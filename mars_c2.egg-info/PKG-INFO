@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: mars_c2
+Version: 0.1.0
+Summary: MARS C2, surveillance maritime par fusion AIS et radar satellite
+Requires-Python: >=3.11
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scipy
+Requires-Dist: requests
+Requires-Dist: rasterio
+Requires-Dist: pyproj
+Requires-Dist: pyyaml
+Requires-Dist: psycopg[binary]
+Requires-Dist: torch

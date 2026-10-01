@@ -1,0 +1,9 @@
+numpy
+pandas
+scipy
+requests
+rasterio
+pyproj
+pyyaml
+psycopg[binary]
+torch
