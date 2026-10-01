@@ -1,0 +1,23 @@
+[project]
+name = "mars_c2"
+version = "0.1.0"
+description = "MARS C2, surveillance maritime par fusion AIS et radar satellite"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "requests",
+    "rasterio",
+    "pyproj",
+    "pyyaml",
+    "psycopg[binary]",
+    "torch",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["mars", "mars.sar", "mars.ais", "mars.fusion"]

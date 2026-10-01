@@ -1,0 +1,26 @@
+# Règles de MARS C2. Toute alerte enregistre la version ci dessous.
+version: "2026.10.1"
+
+model:
+  file: models/xview3_membre4_v2s.jit
+  version: "xview3_v2s_membre4, sigma0 bilineaire"
+  thresholds:
+    objectness: 0.30
+    vessel: 0.338
+    fishing: 0.35
+
+contrast:
+  min_vv_db: 10.0        # en dessous : détection conservée, masquée pour contraste faible
+  peak_half_px: 2
+  ring_inner_px: 10
+  ring_outer_px: 40
+
+fusion:
+  ais_window_min: 15     # positions AIS lues autour de t0
+  max_gap_min: 10        # interpolation ou estime au plus 10 minutes
+  base_radius_m: 300
+  doppler_s: 150         # rayon supplémentaire = doppler_s x vitesse (m/s) ; phase 0 : décalages jusqu'à 730 m
+
+dark_ship:
+  critical_length_m: 50
+  critical_contrast_db: 20

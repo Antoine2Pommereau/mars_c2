@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MARS C2</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  :root { --bg: #0b1620; --panel: #111f2b; --ink: #dfe8ee; --muted: #8aa0b0; --line: #22384a;
+          --ais: #3fd6e8; --match: #4aa3ff; --dark: #ff4fd8; --masked: #6b7c88; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+               font: 14px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; }
+  #app { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 18px; }
+  #map { height: 100%; }
+  h1 { font-size: 22px; letter-spacing: .04em; margin: 0 0 2px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 22px 0 8px; }
+  .meta { color: var(--muted); font-size: 12.5px; }
+  .legend div { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .alert { border: 1px solid var(--line); border-left: 3px solid var(--dark); border-radius: 4px;
+           padding: 8px 10px; margin: 8px 0; cursor: pointer; }
+  .alert:hover { background: #16293a; }
+  .alert .sev { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dark); }
+  .maplibregl-popup-content { background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+                              font-size: 12.5px; max-width: 320px; }
+  .maplibregl-popup-tip { display: none; }
+  table { border-collapse: collapse; width: 100%; margin-top: 6px; }
+  td, th { padding: 2px 4px; border-bottom: 1px solid var(--line); text-align: left; }
+  @media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: 45% 55%; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>MARS C2</h1>
+    <div class="meta">Surveillance maritime, fusion AIS et radar</div>
+    <h2>Analyse</h2>
+    <div id="analysis" class="meta">Chargement…</div>
+    <h2>Légende</h2>
+    <div class="legend">
+      <div><span class="dot" style="background:var(--ais)"></span> Navire AIS à l'instant du passage</div>
+      <div><span class="dot" style="border:2px solid var(--match)"></span> Détection radar appariée à l'AIS</div>
+      <div><span class="dot" style="border:2px solid var(--dark)"></span> Détection radar sans AIS</div>
+      <div><span class="dot" style="border:2px solid var(--masked)"></span> Détection écartée (contraste faible)</div>
+    </div>
+    <h2>Alertes</h2>
+    <div id="alerts" class="meta">Aucune</div>
+  </aside>
+  <div id="map"></div>
+</div>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
