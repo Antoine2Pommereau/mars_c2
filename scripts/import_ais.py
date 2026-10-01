@@ -1,9 +1,10 @@
 """Importe une journée AIS de la Danish Maritime Authority dans la base, pour une zone donnée.
 
-Exemple :
-    python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 10.2 57.7 10.9 58.15
+Exemple (Skagerrak et Kattegat) :
+    python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 8.5 56.0 13.0 58.6
 """
 import argparse
+import io
 import sys
 import time
 from pathlib import Path
@@ -16,6 +17,8 @@ from mars.ais.dma import read_dma_csv
 from mars.config import load_env
 from mars.db import connect
 
+BATCH = 500_000
+
 
 def main():
     ap = argparse.ArgumentParser(description="Import d'une journée AIS (Danish Maritime Authority)")
@@ -26,8 +29,10 @@ def main():
     load_env()
 
     t = time.time()
-    df = read_dma_csv(args.csv, args.bbox, margin=args.margin)
-    print(f"{len(df)} messages retenus, {df.mmsi.nunique()} navires, lecture en {time.time() - t:.0f} s")
+    df, stats = read_dma_csv(args.csv, args.bbox, margin=args.margin)
+    print(f"Lecture et nettoyage en {time.time() - t:.0f} s")
+    for k, v in stats.items():
+        print(f"  {k:34s} {v:>12,}".replace(",", " "))
     if df.empty:
         return
 
@@ -57,17 +62,37 @@ def main():
         cur.execute("DELETE FROM positions WHERE vessel_id = ANY(%s) AND ts BETWEEN %s AND %s",
                     (list(ids.values()), df.ts.min(), df.ts.max()))
 
+        # Insertion en masse par COPY, en lots, au format texte de PostgreSQL
         t = time.time()
+        out = pd.DataFrame({
+            "vessel_id": df.mmsi.astype(int).map(ids),
+            "ts": df.ts.dt.strftime("%Y-%m-%d %H:%M:%S+00"),
+            "geom": "SRID=4326;POINT(" + df.lon.astype(str) + " " + df.lat.astype(str) + ")",
+            "sog": df.sog, "cog": df.cog, "heading": df.heading.astype("Int64"),
+        })
         with cur.copy("COPY positions (vessel_id, ts, geom, sog_kn, cog_deg, heading_deg) FROM STDIN") as cp:
-            for r in df.itertuples():
-                cp.write_row((
-                    ids[int(r.mmsi)], r.ts, f"SRID=4326;POINT({r.lon} {r.lat})",
-                    None if pd.isna(r.sog) else float(r.sog),
-                    None if pd.isna(r.cog) else float(r.cog),
-                    None if pd.isna(r.heading) else int(r.heading),
-                ))
+            for start in range(0, len(out), BATCH):
+                buf = io.StringIO()
+                out.iloc[start:start + BATCH].to_csv(buf, sep="\t", header=False, index=False, na_rep="\\N")
+                cp.write(buf.getvalue())
+                print(f"\r  {min(start + BATCH, len(out)):,} positions insérées".replace(",", " "), end="")
+        elapsed = time.time() - t
+        print(f"\n{len(out):,} positions en {elapsed:.0f} s, soit {len(out) / max(elapsed, 1e-6):,.0f} par seconde"
+              .replace(",", " "))
+
+        # Journées disponibles
+        for day, g in df.groupby(df.ts.dt.date):
+            cur.execute("INSERT INTO ais_days (day, messages, vessels) VALUES (%s, %s, %s) "
+                        "ON CONFLICT (day) DO UPDATE SET messages = EXCLUDED.messages, vessels = EXCLUDED.vessels, "
+                        "imported_at = now()", (day, len(g), int(g.mmsi.nunique())))
+
+        # Si l'horloge simulée pointe hors des journées chargées, on la place sur la première journée importée
+        cur.execute("SELECT EXISTS (SELECT 1 FROM ais_days WHERE day = (sim_now() AT TIME ZONE 'UTC')::date)")
+        if not cur.fetchone()[0]:
+            start = pd.Timestamp(df.ts.min().date(), tz="UTC") + pd.Timedelta(hours=12)
+            cur.execute("UPDATE sim_clock SET sim_anchor = %s, real_anchor = clock_timestamp(), paused = true", (start,))
+            print(f"Horloge simulée placée au {start}")
         conn.commit()
-    print(f"{len(df)} positions insérées en {time.time() - t:.0f} s")
 
 
 if __name__ == "__main__":

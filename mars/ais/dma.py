@@ -4,31 +4,59 @@ import pandas as pd
 
 USECOLS = ["# Timestamp", "Type of mobile", "MMSI", "Latitude", "Longitude", "SOG", "COG", "Heading",
            "Name", "Ship type", "Length"]
+COLUMNS = ["mmsi", "ts", "lat", "lon", "sog", "cog", "heading", "name", "ship_type", "length"]
 
 
-def read_dma_csv(path, bbox, margin: float = 0.2, chunksize: int = 2_000_000) -> pd.DataFrame:
-    """Lit le fichier par blocs, garde la zone élargie et nettoie les messages."""
+def read_dma_csv(path, bbox, margin: float = 0.2, chunksize: int = 2_000_000):
+    """Lit le fichier par blocs, garde la zone élargie et nettoie les messages.
+
+    Renvoie (positions nettoyées, statistiques de nettoyage), pour que chaque règle soit traçable.
+    """
     lon_min, lat_min, lon_max, lat_max = bbox
+    stats = {"lus": 0, "dans_la_zone": 0}
     parts = []
     for chunk in pd.read_csv(path, usecols=USECOLS, chunksize=chunksize, low_memory=False):
+        stats["lus"] += len(chunk)
         c = chunk[chunk.Latitude.between(lat_min - margin, lat_max + margin)
                   & chunk.Longitude.between(lon_min - margin, lon_max + margin)]
         if len(c):
             parts.append(c)
     if not parts:
-        return pd.DataFrame(columns=["mmsi", "ts", "lat", "lon", "sog", "cog", "heading", "name", "ship_type", "length"])
+        return pd.DataFrame(columns=COLUMNS), stats
     df = pd.concat(parts, ignore_index=True)
+    stats["dans_la_zone"] = len(df)
+
+    n = len(df)
     df = df[df["Type of mobile"].isin(["Class A", "Class B"])]
+    stats["retires_hors_classes_A_B"] = n - len(df)
+
+    n = len(df)
     df = df[df.MMSI.between(100_000_000, 999_999_999)]
+    stats["retires_mmsi_invalide"] = n - len(df)
+
+    n = len(df)
     df = df[(df.Latitude.abs() <= 90) & (df.Longitude.abs() <= 180)].copy()
+    stats["retires_position_non_disponible"] = n - len(df)
+
     df["ts"] = pd.to_datetime(df["# Timestamp"], format="%d/%m/%Y %H:%M:%S", utc=True)
-    df.loc[df.SOG >= 102.2, "SOG"] = np.nan          # 102,3 nœuds : non disponible
-    df.loc[df.COG >= 360, "COG"] = np.nan            # 360 : non disponible
-    df.loc[df.Heading >= 360, "Heading"] = np.nan    # 511 : non disponible
+    stats["vitesse_non_disponible"] = int((df.SOG >= 102.2).sum())    # 102,3 nœuds
+    stats["route_non_disponible"] = int((df.COG >= 360).sum())        # 360
+    stats["cap_non_disponible"] = int((df.Heading >= 360).sum())      # 511
+    df.loc[df.SOG >= 102.2, "SOG"] = np.nan
+    df.loc[df.COG >= 360, "COG"] = np.nan
+    df.loc[df.Heading >= 360, "Heading"] = np.nan
+
     df = df.rename(columns={"MMSI": "mmsi", "Latitude": "lat", "Longitude": "lon", "SOG": "sog", "COG": "cog",
                             "Heading": "heading", "Name": "name", "Ship type": "ship_type", "Length": "length"})
+    n = len(df)
     df = df.drop_duplicates(subset=["mmsi", "ts", "lat", "lon"]).sort_values(["mmsi", "ts"])
-    return _drop_jumps(df)[["mmsi", "ts", "lat", "lon", "sog", "cog", "heading", "name", "ship_type", "length"]]
+    stats["retires_doublons"] = n - len(df)
+
+    n = len(df)
+    df = _drop_jumps(df)
+    stats["retires_sauts_impossibles"] = n - len(df)
+    stats["conserves"] = len(df)
+    return df[COLUMNS], stats
 
 
 def _drop_jumps(df: pd.DataFrame, max_speed_kn: float = 50.0) -> pd.DataFrame:

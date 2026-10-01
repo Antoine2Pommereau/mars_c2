@@ -4,7 +4,29 @@ Maritime Autonomous Reconnaissance and Surveillance, Command and Control.
 Surveillance maritime par fusion des données AIS et de l'imagerie radar Sentinel 1.
 La spécification complète décrit la vision, l'architecture et la feuille de route.
 
-## État : phase 1, tranche verticale
+## État : phase 2, flux AIS et simulation
+
+La phase 2 met le trafic en mouvement. Le rejeu repose sur une horloge simulée stockée en base (table `sim_clock`,
+fonction `sim_now()`) : l'API, l'interface et, plus tard, les règles raisonnent toutes sur le même « maintenant ».
+Les positions importées constituent l'archive ; le rejeu révèle celles dont l'horodatage est dépassé par l'horloge.
+L'interface reçoit le trafic par SSE une fois par seconde, avec la traînée récente de chaque navire.
+
+**Critère de sortie** : les navires se déplacent sur la carte au rythme choisi.
+
+### Passer de la phase 1 à la phase 2
+
+```bash
+docker compose exec -T db psql -U mars -d mars < db/init/02_simulation.sql
+docker compose up -d --build backend
+docker compose restart frontend
+python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 8.5 56.0 13.0 58.6
+```
+
+La première commande ajoute l'horloge et la table des journées AIS à la base existante. L'import élargi couvre le
+Skagerrak et le Kattegat, et affiche le détail du nettoyage ainsi que le débit d'insertion. Ouvrir ensuite
+http://localhost:8080 et cliquer sur Lecture.
+
+## Phase 1, tranche verticale
 
 Chaîne complète minimale, sur une zone et un passage fixes :
 
