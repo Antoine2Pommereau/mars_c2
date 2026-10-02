@@ -40,9 +40,12 @@ def main():
         name=("name", lambda s: s.dropna().iloc[0] if s.notna().any() else None),
         ship_type=("ship_type", lambda s: s.dropna().iloc[0] if s.notna().any() else None),
         length=("length", lambda s: float(s.dropna().iloc[0]) if s.notna().any() else None),
+        ais_class=("ais_class", lambda s: s.mode().iloc[0] if s.notna().any() else None),
         first_seen=("ts", "min"),
         last_seen=("ts", "max"),
     ).reset_index()
+    for col in ["name", "ship_type", "ais_class"]:
+        statics[col] = statics[col].astype(object).where(statics[col].notna(), None)   # jamais de texte « NaN »
 
     with connect() as conn, conn.cursor() as cur:
         # Référentiel : un navire par MMSI observé, réutilisé s'il existe déjà
@@ -50,13 +53,14 @@ def main():
         ids = dict(cur.fetchall())
         for s in statics.itertuples():
             if int(s.mmsi) in ids:
-                cur.execute("UPDATE vessels SET first_seen = LEAST(first_seen, %s), last_seen = GREATEST(last_seen, %s) "
-                            "WHERE id = %s", (s.first_seen, s.last_seen, ids[int(s.mmsi)]))
+                cur.execute("UPDATE vessels SET first_seen = LEAST(first_seen, %s), last_seen = GREATEST(last_seen, %s), "
+                            "ais_class = coalesce(%s, ais_class) WHERE id = %s",
+                            (s.first_seen, s.last_seen, s.ais_class, ids[int(s.mmsi)]))
             else:
-                cur.execute("INSERT INTO vessels (mmsi, name, ship_type, length_m, first_seen, last_seen) "
-                            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                cur.execute("INSERT INTO vessels (mmsi, name, ship_type, length_m, first_seen, last_seen, ais_class) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
                             (int(s.mmsi), s.name, s.ship_type, None if pd.isna(s.length) else float(s.length),
-                             s.first_seen, s.last_seen))
+                             s.first_seen, s.last_seen, s.ais_class))
                 ids[int(s.mmsi)] = cur.fetchone()[0]
 
         # Positions déjà présentes pour ces navires sur la même période : remplacées
@@ -85,9 +89,14 @@ def main():
 
         # Journées disponibles
         for day, g in df.groupby(df.ts.dt.date):
-            cur.execute("INSERT INTO ais_days (day, messages, vessels) VALUES (%s, %s, %s) "
+            b = args.bbox
+            cur.execute("INSERT INTO ais_days (day, messages, vessels, lon_min, lat_min, lon_max, lat_max) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                         "ON CONFLICT (day) DO UPDATE SET messages = EXCLUDED.messages, vessels = EXCLUDED.vessels, "
-                        "imported_at = now()", (day, len(g), int(g.mmsi.nunique())))
+                        "lon_min = EXCLUDED.lon_min, lat_min = EXCLUDED.lat_min, lon_max = EXCLUDED.lon_max, "
+                        "lat_max = EXCLUDED.lat_max, imported_at = now()",
+                        (day, len(g), int(g.mmsi.nunique()), b[0] - args.margin, b[1] - args.margin,
+                         b[2] + args.margin, b[3] + args.margin))
 
         # Si l'horloge simulée pointe hors des journées chargées, on la place sur la première journée importée
         cur.execute("SELECT EXISTS (SELECT 1 FROM ais_days WHERE day = (sim_now() AT TIME ZONE 'UTC')::date)")

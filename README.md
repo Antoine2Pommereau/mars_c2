@@ -4,7 +4,23 @@ Maritime Autonomous Reconnaissance and Surveillance, Command and Control.
 Surveillance maritime par fusion des données AIS et de l'imagerie radar Sentinel 1.
 La spécification complète décrit la vision, l'architecture et la feuille de route.
 
-## État : phase 4 en cours, masques et rendez vous suspects
+## État : phase 4 en cours, masques, rendez vous suspects et coupures AIS
+
+**Coupures AIS** (`backend/rules.py`) : navire de classe A faisant route (au moins 1 nœud) qui cesse d'émettre
+pendant au moins deux heures, à plus de 3 km des côtes, loin du bord des données chargées, et dans la **zone de
+réception fiable** : cellules d'environ 6 km reçues pendant au moins 22 heures sur 24, pour au moins 20 navires.
+Cette dernière condition évite de confondre un silence avec une sortie de la couverture des stations côtières.
+Chaque alerte indique la dernière position et la réapparition, le déplacement pendant le silence, et les navires
+restés lents à moins de 3 km du trajet présumé : des partenaires possibles d'une rencontre dissimulée.
+
+```bash
+docker compose exec -T db psql -U mars -d mars < db/init/06_ais_gap.sql
+docker compose up -d --build backend
+python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 8.5 56.0 13.0 58.6
+python scripts/build_masks.py --skip-land
+python scripts/run_rules.py --day 2024-06-05
+```
+
 
 **Masques géographiques** (`scripts/build_masks.py`) : terres émergées issues de GSHHG en pleine résolution, qui
 contient les petites îles (découpées sur la région et subdivisées pour accélérer les calculs de distance), et zones de

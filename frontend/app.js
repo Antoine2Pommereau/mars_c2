@@ -106,9 +106,42 @@ function rdvHtml(a) {
     <div class="meta" style="margin-top:6px">Alerte levée à ${hm(a.properties.event_time)} UTC, après ${d.parametres?.min_duration_min} min de rencontre. Règles ${esc(a.properties.rule_version)}</div>`;
 }
 
+function gapHtml(a) {
+  const d = a.properties.details || {};
+  const partners = (d.partenaires_possibles || []).map((p) =>
+    `<tr><td>${esc(p.name || p.mmsi)}</td><td>${p.distance_min_m} m</td><td>${hm(p.debut)} à ${hm(p.fin)}</td></tr>`).join("");
+  return `<strong>Coupure AIS</strong>, sévérité ${esc(SEVERITY[a.properties.severity] || a.properties.severity)}<br>
+    ${esc(d.motif)}<br><br>
+    ${vesselLabel(d.navire)}<br><br>
+    Dernier message : ${hm(d.dernier_message)} UTC, à ${fmt(d.vitesse_avant_kn)} nœuds<br>
+    Réapparition : ${d.reapparition ? `${hm(d.reapparition)} UTC` : "aucune dans la journée"}<br>
+    Silence : ${d.duree_min} min${d.deplacement_km !== null ? `, déplacement ${fmt(d.deplacement_km)} km` : ""}<br>
+    Réception de la zone : ${d.reception_cellule?.navires} navires, ${d.reception_cellule?.heures} h sur 24<br>
+    ${(d.contexte || []).length ? `<br><strong>Contexte</strong><br>${d.contexte.map((t) => `· ${esc(t)}`).join("<br>")}<br>` : ""}
+    ${partners ? `<table><tr><th>Partenaire possible</th><th>Au plus près</th><th>Lent</th></tr>${partners}</table>` : ""}
+    <div class="meta" style="margin-top:6px">Alerte levée à ${hm(a.properties.event_time)} UTC, après ${d.parametres?.min_gap_min} min de silence. Règles ${esc(a.properties.rule_version)}</div>`;
+}
+
 async function openLiveAlert(a) {
   const [lon, lat] = a.geometry.coordinates;
-  map.flyTo({ center: [lon, lat], zoom: 12 });
+  map.flyTo({ center: [lon, lat], zoom: 11 });
+  if (a.properties.type === "AIS_GAP") {
+    const d = a.properties.details || {};
+    new maplibregl.Popup({ offset: 14 }).setLngLat([lon, lat]).setHTML(gapHtml(a)).addTo(map);
+    const coords = [d.derniere_position, d.position_reapparition].filter(Boolean);
+    map.getSource("gap-line").setData({ type: "FeatureCollection", features: [
+      ...(coords.length === 2 ? [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: {} }] : []),
+      ...coords.map((c, i) => ({ type: "Feature", geometry: { type: "Point", coordinates: c }, properties: { kind: i ? "reapparition" : "dernier" } })),
+    ] });
+    const start = new Date(new Date(d.dernier_message).getTime() - 60 * 60 * 1000).toISOString();
+    const end = new Date(new Date(d.reapparition || d.dernier_message).getTime() + 60 * 60 * 1000).toISOString();
+    const ids = [d.navire, ...(d.partenaires_possibles || [])].filter(Boolean).map((v) => v.vessel_id);
+    const tracks = await Promise.all(ids.map((id) =>
+      getJSON(`/vessels/${id}/track?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`).catch(() => null)));
+    map.getSource("rdv-tracks").setData({ type: "FeatureCollection", features: tracks.filter(Boolean) });
+    return;
+  }
+  map.getSource("gap-line").setData(EMPTY);
   new maplibregl.Popup({ offset: 14 }).setLngLat([lon, lat]).setHTML(rdvHtml(a)).addTo(map);
   const d = a.properties.details || {};
   const start = new Date(new Date(d.debut).getTime() - 30 * 60 * 1000).toISOString();
@@ -129,11 +162,18 @@ function renderLiveAlerts(fc) {
   list.innerHTML = fc.features.length ? "" : "Aucune à cet instant";
   fc.features.forEach((a) => {
     const d = a.properties.details || {};
-    const [v1, v2] = d.navires || [];
     const el = document.createElement("div");
-    el.className = `alert rdv ${a.properties.severity === "faible" ? "low" : ""}`;
-    el.innerHTML = `<div class="sev">Rendez vous, ${esc(SEVERITY[a.properties.severity] || a.properties.severity)}</div>
-      ${esc(v1?.name || v1?.mmsi)} et ${esc(v2?.name || v2?.mmsi)}<br>${hm(d.debut)} à ${hm(d.fin)} UTC, ${d.duree_min} min`;
+    const sev = esc(SEVERITY[a.properties.severity] || a.properties.severity);
+    if (a.properties.type === "AIS_GAP") {
+      el.className = "alert gap";
+      el.innerHTML = `<div class="sev">Coupure AIS, ${sev}</div>
+        ${esc(d.navire?.name || d.navire?.mmsi)}<br>silence de ${d.duree_min} min depuis ${hm(d.dernier_message)} UTC`;
+    } else {
+      const [v1, v2] = d.navires || [];
+      el.className = `alert rdv ${a.properties.severity === "faible" ? "low" : ""}`;
+      el.innerHTML = `<div class="sev">Rendez vous, ${sev}</div>
+        ${esc(v1?.name || v1?.mmsi)} et ${esc(v2?.name || v2?.mmsi)}<br>${hm(d.debut)} à ${hm(d.fin)} UTC, ${d.duree_min} min`;
+    }
     el.onclick = () => openLiveAlert(a);
     list.appendChild(el);
   });
@@ -378,9 +418,21 @@ map.on("load", async () => {
   map.addLayer({ id: "rdv-tracks", type: "line", source: "rdv-tracks",
     paint: { "line-color": "#ffb547", "line-width": 2.5, "line-opacity": 0.9 } });
 
+  map.addSource("reception", { type: "geojson", data: EMPTY });
+  map.addLayer({ id: "reception", type: "fill", source: "reception", layout: { visibility: "none" },
+    paint: { "fill-color": "#5fd38d", "fill-opacity": 0.12, "fill-outline-color": "#5fd38d" } }, "trails");
+
+  map.addSource("gap-line", { type: "geojson", data: EMPTY });
+  map.addLayer({ id: "gap-line", type: "line", source: "gap-line", filter: ["==", ["geometry-type"], "LineString"],
+    paint: { "line-color": "#ff6b6b", "line-width": 2, "line-dasharray": [2, 2] } });
+  map.addLayer({ id: "gap-points", type: "circle", source: "gap-line", filter: ["==", ["geometry-type"], "Point"],
+    paint: { "circle-radius": 5, "circle-color": ["match", ["get", "kind"], "dernier", "#ff6b6b", "#ffffff"],
+             "circle-stroke-width": 1.5, "circle-stroke-color": "#ff6b6b" } });
+
   map.addSource("live-alerts", { type: "geojson", data: EMPTY });
   map.addLayer({ id: "live-alerts", type: "circle", source: "live-alerts",
-    paint: { "circle-radius": 14, "circle-color": "rgba(255,181,71,0.12)", "circle-stroke-width": 2, "circle-stroke-color": "#ffb547",
+    paint: { "circle-radius": 14, "circle-color": "rgba(255,181,71,0.12)", "circle-stroke-width": 2,
+             "circle-stroke-color": ["match", ["get", "type"], "AIS_GAP", "#ff6b6b", "#ffb547"],
              "circle-stroke-opacity": ["case", ["==", ["get", "severity"], "faible"], 0.45, 1] } });
 
   document.getElementById("show-zones").onchange = async (e) => {
@@ -389,6 +441,13 @@ map.on("load", async () => {
       map.getSource("zones")._loaded = true;
     }
     map.setLayoutProperty("zones", "visibility", e.target.checked ? "visible" : "none");
+  };
+  document.getElementById("show-reception").onchange = async (e) => {
+    if (e.target.checked && !map.getSource("reception")._loaded) {
+      map.getSource("reception").setData(await getJSON("/masks/reception"));
+      map.getSource("reception")._loaded = true;
+    }
+    map.setLayoutProperty("reception", "visibility", e.target.checked ? "visible" : "none");
   };
   map.on("click", "live-alerts", (e) => openLiveAlert(liveById.get(e.features[0].properties.id)));
 

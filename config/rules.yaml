@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.5"
+version: "2026.10.10"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -51,3 +51,35 @@ stationary_zones:
   max_speed_kn: 0.5
   min_vessels: 4         # au moins 4 navires distincts immobiles dans la même cellule
   min_slow_positions: 30
+
+reception:
+  # La fiabilité se mesure par la continuité des trajectoires, pas par la densité du trafic : dans une cellule
+  # bien couverte, deux messages successifs d'un navire de classe A en route sont presque toujours rapprochés.
+  cell_deg_lon: 0.10     # environ 6 km
+  cell_deg_lat: 0.05     # environ 5,5 km
+  max_interval_s: 180    # intervalle jugé normal entre deux messages d'un navire en route
+  min_coverage: 0.95     # au moins 95 % des intervalles sous ce seuil
+  min_pairs: 200         # assez d'observations pour juger
+  min_vessels: 3
+
+ais_gap:
+  min_gap_min: 120       # silence d'au moins deux heures
+  min_speed_kn: 1.0      # le navire faisait route au moment de se taire
+  min_prior_messages: 10 # et émettait régulièrement : au moins 10 messages dans l'heure précédente
+  prior_window_min: 60   # (écarte les MMSI fantômes : un message isolé, souvent un identifiant corrompu)
+  min_coast_km: 3        # dernière position au large
+  edge_margin_deg: 0.25  # loin du bord des données chargées (environ 15 km en longitude, 28 km en latitude)
+  ais_classes: [A]       # classe B (petites unités) ignorée : émission moins fréquente, coupures courantes
+  partner_radius_m: 3000 # navires lents à moins de 3 km du trajet pendant le silence
+  partner_window_max_min: 180   # recherche limitée aux 3 premières heures du silence
+  projection_min: 30     # position estimée 30 min après le dernier message (route et vitesse déclarées) :
+                         # si elle sort de la zone fiable ou des données, le silence est une sortie de couverture
+  projection_open_min: 120   # sans réapparition, horizon porté à la durée minimale du silence : un navire qui
+                             # aurait quitté la zone dans ce délai en gardant sa route n'apporte aucune preuve
+  stop_ratio: 0.3        # vitesse implicite < 30 % de la vitesse déclarée : arrêt pendant le silence
+  continue_ratio: 0.5    # vitesse implicite > 50 % : route poursuivie, silence moins suspect
+  partner_max_speed_kn: 2.0
+  partner_min_positions: 5
+  high_duration_min: 360 # silence sans réapparition : sévérité élevée au delà de 6 heures
+  excluded_ship_types: [Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement", "Port tender",
+                        Dredging, Diving, Military, Medical, "Anti-pollution"]

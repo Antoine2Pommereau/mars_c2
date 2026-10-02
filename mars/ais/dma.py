@@ -4,7 +4,7 @@ import pandas as pd
 
 USECOLS = ["# Timestamp", "Type of mobile", "MMSI", "Latitude", "Longitude", "Navigational status", "SOG", "COG",
            "Heading", "Name", "Ship type", "Length"]
-COLUMNS = ["mmsi", "ts", "lat", "lon", "sog", "cog", "heading", "nav_status", "name", "ship_type", "length"]
+COLUMNS = ["mmsi", "ts", "lat", "lon", "sog", "cog", "heading", "nav_status", "name", "ship_type", "length", "ais_class"]
 
 # Codes normalisés du statut de navigation AIS, à partir des libellés de la Danish Maritime Authority
 NAV_STATUS = [("under way using engine", 0), ("at anchor", 1), ("not under command", 2), ("restricted", 3),
@@ -61,6 +61,7 @@ def read_dma_csv(path, bbox, margin: float = 0.2, chunksize: int = 2_000_000):
     df.loc[df.Heading >= 360, "Heading"] = np.nan
 
     df["nav_status"] = df["Navigational status"].map(nav_status_code)
+    df["ais_class"] = df["Type of mobile"].str.replace("Class ", "", regex=False)
     df = df.rename(columns={"MMSI": "mmsi", "Latitude": "lat", "Longitude": "lon", "SOG": "sog", "COG": "cog",
                             "Heading": "heading", "Name": "name", "Ship type": "ship_type", "Length": "length"})
     n = len(df)

@@ -103,6 +103,7 @@ def main():
     ap.add_argument("--region", nargs=4, type=float, default=[4, 53, 17, 60],
                     metavar=("LON_MIN", "LAT_MIN", "LON_MAX", "LAT_MAX"))
     ap.add_argument("--source", choices=["gshhg", "naturalearth"], default="gshhg")
+    ap.add_argument("--skip-land", action="store_true", help="Ne recalculer que les masques déduits de l'AIS")
     ap.add_argument("--api", default="http://localhost:8000/api")   # API en direct : pas de délai du relais nginx
     args = ap.parse_args()
     load_env()
@@ -110,8 +111,13 @@ def main():
     folder.mkdir(parents=True, exist_ok=True)
 
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM land")
-        if args.source == "gshhg":
+        if args.skip_land:
+            print("Trait de côte conservé")
+        else:
+            cur.execute("DELETE FROM land")
+        if args.skip_land:
+            pass
+        elif args.source == "gshhg":
             n = load_shapes(cur, gshhg_shapefile(folder), "gshhg_f_l1", args.region)
             print(f"GSHHG pleine résolution : {n} polygones dans la région")
         else:
@@ -120,9 +126,10 @@ def main():
                 print(f"{path.stem} : {n} polygones dans la région")
         conn.commit()
 
-    r = requests.post(f"{args.api}/masks/stationary", timeout=1800)
-    r.raise_for_status()
-    print("Zones de stationnement :", r.json())
+    for kind, label in [("stationary", "Zones de stationnement"), ("reception", "Zone de réception fiable")]:
+        r = requests.post(f"{args.api}/masks/{kind}", timeout=1800)
+        r.raise_for_status()
+        print(f"{label} :", r.json())
 
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@
   .alert.rdv { border-left-color: #ffb547; }
   .alert.rdv .sev { color: #ffb547; }
   .alert.rdv.low { opacity: .6; }
+  .alert.gap { border-left-color: #ff6b6b; }
+  .alert.gap .sev { color: #ff6b6b; }
   button.action, .pass { display: block; width: 100%; text-align: left; margin-top: 8px; background: #0b1620;
             color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; font: inherit;
             cursor: pointer; }
@@ -108,9 +110,12 @@
     <h2>Alertes comportementales</h2>
     <div class="legend">
       <div><span class="ring" style="border-color:#ffb547"></span> Rendez vous suspect</div>
-      <div><span class="dot" style="background:rgba(255,181,71,.25);border-radius:2px"></span> Zone de stationnement (exclue)</div>
+      <div><span class="ring" style="border-color:#ff6b6b"></span> Coupure AIS (trait pointillé : trajet présumé)</div>
+      <div><span class="dot" style="background:rgba(255,181,71,.25);border-radius:2px"></span> Zone de mouillage</div>
+      <div><span class="dot" style="background:rgba(95,211,141,.25);border-radius:2px"></span> Zone de réception AIS fiable</div>
     </div>
-    <label class="toggle"><input type="checkbox" id="show-zones"> Afficher les zones de stationnement</label>
+    <label class="toggle"><input type="checkbox" id="show-zones"> Afficher les zones de mouillage</label>
+    <label class="toggle"><input type="checkbox" id="show-reception"> Afficher la zone de réception fiable</label>
     <div id="live-alerts" class="meta" style="margin-top:8px">Aucune à cet instant</div>
   </aside>
   <main>
