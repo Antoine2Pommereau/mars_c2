@@ -31,11 +31,17 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
         ais = ais[ais.lon.between(bbox[0], bbox[2]) & ais.lat.between(bbox[1], bbox[3])].reset_index(drop=True)
         ais["x"], ais["y"] = to_utm.transform(ais.lon.to_numpy(), ais.lat.to_numpy())
 
+    # Masques, dans l'ordre de priorité : terre, contraste, classification
     det["mask_reason"] = None
     if len(det):
-        det.loc[det.contrast_vv_db.isna(), "mask_reason"] = "contraste indetermine"
-        det.loc[det.contrast_vv_db < c_min, "mask_reason"] = "contraste faible"
-        det.loc[det.mask_reason.isna() & (det.vessel_score < thr["vessel"]), "mask_reason"] = "non navire"
+        if "on_land" in det:
+            det.loc[det.on_land.astype(bool), "mask_reason"] = "terre"
+        free = det.mask_reason.isna()
+        det.loc[free & det.contrast_vv_db.isna(), "mask_reason"] = "contraste indetermine"
+        free = det.mask_reason.isna()
+        det.loc[free & (det.contrast_vv_db < c_min), "mask_reason"] = "contraste faible"
+        free = det.mask_reason.isna()
+        det.loc[free & (det.vessel_score < thr["vessel"]), "mask_reason"] = "non navire"
 
     kept = det[det.mask_reason.isna()]
     matched = match(kept, ais, f["base_radius_m"], f["doppler_s"])

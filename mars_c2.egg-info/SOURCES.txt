@@ -21,3 +21,4 @@ mars_c2.egg-info/dependency_links.txt
 mars_c2.egg-info/requires.txt
 mars_c2.egg-info/top_level.txt
 tests/test_contract.py
+tests/test_fusion.py

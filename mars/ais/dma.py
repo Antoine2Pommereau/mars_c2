@@ -2,9 +2,23 @@
 import numpy as np
 import pandas as pd
 
-USECOLS = ["# Timestamp", "Type of mobile", "MMSI", "Latitude", "Longitude", "SOG", "COG", "Heading",
-           "Name", "Ship type", "Length"]
-COLUMNS = ["mmsi", "ts", "lat", "lon", "sog", "cog", "heading", "name", "ship_type", "length"]
+USECOLS = ["# Timestamp", "Type of mobile", "MMSI", "Latitude", "Longitude", "Navigational status", "SOG", "COG",
+           "Heading", "Name", "Ship type", "Length"]
+COLUMNS = ["mmsi", "ts", "lat", "lon", "sog", "cog", "heading", "nav_status", "name", "ship_type", "length"]
+
+# Codes normalisés du statut de navigation AIS, à partir des libellés de la Danish Maritime Authority
+NAV_STATUS = [("under way using engine", 0), ("at anchor", 1), ("not under command", 2), ("restricted", 3),
+              ("constrained", 4), ("moored", 5), ("aground", 6), ("engaged in fishing", 7), ("sailing", 8)]
+
+
+def nav_status_code(label) -> float:
+    if not isinstance(label, str):
+        return np.nan
+    low = label.lower()
+    for key, code in NAV_STATUS:
+        if key in low:
+            return code
+    return np.nan
 
 
 def read_dma_csv(path, bbox, margin: float = 0.2, chunksize: int = 2_000_000):
@@ -46,6 +60,7 @@ def read_dma_csv(path, bbox, margin: float = 0.2, chunksize: int = 2_000_000):
     df.loc[df.COG >= 360, "COG"] = np.nan
     df.loc[df.Heading >= 360, "Heading"] = np.nan
 
+    df["nav_status"] = df["Navigational status"].map(nav_status_code)
     df = df.rename(columns={"MMSI": "mmsi", "Latitude": "lat", "Longitude": "lon", "SOG": "sog", "COG": "cog",
                             "Heading": "heading", "Name": "name", "Ship type": "ship_type", "Length": "length"})
     n = len(df)

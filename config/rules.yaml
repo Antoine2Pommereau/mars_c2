@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.1"
+version: "2026.10.4"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -15,6 +15,9 @@ contrast:
   ring_inner_px: 10
   ring_outer_px: 40
 
+masks:
+  land_buffer_m: 500     # une détection à moins de 500 m de la terre est masquée
+
 fusion:
   ais_window_min: 15     # positions AIS lues autour de t0
   max_gap_min: 10        # interpolation ou estime au plus 10 minutes
@@ -24,3 +27,27 @@ fusion:
 dark_ship:
   critical_length_m: 50
   critical_contrast_db: 20
+
+rendezvous:
+  max_distance_m: 500
+  alongside_m: 50        # bord à bord : transfert physiquement possible
+  # Statuts déclarés excluant une tranche. Vide : un navire « amarré » à plus de 5 km des côtes est un indice
+  # (amarré à l'autre navire), pas une excuse ; exclure ce statut effaçait les transbordements bord à bord.
+  excluded_nav_status: []
+  max_speed_kn: 2.0
+  min_duration_min: 120
+  slot_min: 10           # positions regroupées par tranches de 10 minutes
+  max_gap_min: 20        # deux tranches séparées de 20 minutes au plus restent dans le même épisode
+  min_coast_km: 3        # en dessous : abords de côte et de port, exclus
+  stationary_zone_buffer_m: 1000   # dans une zone de mouillage : alerte conservée, sévérité faible
+  high_duration_min: 240 # sévérité élevée au delà de 4 heures, de 20 km des côtes, ou bord à bord
+  high_coast_km: 20
+  excluded_ship_types: [Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement", "Port tender",
+                        Dredging, Diving, Military, Medical, "Anti-pollution"]
+
+stationary_zones:
+  cell_deg_lon: 0.04     # environ 2,4 km à ces latitudes : capte les mouillages dispersés
+  cell_deg_lat: 0.02     # environ 2,2 km
+  max_speed_kn: 0.5
+  min_vessels: 4         # au moins 4 navires distincts immobiles dans la même cellule
+  min_slow_positions: 30

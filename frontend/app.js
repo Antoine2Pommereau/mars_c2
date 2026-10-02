@@ -27,6 +27,8 @@ map.addControl(new maplibregl.NavigationControl(), "top-right");
 
 let clock = null;
 let analysis = null;
+let liveIds = "";
+const liveById = new Map();
 const STEP_LABEL = { extraction: "Extrait radar", inference: "Détection", fusion: "Fusion AIS" };
 const alertsById = new Map();
 
@@ -82,12 +84,68 @@ function renderProgress(list) {
   if (done.length && (!analysis || Math.max(...done) > analysis.properties.id)) loadAnalysis();
 }
 
+function hm(iso) {
+  return new Date(iso).toISOString().slice(11, 16);
+}
+
+function vesselLabel(v) {
+  if (!v) return "inconnu";
+  return `${esc(v.name || "Sans nom")} (MMSI ${esc(v.mmsi)}, ${esc(v.ship_type || "type non renseigné")}${v.length_m ? `, ${fmt(v.length_m, 0)} m` : ""})`;
+}
+
+function rdvHtml(a) {
+  const d = a.properties.details || {};
+  const [v1, v2] = d.navires || [];
+  return `<strong>Rendez vous suspect</strong>, sévérité ${esc(SEVERITY[a.properties.severity] || a.properties.severity)}<br>
+    ${esc(d.motif)}<br><br>
+    ${vesselLabel(v1)}<br>${vesselLabel(v2)}<br><br>
+    De ${hm(d.debut)} à ${hm(d.fin)} UTC, soit ${d.duree_min} min<br>
+    Distance entre les navires : ${d.distance_min_m} m au plus près, ${d.distance_moyenne_m} m en moyenne<br>
+    Distance à la côte : ${d.distance_cote_km === null ? "n.d." : `${fmt(d.distance_cote_km)} km`}<br>
+    ${(d.contexte || []).length ? `<br><strong>Contexte</strong><br>${d.contexte.map((t) => `· ${esc(t)}`).join("<br>")}<br>` : ""}
+    <div class="meta" style="margin-top:6px">Alerte levée à ${hm(a.properties.event_time)} UTC, après ${d.parametres?.min_duration_min} min de rencontre. Règles ${esc(a.properties.rule_version)}</div>`;
+}
+
+async function openLiveAlert(a) {
+  const [lon, lat] = a.geometry.coordinates;
+  map.flyTo({ center: [lon, lat], zoom: 12 });
+  new maplibregl.Popup({ offset: 14 }).setLngLat([lon, lat]).setHTML(rdvHtml(a)).addTo(map);
+  const d = a.properties.details || {};
+  const start = new Date(new Date(d.debut).getTime() - 30 * 60 * 1000).toISOString();
+  const end = new Date(new Date(d.fin).getTime() + 30 * 60 * 1000).toISOString();
+  const tracks = await Promise.all((d.navires || []).filter(Boolean).map((v) =>
+    getJSON(`/vessels/${v.vessel_id}/track?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`).catch(() => null)));
+  map.getSource("rdv-tracks").setData({ type: "FeatureCollection", features: tracks.filter(Boolean) });
+}
+
+function renderLiveAlerts(fc) {
+  map.getSource("live-alerts")?.setData(fc);
+  const ids = fc.features.map((f) => f.properties.id).join(",");
+  if (ids === liveIds) return;
+  liveIds = ids;
+  liveById.clear();
+  fc.features.forEach((a) => liveById.set(a.properties.id, a));
+  const list = document.getElementById("live-alerts");
+  list.innerHTML = fc.features.length ? "" : "Aucune à cet instant";
+  fc.features.forEach((a) => {
+    const d = a.properties.details || {};
+    const [v1, v2] = d.navires || [];
+    const el = document.createElement("div");
+    el.className = `alert rdv ${a.properties.severity === "faible" ? "low" : ""}`;
+    el.innerHTML = `<div class="sev">Rendez vous, ${esc(SEVERITY[a.properties.severity] || a.properties.severity)}</div>
+      ${esc(v1?.name || v1?.mmsi)} et ${esc(v2?.name || v2?.mmsi)}<br>${hm(d.debut)} à ${hm(d.fin)} UTC, ${d.duree_min} min`;
+    el.onclick = () => openLiveAlert(a);
+    list.appendChild(el);
+  });
+}
+
 function connectStream() {
   const es = new EventSource("/api/stream");
   es.addEventListener("traffic", (e) => {
     const d = JSON.parse(e.data);
     renderClock(d.clock);
     renderProgress(d.analyses || []);
+    if (d.live_alerts) renderLiveAlerts(d.live_alerts);
     map.getSource("traffic")?.setData(d.traffic);
     const n = d.traffic.features.length;
     const silent = d.traffic.features.filter((f) => f.properties.age_s > 600).length;
@@ -312,6 +370,28 @@ map.on("load", async () => {
   map.addLayer({ id: "alerts", type: "circle", source: "alerts",
     paint: { "circle-radius": 15, "circle-color": "rgba(255,79,216,0.12)", "circle-stroke-width": 1.5, "circle-stroke-color": "#ff4fd8" } });
 
+  map.addSource("zones", { type: "geojson", data: EMPTY });
+  map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
+    paint: { "fill-color": "#ffb547", "fill-opacity": 0.18, "fill-outline-color": "#ffb547" } }, "trails");
+
+  map.addSource("rdv-tracks", { type: "geojson", data: EMPTY });
+  map.addLayer({ id: "rdv-tracks", type: "line", source: "rdv-tracks",
+    paint: { "line-color": "#ffb547", "line-width": 2.5, "line-opacity": 0.9 } });
+
+  map.addSource("live-alerts", { type: "geojson", data: EMPTY });
+  map.addLayer({ id: "live-alerts", type: "circle", source: "live-alerts",
+    paint: { "circle-radius": 14, "circle-color": "rgba(255,181,71,0.12)", "circle-stroke-width": 2, "circle-stroke-color": "#ffb547",
+             "circle-stroke-opacity": ["case", ["==", ["get", "severity"], "faible"], 0.45, 1] } });
+
+  document.getElementById("show-zones").onchange = async (e) => {
+    if (e.target.checked && !map.getSource("zones")._loaded) {
+      map.getSource("zones").setData(await getJSON("/masks/stationary"));
+      map.getSource("zones")._loaded = true;
+    }
+    map.setLayoutProperty("zones", "visibility", e.target.checked ? "visible" : "none");
+  };
+  map.on("click", "live-alerts", (e) => openLiveAlert(liveById.get(e.features[0].properties.id)));
+
   document.getElementById("show-analysis").onchange = (e) => {
     ANALYSIS_LAYERS.forEach((l) => map.setLayoutProperty(l, "visibility", e.target.checked ? "visible" : "none"));
   };
@@ -332,7 +412,7 @@ map.on("load", async () => {
       `<strong>Détection radar</strong><br>${statut}<br>Longueur ${fmt(p.length_m, 0)} m<br>
        Contraste VV ${fmt(p.contrast_vv_db)} dB<br>Présence ${fmt(p.objectness, 2)}, navire ${fmt(p.vessel_score, 2)}`).addTo(map);
   });
-  for (const layer of ["alerts", "traffic", "det"]) {
+  for (const layer of ["alerts", "traffic", "det", "live-alerts"]) {
     map.on("mouseenter", layer, () => (map.getCanvas().style.cursor = "pointer"));
     map.on("mouseleave", layer, () => (map.getCanvas().style.cursor = ""));
   }

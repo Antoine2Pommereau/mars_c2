@@ -25,6 +25,9 @@
            padding: 8px 10px; margin: 8px 0; cursor: pointer; }
   .alert:hover { background: #16293a; }
   .alert .sev { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dark); }
+  .alert.rdv { border-left-color: #ffb547; }
+  .alert.rdv .sev { color: #ffb547; }
+  .alert.rdv.low { opacity: .6; }
   button.action, .pass { display: block; width: 100%; text-align: left; margin-top: 8px; background: #0b1620;
             color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; font: inherit;
             cursor: pointer; }
@@ -99,8 +102,16 @@
     </div>
     <label class="toggle"><input type="checkbox" id="show-analysis" checked> Afficher l'analyse</label>
 
-    <h2>Alertes</h2>
+    <h2>Alertes de l'analyse radar</h2>
     <div id="alerts" class="meta">Aucune</div>
+
+    <h2>Alertes comportementales</h2>
+    <div class="legend">
+      <div><span class="ring" style="border-color:#ffb547"></span> Rendez vous suspect</div>
+      <div><span class="dot" style="background:rgba(255,181,71,.25);border-radius:2px"></span> Zone de stationnement (exclue)</div>
+    </div>
+    <label class="toggle"><input type="checkbox" id="show-zones"> Afficher les zones de stationnement</label>
+    <div id="live-alerts" class="meta" style="margin-top:8px">Aucune à cet instant</div>
   </aside>
   <main>
     <div id="map"></div>

@@ -22,6 +22,7 @@ from mars.config import load_rules
 from mars.fusion.pipeline import fuse
 from mars.geo import bbox_size_km
 from mars.sar.catalog import get_token, search_passes
+from rules import build_stationary_zones, run_rendezvous
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://mars:mars@localhost:5432/mars")
 INFERENCE_URL = os.environ.get("INFERENCE_URL", "http://host.docker.internal:8001")
@@ -143,6 +144,18 @@ async def read_active_analyses(c) -> list:
     return [clean(r) for r in rows]
 
 
+async def read_live_alerts(c, now: datetime) -> dict:
+    """Alertes comportementales déjà franchies à l'instant simulé (12 dernières heures simulées)."""
+    rows = await c.fetch(
+        """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,
+                  ST_AsGeoJSON(al.geom)::json AS geometry
+           FROM alerts al
+           WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP', 'AIS_UNCONFIRMED')
+             AND al.event_time <= $1::timestamptz AND al.event_time > $1::timestamptz - interval '12 hours'
+           ORDER BY al.event_time DESC""", now)
+    return collection([feature(r["geometry"], clean(r)) for r in rows])
+
+
 @app.get("/api/traffic")
 async def traffic():
     async with app.state.pool.acquire() as c:
@@ -185,7 +198,8 @@ async def stream(request: Request):
             async with app.state.pool.acquire() as c:
                 clock = await read_clock(c)
                 payload = {"clock": clock_json(clock), "traffic": await read_traffic(c, clock["now"]),
-                           "analyses": await read_active_analyses(c)}
+                           "analyses": await read_active_analyses(c),
+                           "live_alerts": await read_live_alerts(c, clock["now"])}
             yield f"event: traffic\ndata: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1)
 
@@ -315,6 +329,15 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
         det = pd.DataFrame(result["detections"],
                            columns=["lon", "lat", "objectness", "vessel_score", "fishing_score", "length_m", "contrast_vv_db"])
         det["contrast_vv_db"] = pd.to_numeric(det.contrast_vv_db, errors="coerce")
+        det["on_land"] = False
+        if len(det):
+            async with pool.acquire() as c:
+                land_idx = await c.fetch(
+                    "SELECT i FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(lon, lat, i) "
+                    "WHERE EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, "
+                    "ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)::geography, $3::float8))",
+                    det.lon.astype(float).tolist(), det.lat.astype(float).tolist(), float(rules["masks"]["land_buffer_m"]))
+            det.loc[[r["i"] - 1 for r in land_idx], "on_land"] = True
         det, alerts, n_ais = await asyncio.to_thread(fuse, det, pos, pd.Timestamp(t0), bbox, rules)
 
         # 3. Enregistrement des détections, des alertes et de leurs preuves
@@ -407,6 +430,55 @@ async def inference_health():
             return (await client.get(f"{INFERENCE_URL}/v1/health")).json()
     except Exception:
         return {"status": "injoignable", "url": INFERENCE_URL}
+
+
+# Masques et règles comportementales
+
+class RuleRun(BaseModel):
+    day: str | None = None   # AAAA-MM-JJ ; toutes les journées chargées si absent
+
+
+@app.post("/api/masks/stationary")
+async def rebuild_stationary_zones():
+    async with app.state.pool.acquire() as c:
+        span = await c.fetchrow("SELECT min(day) AS d0, max(day) AS d1 FROM ais_days")
+        if span["d0"] is None:
+            raise HTTPException(422, "Aucune journée AIS chargée")
+        n = await build_stationary_zones(c, span["d0"], span["d1"], load_rules())
+    return {"zones": n, "du": span["d0"].isoformat(), "au": span["d1"].isoformat()}
+
+
+@app.get("/api/masks/stationary")
+async def stationary_zones():
+    async with app.state.pool.acquire() as c:
+        rows = await c.fetch("SELECT id, vessels, slow_positions, ST_AsGeoJSON(geom)::json AS geometry FROM stationary_zones")
+    return collection([feature(r["geometry"], clean(r)) for r in rows])
+
+
+@app.post("/api/rules/rendezvous/run")
+async def rendezvous_run(req: RuleRun):
+    rules = load_rules()
+    async with app.state.pool.acquire() as c:
+        if req.day:
+            days = [datetime.fromisoformat(req.day).date()]
+        else:
+            days = [r["day"] for r in await c.fetch("SELECT day FROM ais_days ORDER BY day")]
+        if not days:
+            raise HTTPException(422, "Aucune journée AIS chargée")
+        if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
+            raise HTTPException(422, "Masque de terre absent : lancer scripts/build_masks.py")
+        results = {}
+        for d in days:
+            start = pd.Timestamp(d, tz="UTC").to_pydatetime()
+            results[d.isoformat()] = await run_rendezvous(c, start, start + pd.Timedelta(days=1), rules)
+    return results
+
+
+@app.get("/api/alerts/live")
+async def live_alerts():
+    async with app.state.pool.acquire() as c:
+        clock = await read_clock(c)
+        return await read_live_alerts(c, clock["now"])
 
 
 # Consultation

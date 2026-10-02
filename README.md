@@ -4,7 +4,34 @@ Maritime Autonomous Reconnaissance and Surveillance, Command and Control.
 Surveillance maritime par fusion des données AIS et de l'imagerie radar Sentinel 1.
 La spécification complète décrit la vision, l'architecture et la feuille de route.
 
-## État : phase 3, analyse à la demande
+## État : phase 4 en cours, masques et rendez vous suspects
+
+**Masques géographiques** (`scripts/build_masks.py`) : terres émergées issues de GSHHG en pleine résolution, qui
+contient les petites îles (découpées sur la région et subdivisées pour accélérer les calculs de distance), et zones de
+mouillage déduites de l'AIS : cellules d'environ 2 km où au moins quatre navires distincts sont restés immobiles. Une
+détection radar à moins de 500 m de la terre est masquée.
+
+**Rendez vous suspects** (`backend/rules.py`) : deux navires à moins de 500 m l'un de l'autre, à moins de 2 nœuds,
+pendant au moins deux heures, à plus de 5 km des côtes ; tranches où l'un des navires se déclare amarré exclues ;
+navires de service (remorqueurs, pilotes, secours…) exclus. Dans une zone de mouillage, l'alerte est conservée mais
+déclassée en sévérité faible, avec son contexte ; un rendez vous bord à bord (moins de 50 m) est signalé comme tel. La règle est évaluée en SQL sur toute la journée, et chaque alerte est
+horodatée à l'instant où les deux heures sont atteintes : elle n'apparaît qu'une fois cet instant franchi par le rejeu.
+Tous les paramètres sont dans `config/rules.yaml`.
+
+### Mise en route de la phase 4
+
+```bash
+pip install -e ".[test]"
+docker compose exec -T db psql -U mars -d mars < db/init/04_masks.sql
+docker compose exec -T db psql -U mars -d mars < db/init/05_nav_status.sql
+docker compose up -d --build backend
+python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 8.5 56.0 13.0 58.6
+python -m pytest tests
+python scripts/build_masks.py --region 4 53 17 60
+python scripts/run_rules.py --day 2024-06-05
+```
+
+## Phase 3, analyse à la demande
 
 L'opérateur trace une zone sur la carte (Maj + glisser), choisit un passage Sentinel 1 parmi ceux qui couvrent la
 zone sur les journées AIS chargées, et suit l'analyse étape par étape : extrait radar, détection, fusion avec l'AIS.

@@ -71,8 +71,9 @@ def main():
             "ts": df.ts.dt.strftime("%Y-%m-%d %H:%M:%S+00"),
             "geom": "SRID=4326;POINT(" + df.lon.astype(str) + " " + df.lat.astype(str) + ")",
             "sog": df.sog, "cog": df.cog, "heading": df.heading.astype("Int64"),
+            "nav_status": df.nav_status.astype("Int64"),
         })
-        with cur.copy("COPY positions (vessel_id, ts, geom, sog_kn, cog_deg, heading_deg) FROM STDIN") as cp:
+        with cur.copy("COPY positions (vessel_id, ts, geom, sog_kn, cog_deg, heading_deg, nav_status) FROM STDIN") as cp:
             for start in range(0, len(out), BATCH):
                 buf = io.StringIO()
                 out.iloc[start:start + BATCH].to_csv(buf, sep="\t", header=False, index=False, na_rep="\\N")
