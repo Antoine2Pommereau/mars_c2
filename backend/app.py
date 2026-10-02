@@ -150,7 +150,7 @@ async def read_live_alerts(c, now: datetime) -> dict:
         """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,
                   ST_AsGeoJSON(al.geom)::json AS geometry
            FROM alerts al
-           WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP', 'AIS_UNCONFIRMED')
+           WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP')
              AND al.event_time <= $1::timestamptz AND al.event_time > $1::timestamptz - interval '12 hours'
            ORDER BY al.event_time DESC""", now)
     return collection([feature(r["geometry"], clean(r)) for r in rows])
@@ -338,7 +338,26 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                     "ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)::geography, $3::float8))",
                     det.lon.astype(float).tolist(), det.lat.astype(float).tolist(), float(rules["masks"]["land_buffer_m"]))
             det.loc[[r["i"] - 1 for r in land_idx], "on_land"] = True
-        det, alerts, n_ais = await asyncio.to_thread(fuse, det, pos, pd.Timestamp(t0), bbox, rules)
+        async with pool.acquire() as c:
+            orbit = await c.fetchval("SELECT lower(orbit_direction) FROM sar_passes WHERE product_name = $1", product_name)
+        heading = rules["fusion"]["flight_heading_deg"].get(orbit) if orbit else None
+        det, alerts, n_ais, extras = await asyncio.to_thread(fuse, det, pos, pd.Timestamp(t0), bbox, rules, heading)
+
+        # Positions AIS non confirmées : on écarte les navires près de la terre (ports, quais) et hors de l'emprise
+        # du passage satellite, où l'absence d'écho ne prouve rien
+        unconfirmed = []
+        if extras["unconfirmed"]:
+            u = extras["unconfirmed"]
+            async with pool.acquire() as c:
+                ok = await c.fetch(
+                    "SELECT i FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(lon, lat, i) "
+                    "WHERE NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, "
+                    "      ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)::geography, $3::float8)) "
+                    "  AND EXISTS (SELECT 1 FROM sar_passes s WHERE s.product_name = $4 AND (s.footprint IS NULL OR "
+                    "      ST_Covers(s.footprint, ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)::geography)))",
+                    [x["lon"] for x in u], [x["lat"] for x in u], float(rules["masks"]["land_buffer_m"]) * 2,
+                    product_name)
+            unconfirmed = [u[r["i"] - 1] for r in ok]
 
         # 3. Enregistrement des détections, des alertes et de leurs preuves
         async with pool.acquire() as c, c.transaction():
@@ -366,12 +385,34 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                 await c.executemany("INSERT INTO alert_evidence VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                                     [(alert_id, et, eid) for et, eid in evidence])
 
+            for x in unconfirmed:
+                big = x["length_m"] >= rules["unconfirmed"]["high_length_m"]
+                details = {"analysis_id": analysis_id, "pass": product_name,
+                           "navire": {k: x[k] for k in ("vessel_id", "mmsi", "name", "length_m", "sog_kn")},
+                           "methode_position": x["methode_position"],
+                           "echo_le_plus_proche_m": x["echo_le_plus_proche_m"],
+                           "tolerance_le_long_m": x["tolerance_le_long_m"],
+                           "tolerance_en_travers_m": x["tolerance_en_travers_m"],
+                           "motif": "Grand navire déclaré par l'AIS dans la zone analysée, sans aucun écho radar "
+                                    "compatible à l'instant du passage : position possiblement falsifiée",
+                           "contexte": ["Le détecteur manque environ un navire sur dix : indice à recouper, pas une preuve"],
+                           "parametres": dict(rules["unconfirmed"])}
+                alert_id = await c.fetchval(
+                    "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
+                    "VALUES ('AIS_UNCONFIRMED', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) "
+                    "RETURNING id",
+                    "moyenne" if big else "faible", t0, x["lon"], x["lat"], details, rules["version"])
+                await c.executemany("INSERT INTO alert_evidence VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                                    [(alert_id, "analysis", analysis_id), (alert_id, "vessel", x["vessel_id"])])
+
             fusion_s = round(asyncio.get_running_loop().time() - t_fusion, 2)
             timings = {**result["timings"], "fusion_s": fusion_s,
                        "total_s": round(asyncio.get_running_loop().time() - started, 2)}
             summary = {"detections": len(det), "retenues": int(det.mask_reason.isna().sum()) if len(det) else 0,
                        "appariees": int(det.matched_vessel_id.notna().sum()) if len(det) else 0,
-                       "alertes": len(alerts), "navires_ais": n_ais, "tuiles": result["n_tiles"],
+                       "alertes": len(alerts), "positions_non_confirmees": len(unconfirmed),
+                       "decalages": extras["offsets"], "direction_de_vol_deg": heading,
+                       "navires_ais": n_ais, "tuiles": result["n_tiles"],
                        "accelerateur": result["device"], "precision_mixte": result["amp"]}
             await add_progress(c, analysis_id, {"type": "progress", "step": "fusion", "state": "done",
                                                 "seconds": fusion_s,

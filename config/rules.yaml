@@ -1,13 +1,18 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.10"
+version: "2026.10.13"
 
 model:
   file: models/xview3_membre4_v2s.jit
   version: "xview3_v2s_membre4, sigma0 bilineaire"
+  # Seuil de présence abaissé de 0,30 (valeur de l'auteur, calibrée sur xView3) à 0,20 : sur nos scènes le modèle
+  # est moins confiant, et le filtre de contraste local confirme les candidats (balayage du 2 octobre 2026)
   thresholds:
-    objectness: 0.30
+    objectness: 0.20
     vessel: 0.338
     fishing: 0.35
+  merge:                 # fusion des pics multiples d'un même grand écho
+    radius_m: 150
+    length_factor: 0.6
 
 contrast:
   min_vv_db: 10.0        # en dessous : détection conservée, masquée pour contraste faible
@@ -22,7 +27,17 @@ fusion:
   ais_window_min: 15     # positions AIS lues autour de t0
   max_gap_min: 10        # interpolation ou estime au plus 10 minutes
   base_radius_m: 300
-  doppler_s: 150         # rayon supplémentaire = doppler_s x vitesse (m/s) ; phase 0 : décalages jusqu'à 730 m
+  doppler_s: 150         # décalage le long de la trace = doppler_s x vitesse vers le radar (m/s) ; phase 0 : jusqu'à 730 m
+  # Direction de vol de Sentinel 1 à ces latitudes, selon le sens de l'orbite : la tolérance est une ellipse
+  # allongée le long de la trace
+  flight_heading_deg:
+    ascending: 348
+    descending: 192
+
+unconfirmed:
+  min_length_m: 50       # seuls les grands navires sont presque toujours vus par le radar
+  tolerance_factor: 1.5  # tolérance élargie : on ne cherche qu'un écho compatible, même écarté par un filtre
+  high_length_m: 150     # sévérité moyenne au delà de 150 m, faible sinon
 
 dark_ship:
   critical_length_m: 50

@@ -81,3 +81,11 @@ def test_modele_sorties():
         out = model(torch.zeros(1, 2, inf.TILE, inf.TILE))
     assert len(out) == 5
     assert tuple(out[4].shape) == (1, 2, inf.TILE // 2, inf.TILE // 2)
+
+
+def test_fusion_des_fragments_d_un_grand_echo():
+    import pandas as pd
+    det = pd.DataFrame({"x": [0.0, 80.0, 1000.0], "y": [0.0, 0.0, 0.0], "objectness": [0.26, 0.53, 0.4],
+                        "length_m": [61.0, 106.0, 40.0]})
+    out = inf.merge_fragments(det, 150, 0.6)
+    assert sorted(out.objectness.tolist()) == [0.4, 0.53]   # le pic secondaire à 80 m disparaît, l'écho distant reste

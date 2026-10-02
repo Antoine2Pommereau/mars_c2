@@ -45,7 +45,10 @@ def _warmup(model, device, amp):
 async def lifespan(app):
     device = pick_device(os.environ.get("INFERENCE_DEVICE", "auto"))
     model = load_model(ROOT / RULES["model"]["file"], device)
-    amp = device in ("cuda", "mps") and os.environ.get("INFERENCE_AMP", "auto") != "off"
+    # Précision mixte : utile sur GPU NVIDIA ; sur GPU Apple (MPS) elle ralentit le calcul (16 s contre 6 s mesurés
+    # pour 4 tuiles) sans rien changer aux détections. Forçable avec INFERENCE_AMP=on ou off.
+    amp_env = os.environ.get("INFERENCE_AMP", "auto")
+    amp = (device == "cuda") if amp_env == "auto" else (amp_env == "on")
     try:
         warm_s = _warmup(model, device, amp)
     except Exception:
@@ -81,6 +84,7 @@ async def analyze(req: AnalyzeRequest):
 
     def work():
         timings = {}
+        rules = load_rules()   # relues à chaque analyse : un changement de seuil s'applique sans redémarrage
         try:
             with LOCK:
                 t0 = pd.Timestamp(req.acquired_at)
@@ -96,7 +100,8 @@ async def analyze(req: AnalyzeRequest):
                 emit({"type": "progress", "step": "inference", "state": "start"})
                 t = time.time()
                 det, n_tiles = detect(image_db, transform, STATE["model"], STATE["device"],
-                                      RULES["model"]["thresholds"], RULES["contrast"], amp=STATE["amp"])
+                                      rules["model"]["thresholds"], rules["contrast"], amp=STATE["amp"],
+                                      merge_cfg=rules["model"].get("merge"))
                 timings["inference_s"] = round(time.time() - t, 2)
                 emit({"type": "progress", "step": "inference", "state": "done", "seconds": timings["inference_s"],
                       "detail": f"{len(det)} détections sur {n_tiles} tuile(s), {STATE['device']}"})
@@ -111,7 +116,8 @@ async def analyze(req: AnalyzeRequest):
                     for lo, la, d in zip(lon, lat, det.itertuples())
                 ]
                 emit({"type": "result", "detections": detections, "timings": timings, "n_tiles": n_tiles,
-                      "device": STATE["device"], "amp": STATE["amp"], "model_version": RULES["model"]["version"]})
+                      "device": STATE["device"], "amp": STATE["amp"], "model_version": rules["model"]["version"],
+                      "thresholds": rules["model"]["thresholds"]})
         except Exception as e:
             emit({"type": "error", "message": f"{type(e).__name__} : {e}"})
         finally:

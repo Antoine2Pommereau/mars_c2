@@ -309,15 +309,27 @@ function renderProgress(a) {
 
 function alertHtml(a) {
   const d = a.properties.details || {};
+  const sev = esc(SEVERITY[a.properties.severity] || a.properties.severity);
+  if (a.properties.type === "AIS_UNCONFIRMED") {
+    const v = d.navire || {};
+    return `<strong>Position AIS non confirmée</strong>, sévérité ${sev}<br>
+      ${esc(d.motif)}<br><br>
+      ${esc(v.name || "Sans nom")} (MMSI ${esc(v.mmsi)}), ${fmt(v.length_m, 0)} m déclarés, ${fmt(v.sog_kn)} nœuds<br>
+      Position à l'instant du passage : ${esc(d.methode_position)}<br>
+      Écho radar le plus proche : ${d.echo_le_plus_proche_m === null ? "aucun" : `${d.echo_le_plus_proche_m} m`}
+      (tolérance ${d.tolerance_le_long_m} m le long de la trace, ${d.tolerance_en_travers_m} m en travers)<br>
+      ${(d.contexte || []).length ? `<br><strong>Contexte</strong><br>${d.contexte.map((t) => `· ${esc(t)}`).join("<br>")}` : ""}
+      <div class="meta" style="margin-top:6px">Règles ${esc(a.properties.rule_version)}</div>`;
+  }
   const cands = (d.candidats_ais || []).map((c) =>
-    `<tr><td>${esc(c.name || c.mmsi)}</td><td>${c.distance_m} m</td><td>${c.rayon_tolere_m} m</td></tr>`).join("");
-  return `<strong>Navire sombre</strong>, sévérité ${esc(SEVERITY[a.properties.severity] || a.properties.severity)}<br>
+    `<tr><td>${esc(c.name || c.mmsi)}</td><td>${c.distance_m} m</td><td>${c.tolerance_le_long_m ?? c.rayon_tolere_m} m</td></tr>`).join("");
+  return `<strong>Navire sombre</strong>, sévérité ${sev}<br>
     ${esc(d.motif)}<br><br>
     Longueur estimée : ${fmt(d.length_m, 0)} m<br>
     Contraste local VV : ${fmt(d.contrast_vv_db)} dB (seuil ${fmt(d.parametres?.seuil_contraste_db, 0)} dB)<br>
     Score de présence : ${fmt(d.objectness, 2)}, score navire : ${fmt(d.vessel_score, 2)}<br>
     Instant : ${esc(utc(a.properties.event_time))}<br>
-    ${cands ? `<table><tr><th>AIS examiné</th><th>Distance</th><th>Toléré</th></tr>${cands}</table>` : "Aucun navire AIS à proximité"}
+    ${cands ? `<table><tr><th>AIS examiné</th><th>Distance</th><th>Toléré le long de la trace</th></tr>${cands}</table>` : "Aucun navire AIS à proximité"}
     <div class="meta" style="margin-top:6px">Règles ${esc(a.properties.rule_version)}</div>`;
 }
 
@@ -361,8 +373,15 @@ async function loadAnalysis(wantedId = null) {
     const d = a.properties.details || {};
     const el = document.createElement("div");
     el.className = "alert";
-    el.innerHTML = `<div class="sev">Navire sombre, ${esc(SEVERITY[a.properties.severity] || a.properties.severity)}</div>
-      ${fmt(d.length_m, 0)} m, contraste ${fmt(d.contrast_vv_db)} dB`;
+    const sev = esc(SEVERITY[a.properties.severity] || a.properties.severity);
+    if (a.properties.type === "AIS_UNCONFIRMED") {
+      el.className = "alert unconf";
+      el.innerHTML = `<div class="sev">Position AIS non confirmée, ${sev}</div>
+        ${esc(d.navire?.name || d.navire?.mmsi)}, ${fmt(d.navire?.length_m, 0)} m`;
+    } else {
+      el.innerHTML = `<div class="sev">Navire sombre, ${sev}</div>
+        ${fmt(d.length_m, 0)} m, contraste ${fmt(d.contrast_vv_db)} dB`;
+    }
     el.onclick = () => openAlert(a);
     list.appendChild(el);
   });
@@ -408,7 +427,8 @@ map.on("load", async () => {
 
   map.addSource("alerts", { type: "geojson", data: EMPTY });
   map.addLayer({ id: "alerts", type: "circle", source: "alerts",
-    paint: { "circle-radius": 15, "circle-color": "rgba(255,79,216,0.12)", "circle-stroke-width": 1.5, "circle-stroke-color": "#ff4fd8" } });
+    paint: { "circle-radius": 15, "circle-color": "rgba(255,79,216,0.12)", "circle-stroke-width": 1.5,
+             "circle-stroke-color": ["match", ["get", "type"], "AIS_UNCONFIRMED", "#f5e663", "#ff4fd8"] } });
 
   map.addSource("zones", { type: "geojson", data: EMPTY });
   map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },

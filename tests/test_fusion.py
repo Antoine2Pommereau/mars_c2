@@ -25,7 +25,7 @@ def _cas():
 
 def test_masques_et_appariement():
     det, pos = _cas()
-    out, alerts, n_ais = fuse(det, pos, T0, BBOX, load_rules())
+    out, alerts, n_ais, extras = fuse(det, pos, T0, BBOX, load_rules())
     assert n_ais == 1
     assert out.mask_reason.tolist() == [None, None, "contraste faible", "non navire", "terre"]
     assert out.matched_vessel_id.iloc[0] == 1
@@ -34,9 +34,27 @@ def test_masques_et_appariement():
 
 def test_alerte_navire_sombre():
     det, pos = _cas()
-    _, alerts, _ = fuse(det, pos, T0, BBOX, load_rules())
+    _, alerts, _, _ = fuse(det, pos, T0, BBOX, load_rules())
     assert len(alerts) == 1
     a = alerts[0]
     assert a["det_index"] == 1
     assert a["severity"] == "elevee"            # 43 m : sous le seuil de longueur critique
     assert a["vessel_ids"] == [1]               # le navire AIS examiné figure dans les preuves
+
+
+def test_tolerance_orientee():
+    """Un écho décalé de 700 m le long de la trace est apparié ; le même écart en travers ne l'est pas."""
+    det, pos = _cas()
+    pos = pos.assign(cog=90.0)                    # navire filant vers l'est, trace orientée nord sud
+    lat0 = 57.9010
+    for dlat, dlon, expected in [(700 / 110570, 0.0, 1), (0.0, 700 / (111320 * 0.531), None)]:
+        d = det.iloc[[0]].assign(lat=lat0 + dlat, lon=10.5 + dlon)
+        out, _, _, _ = fuse(d, pos, T0, BBOX, load_rules(), heading_deg=0.0)
+        assert out.matched_vessel_id.iloc[0] == expected
+
+
+def test_position_non_confirmee():
+    det, pos = _cas()
+    far = det.iloc[[1]]                           # aucun écho près du navire AIS de 120 m
+    _, _, _, extras = fuse(far, pos, T0, BBOX, load_rules())
+    assert [u["vessel_id"] for u in extras["unconfirmed"]] == [1]

@@ -120,14 +120,38 @@ def local_contrast(band_db: np.ndarray, r: int, c: int, peak_half: int, ring_in:
     return float(10 * np.log10(peak / background))
 
 
+def merge_fragments(det: pd.DataFrame, radius_m: float, length_factor: float) -> pd.DataFrame:
+    """Fusionne les détections multiples d'un même grand navire.
+
+    La suppression des non maxima du modèle (noyau de 3 pixels à demi résolution, soit 60 m) laisse subsister des
+    pics secondaires sur les très grands échos ; avec un seuil de présence abaissé, ils deviennent des détections à part
+    entière, qui peuvent capter l'appariement AIS du pic principal. On garde le pic le plus fort, et on écarte les autres
+    situés à moins de max(radius_m, length_factor x longueur estimée du pic retenu).
+    """
+    if len(det) < 2:
+        return det
+    det = det.sort_values("objectness", ascending=False).reset_index(drop=True)
+    xy = det[["x", "y"]].to_numpy(float)
+    keep = np.ones(len(det), dtype=bool)
+    for i in range(len(det)):
+        if not keep[i]:
+            continue
+        reach = max(radius_m, length_factor * float(det.length_m.iloc[i]))
+        d = np.linalg.norm(xy[i + 1:] - xy[i], axis=1)
+        keep[i + 1:] &= d > reach
+    return det[keep].reset_index(drop=True)
+
+
 def detect(image_db: np.ndarray, transform, model, device: str, thresholds: dict, contrast_cfg: dict,
-           amp: bool = False) -> tuple[pd.DataFrame, int]:
+           amp: bool = False, merge_cfg: dict | None = None) -> tuple[pd.DataFrame, int]:
     """Détections géoréférencées (coordonnées projetées x, y) avec leur contraste local en VV."""
     maps, shape, n_tiles = run_model(normalize(image_db), model, device, amp)
     det = decode(maps, shape, thresholds)
     if len(det):
         xs, ys = rasterio.transform.xy(transform, det.row.to_numpy(), det.col.to_numpy(), offset="ul")
         det["x"], det["y"] = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+        if merge_cfg:
+            det = merge_fragments(det, merge_cfg["radius_m"], merge_cfg["length_factor"])
         det["contrast_vv_db"] = [
             local_contrast(image_db[1], int(r), int(c), contrast_cfg["peak_half_px"],
                            contrast_cfg["ring_inner_px"], contrast_cfg["ring_outer_px"])
