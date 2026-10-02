@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.4"
+version: "2026.10.5"
 
 model:
   file: models/xview3_membre4_v2s.jit
