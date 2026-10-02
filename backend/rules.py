@@ -250,7 +250,7 @@ WHERE p.ts BETWEEN $1::timestamptz AND $2::timestamptz
   AND p.sog_kn IS NOT NULL AND p.sog_kn < $5::float8
   AND ST_DWithin(p.geom, $4::geography, $6::float8)
 GROUP BY p.vessel_id, v.mmsi, v.name, v.ship_type
-HAVING count(*) >= $7::int
+HAVING count(*) >= $7::int AND max(p.ts) - min(p.ts) >= make_interval(mins => $8::int)
 ORDER BY count(*) DESC
 LIMIT 3
 """
@@ -282,14 +282,15 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
                 continue
             open_gap = x["t_next"] is None
             t_end = day_end if open_gap else x["t_next"]
-            # Trajet présumé pendant le silence : segment entre la dernière position et la réapparition
+            # Lieux où une rencontre dissimulée laisserait une trace : la dernière position et la réapparition
             if open_gap:
                 ref = f"SRID=4326;POINT({x['lon']} {x['lat']})"
             else:
-                ref = f"SRID=4326;LINESTRING({x['lon']} {x['lat']},{x['next_lon']} {x['next_lat']})"
+                ref = f"SRID=4326;MULTIPOINT(({x['lon']} {x['lat']}),({x['next_lon']} {x['next_lat']}))"
             t_partner_end = min(t_end, x["t_last"] + timedelta(minutes=g["partner_window_max_min"]))
             partners = await c.fetch(PARTNERS_SQL, x["t_last"], t_partner_end, x["vessel_id"], ref,
-                                     g["partner_max_speed_kn"], g["partner_radius_m"], g["partner_min_positions"])
+                                     g["partner_max_speed_kn"], g["partner_radius_m"], g["partner_min_positions"],
+                                     g["partner_min_slow_min"])
             partners = [{"vessel_id": p["vessel_id"], "mmsi": p["mmsi"], "name": p["name"], "ship_type": p["ship_type"],
                          "positions_lentes": p["positions"], "distance_min_m": p["distance_min_m"],
                          "debut": p["debut"].isoformat(), "fin": p["fin"].isoformat(),
@@ -306,8 +307,8 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
                           else displacement_km * 1000 / (x["duration_min"] * 60) / 0.514444)
             context = []
             if offshore_partners:
-                context.append(f"{len(offshore_partners)} navire(s) lent(s) hors mouillage à moins de "
-                               f"{g['partner_radius_m']} m du trajet pendant le silence : rencontre possible")
+                context.append(f"{len(offshore_partners)} navire(s) resté(s) lent(s) hors mouillage à moins de "
+                               f"{g['partner_radius_m']} m de la dernière position ou de la réapparition : rencontre possible")
                 with_partner += 1
             if len(partners) > len(offshore_partners):
                 context.append(f"{len(partners) - len(offshore_partners)} navire(s) lent(s) au mouillage à proximité : "
@@ -320,7 +321,7 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
                                "déclarée restait dans la zone de réception fiable")
             elif implied_kn is not None and x["sog_kn"] > 0:
                 ratio = implied_kn / x["sog_kn"]
-                if ratio < g["stop_ratio"]:
+                if ratio < g["stop_ratio"] and x["sog_kn"] >= g["stop_min_speed_kn"]:
                     behaviour = "arret"
                     context.append(f"Arrêt pendant le silence : réapparition à {displacement_km:.1f} km seulement, "
                                    f"soit {implied_kn:.1f} nœuds de moyenne contre {x['sog_kn']:.1f} déclarés avant")

@@ -341,7 +341,22 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
         async with pool.acquire() as c:
             orbit = await c.fetchval("SELECT lower(orbit_direction) FROM sar_passes WHERE product_name = $1", product_name)
         heading = rules["fusion"]["flight_heading_deg"].get(orbit) if orbit else None
-        det, alerts, n_ais, extras = await asyncio.to_thread(fuse, det, pos, pd.Timestamp(t0), bbox, rules, heading)
+
+        # Persistance : échos fixes connus, et échos sans AIS observés à une autre date sur la zone
+        async with pool.acquire() as c:
+            fixed_rows = await c.fetch(
+                """SELECT 'registre' AS source, f.id AS ref, ST_X(f.geom::geometry) AS lon, ST_Y(f.geom::geometry) AS lat
+                   FROM fixed_echoes f WHERE ST_DWithin(f.geom, $1::geography, 1000)
+                   UNION ALL
+                   SELECT 'detection', d.id, ST_X(d.geom::geometry), ST_Y(d.geom::geometry)
+                   FROM detections d JOIN analyses a ON a.id = d.analysis_id JOIN sar_passes p ON p.id = a.pass_id
+                   WHERE d.matched_vessel_id IS NULL AND coalesce(d.mask_reason, '') <> 'terre'
+                     AND abs(extract(epoch FROM p.acquired_at - $2::timestamptz)) >= $3::float8 * 86400
+                     AND ST_DWithin(d.geom, $1::geography, 1000)""",
+                aoi_wkt(bbox), t0, float(rules["persistence"]["min_days_apart"]))
+        fixed_points = pd.DataFrame([dict(r) for r in fixed_rows], columns=["source", "ref", "lon", "lat"])
+        det, alerts, n_ais, extras = await asyncio.to_thread(fuse, det, pos, pd.Timestamp(t0), bbox, rules, heading,
+                                                             fixed_points)
 
         # Positions AIS non confirmées : on écarte les navires près de la terre (ports, quais) et hors de l'emprise
         # du passage satellite, où l'absence d'écho ne prouve rien
@@ -385,6 +400,37 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                 await c.executemany("INSERT INTO alert_evidence VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                                     [(alert_id, et, eid) for et, eid in evidence])
 
+            # Registre des échos fixes, et reclassement des alertes « navire sombre » levées sur ces échos à d'autres dates
+            n_fixed = 0
+            for hit in extras["fixed_hits"]:
+                d = det.loc[hit["det_index"]]
+                prior = [r["ref"] for r in hit["refs"] if r["source"] == "detection"]
+                registry = [r["ref"] for r in hit["refs"] if r["source"] == "registre"]
+                if registry:
+                    await c.execute("UPDATE fixed_echoes SET observations = observations + 1, "
+                                    "last_seen = greatest(last_seen, $2::timestamptz), first_seen = least(first_seen, $2::timestamptz), "
+                                    "detection_ids = detection_ids || $3::bigint[] WHERE id = $1",
+                                    registry[0], t0, [det_ids[hit["det_index"]]])
+                else:
+                    first = await c.fetchval(
+                        "SELECT min(p.acquired_at) FROM detections d JOIN analyses a ON a.id = d.analysis_id "
+                        "JOIN sar_passes p ON p.id = a.pass_id WHERE d.id = ANY($1::bigint[])", prior)
+                    await c.execute(
+                        "INSERT INTO fixed_echoes (geom, first_seen, last_seen, observations, detection_ids) "
+                        "VALUES (ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, "
+                        "least($3::timestamptz, $4::timestamptz), greatest($3::timestamptz, $4::timestamptz), $5::int, $6::bigint[])",
+                        float(d.lon), float(d.lat), first or t0, t0, 1 + len(prior), prior + [det_ids[hit["det_index"]]])
+                if prior:
+                    await c.execute("UPDATE detections SET mask_reason = 'echo fixe' "
+                                    "WHERE id = ANY($1::bigint[]) AND mask_reason IS NULL", prior)
+                    await c.execute(
+                        "UPDATE alerts SET status = 'classee', details = details || jsonb_build_object("
+                        "'reclassement', 'Écho revu au même endroit le ' || to_char($2::timestamptz, 'DD/MM/YYYY') || "
+                        "' sans AIS : écho fixe (éolienne, plateforme, bouée), pas un navire') "
+                        "WHERE type = 'DARK_SHIP' AND id IN (SELECT alert_id FROM alert_evidence "
+                        "WHERE evidence_type = 'detection' AND evidence_id = ANY($1::bigint[]))", prior, t0)
+                n_fixed += 1
+
             for x in unconfirmed:
                 big = x["length_m"] >= rules["unconfirmed"]["high_length_m"]
                 details = {"analysis_id": analysis_id, "pass": product_name,
@@ -410,7 +456,7 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                        "total_s": round(asyncio.get_running_loop().time() - started, 2)}
             summary = {"detections": len(det), "retenues": int(det.mask_reason.isna().sum()) if len(det) else 0,
                        "appariees": int(det.matched_vessel_id.notna().sum()) if len(det) else 0,
-                       "alertes": len(alerts), "positions_non_confirmees": len(unconfirmed),
+                       "alertes": len(alerts), "positions_non_confirmees": len(unconfirmed), "echos_fixes": n_fixed,
                        "decalages": extras["offsets"], "direction_de_vol_deg": heading,
                        "navires_ais": n_ais, "tuiles": result["n_tiles"],
                        "accelerateur": result["device"], "precision_mixte": result["amp"]}

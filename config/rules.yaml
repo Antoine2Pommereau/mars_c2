@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.13"
+version: "2026.10.15"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -33,6 +33,10 @@ fusion:
   flight_heading_deg:
     ascending: 348
     descending: 192
+
+persistence:
+  radius_m: 60           # un écho sans AIS revu à moins de 60 m, à une autre date, est un écho fixe
+  min_days_apart: 1
 
 unconfirmed:
   min_length_m: 50       # seuls les grands navires sont presque toujours vus par le radar
@@ -85,13 +89,17 @@ ais_gap:
   min_coast_km: 3        # dernière position au large
   edge_margin_deg: 0.25  # loin du bord des données chargées (environ 15 km en longitude, 28 km en latitude)
   ais_classes: [A]       # classe B (petites unités) ignorée : émission moins fréquente, coupures courantes
-  partner_radius_m: 3000 # navires lents à moins de 3 km du trajet pendant le silence
+  partner_radius_m: 500  # navires lents à moins de 500 m de la dernière position ou de la réapparition
+  partner_min_slow_min: 30      # et restés lents au moins 30 minutes (un navire qui croise ne compte pas)
   partner_window_max_min: 180   # recherche limitée aux 3 premières heures du silence
-  projection_min: 30     # position estimée 30 min après le dernier message (route et vitesse déclarées) :
-                         # si elle sort de la zone fiable ou des données, le silence est une sortie de couverture
+  projection_min: 120    # position estimée 2 h après le dernier message (route et vitesse déclarées) : si elle sort
+                         # de la zone fiable ou des données, le silence est une sortie de couverture. Porté de 30 à
+                         # 120 min : le 17 juin, PEARL SEAWAYS parti vers Oslo et revenu 17 h plus tard passait le filtre
   projection_open_min: 120   # sans réapparition, horizon porté à la durée minimale du silence : un navire qui
                              # aurait quitté la zone dans ce délai en gardant sa route n'apporte aucune preuve
   stop_ratio: 0.3        # vitesse implicite < 30 % de la vitesse déclarée : arrêt pendant le silence
+  stop_min_speed_kn: 5   # seulement pour un navire qui faisait vraiment route : sous 5 nœuds (pêche, dérive),
+                         # un déplacement faible pendant le silence n'a rien d'anormal
   continue_ratio: 0.5    # vitesse implicite > 50 % : route poursuivie, silence moins suspect
   partner_max_speed_kn: 2.0
   partner_min_positions: 5

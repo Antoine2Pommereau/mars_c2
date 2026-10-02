@@ -11,10 +11,12 @@ from mars.fusion.match import match, normalized_distance, tolerance
 from mars.geo import utm_epsg
 
 
-def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: dict, heading_deg: float | None = None):
+def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: dict, heading_deg: float | None = None,
+         fixed_points: pd.DataFrame | None = None):
     """det : lon, lat, objectness, vessel_score, fishing_score, length_m, contrast_vv_db (et on_land).
     pos : vessel_id, mmsi, name, length_m, ts, lat, lon, sog, cog (positions brutes autour de t0).
     heading_deg : direction de vol du satellite, pour la tolérance orientée (None : tolérance circulaire).
+    fixed_points : lon, lat, source, ref (échos fixes connus et échos sans AIS observés à d'autres dates).
 
     Renvoie (det enrichi, alertes navire sombre, nombre de navires AIS à t0, extras) ; extras contient
     les positions AIS à t0, les navires AIS non confirmés par le radar et la statistique des décalages.
@@ -52,6 +54,26 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
         [int(ais.vessel_id.iloc[int(m)]) if pd.notna(m) and m >= 0 else None for m in det.matched_idx],
         index=det.index, dtype=object)
 
+    # Persistance : un écho sans AIS revu au même endroit à une autre date est un écho fixe, pas un navire
+    fixed_hits = []
+    det["fixed_refs"] = [[] for _ in range(len(det))]
+    if fixed_points is not None and len(fixed_points) and len(det):
+        fx, fy = to_utm.transform(fixed_points.lon.to_numpy(), fixed_points.lat.to_numpy())
+        fxy = np.stack([fx, fy], axis=1)
+        radius = rules["persistence"]["radius_m"]
+        for i, d in det.iterrows():
+            if d.mask_reason == "terre" or pd.notna(d.matched_vessel_id):
+                continue
+            dist = np.linalg.norm(fxy - np.array([d.x, d.y]), axis=1)
+            near = np.where(dist <= radius)[0]
+            if len(near):
+                refs = [{"source": fixed_points.source.iloc[j], "ref": int(fixed_points.ref.iloc[j]),
+                         "distance_m": round(float(dist[j]))} for j in near]
+                det.at[i, "fixed_refs"] = refs
+                if pd.isna(d.mask_reason):
+                    det.at[i, "mask_reason"] = "echo fixe"
+                fixed_hits.append({"det_index": i, "refs": refs})
+
     alerts = []
     dsr = rules["dark_ship"]
     for i, d in det.iterrows():
@@ -74,7 +96,8 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
             },
         })
 
-    extras = {"ais": ais, "unconfirmed": unconfirmed(ais, det, rules, heading_deg), "offsets": offsets(det)}
+    extras = {"ais": ais, "unconfirmed": unconfirmed(ais, det, rules, heading_deg), "offsets": offsets(det),
+              "fixed_hits": fixed_hits}
     return det, alerts, len(ais), extras
 
 

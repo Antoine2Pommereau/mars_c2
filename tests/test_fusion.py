@@ -58,3 +58,12 @@ def test_position_non_confirmee():
     far = det.iloc[[1]]                           # aucun écho près du navire AIS de 120 m
     _, _, _, extras = fuse(far, pos, T0, BBOX, load_rules())
     assert [u["vessel_id"] for u in extras["unconfirmed"]] == [1]
+
+
+def test_echo_fixe_ne_declenche_pas_d_alerte():
+    det, pos = _cas()
+    fixed = pd.DataFrame({"source": ["detection"], "ref": [42], "lon": [10.6002], "lat": [57.9501]})
+    out, alerts, _, extras = fuse(det, pos, T0, BBOX, load_rules(), fixed_points=fixed)
+    assert out.mask_reason.iloc[1] == "echo fixe"       # l'écho de 43 m sans AIS, revu à 25 m près
+    assert alerts == []
+    assert extras["fixed_hits"][0]["refs"][0]["ref"] == 42
