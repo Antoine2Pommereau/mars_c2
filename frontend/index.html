@@ -25,6 +25,22 @@
            padding: 8px 10px; margin: 8px 0; cursor: pointer; }
   .alert:hover { background: #16293a; }
   .alert .sev { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dark); }
+  button.action, .pass { display: block; width: 100%; text-align: left; margin-top: 8px; background: #0b1620;
+            color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; font: inherit;
+            cursor: pointer; }
+  button.action:hover, .pass:hover { border-color: var(--accent); }
+  .pass .tag { font-size: 11px; color: #5fd38d; margin-left: 6px; }
+  .pass .tag.no { color: var(--masked); }
+  .steps { margin: 8px 0 0; padding: 0; list-style: none; }
+  .steps li { margin: 3px 0; }
+  .steps li.done { color: var(--ink); }
+  .steps li.now { color: var(--accent); font-weight: 600; }
+  .warn { color: #ff8a8a; }
+  #progress .job { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px;
+                   padding: 8px 10px; margin-bottom: 10px; font-size: 12.5px; }
+  #progress .job.failed { border-left-color: #e5534b; }
+  #progress .step { display: flex; justify-content: space-between; color: var(--muted); }
+  #progress .step.run { color: var(--ink); }
   label.toggle { display: flex; gap: 8px; align-items: center; cursor: pointer; margin-top: 10px; }
 
   #replay { position: absolute; top: 12px; left: 12px; z-index: 2; display: flex; gap: 8px; align-items: center;
@@ -65,7 +81,16 @@
       <div><span class="dot" style="background:#9fb3c2;opacity:.35"></span> Silencieux depuis plus de 10 minutes</div>
     </div>
 
+    <h2>Nouvelle analyse</h2>
+    <div id="infer-status" class="meta">Service d'inférence : vérification…</div>
+    <div id="draw-help" class="meta" style="margin-top:6px">Maintenez <b>Maj</b> et faites glisser sur la carte pour tracer une zone (50 km de côté au plus).</div>
+    <div id="zone" class="meta" style="margin-top:6px"></div>
+    <button id="search-passes" class="action" hidden>Chercher les passages</button>
+    <div id="passes"></div>
+    <div id="progress" class="meta"></div>
+
     <h2>Analyse radar</h2>
+    <div id="progress"></div>
     <div id="analysis" class="meta">Chargement…</div>
     <div class="legend" style="margin-top:8px">
       <div><span class="ring" style="border-color:var(--match)"></span> Détection appariée à l'AIS</div>

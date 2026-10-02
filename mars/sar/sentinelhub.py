@@ -1,8 +1,8 @@
-"""Accès à Sentinel Hub (Copernicus Data Space Ecosystem) : catalogue des passages et extraits radar.
+"""Extraits radar Sentinel 1 via l'API de traitement de Sentinel Hub (Copernicus Data Space Ecosystem).
 
 Harmonisation mesurée en phase 0 : sigma0, orthorectifié, rééchantillonnage bilinéaire.
-L'API de traitement refuse les images de plus de 2500 pixels de côté : les zones plus grandes
-sont découpées en morceaux récupérés en parallèle.
+L'API refuse les images de plus de 2500 pixels de côté : les zones plus grandes sont découpées en morceaux
+récupérés en parallèle, puis réassemblées. Les extraits sont mis en cache sur disque.
 """
 import copy
 import hashlib
@@ -17,8 +17,9 @@ import requests
 from pyproj import Transformer
 from rasterio.transform import from_origin
 
-TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
-SH_BASE = "https://sh.dataspace.copernicus.eu"
+from mars.geo import utm_epsg
+from mars.sar.catalog import SH_BASE, get_token, iso, search_passes
+
 RES_M = 10
 MAX_PX = 2400
 
@@ -39,43 +40,13 @@ PROCESSING = {
 }
 
 
-def utm_epsg(lon: float, lat: float) -> int:
-    zone = int((lon + 180) // 6) + 1
-    return (32600 if lat >= 0 else 32700) + zone
-
-
-def _iso(t: pd.Timestamp) -> str:
-    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 class SentinelHub:
     def __init__(self, client_id: str, client_secret: str):
-        if not client_id or not client_secret:
-            raise ValueError("Identifiants Sentinel Hub manquants (SH_CLIENT_ID, SH_CLIENT_SECRET dans .env)")
-        r = requests.post(TOKEN_URL, data={"grant_type": "client_credentials", "client_id": client_id,
-                                           "client_secret": client_secret}, timeout=30)
-        r.raise_for_status()
-        self.headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+        self.headers = {"Authorization": f"Bearer {get_token(client_id, client_secret)}"}
+        self._token = self.headers["Authorization"].split(" ", 1)[1]
 
     def search_passes(self, bbox, t_from: pd.Timestamp, t_to: pd.Timestamp) -> list[dict]:
-        payload = {"bbox": list(bbox), "datetime": f"{_iso(t_from)}/{_iso(t_to)}",
-                   "collections": ["sentinel-1-grd"], "limit": 100}
-        r = requests.post(f"{SH_BASE}/api/v1/catalog/1.0.0/search", headers=self.headers, json=payload, timeout=60)
-        r.raise_for_status()
-        passes = []
-        for f in r.json().get("features", []):
-            p = f["properties"]
-            mode = p.get("sar:instrument_mode")
-            if mode and mode != "IW":
-                continue
-            passes.append({
-                "product_name": f["id"],
-                "acquired_at": pd.Timestamp(p["datetime"]).tz_convert("UTC"),
-                "platform": p.get("platform"),
-                "orbit_direction": p.get("sat:orbit_state"),
-                "footprint": f.get("geometry"),
-            })
-        return sorted(passes, key=lambda x: x["acquired_at"])
+        return search_passes(self._token, bbox, t_from, t_to)
 
     def _fetch_chunk(self, epsg, bounds, t0, width, height):
         payload = {
@@ -84,7 +55,7 @@ class SentinelHub:
                 "data": [{
                     "type": "sentinel-1-grd",
                     "dataFilter": {
-                        "timeRange": {"from": _iso(t0 - pd.Timedelta(minutes=2)), "to": _iso(t0 + pd.Timedelta(minutes=2))},
+                        "timeRange": {"from": iso(t0 - pd.Timedelta(minutes=2)), "to": iso(t0 + pd.Timedelta(minutes=2))},
                         "acquisitionMode": "IW", "polarization": "DV", "resolution": "HIGH",
                         "mosaickingOrder": "mostRecent",
                     },
@@ -102,9 +73,11 @@ class SentinelHub:
             return src.read().astype("float32")
 
     def fetch_extract(self, bbox, t0: pd.Timestamp, cache_dir: Path):
-        """Renvoie (image_db, transform, epsg) ; image_db a la forme (2, H, W), canaux VH puis VV, en dB."""
-        lon_c, lat_c = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-        epsg = utm_epsg(lon_c, lat_c)
+        """Renvoie (image_db, transform, epsg, depuis_le_cache, nombre_de_requetes).
+
+        image_db a la forme (2, H, W), canaux VH puis VV, en dB.
+        """
+        epsg = utm_epsg((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
         to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
         xs, ys = to_utm.transform([bbox[0], bbox[2], bbox[0], bbox[2]], [bbox[1], bbox[1], bbox[3], bbox[3]])
         xmin, xmax = round(min(xs), -1), round(max(xs), -1)
@@ -112,18 +85,18 @@ class SentinelHub:
         width, height = int(round((xmax - xmin) / RES_M)), int(round((ymax - ymin) / RES_M))
         transform = from_origin(xmin, ymax, RES_M, RES_M)
 
-        key = hashlib.sha1(f"{bbox}{t0.isoformat()}{PROCESSING}".encode()).hexdigest()[:12]
+        key = hashlib.sha1(f"{list(bbox)}{t0.isoformat()}{PROCESSING}".encode()).hexdigest()[:12]
         cache_dir = Path(cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache = cache_dir / f"extrait_{t0:%Y%m%dT%H%M%S}_{key}.tif"
 
-        if cache.exists():
+        jobs = [(i, j, min(MAX_PX, width - i), min(MAX_PX, height - j))
+                for j in range(0, height, MAX_PX) for i in range(0, width, MAX_PX)]
+        from_cache = cache.exists()
+        if from_cache:
             with rasterio.open(cache) as src:
                 full = src.read().astype("float32")
         else:
-            jobs = [(i, j, min(MAX_PX, width - i), min(MAX_PX, height - j))
-                    for j in range(0, height, MAX_PX) for i in range(0, width, MAX_PX)]
-
             def run(job):
                 i, j, w, h = job
                 bx0, by_top = xmin + i * RES_M, ymax - j * RES_M
@@ -142,4 +115,4 @@ class SentinelHub:
         image_db = np.full((2, height, width), np.nan, dtype="float32")
         image_db[0][ok] = 10 * np.log10(vh[ok])
         image_db[1][ok] = 10 * np.log10(vv[ok])
-        return image_db, transform, epsg
+        return image_db, transform, epsg, from_cache, len(jobs)

@@ -55,7 +55,8 @@ def main():
             else:
                 cur.execute("INSERT INTO vessels (mmsi, name, ship_type, length_m, first_seen, last_seen) "
                             "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                            (int(s.mmsi), s.name, s.ship_type, s.length, s.first_seen, s.last_seen))
+                            (int(s.mmsi), s.name, s.ship_type, None if pd.isna(s.length) else float(s.length),
+                             s.first_seen, s.last_seen))
                 ids[int(s.mmsi)] = cur.fetchone()[0]
 
         # Positions déjà présentes pour ces navires sur la même période : remplacées
@@ -64,6 +65,7 @@ def main():
 
         # Insertion en masse par COPY, en lots, au format texte de PostgreSQL
         t = time.time()
+        df = df.sort_values("ts")  # ordre chronologique : meilleure localité pour les lectures par fenêtre de temps
         out = pd.DataFrame({
             "vessel_id": df.mmsi.astype(int).map(ids),
             "ts": df.ts.dt.strftime("%Y-%m-%d %H:%M:%S+00"),

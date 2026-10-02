@@ -1,13 +1,18 @@
 README.md
 pyproject.toml
+inference/__init__.py
+inference/app.py
 mars/__init__.py
 mars/config.py
 mars/db.py
+mars/geo.py
 mars/ais/__init__.py
 mars/ais/dma.py
 mars/fusion/__init__.py
 mars/fusion/match.py
+mars/fusion/pipeline.py
 mars/sar/__init__.py
+mars/sar/catalog.py
 mars/sar/inference.py
 mars/sar/sentinelhub.py
 mars_c2.egg-info/PKG-INFO
@@ -15,3 +20,4 @@ mars_c2.egg-info/SOURCES.txt
 mars_c2.egg-info/dependency_links.txt
 mars_c2.egg-info/requires.txt
 mars_c2.egg-info/top_level.txt
+tests/test_contract.py

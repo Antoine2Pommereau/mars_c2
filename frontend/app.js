@@ -27,6 +27,7 @@ map.addControl(new maplibregl.NavigationControl(), "top-right");
 
 let clock = null;
 let analysis = null;
+const STEP_LABEL = { extraction: "Extrait radar", inference: "Détection", fusion: "Fusion AIS" };
 const alertsById = new Map();
 
 // Rejeu
@@ -61,17 +62,149 @@ async function refreshTrails() {
   if (src) src.setData(await getJSON("/traffic/trails"));
 }
 
+function renderProgress(list) {
+  const box = document.getElementById("progress");
+  box.innerHTML = list.map((a) => {
+    const steps = {};
+    (a.progress || []).forEach((p) => { steps[p.step] = p; });
+    const rows = Object.keys(STEP_LABEL).map((k) => {
+      const p = steps[k];
+      const state = !p ? "en attente" : p.state === "done" ? `${fmt(p.seconds)} s` : "en cours…";
+      return `<div class="step ${p && p.state !== "done" ? "run" : ""}"><span>${STEP_LABEL[k]}</span><span>${state}</span></div>`;
+    }).join("");
+    const head = a.status === "failed" ? `Analyse n° ${a.id} en échec` :
+      a.status === "done" ? `Analyse n° ${a.id} terminée` : `Analyse n° ${a.id} en cours`;
+    const err = a.error ? `<div style="margin-top:6px;color:#e5534b">${esc(a.error)}</div>` : "";
+    return `<div class="job ${a.status === "failed" ? "failed" : ""}"><strong>${head}</strong>${rows}${err}</div>`;
+  }).join("");
+  // Une analyse plus récente que celle affichée vient de se terminer : on la charge
+  const done = list.filter((a) => a.status === "done").map((a) => a.id);
+  if (done.length && (!analysis || Math.max(...done) > analysis.properties.id)) loadAnalysis();
+}
+
 function connectStream() {
   const es = new EventSource("/api/stream");
   es.addEventListener("traffic", (e) => {
     const d = JSON.parse(e.data);
     renderClock(d.clock);
+    renderProgress(d.analyses || []);
     map.getSource("traffic")?.setData(d.traffic);
     const n = d.traffic.features.length;
     const silent = d.traffic.features.filter((f) => f.properties.age_s > 600).length;
     document.getElementById("traffic-info").textContent = `${n} navires affichés, dont ${silent} silencieux depuis plus de 10 minutes`;
+    if (myAnalysisId) {
+      const a = (d.analyses || []).find((x) => x.id === myAnalysisId);
+      if (a) renderProgress(a);
+    }
   });
   es.onerror = () => { document.getElementById("traffic-info").textContent = "Connexion perdue, nouvelle tentative…"; };
+}
+
+// Analyse à la demande : tracé de zone, choix du passage, suivi
+
+let drawStart = null;
+let zone = null;
+let myAnalysisId = null;
+const MAX_KM = 50;
+const STEPS = [["en attente", "En attente"], ["extraction", "Extrait radar"], ["inference", "Détection"],
+               ["fusion", "Fusion avec l'AIS"], ["terminee", "Terminée"]];
+
+function sizeKm(b) {
+  const lat = ((b[1] + b[3]) / 2) * Math.PI / 180;
+  return [(b[2] - b[0]) * 111.32 * Math.cos(lat), (b[3] - b[1]) * 110.57];
+}
+
+function zoneFeature(b) {
+  return { type: "Feature", properties: {}, geometry: { type: "Polygon",
+    coordinates: [[[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]]] } };
+}
+
+function bboxFrom(a, c) {
+  return [Math.min(a.lng, c.lng), Math.min(a.lat, c.lat), Math.max(a.lng, c.lng), Math.max(a.lat, c.lat)];
+}
+
+function showZone(b, final) {
+  map.getSource("draw").setData(zoneFeature(b));
+  const [w, h] = sizeKm(b);
+  const tooBig = Math.max(w, h) > MAX_KM;
+  document.getElementById("zone").innerHTML = `Zone : ${fmt(w, 0)} × ${fmt(h, 0)} km` +
+    (tooBig ? ` <span class="warn">, trop grande (${MAX_KM} km de côté au plus)</span>` : "");
+  document.getElementById("search-passes").hidden = !final || tooBig;
+  return !tooBig;
+}
+
+function enableDrawing() {
+  map.boxZoom.disable();
+  map.on("mousedown", (e) => {
+    if (!e.originalEvent.shiftKey) return;
+    e.preventDefault();
+    map.dragPan.disable();
+    drawStart = e.lngLat;
+  });
+  map.on("mousemove", (e) => { if (drawStart) showZone(bboxFrom(drawStart, e.lngLat), false); });
+  map.on("mouseup", (e) => {
+    if (!drawStart) return;
+    const b = bboxFrom(drawStart, e.lngLat);
+    drawStart = null;
+    map.dragPan.enable();
+    zone = showZone(b, true) ? b : null;
+    document.getElementById("passes").innerHTML = "";
+    document.getElementById("progress").innerHTML = "";
+  });
+}
+
+document.getElementById("search-passes").onclick = async () => {
+  if (!zone) return;
+  const box = document.getElementById("passes");
+  box.innerHTML = '<div class="meta" style="margin-top:8px">Recherche dans le catalogue…</div>';
+  try {
+    const passes = await getJSON(`/passes?bbox=${zone.map((v) => v.toFixed(5)).join(",")}`);
+    if (!passes.length) {
+      box.innerHTML = '<div class="meta" style="margin-top:8px">Aucun passage sur les journées AIS chargées.</div>';
+      return;
+    }
+    box.innerHTML = "";
+    passes.forEach((p) => {
+      const el = document.createElement("button");
+      el.className = "pass";
+      el.innerHTML = `${esc(utc(p.acquired_at))}<br><span class="meta">${esc(p.platform || "")}, orbite
+        ${esc(p.orbit_direction === "ascending" ? "ascendante" : p.orbit_direction === "descending" ? "descendante" : "n.d.")}</span>
+        <span class="tag ${p.ais_available ? "" : "no"}">${p.ais_available ? "AIS disponible" : "sans AIS"}</span>`;
+      el.onclick = () => launch(p);
+      box.appendChild(el);
+    });
+  } catch (err) {
+    box.innerHTML = `<div class="warn" style="margin-top:8px">${esc(err.message)}</div>`;
+  }
+};
+
+async function launch(p) {
+  document.getElementById("passes").innerHTML = "";
+  const r = await postJSON("/analyses", { bbox: zone, product_name: p.product_name, acquired_at: p.acquired_at,
+    platform: p.platform, orbit_direction: p.orbit_direction, mode: "fast" });
+  if (!r.id) {
+    document.getElementById("progress").innerHTML = `<span class="warn">${esc(r.detail || "Échec du lancement")}</span>`;
+    return;
+  }
+  myAnalysisId = r.id;
+  renderProgress({ id: r.id, status: "pending", progress: { etape: "en attente" } });
+}
+
+function renderProgress(a) {
+  const el = document.getElementById("progress");
+  if (a.status === "failed") {
+    el.innerHTML = `<span class="warn">Analyse n° ${a.id} en échec : ${esc(a.error)}</span>`;
+    myAnalysisId = null;
+    return;
+  }
+  const cur = STEPS.findIndex(([k]) => k === (a.progress || {}).etape);
+  el.innerHTML = `Analyse n° ${a.id}<ul class="steps">` + STEPS.map(([k, label], i) =>
+    `<li class="${i < cur || a.status === "done" ? "done" : i === cur ? "now" : ""}">${i < cur || a.status === "done" ? "✓" : i === cur ? "▸" : "·"} ${label}</li>`).join("") + "</ul>";
+  if (a.status === "done") {
+    const id = a.id;
+    myAnalysisId = null;
+    loadAnalysis(id);
+  }
 }
 
 // Analyse radar
@@ -96,18 +229,19 @@ function openAlert(a) {
   new maplibregl.Popup({ offset: 12 }).setLngLat([lon, lat]).setHTML(alertHtml(a)).addTo(map);
 }
 
-async function loadAnalysis() {
+async function loadAnalysis(wantedId = null) {
   const analyses = await getJSON("/analyses");
-  if (!analyses.features.length) {
-    document.getElementById("analysis").textContent = "Aucune analyse en base.";
+  const done = analyses.features.filter((f) => f.properties.status === "done");
+  if (!done.length) {
+    document.getElementById("analysis").textContent = "Aucune analyse terminée.";
     return;
   }
-  analysis = analyses.features[0];
+  analysis = done.find((f) => f.properties.id === wantedId) || done[0];
   const id = analysis.properties.id;
   const [det, alerts] = await Promise.all([getJSON(`/analyses/${id}/detections`), getJSON(`/alerts?analysis_id=${id}`)]);
   const nAlerts = alerts.features.length;
   document.getElementById("analysis").innerHTML = `
-    Passage ${esc(analysis.properties.product_name.slice(0, 32))}…<br>
+    Analyse n° ${id}, passage ${esc(analysis.properties.product_name.slice(0, 26))}…<br>
     Acquisition : ${esc(utc(analysis.properties.acquired_at))}<br>
     ${det.features.length} détection${det.features.length > 1 ? "s" : ""}, ${nAlerts} alerte${nAlerts > 1 ? "s" : ""}`;
 
@@ -115,6 +249,13 @@ async function loadAnalysis() {
   map.getSource("det").setData(det);
   map.getSource("alerts").setData(alerts);
 
+  const t = analysis.properties.timings || {};
+  if (t.total_s !== undefined) {
+    document.getElementById("analysis").innerHTML += `<br>Durées : extrait ${fmt(t.extraction_s)} s, détection ${fmt(t.inference_s)} s
+      (${esc(t.device || "")}), fusion ${fmt(t.fusion_s)} s, total ${fmt(t.total_s)} s`;
+  }
+  alertsById.clear();
+  alertsById.clear();
   alerts.features.forEach((a) => alertsById.set(a.properties.id, a));
   const list = document.getElementById("alerts");
   list.innerHTML = nAlerts ? "" : "Aucune";
@@ -147,6 +288,11 @@ map.on("load", async () => {
       "circle-opacity": ["case", [">", ["get", "age_s"], 600], 0.35, 1],
       "circle-stroke-width": 0.5, "circle-stroke-color": "#0b1620",
     } });
+
+  map.addSource("draw", { type: "geojson", data: EMPTY });
+  map.addLayer({ id: "draw-fill", type: "fill", source: "draw", paint: { "fill-color": "#3fa7b8", "fill-opacity": 0.08 } });
+  map.addLayer({ id: "draw-line", type: "line", source: "draw", paint: { "line-color": "#3fa7b8", "line-width": 2 } });
+  enableDrawing();
 
   map.addSource("aoi", { type: "geojson", data: EMPTY });
   map.addLayer({ id: "aoi", type: "line", source: "aoi",
@@ -200,6 +346,12 @@ map.on("load", async () => {
       input.max = `${days[days.length - 1].day}T23:59`;
     }
     input.value = clock.now.slice(0, 16);
+    getJSON("/inference/health").then((h) => {
+      document.getElementById("infer-status").textContent =
+        `Service d'inférence prêt sur ${h.device}${h.amp ? ", précision mixte" : ""} (préchauffage ${fmt(h.warmup_s)} s)`;
+    }).catch(() => {
+      document.getElementById("infer-status").innerHTML = '<span class="warn">Service d\'inférence injoignable : lancez-le sur le Mac (voir README).</span>';
+    });
     await loadAnalysis();
   } catch (err) {
     document.getElementById("analysis").textContent = `Erreur : ${err.message}`;

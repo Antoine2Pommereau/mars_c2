@@ -7,3 +7,9 @@ pyproj
 pyyaml
 psycopg[binary]
 torch
+fastapi
+uvicorn
+httpx
+
+[test]
+pytest

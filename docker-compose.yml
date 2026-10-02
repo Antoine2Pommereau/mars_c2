@@ -19,9 +19,18 @@ services:
       retries: 20
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env          # identifiants Sentinel Hub
     environment:
       DATABASE_URL: postgresql://mars:mars@db:5432/mars
+      # Service d'inférence lancé sur le Mac (GPU Apple) ; avec le profil "conteneur" : http://inference:8001
+      INFERENCE_URL: ${INFERENCE_URL:-http://host.docker.internal:8001}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config:/app/config:ro
     depends_on:
       db:
         condition: service_healthy
@@ -37,6 +46,20 @@ services:
       - backend
     ports:
       - "8080:80"
+
+  # Variante en conteneur, sur CPU : docker compose --profile conteneur up -d
+  inference:
+    profiles: ["conteneur"]
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/app/config:ro
+      - ./models:/app/models:ro
+      - ./data:/app/data
+    ports:
+      - "8001:8001"
 
 volumes:
   db_data:

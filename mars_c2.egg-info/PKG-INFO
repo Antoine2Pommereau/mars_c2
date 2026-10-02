@@ -12,3 +12,8 @@ Requires-Dist: pyproj
 Requires-Dist: pyyaml
 Requires-Dist: psycopg[binary]
 Requires-Dist: torch
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: httpx
+Provides-Extra: test
+Requires-Dist: pytest; extra == "test"

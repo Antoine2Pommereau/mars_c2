@@ -29,7 +29,7 @@ def match(det: pd.DataFrame, ais: pd.DataFrame, base_radius_m: float, doppler_s:
         # Trois navires AIS les plus proches de chaque détection, pour la fiche d'alerte
         for i in range(n):
             candidates[i] = [
-                {"mmsi": int(ais.mmsi.iloc[j]),
+                {"vessel_id": int(ais.vessel_id.iloc[j]), "mmsi": int(ais.mmsi.iloc[j]),
                  "name": None if pd.isna(ais["name"].iloc[j]) else str(ais["name"].iloc[j]),
                  "distance_m": round(float(dist[i, j])), "rayon_tolere_m": round(float(radius[j]))}
                 for j in np.argsort(dist[i])[:3]

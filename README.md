@@ -4,7 +4,45 @@ Maritime Autonomous Reconnaissance and Surveillance, Command and Control.
 Surveillance maritime par fusion des données AIS et de l'imagerie radar Sentinel 1.
 La spécification complète décrit la vision, l'architecture et la feuille de route.
 
-## État : phase 2, flux AIS et simulation
+## État : phase 3, analyse à la demande
+
+L'opérateur trace une zone sur la carte (Maj + glisser), choisit un passage Sentinel 1 parmi ceux qui couvrent la
+zone sur les journées AIS chargées, et suit l'analyse étape par étape : extrait radar, détection, fusion avec l'AIS.
+Les détections et les alertes s'affichent à la fin, avec la durée de chaque étape.
+
+Architecture : le **service d'inférence** (dossier `inference`) porte l'accès à Sentinel Hub et le modèle, chargé et
+préchauffé une seule fois au démarrage ; il traite les analyses l'une après l'autre. Le **backend** orchestre :
+il crée l'analyse, confie l'extrait et la détection au service d'inférence, puis exécute la fusion et enregistre
+détections, alertes et preuves. L'adresse du service d'inférence est un paramètre (`INFERENCE_URL`) : sur un Mac,
+il tourne hors de Docker pour utiliser le GPU Apple ; ailleurs, il peut tourner en conteneur ou sur un GPU distant.
+
+**Critère de sortie** : une zone et un passage soumis depuis l'interface produisent leurs détections en base en
+quelques secondes, sans intervention manuelle.
+
+### Passer de la phase 2 à la phase 3
+
+```bash
+docker compose exec -T db psql -U mars -d mars < db/init/02_simulation.sql
+docker compose exec -T db psql -U mars -d mars < db/init/03_analyses.sql
+pip install -e ".[test]"
+docker compose up -d --build backend
+docker compose restart frontend
+```
+
+Puis, dans un **second onglet du Terminal**, depuis `mars_c2` et avec l'environnement Python activé, démarrer le
+service d'inférence et le laisser tourner :
+
+```bash
+uvicorn inference.service:app --host 0.0.0.0 --port 8001
+```
+
+Il affiche l'accélérateur utilisé et la durée du préchauffage. Vérifier enfin le contrat du modèle :
+
+```bash
+pytest tests
+```
+
+## Phase 2, flux AIS et simulation
 
 La phase 2 met le trafic en mouvement. Le rejeu repose sur une horloge simulée stockée en base (table `sim_clock`,
 fonction `sim_now()`) : l'API, l'interface et, plus tard, les règles raisonnent toutes sur le même « maintenant ».

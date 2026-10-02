@@ -26,3 +26,8 @@ CREATE TABLE IF NOT EXISTS ais_days (
     vessels      INTEGER NOT NULL,
     imported_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Le rejeu lit les positions par fenêtre de temps. Les positions étant importées navire par navire, l'index
+-- BRIN sur ts est inefficace : un index B-tree sur ts est indispensable.
+CREATE INDEX IF NOT EXISTS positions_ts_idx ON positions (ts);
+ANALYZE positions;
