@@ -232,7 +232,8 @@ def render_shading(tif_path):
     depth = np.asarray(-z.filled(np.nan))  # profondeur positive en mer, négative sur terre, nan hors donnée
     sea = np.isfinite(depth) & (depth > 0)
     norm = mcolors.Normalize(vmin=0, vmax=300, clip=True)  # dégradé sur 0 à 300 m, au delà saturé
-    cmap = matplotlib.colormaps["Blues"]
+    # Dégradé bleu sombre et désaturé : hauts fonds plus clairs mais jamais vifs, grands fonds proches du fond de carte
+    cmap = mcolors.LinearSegmentedColormap.from_list("profondeur", ["#6fa3b6", "#3f7284", "#274f5f", "#17323d"])
     rgba = cmap(norm(np.where(sea, depth, 0.0)))
     rgba[..., 3] = np.where(sea, 1.0, 0.0)  # opaque en mer, transparent ailleurs ; l'opacité finale est réglée sur la couche
     out = tif_path.with_name("bathymetry.png")

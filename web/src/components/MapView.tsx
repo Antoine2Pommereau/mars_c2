@@ -272,7 +272,7 @@ export default function MapView(p: Props) {
       map.addSource("bathymetry-img", { type: "image", url: img.url, coordinates });
       map.addLayer({ id: "bathymetry-shade", type: "raster", source: "bathymetry-img",
         layout: { visibility: p.show.bathymetry ? "visible" : "none" },
-        paint: { "raster-opacity": 0.55, "raster-fade-duration": 0 } }, "bathymetry");
+        paint: { "raster-opacity": 0.32, "raster-fade-duration": 0 } }, "bathymetry");
     }
   }, [ready, p.bathymetryImage]);
 
