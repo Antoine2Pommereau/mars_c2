@@ -1,7 +1,7 @@
 import { Pause, Play } from "lucide-react";
 import { useState } from "react";
 import type { Clock, FC } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, dayLabel, utc } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, dayLabel, hms, utc } from "../lib/format";
 
 const DAY = 86400;
 
@@ -25,7 +25,7 @@ export default function Timeline({ clock, days, dayAlerts, passes, onCommand }: 
   const at = (iso: string) => ((new Date(iso).getTime() - dayStart) / 1000 / DAY) * 100;
   const seek = (s: number) => onCommand({ action: "seek", time: new Date(dayStart + s * 1000).toISOString() });
   const commit = () => { if (drag !== null) { seek(drag); setDrag(null); } };
-  const shownTime = drag !== null ? utc(new Date(dayStart + drag * 1000).toISOString()) : utc(clock.now);
+  const shownTime = drag !== null ? hms(new Date(dayStart + drag * 1000).toISOString()) : hms(clock.now);
   const passesToday = passes.filter((p) => p.time.slice(0, 10) === day);
 
   return (
@@ -36,14 +36,17 @@ export default function Timeline({ clock, days, dayAlerts, passes, onCommand }: 
           className="flex h-9 w-9 items-center justify-center rounded-full bg-ink text-abyss hover:bg-white">
           {clock.paused ? <Play size={16} fill="currentColor" className="ml-0.5" /> : <Pause size={16} fill="currentColor" />}
         </button>
-        <div className="min-w-[230px] font-cond text-[22px] font-medium leading-none tabular-nums">{shownTime}</div>
-        <div className="flex rounded-md border border-hair p-0.5" role="group" aria-label="Vitesse du rejeu">
-          {[1, 10, 60, 300].map((v) => (
-            <button key={v} onClick={() => onCommand({ action: "speed", speed: v })}
-              className={`rounded px-2.5 py-1 text-[12px] ${clock.speed === v ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>
-              × {v}
-            </button>
-          ))}
+        <div className="min-w-[150px] font-cond text-[22px] font-medium leading-none tabular-nums">{shownTime}</div>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wide text-faint">vitesse</span>
+          <div className="flex rounded-md border border-hair p-0.5" role="group" aria-label="Vitesse du rejeu">
+            {[1, 10, 60, 300].map((v) => (
+              <button key={v} onClick={() => onCommand({ action: "speed", speed: v })}
+                className={`rounded px-2.5 py-1 text-[12px] ${clock.speed === v ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>
+                × {v}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="ml-auto">
           <select aria-label="Journée" value={day} onChange={(e) => onCommand({ action: "seek", time: `${e.target.value}T12:00:00Z` })}

@@ -1,3 +1,4 @@
+import { Check, ChevronDown } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { AlertProps, AlertType, FC, Feature } from "../lib/types";
 import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num } from "../lib/format";
@@ -74,6 +75,9 @@ export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, s
   const todoCount = all.filter((a) => statusOf(a) === "nouvelle").length;
 
   const count = (t: AlertType) => all.filter((a) => a.properties.type === t).length;
+  // Seuls les types qui ont au moins une alerte apparaissent dans le menu de filtre
+  const visibleTypes = TYPES.filter((t) => count(t) > 0);
+  const activeTypes = visibleTypes.filter((t) => types.includes(t)).length;
 
   return (
     <div className="flex h-full flex-col">
@@ -81,29 +85,40 @@ export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, s
         <h2 className="flex items-baseline justify-between text-[15px] font-semibold">
           Alertes <span className="text-[12px] font-normal text-muted">{shown.length} sur {all.length}</span>
         </h2>
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {TYPES.map((t) => {
-            const on = types.includes(t);
-            return (
-              <button key={t} onClick={() => setTypes(on ? types.filter((x) => x !== t) : [...types, t])}
-                className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors
-                  ${on ? "border-hair bg-raised text-ink" : "border-transparent text-faint"}`}>
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: on ? ALERT_COLOR[t] : "#4c5a66" }} />
-                {ALERT_LABEL[t]} <span className="text-muted">{count(t)}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-3 flex items-center justify-between gap-3 text-[12px]">
-          <label className="flex cursor-pointer items-center gap-2 text-muted">
-            <input type="checkbox" checked={inView} onChange={(e) => setInView(e.target.checked)} /> Zone affichée
-          </label>
+        <div className="mt-3 flex items-center gap-2 text-[12px]">
+          {/* Filtre par type : menu repliable, les types sans alerte sont masqués */}
+          <details className="relative">
+            <summary className="flex cursor-pointer list-none items-center gap-1 rounded-md border border-hair px-2 py-1 text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
+              Type{activeTypes < visibleTypes.length ? <span className="text-ink">{` ${activeTypes}`}</span> : null}
+              <ChevronDown size={12} />
+            </summary>
+            <div className="absolute left-0 top-full z-20 mt-1 w-56 rounded-md border border-hair bg-raised p-1 shadow-xl">
+              {visibleTypes.length === 0 && <div className="px-2 py-1.5 text-faint">Aucune alerte</div>}
+              {visibleTypes.map((t) => {
+                const on = types.includes(t);
+                return (
+                  <button key={t} onClick={() => setTypes(on ? types.filter((x) => x !== t) : [...types, t])}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-panel">
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: on ? ALERT_COLOR[t] : "#4c5a66" }} />
+                    <span className={`flex-1 ${on ? "text-ink" : "text-faint"}`}>{ALERT_LABEL[t]}</span>
+                    <span className="text-muted">{count(t)}</span>
+                    {on && <Check size={13} className="text-signal" />}
+                  </button>
+                );
+              })}
+            </div>
+          </details>
           <div className="flex rounded-md border border-hair p-0.5" aria-label="Période des alertes comportementales">
             {PERIODS.map(([h, l]) => (
               <button key={h} onClick={() => setHours(h)}
                 className={`rounded px-2 py-0.5 ${hours === h ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>{l}</button>
             ))}
           </div>
+          <button onClick={() => setInView(!inView)} title="Limiter à la zone affichée sur la carte"
+            className={`rounded-md border px-2 py-1 transition-colors
+              ${inView ? "border-signal text-ink" : "border-hair text-muted hover:text-ink"}`}>
+            Zone
+          </button>
         </div>
         <div className="mt-2 flex rounded-md border border-hair p-0.5 text-[12px]" role="tablist">
           {([["todo", `À traiter ${todoCount}`], ["confirmed", "Confirmées"], ["all", "Toutes"]] as const).map(([k, l]) => (

@@ -14,6 +14,13 @@ export function hm(iso?: string | null): string {
   return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 }
 
+// Heure seule (sans la date) : la date est affichée une seule fois, par le sélecteur de journée
+export function hms(iso?: string | null): string {
+  if (!iso) return "n.d.";
+  const d = new Date(iso);
+  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} UTC`;
+}
+
 export function num(v: unknown, digits = 1): string {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return "n.d.";
   return Number(v).toLocaleString("fr-FR", { minimumFractionDigits: digits, maximumFractionDigits: digits });

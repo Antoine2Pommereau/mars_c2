@@ -142,8 +142,9 @@ export default function App() {
   const passes = useMemo(() => (analysesQ.data?.features ?? [])
     .filter((f) => f.properties.status === "done")
     .map((f) => ({ id: f.properties.id, time: f.properties.acquired_at })), [analysesQ.data]);
-  const openAlerts = [...analysisAlerts.features, ...liveAlerts.features]
-    .filter((a) => a.properties.severity !== "faible" && (a.properties.status ?? "nouvelle") === "nouvelle").length;
+  // Pastille du rail = nombre d'alertes à traiter, cohérent avec l'onglet « À traiter » du panneau
+  const todoAlerts = [...analysisAlerts.features, ...liveAlerts.features]
+    .filter((a) => (a.properties.status ?? "nouvelle") === "nouvelle").length;
   const selectedId = selection?.kind === "alert" ? selection.feature.properties.id : null;
 
   // Navires concernés par la sélection, pour le mode focus de la carte
@@ -163,7 +164,7 @@ export default function App() {
 
   return (
     <div className="flex h-full">
-      <Rail active={panel} onSelect={setPanel} alertCount={openAlerts}
+      <Rail active={panel} onSelect={setPanel} alertCount={todoAlerts}
         running={jobs.some((a) => a.status === "pending" || a.status === "running")} />
       {panel && (
         <aside className="h-full w-[340px] shrink-0 border-r border-hair bg-panel">
