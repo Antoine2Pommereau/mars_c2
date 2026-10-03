@@ -51,7 +51,14 @@ interface Props {
   drawing: boolean;
   draft: number[] | null;
   onDraw: (bbox: number[]) => void;
+  spotlight: { alertId: number | null; vesselIds: number[] } | null;
+  onBounds: (b: number[]) => void;
 }
+
+// Opacités de base, et mode focus : tout ce qui ne concerne pas la sélection s'efface
+const TRAFFIC_OPACITY: any = ["case", [">", ["get", "age_s"], 600], 0.3, 0.9];
+const ALERT_OPACITY: any = ["case", ["any", ["==", ["get", "severity"], "faible"],
+  ["==", ["get", "status"], "classee"], ["==", ["get", "status"], "acquittee"]], 0.35, 1];
 
 export default function MapView(p: Props) {
   const container = useRef<HTMLDivElement>(null);
@@ -64,6 +71,8 @@ export default function MapView(p: Props) {
   drawing.current = p.drawing;
   const onDraw = useRef(p.onDraw);
   onDraw.current = p.onDraw;
+  const onBounds = useRef(p.onBounds);
+  onBounds.current = p.onBounds;
 
   // Création de la carte et des couches, une seule fois
   useEffect(() => {
@@ -94,7 +103,7 @@ export default function MapView(p: Props) {
         },
         paint: {
           "icon-color": NEUTRAL,
-          "icon-opacity": ["case", [">", ["get", "age_s"], 600], 0.3, 0.9],
+          "icon-opacity": TRAFFIC_OPACITY,
         } });
       map.addLayer({ id: "aoi", type: "line", source: "aoi",
         paint: { "line-color": "#4fb6c8", "line-width": 1.2, "line-dasharray": [4, 3] } });
@@ -118,7 +127,7 @@ export default function MapView(p: Props) {
           paint: {
             "circle-radius": 14, "circle-color": "rgba(255,255,255,0.04)", "circle-stroke-width": 2,
             "circle-stroke-color": ALERT_STROKE,
-            "circle-stroke-opacity": ["case", ["any", ["==", ["get", "severity"], "faible"], ["==", ["get", "status"], "classee"]], 0.4, 1],
+            "circle-stroke-opacity": ALERT_OPACITY,
           } });
       }
 
@@ -145,7 +154,12 @@ export default function MapView(p: Props) {
       });
 
       map.on("click", "traffic", (e) => { if (!drawing.current) onSelect.current({ kind: "vessel", properties: e.features![0].properties as any }); });
-      map.on("click", "det", (e) => { if (!drawing.current) onSelect.current({ kind: "detection", properties: e.features![0].properties as any }); });
+      map.on("click", "det", (e) => {
+        if (drawing.current) return;
+        const f = e.features![0];
+        const [lon, lat] = (f.geometry as any).coordinates;
+        onSelect.current({ kind: "detection", properties: { ...(f.properties as any), lon, lat } });
+      });
       for (const id of ["alerts", "live"]) {
         map.on("click", id, (e) => {
           if (drawing.current) return;
@@ -157,6 +171,9 @@ export default function MapView(p: Props) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
       }
+      const emitBounds = () => { const b = map.getBounds(); onBounds.current([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]); };
+      map.on("moveend", emitBounds);
+      emitBounds();
       setReady(true);
     });
     return () => map.remove();
@@ -215,6 +232,21 @@ export default function MapView(p: Props) {
   }, [ready, p.drawing]);
 
   useEffect(() => setData("draft", p.draft ? (bboxPolygon(p.draft) as FC) : null), [ready, p.draft]);
+
+  // Mode focus sur la sélection
+  const spotKey = p.spotlight ? `${p.spotlight.alertId}:${p.spotlight.vesselIds.join(",")}` : "";
+  useEffect(() => {
+    if (!ready || !mapRef.current) return;
+    const map = mapRef.current;
+    const s = p.spotlight;
+    const ids = ["literal", s?.vesselIds ?? []];
+    map.setPaintProperty("traffic", "icon-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 1, 0.12] : TRAFFIC_OPACITY);
+    map.setPaintProperty("trails", "line-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 0.9, 0.06] : 0.45);
+    map.setPaintProperty("det", "circle-stroke-opacity", s ? 0.35 : 1);
+    for (const id of ["alerts", "live"]) {
+      map.setPaintProperty(id, "circle-stroke-opacity", s?.alertId != null ? ["case", ["==", ["get", "id"], s.alertId], 1, 0.15] : ALERT_OPACITY);
+    }
+  }, [ready, spotKey]);
 
   return <div ref={container} style={{ position: "absolute", inset: 0 }} />;
 }

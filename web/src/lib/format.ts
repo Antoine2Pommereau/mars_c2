@@ -23,6 +23,10 @@ export const SEVERITY: Record<string, string> = {
   faible: "faible", moyenne: "moyenne", elevee: "élevée", critique: "critique",
 };
 
+export const STATUS_LABEL: Record<string, string> = {
+  nouvelle: "à traiter", acquittee: "acquittée", confirmee: "confirmée", classee: "classée",
+};
+
 export const ALERT_LABEL: Record<string, string> = {
   DARK_SHIP: "Navire sombre",
   RENDEZVOUS: "Rendez vous suspect",

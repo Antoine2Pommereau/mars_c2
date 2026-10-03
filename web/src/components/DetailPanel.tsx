@@ -1,7 +1,9 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Props, Selection } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, SEVERITY, hm, num, utc } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num, utc } from "../lib/format";
+import AlertActions from "./AlertActions";
+import Chip from "./Chip";
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -99,7 +101,14 @@ function AlertBody({ p }: { p: Props }) {
   }
 }
 
-export default function DetailPanel({ selection, onClose }: { selection: Selection | null; onClose: () => void }) {
+interface PanelProps {
+  selection: Selection | null;
+  onClose: () => void;
+  passTime: string | null;
+  onStatus: (status: string) => void;
+}
+
+export default function DetailPanel({ selection, onClose, passTime, onStatus }: PanelProps) {
   if (!selection) return null;
   let title = "";
   let color = "#4fb6c8";
@@ -109,9 +118,21 @@ export default function DetailPanel({ selection, onClose }: { selection: Selecti
   if (selection.kind === "alert") {
     const p = selection.feature.properties;
     const d = p.details ?? {};
-    title = `${ALERT_LABEL[p.type] ?? p.type}, ${SEVERITY[p.severity] ?? p.severity}${p.status === "classee" ? ", classée" : ""}`;
+    const [lon, lat] = selection.feature.geometry.coordinates as [number, number];
+    const withChip = (p.type === "DARK_SHIP" || p.type === "AIS_UNCONFIRMED") && p.event_time;
+    title = `${ALERT_LABEL[p.type] ?? p.type}, ${SEVERITY[p.severity] ?? p.severity}`;
     color = ALERT_COLOR[p.type] ?? color;
-    body = (<><p className="mb-3 text-ink/90">{d.motif}</p><AlertBody p={p} /></>);
+    body = (
+      <>
+        {p.status !== "nouvelle" && (
+          <span className="mb-2 inline-block rounded-full bg-raised px-2 py-0.5 text-[11.5px] text-muted">{STATUS_LABEL[p.status]}</span>
+        )}
+        <p className="mb-3 text-ink/90">{d.motif}</p>
+        {withChip && <Chip lon={lon} lat={lat} time={p.event_time} />}
+        <AlertBody p={p} />
+        <AlertActions id={p.id} status={p.status ?? "nouvelle"} onStatus={onStatus} />
+      </>
+    );
     footer = <>Règles {p.rule_version}{p.event_time ? `, alerte levée le ${utc(p.event_time)}` : ""}</>;
   } else if (selection.kind === "vessel") {
     const p = selection.properties;
@@ -138,6 +159,7 @@ export default function DetailPanel({ selection, onClose }: { selection: Selecti
         <Row label="Contraste local VV">{num(p.contrast_vv_db)} dB</Row>
         <Row label="Score de présence">{num(p.objectness, 2)}</Row>
         <Row label="Score navire">{num(p.vessel_score, 2)}</Row>
+        {passTime && p.lon != null && <Chip lon={p.lon} lat={p.lat} time={passTime} />}
       </>
     );
   }

@@ -37,23 +37,13 @@ services:
     ports:
       - "8000:8000"
 
-  frontend:
-    image: nginx:1.27-alpine
-    volumes:
-      - ./frontend:/usr/share/nginx/html:ro
-      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - backend
-    ports:
-      - "8080:80"
-
-  # Interface tactique React (phase 5), servie sur le port 8081 en parallèle de l'ancienne page (8080)
+  # Interface tactique (React), construite puis servie par nginx ; en développement : cd web && npm run dev
   web:
     build: ./web
     depends_on:
       - backend
     ports:
-      - "8081:80"
+      - "8080:80"
 
   # Variante en conteneur, sur CPU : docker compose --profile conteneur up -d
   inference:

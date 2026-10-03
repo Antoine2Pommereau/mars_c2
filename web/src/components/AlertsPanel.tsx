@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { FC, Feature } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, SEVERITY, hm, num } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num } from "../lib/format";
 
 const TYPES = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED"];
 const RANK: Record<string, number> = { critique: 0, elevee: 1, moyenne: 2, faible: 3 };
@@ -31,15 +31,21 @@ function detail(a: Feature): string {
 }
 
 interface Props {
+  bounds: number[] | null;
+  now: string | null;
   analysisAlerts: FC;
   liveAlerts: FC;
   selectedId: number | null;
   onPick: (f: Feature) => void;
 }
 
-export default function AlertsPanel({ analysisAlerts, liveAlerts, selectedId, onPick }: Props) {
+const PERIODS: [number, string][] = [[1, "1 h"], [6, "6 h"], [12, "12 h"]];
+
+export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, selectedId, onPick }: Props) {
+  const [inView, setInView] = useState(false);
+  const [hours, setHours] = useState(12);
   const [types, setTypes] = useState<string[]>(TYPES);
-  const [hideLow, setHideLow] = useState(false);
+  const [view, setView] = useState<"todo" | "confirmed" | "all">("todo");
 
   const all = useMemo(() => {
     const list = [...analysisAlerts.features, ...liveAlerts.features];
@@ -48,8 +54,18 @@ export default function AlertsPanel({ analysisAlerts, liveAlerts, selectedId, on
       String(b.properties.event_time).localeCompare(String(a.properties.event_time)));
   }, [analysisAlerts, liveAlerts]);
 
-  const shown = all.filter((a) => types.includes(a.properties.type) &&
-    !(hideLow && (a.properties.severity === "faible" || a.properties.status === "classee")));
+  const statusOf = (a: Feature) => a.properties.status ?? "nouvelle";
+  const since = now ? new Date(now).getTime() - hours * 3600_000 : 0;
+  const visible = (a: Feature) => {
+    if (!inView || !bounds) return true;
+    const [lon, lat] = a.geometry.coordinates;
+    return lon >= bounds[0] && lon <= bounds[2] && lat >= bounds[1] && lat <= bounds[3];
+  };
+  const recent = (a: Feature) => !["RENDEZVOUS", "AIS_GAP"].includes(a.properties.type)
+    || new Date(a.properties.event_time).getTime() >= since;
+  const shown = all.filter((a) => types.includes(a.properties.type) && visible(a) && recent(a) &&
+    (view === "all" || (view === "todo" ? statusOf(a) === "nouvelle" : statusOf(a) === "confirmee")));
+  const todoCount = all.filter((a) => statusOf(a) === "nouvelle").length;
 
   const count = (t: string) => all.filter((a) => a.properties.type === t).length;
 
@@ -72,20 +88,33 @@ export default function AlertsPanel({ analysisAlerts, liveAlerts, selectedId, on
             );
           })}
         </div>
-        <label className="mt-3 flex cursor-pointer items-center gap-2 text-[12px] text-muted">
-          <input type="checkbox" checked={hideLow} onChange={(e) => setHideLow(e.target.checked)} />
-          Masquer faibles et classées
-        </label>
+        <div className="mt-3 flex items-center justify-between gap-3 text-[12px]">
+          <label className="flex cursor-pointer items-center gap-2 text-muted">
+            <input type="checkbox" checked={inView} onChange={(e) => setInView(e.target.checked)} /> Zone affichée
+          </label>
+          <div className="flex rounded-md border border-hair p-0.5" aria-label="Période des alertes comportementales">
+            {PERIODS.map(([h, l]) => (
+              <button key={h} onClick={() => setHours(h)}
+                className={`rounded px-2 py-0.5 ${hours === h ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-2 flex rounded-md border border-hair p-0.5 text-[12px]" role="tablist">
+          {([["todo", `À traiter ${todoCount}`], ["confirmed", "Confirmées"], ["all", "Toutes"]] as const).map(([k, l]) => (
+            <button key={k} role="tab" aria-selected={view === k} onClick={() => setView(k)}
+              className={`flex-1 rounded px-2 py-1 ${view === k ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>{l}</button>
+          ))}
+        </div>
       </header>
 
       <ul className="flex-1 overflow-y-auto">
         {shown.length === 0 && (
           <li className="px-4 py-6 text-muted">
-            Aucune alerte à cet instant.
+            {view === "todo" ? "Aucune alerte à traiter à cet instant." : "Aucune alerte."}
           </li>
         )}
         {shown.map((a) => {
-          const low = a.properties.severity === "faible" || a.properties.status === "classee";
+          const low = a.properties.severity === "faible" || ["classee", "acquittee"].includes(statusOf(a));
           const selected = a.properties.id === selectedId;
           return (
             <li key={`${a.properties.type}${a.properties.id}`}>
@@ -100,7 +129,7 @@ export default function AlertsPanel({ analysisAlerts, liveAlerts, selectedId, on
                 <span className="text-right text-[12px]">
                   <span className="block text-ink/80">{hm(a.properties.event_time)}</span>
                   <span className="block text-muted">
-                    {a.properties.status === "classee" ? "classée" : SEVERITY[a.properties.severity]}
+                    {statusOf(a) === "nouvelle" ? SEVERITY[a.properties.severity] : STATUS_LABEL[statusOf(a)]}
                   </span>
                 </span>
               </button>

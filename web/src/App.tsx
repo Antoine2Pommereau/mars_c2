@@ -23,6 +23,7 @@ export default function App() {
   const [drawing, setDrawing] = useState(false);
   const [draft, setDraft] = useState<number[] | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
+  const [bounds, setBounds] = useState<number[] | null>(null);
 
   const [pinnedWaiting, setPinnedWaiting] = useState(false);
   const analysesQ = useQuery({ queryKey: ["analyses"], queryFn: api.analyses,
@@ -126,6 +127,11 @@ export default function App() {
   }, [selection]);
 
   const onSelect = useCallback((s: Selection) => setSelection(s), []);
+  // Après une décision : la fiche ouverte reflète tout de suite le nouveau statut
+  const onStatus = useCallback((status: string) => {
+    setSelection((s) => s?.kind === "alert"
+      ? { kind: "alert", feature: { ...s.feature, properties: { ...s.feature.properties, status } } } : s);
+  }, []);
   const liveAlerts = stream?.live_alerts ?? EMPTY;
   const analysisAlerts = alertsQ.data ?? EMPTY;
   const jobs = (stream?.analyses ?? []).filter((a) => a.status !== "done" || a.id !== analysisId);
@@ -133,8 +139,22 @@ export default function App() {
     .filter((f) => f.properties.status === "done")
     .map((f) => ({ id: f.properties.id, time: f.properties.acquired_at })), [analysesQ.data]);
   const openAlerts = [...analysisAlerts.features, ...liveAlerts.features]
-    .filter((a) => a.properties.severity !== "faible" && a.properties.status !== "classee").length;
+    .filter((a) => a.properties.severity !== "faible" && (a.properties.status ?? "nouvelle") === "nouvelle").length;
   const selectedId = selection?.kind === "alert" ? selection.feature.properties.id : null;
+
+  // Navires concernés par la sélection, pour le mode focus de la carte
+  const spotlight = useMemo(() => {
+    if (!selection) return null;
+    if (selection.kind === "vessel") return { alertId: null, vesselIds: [selection.properties.vessel_id] };
+    if (selection.kind !== "alert") return null;
+    const p = selection.feature.properties;
+    const d = p.details ?? {};
+    const vs: any[] = p.type === "RENDEZVOUS" ? d.navires ?? []
+      : p.type === "AIS_GAP" ? [d.navire, ...(d.partenaires_possibles ?? [])]
+      : p.type === "AIS_UNCONFIRMED" ? [d.navire]
+      : d.candidats_ais ?? [];
+    return { alertId: p.id as number, vesselIds: vs.filter(Boolean).map((v) => v.vessel_id) };
+  }, [selection]);
   const vessels = stream?.traffic.features.length ?? 0;
 
   return (
@@ -143,7 +163,7 @@ export default function App() {
         running={jobs.some((a) => a.status === "pending" || a.status === "running")} />
       {panel && (
         <aside className="h-full w-[340px] shrink-0 border-r border-hair bg-panel">
-          {panel === "alertes" && <AlertsPanel analysisAlerts={analysisAlerts} liveAlerts={liveAlerts} selectedId={selectedId} onPick={pickAlert} />}
+          {panel === "alertes" && <AlertsPanel bounds={bounds} now={stream?.clock.now ?? null} analysisAlerts={analysisAlerts} liveAlerts={liveAlerts} selectedId={selectedId} onPick={pickAlert} />}
           {panel === "analyses" && (
             <AnalysesPanel jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0}
               history={done.slice(0, 8)} onPick={pickAnalysis}
@@ -169,6 +189,8 @@ export default function App() {
           drawing={drawing}
           draft={draft}
           onDraw={onDraw}
+          spotlight={spotlight}
+          onBounds={setBounds}
         />
         <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-md border border-hair bg-panel/90 px-3 py-1.5 text-[12px] text-muted backdrop-blur">
           <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-signal" : "bg-gap"}`} />
@@ -179,7 +201,8 @@ export default function App() {
             ${drawing ? "border-signal bg-panel/95 text-ink" : "border-hair bg-panel/90 text-ink hover:border-signal"}`}>
           {drawing ? "Cliquez deux coins opposés, Échap pour annuler" : draft ? "Annuler le tracé" : "Nouvelle analyse"}
         </button>
-        <DetailPanel selection={selection} onClose={() => setSelection(null)} />
+        <DetailPanel selection={selection} onClose={() => setSelection(null)}
+          passTime={analysis?.properties.acquired_at ?? null} onStatus={onStatus} />
         <Timeline clock={stream?.clock ?? null} days={(daysQ.data ?? []).map((d) => d.day)}
           dayAlerts={dayAlertsQ.data ?? EMPTY} passes={passes} onCommand={timelineCommand} />
       </main>

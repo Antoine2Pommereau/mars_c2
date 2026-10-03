@@ -25,7 +25,15 @@ export interface Pass {
   ais_available: boolean;
 }
 
+export interface AlertActionRow { action: string; note: string | null; author: string; at: string }
+
+export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
+  `/api/chip?lon=${lon}&lat=${lat}&time=${encodeURIComponent(time)}&size_m=${sizeM}`;
+
 export const api = {
+  alertActions: (id: number) => get<AlertActionRow[]>(`/alerts/${id}/actions`),
+  act: (id: number, action: string, note: string) =>
+    post<{ id: number; status: string }>(`/alerts/${id}/actions`, { action, note }),
   passes: (bbox: number[]) => get<Pass[]>(`/passes?bbox=${bbox.join(",")}`),
   launch: (bbox: number[], product_name: string) => post<{ id: number }>("/analyses", { bbox, product_name, mode: "fast" }),
   analyses: () => get<FC>("/analyses"),

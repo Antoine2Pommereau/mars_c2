@@ -10,15 +10,19 @@ La progression est renvoyée ligne par ligne (NDJSON), puis le résultat final.
 import asyncio
 import json
 import os
+import struct
 import threading
 import time
+import zlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import torch
-from fastapi import FastAPI
+import rasterio
+from fastapi import FastAPI, Response
+from rasterio.windows import Window
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pyproj import Transformer
@@ -72,6 +76,44 @@ class AnalyzeRequest(BaseModel):
 def health():
     return {"status": "ok" if STATE else "starting", "device": STATE.get("device"), "amp": STATE.get("amp"),
             "warmup_s": STATE.get("warmup_s"), "model_version": RULES["model"]["version"]}
+
+
+def png_gray(a: np.ndarray) -> bytes:
+    """Encode une image en niveaux de gris (uint8) au format PNG, sans dépendance supplémentaire."""
+    a = np.ascontiguousarray(a, dtype=np.uint8)
+    h, w = a.shape
+    raw = b"".join(b"\x00" + a[r].tobytes() for r in range(h))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+@app.get("/v1/chip")
+def chip(lon: float, lat: float, acquired_at: datetime, size_m: float = 800):
+    """Vignette VV autour d'un point, lue dans les extraits radar en cache pour ce passage."""
+    t0 = pd.Timestamp(acquired_at)
+    t0 = t0.tz_localize("UTC") if t0.tzinfo is None else t0.tz_convert("UTC")
+    paths = sorted((ROOT / "data" / "sar").glob(f"extrait_{t0:%Y%m%dT%H%M%S}_*.tif"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in paths:
+        with rasterio.open(path) as src:
+            x, y = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True).transform(lon, lat)
+            row, col = src.index(x, y)
+            if not (0 <= row < src.height and 0 <= col < src.width):
+                continue
+            half = max(int(size_m / 2 / abs(src.transform.a)), 8)
+            vv = src.read(2, window=Window(col - half, row - half, 2 * half, 2 * half), boundless=True, fill_value=0)
+        db = np.where(vv > 0, 10 * np.log10(np.maximum(vv, 1e-10)), np.nan)
+        if np.isnan(db).all():
+            break
+        lo = float(np.nanpercentile(db, 2))
+        hi = max(lo + 15.0, float(np.nanpercentile(db, 99.7)))
+        img = np.nan_to_num((np.clip((db - lo) / (hi - lo), 0, 1) * 255), nan=0).astype(np.uint8)
+        return Response(png_gray(img), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+    return Response(status_code=404)
 
 
 @app.post("/v1/analyze")

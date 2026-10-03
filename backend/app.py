@@ -15,7 +15,7 @@ import asyncpg
 import httpx
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from mars.config import load_rules
@@ -78,21 +78,6 @@ def aoi_wkt(b):
 async def read_clock(c) -> dict:
     r = await c.fetchrow("SELECT sim_now() AS now, speed, paused FROM sim_clock WHERE id = 1")
     return {"now": r["now"], "speed": r["speed"], "paused": r["paused"]}
-
-
-async def keep_clock_in_data(c):
-    """Le rejeu reste dans les journées chargées : saut à la journée suivante, pause à la fin de la dernière."""
-    await c.execute("""
-        WITH s AS (SELECT sim_now() AS now),
-             d AS (SELECT day::timestamp AT TIME ZONE 'UTC' AS start FROM ais_days),
-             inside AS (SELECT EXISTS (SELECT 1 FROM d, s WHERE s.now >= d.start AND s.now < d.start + interval '1 day') AS ok),
-             nxt AS (SELECT min(d.start) AS start FROM d, s WHERE d.start > s.now),
-             last AS (SELECT max(start) + interval '1 day' - interval '1 second' AS end_ FROM d)
-        UPDATE sim_clock SET
-            sim_anchor = coalesce((SELECT start FROM nxt), (SELECT end_ FROM last)),
-            real_anchor = clock_timestamp(),
-            paused = CASE WHEN (SELECT start FROM nxt) IS NULL THEN true ELSE paused END
-        WHERE id = 1 AND EXISTS (SELECT 1 FROM d) AND NOT (SELECT ok FROM inside)""")
 
 
 def clock_json(clock: dict) -> dict:
@@ -211,7 +196,6 @@ async def stream(request: Request):
     async def events():
         while not await request.is_disconnected():
             async with app.state.pool.acquire() as c:
-                await keep_clock_in_data(c)
                 clock = await read_clock(c)
                 payload = {"clock": clock_json(clock), "traffic": await read_traffic(c, clock["now"]),
                            "analyses": await read_active_analyses(c),
@@ -684,6 +668,52 @@ async def rendezvous_run(req: RuleRun):
             start = pd.Timestamp(d, tz="UTC").to_pydatetime()
             results[d.isoformat()] = await run_rendezvous(c, start, start + pd.Timedelta(days=1), rules)
     return results
+
+
+@app.get("/api/chip")
+async def chip(lon: float, lat: float, time: str, size_m: float = 800):
+    """Vignette radar autour d'un point, produite par le service d'inférence qui détient les extraits."""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(f"{INFERENCE_URL}/v1/chip",
+                                 params={"lon": lon, "lat": lat, "acquired_at": time, "size_m": size_m})
+    except httpx.ConnectError:
+        raise HTTPException(503, "Service d'inférence injoignable")
+    if r.status_code != 200:
+        raise HTTPException(404, "Vignette indisponible pour ce passage")
+    return Response(r.content, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
+class AlertAction(BaseModel):
+    action: str
+    note: str | None = None
+    author: str = "Opérateur"
+
+
+STATUS_OF = {"acquitter": "acquittee", "confirmer": "confirmee", "classer": "classee", "rouvrir": "nouvelle"}
+
+
+@app.post("/api/alerts/{alert_id}/actions")
+async def alert_action(alert_id: int, a: AlertAction):
+    """Décision d'un opérateur sur une alerte : nouveau statut, et trace dans le journal."""
+    if a.action not in STATUS_OF:
+        raise HTTPException(422, "Action inconnue")
+    async with app.state.pool.acquire() as c, c.transaction():
+        status = await c.fetchval("UPDATE alerts SET status = $2 WHERE id = $1 RETURNING status",
+                                  alert_id, STATUS_OF[a.action])
+        if status is None:
+            raise HTTPException(404, "Alerte inconnue")
+        await c.execute("INSERT INTO alert_actions (alert_id, action, note, author) VALUES ($1, $2, $3, $4)",
+                        alert_id, a.action, (a.note or "").strip() or None, a.author)
+    return {"id": alert_id, "status": status}
+
+
+@app.get("/api/alerts/{alert_id}/actions")
+async def alert_actions(alert_id: int):
+    async with app.state.pool.acquire() as c:
+        rows = await c.fetch("SELECT action, note, author, at FROM alert_actions WHERE alert_id = $1 ORDER BY at DESC",
+                             alert_id)
+    return [clean(r) for r in rows]
 
 
 @app.get("/api/alerts/day")
