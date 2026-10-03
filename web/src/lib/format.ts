@@ -49,6 +49,11 @@ export const ALERT_COLOR: Record<string, string> = {
 export const ALERT_FALLBACK = "#ffffff";
 export const SIGNAL = "#4fb6c8";
 
+// Couches de contexte provisionnées (régions) : teintes désaturées, la couleur vive reste aux alertes
+export const INFRA_CABLE = "#6f8fa6";
+export const INFRA_PIPELINE = "#b08d57";
+export const BATHY_CONTOUR = "#4a6072";
+
 // Surlignage des trajectoires : navire principal en orange rendez vous, autres en signal, trajet présumé en rouge coupure
 export const HIGHLIGHT_PRIMARY = ALERT_COLOR.RENDEZVOUS;
 export const HIGHLIGHT_SECONDARY = SIGNAL;

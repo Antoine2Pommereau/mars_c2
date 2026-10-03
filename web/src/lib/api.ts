@@ -27,6 +27,12 @@ export interface Pass {
 
 export interface AlertActionRow { action: string; note: string | null; author: string; at: string }
 
+export interface RegionLayer {
+  layer: string; usage: string; status: string; source: string | null;
+  license: string | null; feature_count: number | null; size_bytes: number | null; fetched_at: string | null;
+}
+export interface Region { id: number; name: string; origin: string; active: boolean; bbox: number[]; layers: RegionLayer[] }
+
 export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
   `/api/chip?lon=${lon}&lat=${lat}&time=${encodeURIComponent(time)}&size_m=${sizeM}`;
 
@@ -47,6 +53,9 @@ export const api = {
   zones: (ctx?: QueryCtx) => get<FC>("/masks/stationary", ctx?.signal),
   reception: (ctx?: QueryCtx) => get<FC>("/masks/reception", ctx?.signal),
   days: (ctx?: QueryCtx) => get<{ day: string; messages: number; vessels: number }[]>("/ais/days", ctx?.signal),
+  regions: (ctx?: QueryCtx) => get<Region[]>("/regions", ctx?.signal),
+  infrastructure: (regionId: number, ctx?: QueryCtx) => get<FC>(`/regions/${regionId}/infrastructure`, ctx?.signal),
+  bathymetry: (regionId: number, ctx?: QueryCtx) => get<FC>(`/regions/${regionId}/bathymetry/contours`, ctx?.signal),
   track: (vesselId: number, start: string, end: string) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
   clock: (body: { action: "play" | "pause" | "speed" | "seek"; speed?: number; time?: string }) =>

@@ -689,6 +689,48 @@ async def reception_cells():
     return collection([feature(r["geometry"], clean(r)) for r in rows])
 
 
+@app.get("/api/regions")
+async def regions():
+    """Régions de couverture et état de provisionnement de leurs couches (voir docs/spec_regions.md)."""
+    async with app.state.pool.acquire() as c:
+        regs = await c.fetch(
+            "SELECT id, name, origin, active, "
+            "ST_XMin(b) AS lon_min, ST_YMin(b) AS lat_min, ST_XMax(b) AS lon_max, ST_YMax(b) AS lat_max "
+            "FROM (SELECT id, name, origin, active, ST_Envelope(geom::geometry) AS b FROM regions) q ORDER BY id")
+        layers = await c.fetch(
+            "SELECT region_id, layer, usage, status, source, license, feature_count, size_bytes, fetched_at "
+            "FROM region_layers ORDER BY region_id, layer")
+    by_region: dict[int, list] = {}
+    for l in layers:
+        by_region.setdefault(l["region_id"], []).append({
+            "layer": l["layer"], "usage": l["usage"], "status": l["status"], "source": l["source"],
+            "license": l["license"], "feature_count": l["feature_count"], "size_bytes": l["size_bytes"],
+            "fetched_at": l["fetched_at"].isoformat() if l["fetched_at"] else None})
+    return [{"id": r["id"], "name": r["name"], "origin": r["origin"], "active": r["active"],
+             "bbox": [r["lon_min"], r["lat_min"], r["lon_max"], r["lat_max"]],
+             "layers": by_region.get(r["id"], [])} for r in regs]
+
+
+@app.get("/api/regions/{region_id}/infrastructure")
+async def region_infrastructure(region_id: int):
+    async with app.state.pool.acquire() as c:
+        rows = await c.fetch(
+            "SELECT kind, name, operator, source, ST_AsGeoJSON(geom)::json AS geometry "
+            "FROM infrastructure WHERE region_id = $1", region_id)
+    return collection([feature(r["geometry"],
+                       {"kind": r["kind"], "name": r["name"], "operator": r["operator"], "source": r["source"]})
+                       for r in rows])
+
+
+@app.get("/api/regions/{region_id}/bathymetry/contours")
+async def region_bathymetry_contours(region_id: int):
+    async with app.state.pool.acquire() as c:
+        rows = await c.fetch(
+            "SELECT depth_m, ST_AsGeoJSON(geom)::json AS geometry "
+            "FROM bathymetry_contours WHERE region_id = $1 ORDER BY depth_m", region_id)
+    return collection([feature(r["geometry"], {"depth_m": r["depth_m"]}) for r in rows])
+
+
 async def _rule_days(c, day: str | None):
     if day:
         return [parse_day(day)]

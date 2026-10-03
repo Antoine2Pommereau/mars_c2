@@ -17,7 +17,7 @@ export default function App() {
   const qc = useQueryClient();
   const { data: stream, connected } = useStream();
   const [panel, setPanel] = useState<PanelId | null>("alertes");
-  const [layers, setLayers] = useState<LayerState>({ analysis: true, zones: false, reception: false, byType: false });
+  const [layers, setLayers] = useState<LayerState>({ analysis: true, zones: false, reception: false, byType: false, infrastructure: false, bathymetry: false });
   const [selection, setSelection] = useState<Selection | null>(null);
   const [highlight, setHighlight] = useState<FC>(EMPTY);
   const [focus, setFocus] = useState<{ center: [number, number]; zoom: number } | null>(null);
@@ -47,6 +47,12 @@ export default function App() {
   const zonesQ = useQuery({ queryKey: ["zones"], queryFn: api.zones, enabled: layers.zones, staleTime: Infinity });
   const receptionQ = useQuery({ queryKey: ["reception"], queryFn: api.reception, enabled: layers.reception, staleTime: Infinity });
   const daysQ = useQuery({ queryKey: ["days"], queryFn: api.days, staleTime: Infinity });
+
+  // Région active et ses couches de contexte provisionnées (câbles, pipelines, isobathes)
+  const regionsQ = useQuery({ queryKey: ["regions"], queryFn: api.regions, staleTime: Infinity });
+  const regionId = (regionsQ.data?.find((r) => r.active) ?? regionsQ.data?.[0])?.id;
+  const infraQ = useQuery({ queryKey: ["infrastructure", regionId], queryFn: (ctx) => api.infrastructure(regionId!, ctx), enabled: !!regionId && layers.infrastructure, staleTime: Infinity });
+  const bathyQ = useQuery({ queryKey: ["bathymetry", regionId], queryFn: (ctx) => api.bathymetry(regionId!, ctx), enabled: !!regionId && layers.bathymetry, staleTime: Infinity });
 
   const day = stream?.clock.now.slice(0, 10);
   const dayAlertsQ = useQuery({ queryKey: ["dayAlerts", day], queryFn: (ctx) => api.alertsOfDay(day!, ctx), enabled: !!day, staleTime: 60_000 });
@@ -187,6 +193,8 @@ export default function App() {
           liveAlerts={liveAlerts}
           zones={zonesQ.data ?? null}
           reception={receptionQ.data ?? null}
+          infrastructure={infraQ.data ?? null}
+          bathymetry={bathyQ.data ?? null}
           highlight={highlight}
           show={layers}
           focus={focus}

@@ -129,37 +129,76 @@ def provision_infrastructure(cur, region_id, bbox):
     return total
 
 
-def provision_bathymetry(cur, region_id, bbox):
+CONTOUR_LEVELS = [-500, -200, -100, -50, -20, -10]
+
+
+def provision_bathymetry(cur, region_id, bbox, refresh=False):
     lon_min, lat_min, lon_max, lat_max = bbox
     set_layer(cur, region_id, "bathymetry", status="en_cours")
     out_dir = ROOT / "data" / "zones" / str(region_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "bathymetry.tif"
-    params = {"service": "WCS", "version": "2.0.1", "request": "GetCoverage",
-              "coverageId": "emodnet__mean", "format": "image/tiff",
-              "subset": [f"Lat({lat_min},{lat_max})", f"Long({lon_min},{lon_max})"]}
-    r = requests.get(BATHY_WCS, params=params, timeout=180)
-    r.raise_for_status()
-    ctype = r.headers.get("content-type", "")
-    if "tif" not in ctype:
-        set_layer(cur, region_id, "bathymetry", status="echec")
-        raise RuntimeError(f"WCS n'a pas renvoyé un GeoTIFF (content-type {ctype}) : {r.text[:300]}")
-    tmp = out.with_suffix(".tif.tmp")
-    tmp.write_bytes(r.content)
-    tmp.replace(out)
-    size = out.stat().st_size
-    print(f"  bathymétrie {size/1e6:.1f} Mo -> {out.relative_to(ROOT)}")
+    if out.exists() and out.stat().st_size > 0 and not refresh:
+        print(f"  GeoTIFF déjà présent ({out.stat().st_size/1e6:.1f} Mo), téléchargement ignoré")
+    else:
+        params = {"service": "WCS", "version": "2.0.1", "request": "GetCoverage",
+                  "coverageId": "emodnet__mean", "format": "image/tiff",
+                  "subset": [f"Lat({lat_min},{lat_max})", f"Long({lon_min},{lon_max})"]}
+        r = requests.get(BATHY_WCS, params=params, timeout=180)
+        r.raise_for_status()
+        if "tif" not in r.headers.get("content-type", ""):
+            set_layer(cur, region_id, "bathymetry", status="echec")
+            raise RuntimeError(f"WCS n'a pas renvoyé un GeoTIFF : {r.text[:300]}")
+        tmp = out.with_suffix(".tif.tmp")
+        tmp.write_bytes(r.content)
+        tmp.replace(out)
+        print(f"  bathymétrie {out.stat().st_size/1e6:.1f} Mo -> {out.relative_to(ROOT)}")
+    n = compute_contours(cur, region_id, out)
+    print(f"  {n} isobathes calculées aux profondeurs {CONTOUR_LEVELS} m")
     set_layer(cur, region_id, "bathymetry", status="prete",
               source="EMODnet Bathymetry emodnet__mean (WCS)", source_url=BATHY_WCS,
-              license=BATHY_LICENSE, size_bytes=size)
+              license=BATHY_LICENSE, size_bytes=out.stat().st_size)
     cur.execute("UPDATE region_layers SET fetched_at = now() WHERE region_id = %s AND layer = 'bathymetry'", (region_id,))
-    return size
+    return out.stat().st_size
+
+
+def compute_contours(cur, region_id, tif_path):
+    """Isobathes vectorielles à partir du raster, pour l'affichage. Sous échantillonne pour rester léger."""
+    import numpy as np
+    import rasterio
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from shapely.geometry import LineString
+    with rasterio.open(tif_path) as ds:
+        step = max(1, max(ds.width, ds.height) // 1200)
+        z = ds.read(1, masked=True).astype("float32").filled(np.nan)[::step, ::step]
+        h, w = z.shape
+        lons = np.linspace(ds.bounds.left, ds.bounds.right, ds.width)[::step][:w]
+        lats = np.linspace(ds.bounds.top, ds.bounds.bottom, ds.height)[::step][:h]
+    X, Y = np.meshgrid(lons, lats)
+    fig = plt.figure()
+    cs = plt.contour(X, Y, z, levels=CONTOUR_LEVELS)
+    cur.execute("DELETE FROM bathymetry_contours WHERE region_id = %s", (region_id,))
+    n = 0
+    for level, segs in zip(cs.levels, cs.allsegs):
+        for seg in segs:
+            if len(seg) < 2:
+                continue
+            line = LineString([(float(x), float(y)) for x, y in seg])
+            cur.execute("INSERT INTO bathymetry_contours (region_id, depth_m, geom) "
+                        "VALUES (%s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326)::geography)",
+                        (region_id, float(level), line.wkt))
+            n += 1
+    plt.close(fig)
+    return n
 
 
 def main():
     ap = argparse.ArgumentParser(description="Provisionnement de la donnée statique d'une région")
     ap.add_argument("--region", help="Nom ou identifiant de région ; par défaut la région active")
     ap.add_argument("--only", choices=["infrastructure", "bathymetry"], help="Un seul fournisseur")
+    ap.add_argument("--refresh", action="store_true", help="Retélécharge même si le fichier local existe")
     args = ap.parse_args()
     load_env()
 
@@ -176,7 +215,7 @@ def main():
         if args.only in (None, "bathymetry"):
             t = time.time()
             print("Bathymétrie (EMODnet Bathymetry)...")
-            provision_bathymetry(cur, region_id, bbox)
+            provision_bathymetry(cur, region_id, bbox, refresh=args.refresh)
             print(f"  en {time.time() - t:.0f} s")
         conn.commit()
     print("Provisionnement terminé.")

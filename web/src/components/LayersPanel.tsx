@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
-import { ALERT_COLOR, ALERT_LABEL, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, BATHY_CONTOUR, INFRA_CABLE, INFRA_PIPELINE, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE } from "../lib/format";
 
 export interface LayerState {
   analysis: boolean;
   zones: boolean;
   reception: boolean;
   byType: boolean;
+  infrastructure: boolean;
+  bathymetry: boolean;
 }
 
 // Libellés de la légende, dans l'ordre de la palette centralisée ; les teintes viennent de SHIP_PALETTE
@@ -42,6 +44,8 @@ export default function LayersPanel({ state, onChange }: { state: LayerState; on
       <Switch on={state.byType} onChange={set("byType")} label="Couleur par type de navire" hint="Sinon, tous les navires en gris neutre" />
       <Switch on={state.zones} onChange={set("zones")} label="Zones de mouillage" hint="Déduites de l'AIS, rencontres déclassées" />
       <Switch on={state.reception} onChange={set("reception")} label="Réception AIS fiable" hint="Là où un silence est significatif" />
+      <Switch on={state.infrastructure} onChange={set("infrastructure")} label="Infrastructures" hint="Câbles et pipelines sous marins (EMODnet)" />
+      <Switch on={state.bathymetry} onChange={set("bathymetry")} label="Bathymétrie" hint="Isobathes, profondeur (EMODnet)" />
 
       <section className="px-4 py-4">
         <div className="mb-2 font-medium">Navires</div>
@@ -63,6 +67,14 @@ export default function LayersPanel({ state, onChange }: { state: LayerState; on
         {Object.entries(ALERT_LABEL).map(([t, l]) => (
           <Key key={t} swatch={<span className="h-3.5 w-3.5 rounded-full border-2" style={{ borderColor: ALERT_COLOR[t] }} />}>{l}</Key>
         ))}
+
+        <div className="mb-2 mt-5 font-medium">Infrastructures</div>
+        <Key swatch={<span className="h-0.5 w-4 rounded" style={{ background: INFRA_CABLE }} />}>Câble sous marin</Key>
+        <Key swatch={<span className="h-0.5 w-4 rounded" style={{ background: INFRA_PIPELINE }} />}>Pipeline</Key>
+
+        <div className="mb-2 mt-5 font-medium">Bathymétrie</div>
+        <Key swatch={<span className="h-0.5 w-4 rounded" style={{ background: BATHY_CONTOUR }} />}>Isobathe</Key>
+        <div className="mt-3 text-[11px] text-faint">Source EMODnet, CC BY 4.0</div>
       </section>
     </div>
   );

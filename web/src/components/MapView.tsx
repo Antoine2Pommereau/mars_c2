@@ -2,7 +2,7 @@ import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map 
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
 import { bboxPolygon } from "../lib/geo";
-import { ALERT_COLOR, ALERT_FALLBACK, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE, SIGNAL } from "../lib/format";
+import { ALERT_COLOR, ALERT_FALLBACK, BATHY_CONTOUR, INFRA_CABLE, INFRA_PIPELINE, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE, SIGNAL } from "../lib/format";
 import { EMPTY, type AlertProps, type FC, type Feature, type Selection } from "../lib/types";
 
 const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -17,6 +17,9 @@ const ALERT_STROKE: ExpressionSpecification = ["match", ["get", "type"],
   "DARK_SHIP", ALERT_COLOR.DARK_SHIP, "RENDEZVOUS", ALERT_COLOR.RENDEZVOUS,
   "AIS_GAP", ALERT_COLOR.AIS_GAP, "AIS_UNCONFIRMED", ALERT_COLOR.AIS_UNCONFIRMED, ALERT_FALLBACK];
 const NEUTRAL = SHIP_NEUTRAL;
+
+// Couleur des infrastructures provisionnées : câble ou pipeline
+const INFRA_COLOR: ExpressionSpecification = ["match", ["get", "kind"], "pipeline", INFRA_PIPELINE, INFRA_CABLE];
 
 // Les types de maplibre n'acceptent pas la comparaison littérale à null, pourtant valide à l'exécution.
 const expr = (e: unknown): ExpressionSpecification => e as ExpressionSpecification;
@@ -45,8 +48,10 @@ interface Props {
   liveAlerts: FC<AlertProps>;
   zones: FC | null;
   reception: FC | null;
+  infrastructure: FC | null;
+  bathymetry: FC | null;
   highlight: FC;
-  show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean };
+  show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean; infrastructure: boolean; bathymetry: boolean };
   focus: { center: [number, number]; zoom: number } | null;
   onSelect: (s: Selection) => void;
   drawing: boolean;
@@ -87,8 +92,14 @@ export default function MapView(p: Props) {
     map.on("load", () => {
       if (disposed) return;
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
+      ["bathymetry", "infrastructure", "zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
 
+      // Couches de contexte provisionnées (régions), sous les données opérationnelles
+      map.addLayer({ id: "bathymetry", type: "line", source: "bathymetry", layout: { visibility: "none" },
+        paint: { "line-color": BATHY_CONTOUR, "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.4, 11, 1], "line-opacity": 0.55 } });
+      map.addLayer({ id: "infrastructure", type: "line", source: "infrastructure",
+        layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": INFRA_COLOR, "line-width": 1.4, "line-opacity": 0.85 } });
       map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
         paint: { "fill-color": ALERT_COLOR.RENDEZVOUS, "fill-opacity": 0.12, "fill-outline-color": ALERT_COLOR.RENDEZVOUS } });
       map.addLayer({ id: "reception", type: "fill", source: "reception", layout: { visibility: "none" },
@@ -207,6 +218,8 @@ export default function MapView(p: Props) {
   useEffect(() => setData("live", p.liveAlerts), [ready, p.liveAlerts]);
   useEffect(() => setData("zones", p.zones), [ready, p.zones]);
   useEffect(() => setData("reception", p.reception), [ready, p.reception]);
+  useEffect(() => setData("infrastructure", p.infrastructure), [ready, p.infrastructure]);
+  useEffect(() => setData("bathymetry", p.bathymetry), [ready, p.bathymetry]);
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
 
   useEffect(() => {
@@ -221,6 +234,8 @@ export default function MapView(p: Props) {
     vis(["aoi", "det", "alerts"], p.show.analysis);
     vis(["zones"], p.show.zones);
     vis(["reception"], p.show.reception);
+    vis(["infrastructure"], p.show.infrastructure);
+    vis(["bathymetry"], p.show.bathymetry);
     map.setPaintProperty("traffic", "icon-color", p.show.byType ? SHIP_COLOR : NEUTRAL);
   }, [ready, p.show]);
 
