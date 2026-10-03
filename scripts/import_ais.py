@@ -63,9 +63,12 @@ def main():
                              s.first_seen, s.last_seen, s.ais_class))
                 ids[int(s.mmsi)] = cur.fetchone()[0]
 
-        # Positions déjà présentes pour ces navires sur la même période : remplacées
-        cur.execute("DELETE FROM positions WHERE vessel_id = ANY(%s) AND ts BETWEEN %s AND %s",
-                    (list(ids.values()), df.ts.min(), df.ts.max()))
+        # Positions déjà présentes pour ces navires sur les journées importées : remplacées.
+        # On purge par journée complète (ts::date) et non par l'intervalle min et max des messages,
+        # pour une vraie idempotence : un réimport efface bien toute la journée avant de réinsérer.
+        days = sorted({d for d in df.ts.dt.date.unique()})
+        cur.execute("DELETE FROM positions WHERE vessel_id = ANY(%s) AND (ts AT TIME ZONE 'UTC')::date = ANY(%s)",
+                    (list(ids.values()), days))
 
         # Insertion en masse par COPY, en lots, au format texte de PostgreSQL
         t = time.time()

@@ -44,12 +44,13 @@ def match(det: pd.DataFrame, ais: pd.DataFrame, base_radius_m: float, doppler_s:
           heading_deg: float | None = None, score_weight: float = 0.2) -> pd.DataFrame:
     """Affectation optimale (algorithme hongrois) dans l'ellipse de tolérance de chaque navire.
 
-    Ajoute à det : matched_idx (position dans ais, ou -1), match_cost, match_distance_m, offset_along_m,
-    offset_cross_m, candidates.
+    Ajoute à det : matched_idx (position dans ais, ou -1), matched_vessel_id (identifiant du navire apparié, ou
+    None), match_cost, match_distance_m, offset_along_m, offset_cross_m, candidates.
     """
     det = det.copy()
     n = len(det)
     matched_idx = np.full(n, -1, dtype=int)
+    matched_vessel_id = [None] * n
     match_cost = np.full(n, np.nan)
     match_dist = np.full(n, np.nan)
     off_along = np.full(n, np.nan)
@@ -70,6 +71,9 @@ def match(det: pd.DataFrame, ais: pd.DataFrame, base_radius_m: float, doppler_s:
         for r, c in zip(rows, cols):
             if cost[r, c] < 1e6:
                 matched_idx[r], match_cost[r], match_dist[r] = c, cost[r, c], dist[r, c]
+                # L'identifiant est lu ici, où l'ordre de ais et de ais_xy coïncide : le pipeline n'a plus à
+                # supposer que l'ordre de ais est resté le même.
+                matched_vessel_id[r] = int(ais.vessel_id.iloc[c])
                 if along is not None:
                     delta = det_xy[r] - ais_xy[c]
                     off_along[r], off_cross[r] = float(delta @ along), float(delta @ cross)
@@ -85,6 +89,7 @@ def match(det: pd.DataFrame, ais: pd.DataFrame, base_radius_m: float, doppler_s:
             ]
 
     det["matched_idx"] = matched_idx
+    det["matched_vessel_id"] = pd.Series(matched_vessel_id, index=det.index, dtype=object)
     det["match_cost"] = match_cost
     det["match_distance_m"] = match_dist
     det["offset_along_m"] = off_along

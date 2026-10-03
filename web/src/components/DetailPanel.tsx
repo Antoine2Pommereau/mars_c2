@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
-import type { Props, Selection } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num, utc } from "../lib/format";
+import type { AisCandidate, AlertProps, GapPartner, Selection, VesselRef } from "../lib/types";
+import { ALERT_COLOR, ALERT_LABEL, SEVERITY, SIGNAL, STATUS_LABEL, hm, num, utc } from "../lib/format";
 import AlertActions from "./AlertActions";
 import Chip from "./Chip";
 
@@ -23,15 +23,15 @@ function Context({ items }: { items?: string[] }) {
   );
 }
 
-function vessel(v?: Props) {
+function vessel(v?: VesselRef) {
   if (!v) return "inconnu";
   return `${v.name ?? "Sans nom"} (MMSI ${v.mmsi}${v.ship_type ? `, ${v.ship_type}` : ""}${v.length_m ? `, ${num(v.length_m, 0)} m` : ""})`;
 }
 
-function AlertBody({ p }: { p: Props }) {
-  const d = p.details ?? {};
+function AlertBody({ p }: { p: AlertProps }) {
   switch (p.type) {
-    case "DARK_SHIP":
+    case "DARK_SHIP": {
+      const d = p.details ?? {};
       return (
         <>
           <Row label="Longueur estimée">{num(d.length_m, 0)} m</Row>
@@ -44,7 +44,7 @@ function AlertBody({ p }: { p: Props }) {
           {(d.candidats_ais ?? []).length ? (
             <table className="mt-1 w-full text-left">
               <thead className="text-muted"><tr><th>Navire</th><th>Distance</th><th>Tolérance</th></tr></thead>
-              <tbody>{d.candidats_ais.map((c: Props) => (
+              <tbody>{d.candidats_ais!.map((c: AisCandidate) => (
                 <tr key={c.mmsi} className="border-t border-hair/70">
                   <td>{c.name ?? c.mmsi}</td><td>{c.distance_m} m</td><td>{c.tolerance_le_long_m ?? c.rayon_tolere_m} m</td>
                 </tr>))}</tbody>
@@ -52,7 +52,9 @@ function AlertBody({ p }: { p: Props }) {
           ) : <p className="text-muted">Aucun navire AIS à proximité.</p>}
         </>
       );
-    case "AIS_UNCONFIRMED":
+    }
+    case "AIS_UNCONFIRMED": {
+      const d = p.details ?? {};
       return (
         <>
           <Row label="Navire">{vessel(d.navire)}</Row>
@@ -63,7 +65,9 @@ function AlertBody({ p }: { p: Props }) {
           <Context items={d.contexte} />
         </>
       );
+    }
     case "RENDEZVOUS": {
+      const d = p.details ?? {};
       const [v1, v2] = d.navires ?? [];
       return (
         <>
@@ -76,7 +80,8 @@ function AlertBody({ p }: { p: Props }) {
         </>
       );
     }
-    case "AIS_GAP":
+    case "AIS_GAP": {
+      const d = p.details ?? {};
       return (
         <>
           <Row label="Navire">{vessel(d.navire)}</Row>
@@ -88,7 +93,7 @@ function AlertBody({ p }: { p: Props }) {
           {(d.partenaires_possibles ?? []).length > 0 && (
             <table className="mt-3 w-full text-left">
               <thead className="text-muted"><tr><th>Partenaire possible</th><th>Au plus près</th><th>Lent</th></tr></thead>
-              <tbody>{d.partenaires_possibles.map((x: Props) => (
+              <tbody>{d.partenaires_possibles!.map((x: GapPartner) => (
                 <tr key={x.vessel_id} className="border-t border-hair/70">
                   <td>{x.name ?? x.mmsi}{x.au_mouillage ? " (mouillage)" : ""}</td><td>{x.distance_min_m} m</td><td>{hm(x.debut)} à {hm(x.fin)}</td>
                 </tr>))}</tbody>
@@ -96,6 +101,7 @@ function AlertBody({ p }: { p: Props }) {
           )}
         </>
       );
+    }
     default:
       return null;
   }
@@ -111,7 +117,7 @@ interface PanelProps {
 export default function DetailPanel({ selection, onClose, passTime, onStatus }: PanelProps) {
   if (!selection) return null;
   let title = "";
-  let color = "#4fb6c8";
+  let color = SIGNAL;
   let body: ReactNode = null;
   let footer: ReactNode = null;
 
@@ -124,11 +130,11 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus }: 
     color = ALERT_COLOR[p.type] ?? color;
     body = (
       <>
-        {p.status !== "nouvelle" && (
+        {p.status && p.status !== "nouvelle" && (
           <span className="mb-2 inline-block rounded-full bg-raised px-2 py-0.5 text-[11.5px] text-muted">{STATUS_LABEL[p.status]}</span>
         )}
         <p className="mb-3 text-ink/90">{d.motif}</p>
-        {withChip && <Chip lon={lon} lat={lat} time={p.event_time} />}
+        {withChip && p.event_time && <Chip lon={lon} lat={lat} time={p.event_time} />}
         <AlertBody p={p} />
         <AlertActions id={p.id} status={p.status ?? "nouvelle"} onStatus={onStatus} />
       </>
@@ -144,7 +150,7 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus }: 
         <Row label="Longueur">{p.length_m ? `${num(p.length_m, 0)} m` : "n.d."}</Row>
         <Row label="Vitesse">{num(p.sog_kn)} nœuds</Row>
         <Row label="Route">{num(p.cog_deg, 0)}°</Row>
-        <Row label="Dernier message">il y a {num(p.age_s / 60, 0)} min</Row>
+        <Row label="Dernier message">il y a {num((p.age_s ?? 0) / 60, 0)} min</Row>
       </>
     );
   } else {
@@ -159,7 +165,7 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus }: 
         <Row label="Contraste local VV">{num(p.contrast_vv_db)} dB</Row>
         <Row label="Score de présence">{num(p.objectness, 2)}</Row>
         <Row label="Score navire">{num(p.vessel_score, 2)}</Row>
-        {passTime && p.lon != null && <Chip lon={p.lon} lat={p.lat} time={passTime} />}
+        {passTime && p.lon != null && p.lat != null && <Chip lon={p.lon} lat={p.lat} time={passTime} />}
       </>
     );
   }

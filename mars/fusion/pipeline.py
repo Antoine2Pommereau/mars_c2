@@ -53,12 +53,11 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
         det.loc[free & (det.vessel_score < thr["vessel"]), "mask_reason"] = "non navire"
 
     kept = det[det.mask_reason.isna()]
-    matched = match(kept, ais, f["base_radius_m"], f["doppler_s"], heading_deg)
-    det = det.join(matched[["matched_idx", "match_cost", "match_distance_m", "offset_along_m", "offset_cross_m",
-                            "candidates"]])
-    det["matched_vessel_id"] = pd.Series(
-        [int(ais.vessel_id.iloc[int(m)]) if pd.notna(m) and m >= 0 else None for m in det.matched_idx],
-        index=det.index, dtype=object)
+    matched = match(kept, ais, f["base_radius_m"], f["doppler_s"], heading_deg, f.get("score_weight", 0.2))
+    # L'identifiant du navire apparié est fourni directement par match (lu là où l'ordre de ais coïncide avec
+    # l'appariement), ce qui supprime toute dépendance implicite à l'ordre des lignes de ais.
+    det = det.join(matched[["matched_idx", "matched_vessel_id", "match_cost", "match_distance_m", "offset_along_m",
+                            "offset_cross_m", "candidates"]])
 
     # Persistance : un écho sans AIS revu au même endroit à une autre date est un écho fixe, pas un navire
     fixed_hits = []

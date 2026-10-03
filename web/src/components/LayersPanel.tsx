@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ALERT_COLOR, ALERT_LABEL } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE } from "../lib/format";
 
 export interface LayerState {
   analysis: boolean;
@@ -8,9 +8,11 @@ export interface LayerState {
   byType: boolean;
 }
 
+// Libellés de la légende, dans l'ordre de la palette centralisée ; les teintes viennent de SHIP_PALETTE
+const SHIP_LABELS = ["Cargo", "Pétrolier", "Pêche", "Passagers", "Plaisance, voile", "Service"];
 const SHIP_TYPES: [string, string][] = [
-  ["#6ea8fe", "Cargo"], ["#f0a35e", "Pétrolier"], ["#5fd38d", "Pêche"], ["#c792ea", "Passagers"],
-  ["#f5e663", "Plaisance, voile"], ["#e07a5f", "Service"], ["#9fb3c2", "Autre ou non renseigné"],
+  ...SHIP_PALETTE.map(({ color }, i) => [color, SHIP_LABELS[i]] as [string, string]),
+  [SHIP_OTHER, "Autre ou non renseigné"],
 ];
 
 function Switch({ on, onChange, label, hint }: { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) {
@@ -43,9 +45,9 @@ export default function LayersPanel({ state, onChange }: { state: LayerState; on
 
       <section className="px-4 py-4">
         <div className="mb-2 font-medium">Navires</div>
-        <Key swatch={<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1 L10 11 L6 8.5 L2 11 Z" fill="#c9d3da" /></svg>}>En route</Key>
-        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da]" />}>Immobile</Key>
-        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da] opacity-35" />}>Silencieux</Key>
+        <Key swatch={<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1 L10 11 L6 8.5 L2 11 Z" fill={SHIP_NEUTRAL} /></svg>}>En route</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full" style={{ background: SHIP_NEUTRAL }} />}>Immobile</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full opacity-35" style={{ background: SHIP_NEUTRAL }} />}>Silencieux</Key>
         {state.byType && (
           <div className="mt-2 grid grid-cols-2 gap-x-3">
             {SHIP_TYPES.map(([c, l]) => <Key key={l} swatch={<span className="h-2 w-2 rounded-full" style={{ background: c }} />}>{l}</Key>)}

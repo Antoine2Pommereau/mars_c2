@@ -20,7 +20,8 @@ export default function AlertActions({ id, status, onStatus }: { id: number; sta
     onSuccess: (r) => {
       setNote("");
       onStatus(r.status);
-      for (const k of ["alertActions", "alerts", "dayAlerts"]) qc.invalidateQueries({ queryKey: [k] });
+      qc.invalidateQueries({ queryKey: ["alertActions", id] });
+      for (const k of ["alerts", "dayAlerts"]) qc.invalidateQueries({ queryKey: [k] });
     },
   });
 
@@ -46,8 +47,8 @@ export default function AlertActions({ id, status, onStatus }: { id: number; sta
       {act.isError && <p className="mt-2 text-[12px] text-gap">{(act.error as Error).message}</p>}
       {(history.data ?? []).length > 0 && (
         <ul className="mt-3 space-y-2">
-          {history.data!.map((h, i) => (
-            <li key={i} className="text-[12px]">
+          {history.data!.map((h) => (
+            <li key={`${h.at}-${h.action}`} className="text-[12px]">
               <span className="text-ink">{VERB[h.action] ?? h.action}</span>
               <span className="text-muted"> par {h.author}, le {utc(h.at).slice(0, 16)}</span>
               {h.note && <span className="mt-0.5 block text-ink/80">{h.note}</span>}

@@ -5,6 +5,7 @@ orchestration du service d'inférence, moteur de fusion, alertes et suivi de pro
 """
 import asyncio
 import json
+import logging
 import math
 import os
 from contextlib import asynccontextmanager
@@ -16,20 +17,52 @@ import httpx
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from mars.config import load_rules
+from mars.config import load_env, load_rules
 from mars.fusion.pipeline import fuse
 from mars.geo import bbox_size_km
 from mars.sar.catalog import get_token, search_passes
-from rules import build_reception_cells, build_stationary_zones, find_gaps, run_ais_gap, run_rendezvous
+from rules import (build_reception_cells, build_stationary_zones, find_gaps, run_ais_gap,
+                   run_rendezvous, run_rendezvous_selftest)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+log = logging.getLogger("mars.api")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://mars:mars@localhost:5432/mars")
 INFERENCE_URL = os.environ.get("INFERENCE_URL", "http://host.docker.internal:8001")
 TRAFFIC_WINDOW_MIN = 30   # un navire reste affiché 30 minutes simulées après son dernier message
 TRAIL_MIN = 10            # longueur de la traînée, en minutes simulées
 MAX_ZONE_KM = 50          # taille maximale d'une zone analysée
+MAX_ANALYSES = 2          # nombre maximal d'analyses menées de front
+MAX_STREAMS = 32          # nombre maximal de flux SSE simultanés
+CHIP_MIN_M = 50           # taille minimale d'une vignette radar
+CHIP_MAX_M = 5000         # taille maximale d'une vignette radar
 TASKS: set = set()
+_ANALYSIS_SEM = asyncio.Semaphore(MAX_ANALYSES)
+_STREAM_SEM = asyncio.Semaphore(MAX_STREAMS)
+
+# Jeton OAuth Sentinel Hub mis en cache jusqu'à son expiration (marge de sécurité de 60 secondes).
+# Le jeton CDSE vit environ 600 secondes ; on borne par prudence pour ne pas le réutiliser trop longtemps.
+_TOKEN_TTL_S = 540
+_token_cache: dict = {"value": None, "expires": 0.0}
+
+
+def is_finite(v) -> bool:
+    """Vrai si v est un flottant fini ; les NaN et les infinis ne sont pas du JSON valide ni acceptés en base."""
+    return not (isinstance(v, float) and not math.isfinite(v))
+
+
+def fetch_token() -> str:
+    """Rend un jeton OAuth Sentinel Hub, depuis le cache tant qu'il est valide. Lève ValueError si les
+    identifiants manquent et remonte l'erreur réseau en cas d'échec de l'échange."""
+    now = asyncio.get_event_loop().time()
+    if _token_cache["value"] is not None and now < _token_cache["expires"]:
+        return _token_cache["value"]
+    token = get_token(os.environ.get("SH_CLIENT_ID"), os.environ.get("SH_CLIENT_SECRET"))
+    _token_cache["value"] = token
+    _token_cache["expires"] = now + _TOKEN_TTL_S
+    return token
 
 
 async def _init(conn):
@@ -39,7 +72,18 @@ async def _init(conn):
 
 @asynccontextmanager
 async def lifespan(app):
+    load_env()
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, init=_init, min_size=1, max_size=10)
+    # Reprise au démarrage : les analyses restées en cours ou en attente lors d'un arrêt sont orphelines
+    # (aucune tâche ne les mène plus), on les repasse en échec pour que l'opérateur puisse les relancer.
+    async with app.state.pool.acquire() as c:
+        status = await c.execute(
+            "UPDATE analyses SET status = 'failed', completed_at = now(), "
+            "error = coalesce(error, 'Analyse interrompue par un redémarrage du service') "
+            "WHERE status IN ('pending', 'running')")
+        orphans = int(status.split()[-1]) if status.startswith("UPDATE") else 0
+        if orphans:
+            log.info("Reprise au démarrage : %s analyse(s) orpheline(s) repassée(s) en échec", orphans)
     yield
     await app.state.pool.close()
 
@@ -56,8 +100,20 @@ def collection(features):
 
 
 def finite(v):
-    """Les valeurs NaN ne sont pas du JSON valide : elles deviennent null."""
-    return None if isinstance(v, float) and math.isnan(v) else v
+    """Les valeurs NaN et infinies ne sont pas du JSON valide ni acceptées en base : elles deviennent null."""
+    return None if isinstance(v, float) and not math.isfinite(v) else v
+
+
+def sanitize(obj):
+    """Assainit récursivement une structure avant sérialisation JSON : les flottants non finis deviennent null,
+    y compris au sein des JSON imbriqués du flux SSE (summary, details, progress)."""
+    if isinstance(obj, float):
+        return None if not math.isfinite(obj) else obj
+    if isinstance(obj, dict):
+        return {k: sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize(v) for v in obj]
+    return obj
 
 
 def clean(record, drop=("geometry",)):
@@ -65,12 +121,24 @@ def clean(record, drop=("geometry",)):
     for k, v in dict(record).items():
         if k in drop:
             continue
-        out[k] = v.isoformat() if hasattr(v, "isoformat") else finite(v)
+        out[k] = v.isoformat() if hasattr(v, "isoformat") else sanitize(v)
     return out
 
 
-def aoi_wkt(b):
-    return f"SRID=4326;POLYGON(({b[0]} {b[1]},{b[2]} {b[1]},{b[2]} {b[3]},{b[0]} {b[3]},{b[0]} {b[1]}))"
+def valid_lonlat(lon: float, lat: float) -> bool:
+    return is_finite(lon) and is_finite(lat) and -180 <= lon <= 180 and -90 <= lat <= 90
+
+
+def check_bbox(b: list[float]) -> list[float]:
+    """Vérifie une emprise [lon_min, lat_min, lon_max, lat_max] : bornes finies, dans les plages lon/lat,
+    et ordonnées. Lève HTTPException(422) sinon. Rempart contre des valeurs nan ou inf jusqu'au WKT PostGIS."""
+    if len(b) != 4 or not all(is_finite(x) for x in b):
+        raise HTTPException(422, "Emprise attendue : quatre nombres finis lon_min,lat_min,lon_max,lat_max")
+    if not (-180 <= b[0] <= 180 and -180 <= b[2] <= 180 and -90 <= b[1] <= 90 and -90 <= b[3] <= 90):
+        raise HTTPException(422, "Emprise hors des plages valides (longitude 180, latitude 90)")
+    if not (b[0] < b[2] and b[1] < b[3]):
+        raise HTTPException(422, "Emprise invalide : lon_min < lon_max et lat_min < lat_max attendus")
+    return b
 
 
 # Horloge simulée
@@ -193,15 +261,33 @@ async def track(vessel_id: int, start: datetime, end: datetime):
 @app.get("/api/stream")
 async def stream(request: Request):
     """Flux SSE, une fois par seconde réelle : horloge, trafic, et progression des analyses en cours."""
+    if _STREAM_SEM.locked():
+        raise HTTPException(503, "Trop de flux ouverts simultanément")
+
     async def events():
-        while not await request.is_disconnected():
-            async with app.state.pool.acquire() as c:
-                clock = await read_clock(c)
-                payload = {"clock": clock_json(clock), "traffic": await read_traffic(c, clock["now"]),
-                           "analyses": await read_active_analyses(c),
-                           "live_alerts": await read_live_alerts(c, clock["now"])}
-            yield f"event: traffic\ndata: {json.dumps(payload)}\n\n"
-            await asyncio.sleep(1)
+        # Connexion dédiée hors pool : un flux garde sa connexion une seconde par seconde, en acquérir une
+        # nouvelle à chaque tour affamait les analyses. On la libère proprement à la fin du flux.
+        await _STREAM_SEM.acquire()
+        conn = None
+        try:
+            conn = await asyncpg.connect(DATABASE_URL)
+            await _init(conn)
+            while not await request.is_disconnected():
+                try:
+                    clock = await read_clock(conn)
+                    payload = {"clock": clock_json(clock), "traffic": await read_traffic(conn, clock["now"]),
+                               "analyses": await read_active_analyses(conn),
+                               "live_alerts": await read_live_alerts(conn, clock["now"])}
+                    yield f"event: traffic\ndata: {json.dumps(sanitize(payload))}\n\n"
+                except Exception:
+                    # Une erreur ponctuelle (base momentanément indisponible) ne doit pas couper le flux :
+                    # on la journalise et on réessaie au tour suivant.
+                    log.exception("Erreur dans le flux SSE, poursuite au tour suivant")
+                await asyncio.sleep(1)
+        finally:
+            if conn is not None:
+                await conn.close()
+            _STREAM_SEM.release()
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -219,10 +305,9 @@ async def ais_days():
 def parse_bbox(bbox: str) -> list[float]:
     try:
         b = [float(v) for v in bbox.split(",")]
-        assert len(b) == 4 and b[0] < b[2] and b[1] < b[3]
-        return b
-    except Exception:
+    except ValueError:
         raise HTTPException(422, "Emprise attendue : lon_min,lat_min,lon_max,lat_max")
+    return check_bbox(b)
 
 
 @app.get("/api/passes")
@@ -237,7 +322,13 @@ async def passes(bbox: str, start: datetime | None = None, end: datetime | None 
             start = start or pd.Timestamp(span["d0"], tz="UTC").to_pydatetime()
             end = end or (pd.Timestamp(span["d1"], tz="UTC") + pd.Timedelta(days=1)).to_pydatetime()
 
-    token = await asyncio.to_thread(get_token, os.environ.get("SH_CLIENT_ID"), os.environ.get("SH_CLIENT_SECRET"))
+    try:
+        token = await asyncio.to_thread(fetch_token)
+    except ValueError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        log.exception("Échange du jeton Sentinel Hub en échec")
+        raise HTTPException(503, f"Jeton Sentinel Hub indisponible : {e}")
     found = await asyncio.to_thread(search_passes, token, b, pd.Timestamp(start), pd.Timestamp(end))
 
     async with app.state.pool.acquire() as c:
@@ -270,15 +361,32 @@ class AnalysisRequest(BaseModel):
     product_name: str
     mode: Literal["fast", "full"] = "fast"
 
+    @field_validator("bbox")
+    @classmethod
+    def _bbox_valide(cls, b: list[float]) -> list[float]:
+        # Rempart précoce : des bornes nan ou inf traverseraient sinon jusqu'au WKT PostGIS.
+        if not all(isinstance(x, float) and math.isfinite(x) for x in b):
+            raise ValueError("Emprise : quatre nombres finis attendus")
+        if not (-180 <= b[0] <= 180 and -180 <= b[2] <= 180 and -90 <= b[1] <= 90 and -90 <= b[3] <= 90):
+            raise ValueError("Emprise hors des plages valides (longitude 180, latitude 90)")
+        if not (b[0] < b[2] and b[1] < b[3]):
+            raise ValueError("Emprise invalide : lon_min < lon_max et lat_min < lat_max attendus")
+        return b
+
 
 async def add_progress(c, analysis_id: int, item: dict):
-    await c.execute("UPDATE analyses SET progress = progress || $2::jsonb WHERE id = $1", analysis_id, [item])
+    await c.execute("UPDATE analyses SET progress = progress || $2::jsonb WHERE id = $1",
+                    analysis_id, [sanitize(item)])
 
 
-async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, product_name: str, mode: str):
+async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, product_name: str, mode: str, rules: dict):
+    # Les règles sont chargées une seule fois par l'appelant et propagées : l'analyse et ses alertes
+    # portent toutes la même version, pas de risque d'incohérence si le fichier change en cours de route.
     pool = app.state.pool
-    rules = load_rules()
     started = asyncio.get_running_loop().time()
+    # Le sémaphore borne le nombre d'analyses menées de front : au delà, la tâche attend ici,
+    # l'analyse reste « pending » et ne mobilise ni le service d'inférence ni le pool de connexions.
+    await _ANALYSIS_SEM.acquire()
     try:
         async with pool.acquire() as c:
             await c.execute("UPDATE analyses SET status = 'running' WHERE id = $1", analysis_id)
@@ -317,8 +425,10 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                 "SELECT p.vessel_id, v.mmsi, v.name, v.length_m, p.ts, ST_Y(p.geom::geometry) AS lat, "
                 "ST_X(p.geom::geometry) AS lon, p.sog_kn AS sog, p.cog_deg AS cog "
                 "FROM positions p JOIN vessels v ON v.id = p.vessel_id "
-                "WHERE ST_DWithin(p.geom, $1::geography, 5000) AND p.ts BETWEEN $2 AND $3",
-                aoi_wkt(bbox), t0 - pd.Timedelta(minutes=f["ais_window_min"]),
+                "WHERE ST_DWithin(p.geom, ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography, 5000) "
+                "AND p.ts BETWEEN $5 AND $6",
+                bbox[0], bbox[1], bbox[2], bbox[3],
+                t0 - pd.Timedelta(minutes=f["ais_window_min"]),
                 t0 + pd.Timedelta(minutes=f["ais_window_min"]))
         pos = pd.DataFrame([dict(r) for r in rows],
                            columns=["vessel_id", "mmsi", "name", "length_m", "ts", "lat", "lon", "sog", "cog"])
@@ -345,15 +455,17 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
         # Persistance : échos fixes connus, et échos sans AIS observés à une autre date sur la zone
         async with pool.acquire() as c:
             fixed_rows = await c.fetch(
-                """SELECT 'registre' AS source, f.id AS ref, ST_X(f.geom::geometry) AS lon, ST_Y(f.geom::geometry) AS lat
-                   FROM fixed_echoes f WHERE ST_DWithin(f.geom, $1::geography, 1000)
+                """WITH env AS (SELECT ST_MakeEnvelope($3, $4, $5, $6, 4326)::geography AS g)
+                   SELECT 'registre' AS source, f.id AS ref, ST_X(f.geom::geometry) AS lon, ST_Y(f.geom::geometry) AS lat
+                   FROM fixed_echoes f, env WHERE ST_DWithin(f.geom, env.g, 1000)
                    UNION ALL
                    SELECT 'detection', d.id, ST_X(d.geom::geometry), ST_Y(d.geom::geometry)
-                   FROM detections d JOIN analyses a ON a.id = d.analysis_id JOIN sar_passes p ON p.id = a.pass_id
+                   FROM detections d JOIN analyses a ON a.id = d.analysis_id JOIN sar_passes p ON p.id = a.pass_id, env
                    WHERE d.matched_vessel_id IS NULL AND coalesce(d.mask_reason, '') <> 'terre'
-                     AND abs(extract(epoch FROM p.acquired_at - $2::timestamptz)) >= $3::float8 * 86400
-                     AND ST_DWithin(d.geom, $1::geography, 1000)""",
-                aoi_wkt(bbox), t0, float(rules["persistence"]["min_days_apart"]))
+                     AND abs(extract(epoch FROM p.acquired_at - $1::timestamptz)) >= $2::float8 * 86400
+                     AND ST_DWithin(d.geom, env.g, 1000)""",
+                t0, float(rules["persistence"]["min_days_apart"]),
+                bbox[0], bbox[1], bbox[2], bbox[3])
         fixed_points = pd.DataFrame([dict(r) for r in fixed_rows], columns=["source", "ref", "lon", "lat"])
         det, alerts, n_ais, extras = await asyncio.to_thread(fuse, det, pos, pd.Timestamp(t0), bbox, rules, heading,
                                                              fixed_points)
@@ -397,7 +509,7 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                     a["severity"], t0, float(d.lon), float(d.lat), details, rules["version"])
                 evidence = [("analysis", analysis_id), ("detection", det_ids[a["det_index"]])]
                 evidence += [("vessel", v) for v in a["vessel_ids"]]
-                await c.executemany("INSERT INTO alert_evidence VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                await c.executemany("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                                     [(alert_id, et, eid) for et, eid in evidence])
 
             # Registre des échos fixes, et reclassement des alertes « navire sombre » levées sur ces échos à d'autres dates
@@ -448,7 +560,7 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                     "VALUES ('AIS_UNCONFIRMED', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) "
                     "RETURNING id",
                     "moyenne" if big else "faible", t0, x["lon"], x["lat"], details, rules["version"])
-                await c.executemany("INSERT INTO alert_evidence VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                await c.executemany("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                                     [(alert_id, "analysis", analysis_id), (alert_id, "vessel", x["vessel_id"])])
 
             fusion_s = round(asyncio.get_running_loop().time() - t_fusion, 2)
@@ -464,18 +576,21 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                                                 "seconds": fusion_s,
                                                 "detail": f"{summary['appariees']} appariées, {len(alerts)} alerte(s)"})
             await c.execute("UPDATE analyses SET status = 'done', completed_at = now(), timings = $2, summary = $3 "
-                            "WHERE id = $1", analysis_id, timings, summary)
+                            "WHERE id = $1", analysis_id, sanitize(timings), sanitize(summary))
     except Exception as e:
+        # On journalise la pile complète avant d'écrire l'échec : sans cela la cause restait invisible,
+        # seule une chaîne tronquée atteignait la base.
+        log.exception("Analyse %s en échec", analysis_id)
         async with pool.acquire() as c:
             await c.execute("UPDATE analyses SET status = 'failed', completed_at = now(), error = $2 WHERE id = $1",
                             analysis_id, str(e)[:1000])
+    finally:
+        _ANALYSIS_SEM.release()
 
 
 @app.post("/api/analyses", status_code=202)
 async def create_analysis(req: AnalysisRequest):
-    b = req.bbox
-    if not (b[0] < b[2] and b[1] < b[3]):
-        raise HTTPException(422, "Emprise invalide")
+    b = check_bbox(req.bbox)
     w, h = bbox_size_km(b)
     if w > MAX_ZONE_KM or h > MAX_ZONE_KM:
         raise HTTPException(422, f"Zone trop grande ({w:.0f} x {h:.0f} km), maximum {MAX_ZONE_KM} km de côté")
@@ -488,11 +603,21 @@ async def create_analysis(req: AnalysisRequest):
                                   p["acquired_at"])
         if not ais_ok:
             raise HTTPException(422, "Pas de données AIS chargées pour la date de ce passage")
+        # Déduplication : si une analyse sur le même passage et la même emprise est déjà en cours
+        # (à quelques mètres près), on renvoie celle ci au lieu d'en lancer une seconde en double.
+        existing = await c.fetchval(
+            "SELECT id FROM analyses WHERE pass_id = $1 AND status IN ('pending', 'running') "
+            "AND ST_Equals(ST_SnapToGrid(aoi::geometry, 0.00001), "
+            "ST_SnapToGrid(ST_MakeEnvelope($2, $3, $4, $5, 4326), 0.00001)) "
+            "ORDER BY id DESC LIMIT 1",
+            p["id"], b[0], b[1], b[2], b[3])
+        if existing is not None:
+            return {"id": existing, "status": "pending", "deja_en_cours": True}
         analysis_id = await c.fetchval(
             "INSERT INTO analyses (pass_id, aoi, mode, status, model_version) "
-            "VALUES ($1, $2::geography, $3, 'pending', $4) RETURNING id",
-            p["id"], aoi_wkt(b), req.mode, rules["model"]["version"])
-    task = asyncio.create_task(run_analysis(analysis_id, b, p["acquired_at"], req.product_name, req.mode))
+            "VALUES ($1, ST_MakeEnvelope($2, $3, $4, $5, 4326)::geography, $6, 'pending', $7) RETURNING id",
+            p["id"], b[0], b[1], b[2], b[3], req.mode, rules["model"]["version"])
+    task = asyncio.create_task(run_analysis(analysis_id, b, p["acquired_at"], req.product_name, req.mode, rules))
     TASKS.add(task)
     task.add_done_callback(TASKS.discard)
     return {"id": analysis_id, "status": "pending"}
@@ -523,6 +648,15 @@ async def inference_health():
 
 class RuleRun(BaseModel):
     day: str | None = None   # AAAA-MM-JJ ; toutes les journées chargées si absent
+
+
+def parse_day(day: str):
+    """Lit une date AAAA-MM-JJ. Lève HTTPException(422) sur un format invalide plutôt que de laisser
+    remonter une exception non maîtrisée."""
+    try:
+        return datetime.fromisoformat(day).date()
+    except (ValueError, TypeError):
+        raise HTTPException(422, "Date attendue au format AAAA-MM-JJ")
 
 
 @app.post("/api/masks/stationary")
@@ -557,7 +691,7 @@ async def reception_cells():
 
 async def _rule_days(c, day: str | None):
     if day:
-        return [datetime.fromisoformat(day).date()]
+        return [parse_day(day)]
     days = [r["day"] for r in await c.fetch("SELECT day FROM ais_days ORDER BY day")]
     if not days:
         raise HTTPException(422, "Aucune journée AIS chargée")
@@ -655,12 +789,7 @@ async def ais_gap_selftest(req: RuleRun):
 async def rendezvous_run(req: RuleRun):
     rules = load_rules()
     async with app.state.pool.acquire() as c:
-        if req.day:
-            days = [datetime.fromisoformat(req.day).date()]
-        else:
-            days = [r["day"] for r in await c.fetch("SELECT day FROM ais_days ORDER BY day")]
-        if not days:
-            raise HTTPException(422, "Aucune journée AIS chargée")
+        days = await _rule_days(c, req.day)
         if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
             raise HTTPException(422, "Masque de terre absent : lancer scripts/build_masks.py")
         results = {}
@@ -670,9 +799,28 @@ async def rendezvous_run(req: RuleRun):
     return results
 
 
+@app.post("/api/rules/rendezvous/selftest")
+async def rendezvous_selftest(req: RuleRun):
+    """Test par injection : on fabrique un rendez vous synthétique (deux navires lents, bord à bord, au large,
+    au delà de la durée seuil) dans une transaction annulée à la fin, et on vérifie que la règle lève bien
+    l'alerte attendue. La base n'est pas modifiée. Prouve que la règle n'est pas silencieuse."""
+    rules = load_rules()
+    async with app.state.pool.acquire() as c:
+        if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
+            raise HTTPException(422, "Masque de terre absent : lancer scripts/build_masks.py")
+        day = (await _rule_days(c, req.day))[0]
+        start = pd.Timestamp(day, tz="UTC").to_pydatetime()
+        result = await run_rendezvous_selftest(c, start, start + pd.Timedelta(days=1), rules)
+    return {"jour": day.isoformat(), **result}
+
+
 @app.get("/api/chip")
 async def chip(lon: float, lat: float, time: str, size_m: float = 800):
     """Vignette radar autour d'un point, produite par le service d'inférence qui détient les extraits."""
+    if not valid_lonlat(lon, lat):
+        raise HTTPException(422, "Position hors des plages valides (longitude 180, latitude 90)")
+    if not (is_finite(size_m) and CHIP_MIN_M <= size_m <= CHIP_MAX_M):
+        raise HTTPException(422, f"Taille de vignette attendue entre {CHIP_MIN_M} et {CHIP_MAX_M} m")
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(f"{INFERENCE_URL}/v1/chip",
@@ -719,7 +867,7 @@ async def alert_actions(alert_id: int):
 @app.get("/api/alerts/day")
 async def alerts_of_day(day: str):
     """Alertes comportementales d'une journée, pour la frise chronologique de l'interface."""
-    start = pd.Timestamp(day, tz="UTC").to_pydatetime()
+    start = pd.Timestamp(parse_day(day), tz="UTC").to_pydatetime()
     async with app.state.pool.acquire() as c:
         rows = await c.fetch(
             """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,

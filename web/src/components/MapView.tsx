@@ -1,24 +1,25 @@
-import maplibregl, { type GeoJSONSource, type Map as MLMap } from "maplibre-gl";
+import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map as MLMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
 import { bboxPolygon } from "../lib/geo";
-import { EMPTY, type FC, type Feature, type Selection } from "../lib/types";
+import { ALERT_COLOR, ALERT_FALLBACK, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE, SIGNAL } from "../lib/format";
+import { EMPTY, type AlertProps, type FC, type Feature, type Selection } from "../lib/types";
 
 const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
-const SHIP_COLOR: any = ["match", ["coalesce", ["get", "ship_type"], ""],
-  "Cargo", "#6ea8fe",
-  "Tanker", "#f0a35e",
-  "Fishing", "#5fd38d",
-  ["Passenger", "HSC"], "#c792ea",
-  ["Pleasure", "Sailing"], "#f5e663",
-  ["Tug", "Towing", "Towing long/wide", "Pilot", "SAR", "Law enforcement", "Military", "Port tender",
-   "Dredging", "Diving", "Anti-pollution", "Medical"], "#e07a5f",
-  "#9fb3c2"];
+// Couleur par type de navire, construite depuis la palette centralisée (lib/format.ts)
+const SHIP_COLOR: ExpressionSpecification = ["match", ["coalesce", ["get", "ship_type"], ""],
+  ...SHIP_PALETTE.flatMap(({ types, color }) => [types.length === 1 ? types[0] : types, color] as const),
+  SHIP_OTHER] as unknown as ExpressionSpecification;
 
-const ALERT_STROKE: any = ["match", ["get", "type"],
-  "DARK_SHIP", "#e85bc7", "RENDEZVOUS", "#f0a84b", "AIS_GAP", "#ef6461", "AIS_UNCONFIRMED", "#e8d45a", "#ffffff"];
-const NEUTRAL = "#c9d3da";
+// Couleur par type d'alerte, depuis la palette centralisée
+const ALERT_STROKE: ExpressionSpecification = ["match", ["get", "type"],
+  "DARK_SHIP", ALERT_COLOR.DARK_SHIP, "RENDEZVOUS", ALERT_COLOR.RENDEZVOUS,
+  "AIS_GAP", ALERT_COLOR.AIS_GAP, "AIS_UNCONFIRMED", ALERT_COLOR.AIS_UNCONFIRMED, ALERT_FALLBACK];
+const NEUTRAL = SHIP_NEUTRAL;
+
+// Les types de maplibre n'acceptent pas la comparaison littérale à null, pourtant valide à l'exécution.
+const expr = (e: unknown): ExpressionSpecification => e as ExpressionSpecification;
 
 /** Icônes en champ de distance signé (teintables) : chevron pour un navire en route, point pour un navire immobile. */
 function makeIcon(kind: "chevron" | "dot") {
@@ -40,8 +41,8 @@ interface Props {
   trails: FC;
   aoi: Feature | null;
   detections: FC;
-  analysisAlerts: FC;
-  liveAlerts: FC;
+  analysisAlerts: FC<AlertProps>;
+  liveAlerts: FC<AlertProps>;
   zones: FC | null;
   reception: FC | null;
   highlight: FC;
@@ -56,8 +57,8 @@ interface Props {
 }
 
 // Opacités de base, et mode focus : tout ce qui ne concerne pas la sélection s'efface
-const TRAFFIC_OPACITY: any = ["case", [">", ["get", "age_s"], 600], 0.3, 0.9];
-const ALERT_OPACITY: any = ["case", ["any", ["==", ["get", "severity"], "faible"],
+const TRAFFIC_OPACITY: ExpressionSpecification = ["case", [">", ["get", "age_s"], 600], 0.3, 0.9];
+const ALERT_OPACITY: ExpressionSpecification = ["case", ["any", ["==", ["get", "severity"], "faible"],
   ["==", ["get", "status"], "classee"], ["==", ["get", "status"], "acquittee"]], 0.35, 1];
 
 export default function MapView(p: Props) {
@@ -66,7 +67,7 @@ export default function MapView(p: Props) {
   const [ready, setReady] = useState(false);
   const onSelect = useRef(p.onSelect);
   onSelect.current = p.onSelect;
-  const alertIndex = useRef(new Map<number, Feature>());
+  const alertIndex = useRef(new Map<number, Feature<AlertProps>>());
   const drawing = useRef(p.drawing);
   drawing.current = p.drawing;
   const onDraw = useRef(p.onDraw);
@@ -76,18 +77,22 @@ export default function MapView(p: Props) {
 
   // Création de la carte et des couches, une seule fois
   useEffect(() => {
+    // StrictMode monte puis démonte l'effet deux fois : ce drapeau empêche d'agir sur une carte déjà retirée
+    let disposed = false;
+    let draftFrame = 0; // limite la mise à jour du brouillon à une image par rafraîchissement
     const map = new maplibregl.Map({ container: container.current!, style: STYLE, center: [10.6, 57.6], zoom: 7.5, boxZoom: false });
     map.addControl(new maplibregl.NavigationControl(), "top-right");
     mapRef.current = map;
 
     map.on("load", () => {
+      if (disposed) return;
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
       ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
 
       map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
-        paint: { "fill-color": "#f0a84b", "fill-opacity": 0.12, "fill-outline-color": "#f0a84b" } });
+        paint: { "fill-color": ALERT_COLOR.RENDEZVOUS, "fill-opacity": 0.12, "fill-outline-color": ALERT_COLOR.RENDEZVOUS } });
       map.addLayer({ id: "reception", type: "fill", source: "reception", layout: { visibility: "none" },
-        paint: { "fill-color": "#4fb6c8", "fill-opacity": 0.07, "fill-outline-color": "#4fb6c8" } });
+        paint: { "fill-color": SIGNAL, "fill-opacity": 0.07, "fill-outline-color": SIGNAL } });
       map.addLayer({ id: "trails", type: "line", source: "trails",
         paint: { "line-color": "#7c8b97", "line-width": 1, "line-opacity": 0.45 } });
       map.addImage("chevron", makeIcon("chevron"), { sdf: true });
@@ -106,22 +111,22 @@ export default function MapView(p: Props) {
           "icon-opacity": TRAFFIC_OPACITY,
         } });
       map.addLayer({ id: "aoi", type: "line", source: "aoi",
-        paint: { "line-color": "#4fb6c8", "line-width": 1.2, "line-dasharray": [4, 3] } });
+        paint: { "line-color": SIGNAL, "line-width": 1.2, "line-dasharray": [4, 3] } });
       map.addLayer({ id: "det", type: "circle", source: "det",
         paint: {
-          "circle-radius": ["case", ["!=", ["get", "mask_reason"], null], 2, 8],
-          "circle-color": ["case", ["!=", ["get", "mask_reason"], null], "#4c5a66", "rgba(0,0,0,0)"],
-          "circle-stroke-width": ["case", ["!=", ["get", "mask_reason"], null], 0, 1.5],
-          "circle-stroke-color": ["case",
+          "circle-radius": expr(["case", ["!=", ["get", "mask_reason"], null], 2, 8]),
+          "circle-color": expr(["case", ["!=", ["get", "mask_reason"], null], "#4c5a66", "rgba(0,0,0,0)"]),
+          "circle-stroke-width": expr(["case", ["!=", ["get", "mask_reason"], null], 0, 1.5]),
+          "circle-stroke-color": expr(["case",
             ["!=", ["get", "mask_reason"], null], "#4c5a66",
             ["!=", ["get", "matched_mmsi"], null], "#e6ecf0",
-            "#e85bc7"],
+            ALERT_COLOR.DARK_SHIP]),
         } });
       // Trajectoires surlignées (traits pleins) et trajet présumé d'une coupure AIS (pointillés)
       map.addLayer({ id: "highlight", type: "line", source: "highlight", filter: ["!=", ["get", "dashed"], true],
-        paint: { "line-color": ["coalesce", ["get", "color"], "#f0a84b"], "line-width": 2.5 } });
+        paint: { "line-color": ["coalesce", ["get", "color"], ALERT_COLOR.RENDEZVOUS], "line-width": 2.5 } });
       map.addLayer({ id: "highlight-dash", type: "line", source: "highlight", filter: ["==", ["get", "dashed"], true],
-        paint: { "line-color": ["coalesce", ["get", "color"], "#ef6461"], "line-width": 2, "line-dasharray": [2, 2] } });
+        paint: { "line-color": ["coalesce", ["get", "color"], ALERT_COLOR.AIS_GAP], "line-width": 2, "line-dasharray": [2, 2] } });
       for (const id of ["alerts", "live"]) {
         map.addLayer({ id, type: "circle", source: id,
           paint: {
@@ -133,9 +138,9 @@ export default function MapView(p: Props) {
 
       // Zone en cours de tracé : rouge si elle dépasse la taille maximale
       map.addLayer({ id: "draft-fill", type: "fill", source: "draft",
-        paint: { "fill-color": ["case", ["get", "tooBig"], "#ef6461", "#4fb6c8"], "fill-opacity": 0.1 } });
+        paint: { "fill-color": ["case", ["get", "tooBig"], ALERT_COLOR.AIS_GAP, SIGNAL], "fill-opacity": 0.1 } });
       map.addLayer({ id: "draft-line", type: "line", source: "draft",
-        paint: { "line-color": ["case", ["get", "tooBig"], "#ef6461", "#4fb6c8"], "line-width": 1.5 } });
+        paint: { "line-color": ["case", ["get", "tooBig"], ALERT_COLOR.AIS_GAP, SIGNAL], "line-width": 1.5 } });
 
       // Tracé d'une zone en deux clics : un coin, puis le coin opposé (fiable au trackpad comme à la souris)
       let start: maplibregl.LngLat | null = null;
@@ -150,7 +155,13 @@ export default function MapView(p: Props) {
         else (map.getSource("draft") as GeoJSONSource).setData(EMPTY as any);
       });
       map.on("mousemove", (e) => {
-        if (drawing.current && start) (map.getSource("draft") as GeoJSONSource).setData(bboxPolygon(box(start, e.lngLat)) as any);
+        if (!drawing.current || !start) return;
+        const lngLat = e.lngLat;
+        if (draftFrame) return;
+        draftFrame = requestAnimationFrame(() => {
+          draftFrame = 0;
+          if (drawing.current && start) (map.getSource("draft") as GeoJSONSource).setData(bboxPolygon(box(start, lngLat)) as any);
+        });
       });
 
       map.on("click", "traffic", (e) => { if (!drawing.current) onSelect.current({ kind: "vessel", properties: e.features![0].properties as any }); });
@@ -174,9 +185,13 @@ export default function MapView(p: Props) {
       const emitBounds = () => { const b = map.getBounds(); onBounds.current([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]); };
       map.on("moveend", emitBounds);
       emitBounds();
-      setReady(true);
+      if (!disposed) setReady(true);
     });
-    return () => map.remove();
+    return () => {
+      disposed = true;
+      if (draftFrame) cancelAnimationFrame(draftFrame);
+      map.remove();
+    };
   }, []);
 
   const setData = (id: string, data: FC | Feature | null) => {
@@ -233,20 +248,20 @@ export default function MapView(p: Props) {
 
   useEffect(() => setData("draft", p.draft ? (bboxPolygon(p.draft) as FC) : null), [ready, p.draft]);
 
-  // Mode focus sur la sélection
-  const spotKey = p.spotlight ? `${p.spotlight.alertId}:${p.spotlight.vesselIds.join(",")}` : "";
+  // Mode focus sur la sélection : spotlight est mémoïsé dans App, son identité change avec la sélection
+  const spotlight = p.spotlight;
   useEffect(() => {
     if (!ready || !mapRef.current) return;
     const map = mapRef.current;
-    const s = p.spotlight;
-    const ids = ["literal", s?.vesselIds ?? []];
+    const s = spotlight;
+    const ids: ExpressionSpecification = ["literal", s?.vesselIds ?? []];
     map.setPaintProperty("traffic", "icon-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 1, 0.12] : TRAFFIC_OPACITY);
     map.setPaintProperty("trails", "line-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 0.9, 0.06] : 0.45);
     map.setPaintProperty("det", "circle-stroke-opacity", s ? 0.35 : 1);
     for (const id of ["alerts", "live"]) {
       map.setPaintProperty(id, "circle-stroke-opacity", s?.alertId != null ? ["case", ["==", ["get", "id"], s.alertId], 1, 0.15] : ALERT_OPACITY);
     }
-  }, [ready, spotKey]);
+  }, [ready, spotlight]);
 
   return <div ref={container} style={{ position: "absolute", inset: 0 }} />;
 }

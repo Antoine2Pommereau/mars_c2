@@ -7,6 +7,8 @@ récupérés en parallèle, puis réassemblées. Les extraits sont mis en cache 
 import copy
 import hashlib
 import io
+import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -42,8 +44,13 @@ PROCESSING = {
 
 class SentinelHub:
     def __init__(self, client_id: str, client_secret: str):
-        self.headers = {"Authorization": f"Bearer {get_token(client_id, client_secret)}"}
-        self._token = self.headers["Authorization"].split(" ", 1)[1]
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._refresh_token()
+
+    def _refresh_token(self):
+        self._token = get_token(self._client_id, self._client_secret)
+        self.headers = {"Authorization": f"Bearer {self._token}"}
 
     def search_passes(self, bbox, t_from: pd.Timestamp, t_to: pd.Timestamp) -> list[dict]:
         return search_passes(self._token, bbox, t_from, t_to)
@@ -66,7 +73,12 @@ class SentinelHub:
                        "responses": [{"identifier": "default", "format": {"type": "image/tiff"}}]},
             "evalscript": EVALSCRIPT,
         }
+        # Le jeton CDSE expire vers dix minutes : si un long lot d'extraction le fait expirer, on régénère le
+        # jeton une seule fois et on réessaie la requête.
         r = requests.post(f"{SH_BASE}/api/v1/process", headers=self.headers, json=payload, timeout=300)
+        if r.status_code == 401:
+            self._refresh_token()
+            r = requests.post(f"{SH_BASE}/api/v1/process", headers=self.headers, json=payload, timeout=300)
         if r.status_code != 200:
             raise RuntimeError(f"Sentinel Hub {r.status_code} : {r.text[:400]}")
         with rasterio.open(io.BytesIO(r.content)) as src:
@@ -105,10 +117,24 @@ class SentinelHub:
             full = np.zeros((3, height, width), dtype="float32")
             with ThreadPoolExecutor(max_workers=4) as pool:
                 for (i, j, w, h), arr in pool.map(run, jobs):
+                    # On prouve l'alignement du morceau plutôt que de l'affirmer : un morceau mal dimensionné
+                    # corromprait silencieusement le réassemblage.
+                    if arr.ndim != 3 or arr.shape[1] < h or arr.shape[2] < w:
+                        raise RuntimeError(
+                            f"Morceau Sentinel Hub de forme inattendue : attendu (_, >= {h}, >= {w}), "
+                            f"obtenu {arr.shape} pour le pavé (i={i}, j={j})")
                     full[:, j:j + h, i:i + w] = arr[:, :h, :w]
-            with rasterio.open(cache, "w", driver="GTiff", height=height, width=width, count=3, dtype="float32",
-                               crs=f"EPSG:{epsg}", transform=transform, compress="deflate") as dst:
-                dst.write(full)
+            # Écriture atomique : on écrit dans un fichier temporaire du même dossier puis on le renomme une fois
+            # le GeoTIFF complet et fermé. Un arrêt pendant l'écriture ne laisse donc jamais de cache tronqué.
+            tmp = cache.with_name(f"{cache.name}.{os.getpid()}.{int(time.time() * 1000)}.tmp")
+            try:
+                with rasterio.open(tmp, "w", driver="GTiff", height=height, width=width, count=3, dtype="float32",
+                                   crs=f"EPSG:{epsg}", transform=transform, compress="deflate") as dst:
+                    dst.write(full)
+                os.replace(tmp, cache)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
 
         vh, vv, mask = full
         ok = (mask > 0) & (vh > 0) & (vv > 0)

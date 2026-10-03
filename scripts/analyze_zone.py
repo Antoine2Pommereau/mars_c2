@@ -18,7 +18,7 @@ def main():
     ap.add_argument("--time", required=True, help="Instant proche du passage voulu, en UTC (ISO 8601)")
     ap.add_argument("--search-hours", type=float, default=3.0)
     ap.add_argument("--mode", default="fast", choices=["fast", "full"])
-    ap.add_argument("--api", default="http://localhost:8080/api")
+    ap.add_argument("--api", default="http://localhost:8000/api")   # API en direct : pas de coupure du relais nginx sur les analyses longues
     args = ap.parse_args()
 
     t = pd.Timestamp(args.time)

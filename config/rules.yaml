@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.15"
+version: "2026.10.16"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -28,6 +28,7 @@ fusion:
   max_gap_min: 10        # interpolation ou estime au plus 10 minutes
   base_radius_m: 300
   doppler_s: 150         # décalage le long de la trace = doppler_s x vitesse vers le radar (m/s) ; phase 0 : jusqu'à 730 m
+  score_weight: 0.2      # à distance égale, l'appariement préfère la détection la plus sûre (terme sur l'objectness)
   # Direction de vol de Sentinel 1 à ces latitudes, selon le sens de l'orbite : la tolérance est une ellipse
   # allongée le long de la trace
   flight_heading_deg:

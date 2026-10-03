@@ -96,8 +96,11 @@ def positions_at(pos: pd.DataFrame, t0: pd.Timestamp, max_gap: pd.Timedelta) -> 
             b, a = before.iloc[0], after.iloc[0]
             if t0 - b.ts <= max_gap and a.ts - t0 <= max_gap:
                 w = (t0 - b.ts) / (a.ts - b.ts)
+                # La route (cog) est angulaire : plutôt que de la figer au message précédent, on prend celle du
+                # message le plus proche de t0, ce qui évite d'interpoler autour de 0 ou 360 degrés.
+                cog = a.cog if w >= 0.5 else b.cog
                 row = {"lat": b.lat + w * (a.lat - b.lat), "lon": b.lon + w * (a.lon - b.lon),
-                       "sog": np.nanmean([b.sog, a.sog]), "cog": b.cog, "method": "interpolation"}
+                       "sog": np.nanmean([b.sog, a.sog]), "cog": cog, "method": "interpolation"}
         if row is None:
             near = g.assign(gap=(g.ts - t0).abs()).sort_values("gap").iloc[0]
             if near["gap"] > max_gap:

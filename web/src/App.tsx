@@ -9,7 +9,8 @@ import NewAnalysis from "./components/NewAnalysis";
 import Rail, { type PanelId } from "./components/Rail";
 import Timeline from "./components/Timeline";
 import { api, type Pass } from "./lib/api";
-import { EMPTY, type FC, type Feature, type Selection } from "./lib/types";
+import { replayStart, HIGHLIGHT_PRIMARY, HIGHLIGHT_SECONDARY, HIGHLIGHT_DASHED } from "./lib/format";
+import { EMPTY, type AlertProps, type AlertStatus, type FC, type Feature, type Selection, type VesselRef } from "./lib/types";
 import { useStream } from "./lib/useStream";
 
 export default function App() {
@@ -25,20 +26,22 @@ export default function App() {
   const [pinned, setPinned] = useState<number | null>(null);
   const [bounds, setBounds] = useState<number[] | null>(null);
 
-  const [pinnedWaiting, setPinnedWaiting] = useState(false);
-  const analysesQ = useQuery({ queryKey: ["analyses"], queryFn: api.analyses,
-    refetchInterval: pinnedWaiting ? 2000 : false });
+  // Une analyse épinglée pas encore terminée : on interroge l'API toutes les deux secondes
+  // jusqu'à ce qu'elle apparaisse terminée dans la liste
+  const isPinnedWaiting = (features: Feature[]) =>
+    pinned !== null && !features.some((f) => f.properties.status === "done" && f.properties.id === pinned);
+  const analysesQ = useQuery({
+    queryKey: ["analyses"], queryFn: api.analyses,
+    refetchInterval: (q) => (isPinnedWaiting(q.state.data?.features ?? []) ? 2000 : false),
+  });
   // Analyse affichée : la plus récente du jour rejoué, à défaut la plus récente tout court
   const replayDay = stream?.clock.now.slice(0, 10);
   const done = analysesQ.data?.features.filter((f) => f.properties.status === "done") ?? [];
-  useEffect(() => {
-    setPinnedWaiting(pinned !== null && !done.some((f) => f.properties.id === pinned));
-  }, [pinned, done.length]);
   const analysis = done.find((f) => f.properties.id === pinned)
     ?? done.find((f) => String(f.properties.acquired_at).slice(0, 10) === replayDay) ?? done[0] ?? null;
   const analysisId = analysis?.properties.id as number | undefined;
-  const detQ = useQuery({ queryKey: ["det", analysisId], queryFn: () => api.detections(analysisId!), enabled: !!analysisId });
-  const alertsQ = useQuery({ queryKey: ["alerts", analysisId], queryFn: () => api.alerts(analysisId!), enabled: !!analysisId });
+  const detQ = useQuery({ queryKey: ["det", analysisId], queryFn: (ctx) => api.detections(analysisId!, ctx), enabled: !!analysisId });
+  const alertsQ = useQuery({ queryKey: ["alerts", analysisId], queryFn: (ctx) => api.alerts(analysisId!, ctx), enabled: !!analysisId });
 
   const trailsQ = useQuery({ queryKey: ["trails"], queryFn: api.trails, refetchInterval: 3000 });
   const zonesQ = useQuery({ queryKey: ["zones"], queryFn: api.zones, enabled: layers.zones, staleTime: Infinity });
@@ -46,7 +49,7 @@ export default function App() {
   const daysQ = useQuery({ queryKey: ["days"], queryFn: api.days, staleTime: Infinity });
 
   const day = stream?.clock.now.slice(0, 10);
-  const dayAlertsQ = useQuery({ queryKey: ["dayAlerts", day], queryFn: () => api.alertsOfDay(day!), enabled: !!day, staleTime: 60_000 });
+  const dayAlertsQ = useQuery({ queryKey: ["dayAlerts", day], queryFn: (ctx) => api.alertsOfDay(day!, ctx), enabled: !!day, staleTime: 60_000 });
 
   // Une analyse plus récente vient de se terminer : on recharge la liste
   useEffect(() => {
@@ -68,7 +71,7 @@ export default function App() {
   const onLaunched = useCallback((id: number, pass: Pass) => {
     setDraft(null);
     setPinned(id);
-    onCommand({ action: "seek", time: new Date(new Date(pass.acquired_at).getTime() - 600_000).toISOString() });
+    onCommand({ action: "seek", time: replayStart(pass.acquired_at) });
     qc.invalidateQueries({ queryKey: ["analyses"] });
   }, [onCommand, qc]);
   // Échap : abandonne le tracé ou ferme la fiche
@@ -84,7 +87,7 @@ export default function App() {
   // Choix d'une analyse dans l'historique : affichage, et rejeu placé juste avant son passage
   const pickAnalysis = useCallback((f: Feature) => {
     setPinned(f.properties.id);
-    onCommand({ action: "seek", time: new Date(new Date(f.properties.acquired_at).getTime() - 600_000).toISOString() });
+    onCommand({ action: "seek", time: replayStart(f.properties.acquired_at) });
   }, [onCommand]);
 
   const timelineCommand = useCallback((body: Parameters<typeof api.clock>[0]) => {
@@ -92,7 +95,7 @@ export default function App() {
     onCommand(body);
   }, [onCommand]);
 
-  const pickAlert = useCallback((f: Feature) => {
+  const pickAlert = useCallback((f: Feature<AlertProps>) => {
     setSelection({ kind: "alert", feature: f });
     setFocus({ center: f.geometry.coordinates as [number, number], zoom: 11 });
   }, []);
@@ -102,25 +105,26 @@ export default function App() {
     let cancelled = false;
     (async () => {
       if (selection?.kind !== "alert") { setHighlight(EMPTY); return; }
-      const p = selection.feature.properties;
-      const d = p.details ?? {};
+      const p: AlertProps = selection.feature.properties;
       const shift = (iso: string, min: number) => new Date(new Date(iso).getTime() + min * 60_000).toISOString();
       const features: Feature[] = [];
       let ids: number[] = [];
       let start = "", end = "";
       if (p.type === "RENDEZVOUS") {
-        ids = (d.navires ?? []).filter(Boolean).map((v: any) => v.vessel_id);
-        start = shift(d.debut, -30); end = shift(d.fin, 30);
+        const d = p.details ?? {};
+        ids = (d.navires ?? []).filter(Boolean).map((v: VesselRef) => v.vessel_id);
+        start = shift(d.debut ?? "", -30); end = shift(d.fin ?? "", 30);
       } else if (p.type === "AIS_GAP") {
-        ids = [d.navire, ...(d.partenaires_possibles ?? [])].filter(Boolean).map((v: any) => v.vessel_id);
-        start = shift(d.dernier_message, -60); end = shift(d.reapparition ?? d.dernier_message, 60);
+        const d = p.details ?? {};
+        ids = [d.navire, ...(d.partenaires_possibles ?? [])].filter(Boolean).map((v) => v!.vessel_id);
+        start = shift(d.dernier_message ?? "", -60); end = shift(d.reapparition ?? d.dernier_message ?? "", 60);
         if (d.derniere_position && d.position_reapparition) {
           features.push({ type: "Feature", geometry: { type: "LineString", coordinates: [d.derniere_position, d.position_reapparition] },
-                          properties: { dashed: true, color: "#ef6461" } });
+                          properties: { dashed: true, color: HIGHLIGHT_DASHED } });
         }
       }
       const tracks = await Promise.all(ids.map((id) => api.track(id, start, end).catch(() => null)));
-      tracks.forEach((t, i) => t && features.push({ ...t, properties: { color: i === 0 ? "#f0a84b" : "#4fb6c8" } }));
+      tracks.forEach((t, i) => t && features.push({ ...t, properties: { color: i === 0 ? HIGHLIGHT_PRIMARY : HIGHLIGHT_SECONDARY } }));
       if (!cancelled) setHighlight({ type: "FeatureCollection", features });
     })();
     return () => { cancelled = true; };
@@ -130,7 +134,7 @@ export default function App() {
   // Après une décision : la fiche ouverte reflète tout de suite le nouveau statut
   const onStatus = useCallback((status: string) => {
     setSelection((s) => s?.kind === "alert"
-      ? { kind: "alert", feature: { ...s.feature, properties: { ...s.feature.properties, status } } } : s);
+      ? { kind: "alert", feature: { ...s.feature, properties: { ...s.feature.properties, status: status as AlertStatus } } } : s);
   }, []);
   const liveAlerts = stream?.live_alerts ?? EMPTY;
   const analysisAlerts = alertsQ.data ?? EMPTY;
@@ -147,13 +151,13 @@ export default function App() {
     if (!selection) return null;
     if (selection.kind === "vessel") return { alertId: null, vesselIds: [selection.properties.vessel_id] };
     if (selection.kind !== "alert") return null;
-    const p = selection.feature.properties;
-    const d = p.details ?? {};
-    const vs: any[] = p.type === "RENDEZVOUS" ? d.navires ?? []
-      : p.type === "AIS_GAP" ? [d.navire, ...(d.partenaires_possibles ?? [])]
-      : p.type === "AIS_UNCONFIRMED" ? [d.navire]
-      : d.candidats_ais ?? [];
-    return { alertId: p.id as number, vesselIds: vs.filter(Boolean).map((v) => v.vessel_id) };
+    const p: AlertProps = selection.feature.properties;
+    const vs: (VesselRef | undefined)[] =
+      p.type === "RENDEZVOUS" ? p.details?.navires ?? []
+      : p.type === "AIS_GAP" ? [p.details?.navire, ...(p.details?.partenaires_possibles ?? [])]
+      : p.type === "AIS_UNCONFIRMED" ? [p.details?.navire]
+      : [];
+    return { alertId: p.id, vesselIds: vs.filter((v): v is VesselRef => !!v).map((v) => v.vessel_id) };
   }, [selection]);
   const vessels = stream?.traffic.features.length ?? 0;
 

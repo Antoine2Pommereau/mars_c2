@@ -1,31 +1,32 @@
 import { useMemo, useState } from "react";
-import type { FC, Feature } from "../lib/types";
+import type { AlertProps, AlertType, FC, Feature } from "../lib/types";
 import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num } from "../lib/format";
 
-const TYPES = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED"];
+type Alert = Feature<AlertProps>;
+const TYPES: AlertType[] = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED"];
 const RANK: Record<string, number> = { critique: 0, elevee: 1, moyenne: 2, faible: 3 };
 
-function headline(a: Feature): string {
-  const d = a.properties.details ?? {};
-  switch (a.properties.type) {
-    case "DARK_SHIP": return `Écho de ${num(d.length_m, 0)} m sans AIS`;
-    case "AIS_UNCONFIRMED": return d.navire?.name ?? `MMSI ${d.navire?.mmsi}`;
+function headline(a: Alert): string {
+  const p = a.properties;
+  switch (p.type) {
+    case "DARK_SHIP": return `Écho de ${num(p.details?.length_m, 0)} m sans AIS`;
+    case "AIS_UNCONFIRMED": return p.details?.navire?.name ?? `MMSI ${p.details?.navire?.mmsi}`;
     case "RENDEZVOUS": {
-      const [v1, v2] = d.navires ?? [];
+      const [v1, v2] = p.details?.navires ?? [];
       return `${v1?.name ?? v1?.mmsi} et ${v2?.name ?? v2?.mmsi}`;
     }
-    case "AIS_GAP": return d.navire?.name ?? `MMSI ${d.navire?.mmsi}`;
+    case "AIS_GAP": return p.details?.navire?.name ?? `MMSI ${p.details?.navire?.mmsi}`;
     default: return "";
   }
 }
 
-function detail(a: Feature): string {
-  const d = a.properties.details ?? {};
-  switch (a.properties.type) {
-    case "DARK_SHIP": return `contraste ${num(d.contrast_vv_db, 0)} dB`;
-    case "AIS_UNCONFIRMED": return `${num(d.navire?.length_m, 0)} m déclarés, aucun écho`;
-    case "RENDEZVOUS": return `${d.duree_min} min, ${d.distance_min_m} m au plus près`;
-    case "AIS_GAP": return `silence de ${d.duree_min} min`;
+function detail(a: Alert): string {
+  const p = a.properties;
+  switch (p.type) {
+    case "DARK_SHIP": return `contraste ${num(p.details?.contrast_vv_db, 0)} dB`;
+    case "AIS_UNCONFIRMED": return `${num(p.details?.navire?.length_m, 0)} m déclarés, aucun écho`;
+    case "RENDEZVOUS": return `${p.details?.duree_min} min, ${p.details?.distance_min_m} m au plus près`;
+    case "AIS_GAP": return `silence de ${p.details?.duree_min} min`;
     default: return "";
   }
 }
@@ -33,10 +34,10 @@ function detail(a: Feature): string {
 interface Props {
   bounds: number[] | null;
   now: string | null;
-  analysisAlerts: FC;
-  liveAlerts: FC;
+  analysisAlerts: FC<AlertProps>;
+  liveAlerts: FC<AlertProps>;
   selectedId: number | null;
-  onPick: (f: Feature) => void;
+  onPick: (f: Alert) => void;
 }
 
 const PERIODS: [number, string][] = [[1, "1 h"], [6, "6 h"], [12, "12 h"]];
@@ -44,7 +45,7 @@ const PERIODS: [number, string][] = [[1, "1 h"], [6, "6 h"], [12, "12 h"]];
 export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, selectedId, onPick }: Props) {
   const [inView, setInView] = useState(false);
   const [hours, setHours] = useState(12);
-  const [types, setTypes] = useState<string[]>(TYPES);
+  const [types, setTypes] = useState<AlertType[]>(TYPES);
   const [view, setView] = useState<"todo" | "confirmed" | "all">("todo");
 
   const all = useMemo(() => {
@@ -54,20 +55,25 @@ export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, s
       String(b.properties.event_time).localeCompare(String(a.properties.event_time)));
   }, [analysisAlerts, liveAlerts]);
 
-  const statusOf = (a: Feature) => a.properties.status ?? "nouvelle";
-  const since = now ? new Date(now).getTime() - hours * 3600_000 : 0;
-  const visible = (a: Feature) => {
-    if (!inView || !bounds) return true;
-    const [lon, lat] = a.geometry.coordinates;
-    return lon >= bounds[0] && lon <= bounds[2] && lat >= bounds[1] && lat <= bounds[3];
-  };
-  const recent = (a: Feature) => !["RENDEZVOUS", "AIS_GAP"].includes(a.properties.type)
-    || new Date(a.properties.event_time).getTime() >= since;
-  const shown = all.filter((a) => types.includes(a.properties.type) && visible(a) && recent(a) &&
-    (view === "all" || (view === "todo" ? statusOf(a) === "nouvelle" : statusOf(a) === "confirmee")));
+  const statusOf = (a: Alert) => a.properties.status ?? "nouvelle";
+
+  // La liste affichée ne se recalcule que lorsque ses vraies entrées changent (pas à chaque rendu)
+  const shown = useMemo(() => {
+    const since = now ? new Date(now).getTime() - hours * 3600_000 : 0;
+    const visible = (a: Alert) => {
+      if (!inView || !bounds) return true;
+      const [lon, lat] = a.geometry.coordinates;
+      return lon >= bounds[0] && lon <= bounds[2] && lat >= bounds[1] && lat <= bounds[3];
+    };
+    const recent = (a: Alert) => !["RENDEZVOUS", "AIS_GAP"].includes(a.properties.type)
+      || new Date(a.properties.event_time ?? 0).getTime() >= since;
+    return all.filter((a) => types.includes(a.properties.type) && visible(a) && recent(a) &&
+      (view === "all" || (view === "todo" ? statusOf(a) === "nouvelle" : statusOf(a) === "confirmee")));
+  }, [all, types, inView, bounds, now, hours, view]);
+
   const todoCount = all.filter((a) => statusOf(a) === "nouvelle").length;
 
-  const count = (t: string) => all.filter((a) => a.properties.type === t).length;
+  const count = (t: AlertType) => all.filter((a) => a.properties.type === t).length;
 
   return (
     <div className="flex h-full flex-col">

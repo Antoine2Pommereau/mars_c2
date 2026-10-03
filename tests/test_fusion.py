@@ -1,5 +1,6 @@
 """Tests du moteur de fusion : masques, appariement, alerte « navire sombre »."""
 import pandas as pd
+import pytest
 
 from mars.config import load_rules
 from mars.fusion.pipeline import fuse
@@ -58,6 +59,30 @@ def test_position_non_confirmee():
     far = det.iloc[[1]]                           # aucun écho près du navire AIS de 120 m
     _, _, _, extras = fuse(far, pos, T0, BBOX, load_rules())
     assert [u["vessel_id"] for u in extras["unconfirmed"]] == [1]
+
+
+@pytest.mark.parametrize(
+    "contrast_db, expect_masked",
+    [
+        (9.9, True),    # juste sous le seuil de 10 dB du fichier de règles : masqué pour contraste faible
+        (10.1, False),  # juste au dessus : la détection passe le filtre de contraste
+    ],
+)
+def test_seuil_contraste(contrast_db, expect_masked):
+    """La frontière de 10 dB de config/rules.yaml se comporte comme attendu de part et d'autre."""
+    rules = load_rules()
+    assert rules["contrast"]["min_vv_db"] == 10.0   # le test suit le seuil versionné
+    det, pos = _cas()
+    # On isole l'écho de 43 m sans AIS proche (celui qui déclenche le navire sombre) et on fait varier son
+    # seul contraste autour de la frontière, toutes choses égales par ailleurs.
+    d = det.iloc[[1]].assign(contrast_vv_db=contrast_db)
+    out, alerts, _, _ = fuse(d, pos, T0, BBOX, rules)
+    if expect_masked:
+        assert out.mask_reason.iloc[0] == "contraste faible"
+        assert alerts == []                         # un écho masqué ne déclenche pas de navire sombre
+    else:
+        assert out.mask_reason.iloc[0] is None
+        assert len(alerts) == 1                     # écho net sans AIS : alerte de navire sombre
 
 
 def test_echo_fixe_ne_declenche_pas_d_alerte():

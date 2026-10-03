@@ -9,6 +9,8 @@ Exemple :
 """
 import argparse
 import re
+import shutil
+import signal
 import sys
 import time
 from pathlib import Path
@@ -60,7 +62,24 @@ def main():
         r.raise_for_status()
         products[name] = min(r.json(), key=lambda p: abs(pd.Timestamp(p["acquired_at"]) - t))["product_name"]
 
+    # Sauvegarde sur disque avant toute modification : même un arrêt brutal pourra être réparé à la main
+    # en recopiant le .bak, et l'interruption par signal restaure le fichier versionné avant de sortir.
+    backup = RULES.with_suffix(RULES.suffix + ".bak")
+    shutil.copy2(RULES, backup)
     original = RULES.read_text()
+
+    def restore():
+        RULES.write_text(original)
+        backup.unlink(missing_ok=True)
+
+    def on_signal(signum, frame):
+        restore()
+        print(f"\nInterruption : règles restaurées depuis {backup.name}")
+        sys.exit(130)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, on_signal)
+
     created, rows = [], []
     try:
         for thr in args.thresholds:
@@ -78,8 +97,12 @@ def main():
                              "inference_s": a["timings"]["inference_s"]})
                 print(rows[-1])
     finally:
-        RULES.write_text(original)
-        print("Règles restaurées")
+        try:
+            restore()
+            print("Règles restaurées")
+        except OSError as e:
+            print(f"ATTENTION : restauration des règles impossible ({e}). "
+                  f"Le fichier {RULES} peut rester modifié ; copie de secours dans {backup}.")
         if not args.keep and created:
             with connect() as conn, conn.cursor() as cur:
                 cur.execute("DELETE FROM alerts WHERE id IN (SELECT alert_id FROM alert_evidence "

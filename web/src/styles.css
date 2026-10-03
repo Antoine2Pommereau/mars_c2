@@ -14,6 +14,16 @@
   --color-rdv: #f0a84b;
   --color-gap: #ef6461;
   --color-unconf: #e8d45a;
+  /* Palette neutre par type de navire (voir SHIP_PALETTE dans lib/format.ts) */
+  --color-ship-neutral: #c9d3da;
+  --color-ship-idle: #4c5a66;
+  --color-ship-cargo: #6ea8fe;
+  --color-ship-tanker: #f0a35e;
+  --color-ship-fishing: #5fd38d;
+  --color-ship-passenger: #c792ea;
+  --color-ship-pleasure: #f5e663;
+  --color-ship-service: #e07a5f;
+  --color-ship-other: #9fb3c2;
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-cond: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
 }

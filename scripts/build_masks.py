@@ -113,14 +113,12 @@ def main():
     with connect() as conn, conn.cursor() as cur:
         if args.skip_land:
             print("Trait de côte conservé")
-        else:
-            cur.execute("DELETE FROM land")
-        if args.skip_land:
-            pass
         elif args.source == "gshhg":
+            cur.execute("DELETE FROM land")
             n = load_shapes(cur, gshhg_shapefile(folder), "gshhg_f_l1", args.region)
             print(f"GSHHG pleine résolution : {n} polygones dans la région")
         else:
+            cur.execute("DELETE FROM land")
             for path in natural_earth_shapefiles(folder):
                 n = load_shapes(cur, path, path.stem, args.region)
                 print(f"{path.stem} : {n} polygones dans la région")

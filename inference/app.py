@@ -55,7 +55,11 @@ async def lifespan(app):
     amp = (device == "cuda") if amp_env == "auto" else (amp_env == "on")
     try:
         warm_s = _warmup(model, device, amp)
-    except Exception:
+    except RuntimeError as e:
+        # On ne replie vers la précision pleine que si l'échec vient bien de l'autocast ; toute autre erreur
+        # (modèle introuvable, accélérateur indisponible) doit remonter telle quelle.
+        if not amp or "autocast" not in str(e).lower():
+            raise
         amp = False   # précision mixte non prise en charge sur cet accélérateur
         warm_s = _warmup(model, device, amp)
     STATE.update(model=model, device=device, amp=amp, warmup_s=round(warm_s, 1))
@@ -106,7 +110,9 @@ def chip(lon: float, lat: float, acquired_at: datetime, size_m: float = 800):
                 continue
             half = max(int(size_m / 2 / abs(src.transform.a)), 8)
             vv = src.read(2, window=Window(col - half, row - half, 2 * half, 2 * half), boundless=True, fill_value=0)
-        db = np.where(vv > 0, 10 * np.log10(np.maximum(vv, 1e-10)), np.nan)
+        ok = vv > 0
+        db = np.full(vv.shape, np.nan, dtype="float32")
+        db[ok] = 10 * np.log10(vv[ok])   # log calculé sur les seuls pixels valides, comme dans sentinelhub.py
         if np.isnan(db).all():
             break
         lo = float(np.nanpercentile(db, 2))
@@ -128,43 +134,47 @@ async def analyze(req: AnalyzeRequest):
         timings = {}
         rules = load_rules()   # relues à chaque analyse : un changement de seuil s'applique sans redémarrage
         try:
-            with LOCK:
-                t0 = pd.Timestamp(req.acquired_at)
-                t0 = t0.tz_convert("UTC") if t0.tzinfo else t0.tz_localize("UTC")
-                emit({"type": "progress", "step": "extraction", "state": "start"})
-                t = time.time()
-                sh = SentinelHub(os.environ.get("SH_CLIENT_ID"), os.environ.get("SH_CLIENT_SECRET"))
-                image_db, transform, epsg, cached, n_req = sh.fetch_extract(req.bbox, t0, ROOT / "data" / "sar")
-                timings["extraction_s"] = round(time.time() - t, 2)
-                emit({"type": "progress", "step": "extraction", "state": "done", "seconds": timings["extraction_s"],
-                      "detail": "depuis le cache" if cached else f"{n_req} requête(s) Sentinel Hub"})
+            t0 = pd.Timestamp(req.acquired_at)
+            t0 = t0.tz_convert("UTC") if t0.tzinfo else t0.tz_localize("UTC")
+            # L'extraction réseau n'utilise pas le GPU : on la laisse hors du verrou pour que plusieurs
+            # extractions se recouvrent. Seule l'inférence, qui ne partage pas le GPU, est sérialisée.
+            emit({"type": "progress", "step": "extraction", "state": "start"})
+            t = time.time()
+            sh = SentinelHub(os.environ.get("SH_CLIENT_ID"), os.environ.get("SH_CLIENT_SECRET"))
+            image_db, transform, epsg, cached, n_req = sh.fetch_extract(req.bbox, t0, ROOT / "data" / "sar")
+            timings["extraction_s"] = round(time.time() - t, 2)
+            emit({"type": "progress", "step": "extraction", "state": "done", "seconds": timings["extraction_s"],
+                  "detail": "depuis le cache" if cached else f"{n_req} requête(s) Sentinel Hub"})
 
-                emit({"type": "progress", "step": "inference", "state": "start"})
-                t = time.time()
+            emit({"type": "progress", "step": "inference", "state": "start"})
+            t = time.time()
+            with LOCK:
                 det, n_tiles = detect(image_db, transform, STATE["model"], STATE["device"],
                                       rules["model"]["thresholds"], rules["contrast"], amp=STATE["amp"],
                                       merge_cfg=rules["model"].get("merge"))
-                timings["inference_s"] = round(time.time() - t, 2)
-                emit({"type": "progress", "step": "inference", "state": "done", "seconds": timings["inference_s"],
-                      "detail": f"{len(det)} détections sur {n_tiles} tuile(s), {STATE['device']}"})
+                # Libération du cache GPU juste après l'inférence, encore sous le verrou : on évite de libérer
+                # pendant qu'une autre inférence tourne.
+                if STATE.get("device") == "mps":
+                    torch.mps.empty_cache()
+            timings["inference_s"] = round(time.time() - t, 2)
+            emit({"type": "progress", "step": "inference", "state": "done", "seconds": timings["inference_s"],
+                  "detail": f"{len(det)} détections sur {n_tiles} tuile(s), {STATE['device']}"})
 
-                to_wgs = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
-                lon, lat = to_wgs.transform(det.x.to_numpy(), det.y.to_numpy()) if len(det) else ([], [])
-                detections = [
-                    {"lon": float(lo), "lat": float(la), "objectness": float(d.objectness),
-                     "vessel_score": float(d.vessel_score), "fishing_score": float(d.fishing_score),
-                     "length_m": float(d.length_m),
-                     "contrast_vv_db": None if np.isnan(d.contrast_vv_db) else float(d.contrast_vv_db)}
-                    for lo, la, d in zip(lon, lat, det.itertuples())
-                ]
-                emit({"type": "result", "detections": detections, "timings": timings, "n_tiles": n_tiles,
-                      "device": STATE["device"], "amp": STATE["amp"], "model_version": rules["model"]["version"],
-                      "thresholds": rules["model"]["thresholds"]})
+            to_wgs = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
+            lon, lat = to_wgs.transform(det.x.to_numpy(), det.y.to_numpy()) if len(det) else ([], [])
+            detections = [
+                {"lon": float(lo), "lat": float(la), "objectness": float(d.objectness),
+                 "vessel_score": float(d.vessel_score), "fishing_score": float(d.fishing_score),
+                 "length_m": float(d.length_m),
+                 "contrast_vv_db": None if np.isnan(d.contrast_vv_db) else float(d.contrast_vv_db)}
+                for lo, la, d in zip(lon, lat, det.itertuples())
+            ]
+            emit({"type": "result", "detections": detections, "timings": timings, "n_tiles": n_tiles,
+                  "device": STATE["device"], "amp": STATE["amp"], "model_version": rules["model"]["version"],
+                  "thresholds": rules["model"]["thresholds"]})
         except Exception as e:
             emit({"type": "error", "message": f"{type(e).__name__} : {e}"})
         finally:
-            if STATE.get("device") == "mps":
-                torch.mps.empty_cache()
             emit(None)
 
     threading.Thread(target=work, daemon=True).start()

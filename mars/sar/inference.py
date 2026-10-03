@@ -16,6 +16,8 @@ import torch.nn.functional as F
 MIDPOINT, TEMPERATURE = -20.0, 0.18
 TILE, STEP, STRIDE = 2048, 1536, 2
 PIX_TO_M = 10.0
+MAX_LENGTH_M = 500.0   # borne physique plausible : au delà, la longueur décodée est écrêtée (les porte conteneurs
+                       # les plus longs approchent 400 m ; 500 m laisse une marge sans laisser passer d'aberration)
 
 
 def pick_device(preference: str = "auto") -> str:
@@ -94,13 +96,20 @@ def decode(maps: torch.Tensor, shape, thresholds: dict) -> pd.DataFrame:
     hmax = F.max_pool2d(obj[None], 3, stride=1, padding=1)[0]
     peaks = (obj * (hmax == obj))[0]
     ys, xs = torch.nonzero(peaks >= thresholds["objectness"], as_tuple=True)
+    length_m = ((torch.exp(torch.relu(size[0, ys, xs])) - 1) * PIX_TO_M).numpy()
+    # Écrêtage à une longueur physiquement plausible : une sortie aberrante du modèle ne fait pas croire à un
+    # navire de plusieurs kilomètres. On compte les écrêtages et on les journalise.
+    n_clipped = int((length_m > MAX_LENGTH_M).sum())
+    if n_clipped:
+        print(f"inference.decode : {n_clipped} longueur(s) écrêtée(s) à {MAX_LENGTH_M:.0f} m", flush=True)
+    length_m = np.minimum(length_m, MAX_LENGTH_M)
     df = pd.DataFrame({
         "row": ((ys.float() + off[1, ys, xs]) * STRIDE).numpy(),
         "col": ((xs.float() + off[0, ys, xs]) * STRIDE).numpy(),
         "objectness": peaks[ys, xs].numpy(),
         "vessel_score": ves[0, ys, xs].numpy(),
         "fishing_score": fish[0, ys, xs].numpy(),
-        "length_m": ((torch.exp(torch.relu(size[0, ys, xs])) - 1) * PIX_TO_M).numpy(),
+        "length_m": length_m,
     })
     h, w = shape
     return df[(df.row < h) & (df.col < w)].reset_index(drop=True)

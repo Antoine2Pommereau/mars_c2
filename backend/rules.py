@@ -132,10 +132,82 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
                 "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
                 "VALUES ('RENDEZVOUS', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) RETURNING id",
                 severity, event_time, x["lon"], x["lat"], details, rules["version"])
-            await c.executemany("INSERT INTO alert_evidence VALUES ($1, 'vessel', $2) ON CONFLICT DO NOTHING",
+            await c.executemany("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, 'vessel', $2) ON CONFLICT DO NOTHING",
                                 [(alert_id, x["v1"]), (alert_id, x["v2"])])
             kept += 1
     return {"episodes_detectes": len(rows), "alertes": kept, "dont_zone_de_mouillage": anchorage, "exclus": excluded}
+
+
+class _RendezvousRollback(Exception):
+    """Annule la transaction du test par injection après vérification, pour ne rien laisser en base."""
+
+
+async def run_rendezvous_selftest(c, day_start, day_end, rules: dict) -> dict:
+    """Test par injection de la règle des rendez vous, symétrique à celui des coupures AIS.
+
+    On fabrique dans une transaction annulée à la fin un épisode synthétique : deux navires lents, bord
+    à bord, loin des côtes, pendant plus de la durée seuil, puis on vérifie que la règle lève bien une
+    alerte RENDEZVOUS sur ces deux navires. Le but est de prouver la règle silencieuse : si elle cessait
+    de détecter ce cas d'école, le test échouerait. La base n'est jamais modifiée."""
+    r = rules["rendezvous"]
+    # Point au large : on cherche dans l'emprise des journées AIS une position à plus de min_coast_km de la
+    # terre, pour que l'épisode ne soit pas écarté par le filtre côtier.
+    span = await c.fetchrow("SELECT min(lon_min) AS lon0, max(lon_max) AS lon1, "
+                            "min(lat_min) AS lat0, max(lat_max) AS lat1 FROM ais_days")
+    if span is None or span["lon0"] is None:
+        return {"erreur": "Aucune journée AIS chargée : emprise inconnue"}
+    coast_m = r["min_coast_km"] * 1000.0 + 500
+    offshore = await c.fetchrow(
+        """SELECT g.lon, g.lat FROM (
+               SELECT $1::float8 + i * ($2::float8 - $1::float8) / 11.0 AS lon,
+                      $3::float8 + j * ($4::float8 - $3::float8) / 11.0 AS lat
+               FROM generate_series(1, 10) i, generate_series(1, 10) j
+           ) g
+           WHERE NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom,
+                 ST_SetSRID(ST_MakePoint(g.lon, g.lat), 4326)::geography, $5::float8))
+           LIMIT 1""",
+        span["lon0"], span["lon1"], span["lat0"], span["lat1"], coast_m)
+    if offshore is None:
+        return {"erreur": "Aucun point au large trouvé dans l'emprise pour injecter l'épisode"}
+    lon, lat = offshore["lon"], offshore["lat"]
+
+    # Durée de l'épisode : largement au delà du seuil, avec une position par tranche de temps
+    duration_min = r["min_duration_min"] + 2 * r["slot_min"]
+    n_slots = duration_min // r["slot_min"] + 1
+    t0 = day_start + timedelta(hours=6)
+    result = {"point": [round(lon, 4), round(lat, 4)], "duree_injectee_min": duration_min}
+    try:
+        async with c.transaction():
+            # Deux navires synthétiques de classe A, type cargo (non exclu), avec un MMSI invraisemblable
+            v1 = await c.fetchval(
+                "INSERT INTO vessels (mmsi, name, ship_type, length_m, ais_class, first_seen, last_seen) "
+                "VALUES (111000001, 'TEST RDV ALPHA', 'Cargo', 90, 'A', $1, $2) RETURNING id", t0, t0)
+            v2 = await c.fetchval(
+                "INSERT INTO vessels (mmsi, name, ship_type, length_m, ais_class, first_seen, last_seen) "
+                "VALUES (111000002, 'TEST RDV BRAVO', 'Cargo', 85, 'A', $1, $2) RETURNING id", t0, t0)
+            # Positions bord à bord (environ 30 m d'écart), vitesse quasi nulle, statut en route
+            dlat = 0.00027   # environ 30 m en latitude
+            for v, off in ((v1, 0.0), (v2, dlat)):
+                for k in range(int(n_slots) + 1):
+                    ts = t0 + timedelta(minutes=k * r["slot_min"])
+                    await c.execute(
+                        "INSERT INTO positions (vessel_id, ts, geom, sog_kn, cog_deg, nav_status) "
+                        "VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7)",
+                        v, ts, lon, lat + off, 0.1, 0.0, 0)
+            await run_rendezvous(c, day_start, day_end, rules)
+            hit = await c.fetchval(
+                """SELECT count(*) FROM alerts a
+                   WHERE a.type = 'RENDEZVOUS'
+                     AND EXISTS (SELECT 1 FROM alert_evidence e WHERE e.alert_id = a.id
+                                 AND e.evidence_type = 'vessel' AND e.evidence_id = $1)
+                     AND EXISTS (SELECT 1 FROM alert_evidence e WHERE e.alert_id = a.id
+                                 AND e.evidence_type = 'vessel' AND e.evidence_id = $2)""",
+                v1, v2)
+            result["detectee"] = bool(hit)
+            raise _RendezvousRollback()
+    except _RendezvousRollback:
+        pass
+    return result
 
 
 STATIONARY_ZONES_SQL = """
@@ -368,7 +440,7 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
                 "VALUES ('AIS_GAP', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) RETURNING id",
                 severity, event_time, x["lon"], x["lat"], details, rules["version"])
             evidence = [(alert_id, "vessel", x["vessel_id"])] + [(alert_id, "vessel", p["vessel_id"]) for p in partners]
-            await c.executemany("INSERT INTO alert_evidence VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", evidence)
+            await c.executemany("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", evidence)
             kept += 1
     return {"silences_detectes": len(rows), "exclus_sortie_de_couverture": exits, "coupures_retenues": kept,
             "avec_partenaire_possible": with_partner}

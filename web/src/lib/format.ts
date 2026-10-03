@@ -34,9 +34,32 @@ export const ALERT_LABEL: Record<string, string> = {
   AIS_UNCONFIRMED: "Position AIS non confirmée",
 };
 
+// Teintes centralisées : couleur réservée aux alertes, palette neutre par type de navire.
+// Seul point de vérité ; réutilisé dans l'interface et dans les expressions MapLibre.
 export const ALERT_COLOR: Record<string, string> = {
   DARK_SHIP: "#e85bc7", RENDEZVOUS: "#f0a84b", AIS_GAP: "#ef6461", AIS_UNCONFIRMED: "#e8d45a",
 };
+export const ALERT_FALLBACK = "#ffffff";
+export const SIGNAL = "#4fb6c8";
+
+// Surlignage des trajectoires : navire principal en orange rendez vous, autres en signal, trajet présumé en rouge coupure
+export const HIGHLIGHT_PRIMARY = ALERT_COLOR.RENDEZVOUS;
+export const HIGHLIGHT_SECONDARY = SIGNAL;
+export const HIGHLIGHT_DASHED = ALERT_COLOR.AIS_GAP;
+
+// Palette neutre par type de navire (aucune valeur changée par rapport au rendu existant)
+export const SHIP_NEUTRAL = "#c9d3da";
+export const SHIP_IDLE = "#4c5a66";
+export const SHIP_PALETTE: { types: string[]; color: string }[] = [
+  { types: ["Cargo"], color: "#6ea8fe" },
+  { types: ["Tanker"], color: "#f0a35e" },
+  { types: ["Fishing"], color: "#5fd38d" },
+  { types: ["Passenger", "HSC"], color: "#c792ea" },
+  { types: ["Pleasure", "Sailing"], color: "#f5e663" },
+  { types: ["Tug", "Towing", "Towing long/wide", "Pilot", "SAR", "Law enforcement", "Military",
+            "Port tender", "Dredging", "Diving", "Anti-pollution", "Medical"], color: "#e07a5f" },
+];
+export const SHIP_OTHER = "#9fb3c2";
 
 export function dayLabel(day: string): string {
   const [y, m, d] = day.slice(0, 10).split("-");
@@ -46,4 +69,10 @@ export function dayLabel(day: string): string {
 // Pour le champ datetime local du saut dans le temps (heure UTC)
 export function toInputValue(iso: string): string {
   return iso.slice(0, 16);
+}
+
+// Le rejeu se place dix minutes avant l'instant d'un passage
+const REPLAY_LEAD_MS = 600_000;
+export function replayStart(acquiredAt: string): string {
+  return new Date(new Date(acquiredAt).getTime() - REPLAY_LEAD_MS).toISOString();
 }

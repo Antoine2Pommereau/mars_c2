@@ -2,17 +2,19 @@
 name = "mars_c2"
 version = "0.1.0"
 description = "MARS C2, surveillance maritime par fusion AIS et radar satellite"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"
 dependencies = [
-    "numpy",
+    # Bornes hautes sur les paquets dont la version change les résultats mesurés (modèle, lecture radar).
+    # Versions validées : torch 2.14.x, numpy 2.5.x, rasterio 1.5.x.
+    "numpy>=2.5,<2.6",
     "pandas",
     "scipy",
     "requests",
-    "rasterio",
+    "rasterio>=1.5,<1.6",
     "pyproj",
     "pyyaml",
     "psycopg[binary]",
-    "torch",
+    "torch>=2.14,<2.15",
     "fastapi",
     "uvicorn",
     "httpx",
