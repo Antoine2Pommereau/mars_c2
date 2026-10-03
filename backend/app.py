@@ -80,6 +80,21 @@ async def read_clock(c) -> dict:
     return {"now": r["now"], "speed": r["speed"], "paused": r["paused"]}
 
 
+async def keep_clock_in_data(c):
+    """Le rejeu reste dans les journées chargées : saut à la journée suivante, pause à la fin de la dernière."""
+    await c.execute("""
+        WITH s AS (SELECT sim_now() AS now),
+             d AS (SELECT day::timestamp AT TIME ZONE 'UTC' AS start FROM ais_days),
+             inside AS (SELECT EXISTS (SELECT 1 FROM d, s WHERE s.now >= d.start AND s.now < d.start + interval '1 day') AS ok),
+             nxt AS (SELECT min(d.start) AS start FROM d, s WHERE d.start > s.now),
+             last AS (SELECT max(start) + interval '1 day' - interval '1 second' AS end_ FROM d)
+        UPDATE sim_clock SET
+            sim_anchor = coalesce((SELECT start FROM nxt), (SELECT end_ FROM last)),
+            real_anchor = clock_timestamp(),
+            paused = CASE WHEN (SELECT start FROM nxt) IS NULL THEN true ELSE paused END
+        WHERE id = 1 AND EXISTS (SELECT 1 FROM d) AND NOT (SELECT ok FROM inside)""")
+
+
 def clock_json(clock: dict) -> dict:
     return {"now": clock["now"].isoformat(), "speed": clock["speed"], "paused": clock["paused"]}
 
@@ -196,6 +211,7 @@ async def stream(request: Request):
     async def events():
         while not await request.is_disconnected():
             async with app.state.pool.acquire() as c:
+                await keep_clock_in_data(c)
                 clock = await read_clock(c)
                 payload = {"clock": clock_json(clock), "traffic": await read_traffic(c, clock["now"]),
                            "analyses": await read_active_analyses(c),
@@ -668,6 +684,21 @@ async def rendezvous_run(req: RuleRun):
             start = pd.Timestamp(d, tz="UTC").to_pydatetime()
             results[d.isoformat()] = await run_rendezvous(c, start, start + pd.Timedelta(days=1), rules)
     return results
+
+
+@app.get("/api/alerts/day")
+async def alerts_of_day(day: str):
+    """Alertes comportementales d'une journée, pour la frise chronologique de l'interface."""
+    start = pd.Timestamp(day, tz="UTC").to_pydatetime()
+    async with app.state.pool.acquire() as c:
+        rows = await c.fetch(
+            """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,
+                      ST_AsGeoJSON(al.geom)::json AS geometry
+               FROM alerts al
+               WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP')
+                 AND al.event_time >= $1::timestamptz AND al.event_time < $1::timestamptz + interval '1 day'
+               ORDER BY al.event_time""", start)
+    return collection([feature(r["geometry"], clean(r)) for r in rows])
 
 
 @app.get("/api/alerts/live")

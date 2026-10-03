@@ -31,7 +31,13 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
 
     ais = positions_at(pos, t0, pd.Timedelta(minutes=f["max_gap_min"])) if len(pos) else pd.DataFrame()
     if len(ais):
-        ais = ais[ais.lon.between(bbox[0], bbox[2]) & ais.lat.between(bbox[1], bbox[3])].reset_index(drop=True)
+        # Navires candidats jusqu'à 3 km au delà du bord : l'écho d'un navire voisin peut tomber dans la zone
+        m = rules["fusion"].get("edge_margin_m", 3000)
+        dlat = m / 110570
+        dlon = m / (111320 * np.cos(np.radians((bbox[1] + bbox[3]) / 2)))
+        ais = ais[ais.lon.between(bbox[0] - dlon, bbox[2] + dlon) & ais.lat.between(bbox[1] - dlat, bbox[3] + dlat)]
+        ais = ais.reset_index(drop=True)
+        ais["inside"] = ais.lon.between(bbox[0], bbox[2]) & ais.lat.between(bbox[1], bbox[3])
         ais["x"], ais["y"] = to_utm.transform(ais.lon.to_numpy(), ais.lat.to_numpy())
 
     # Masques, dans l'ordre de priorité : terre, contraste, classification
@@ -96,9 +102,10 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
             },
         })
 
-    extras = {"ais": ais, "unconfirmed": unconfirmed(ais, det, rules, heading_deg), "offsets": offsets(det),
+    inside = ais[ais.inside].reset_index(drop=True) if len(ais) else ais
+    extras = {"ais": ais, "unconfirmed": unconfirmed(inside, det, rules, heading_deg), "offsets": offsets(det),
               "fixed_hits": fixed_hits}
-    return det, alerts, len(ais), extras
+    return det, alerts, int(ais.inside.sum()) if len(ais) else 0, extras
 
 
 def unconfirmed(ais: pd.DataFrame, det: pd.DataFrame, rules: dict, heading_deg: float | None) -> list[dict]:

@@ -47,6 +47,14 @@ services:
     ports:
       - "8080:80"
 
+  # Interface tactique React (phase 5), servie sur le port 8081 en parallèle de l'ancienne page (8080)
+  web:
+    build: ./web
+    depends_on:
+      - backend
+    ports:
+      - "8081:80"
+
   # Variante en conteneur, sur CPU : docker compose --profile conteneur up -d
   inference:
     profiles: ["conteneur"]
