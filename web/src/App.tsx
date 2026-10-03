@@ -223,7 +223,7 @@ export default function App() {
           onProbe={onProbe}
         />
         {layers.bathymetry && depth && (
-          <div className="absolute bottom-28 left-4 z-10 rounded-md border border-hair bg-panel/90 px-3 py-1.5 text-[12px] backdrop-blur">
+          <div className="absolute left-4 top-24 z-10 rounded-md border border-hair bg-panel/90 px-3 py-1.5 text-[12px] backdrop-blur">
             {depth.depth_m != null
               ? <><span className="text-muted">Profondeur</span> <span className="tabular-nums text-ink">{Math.round(depth.depth_m)} m</span></>
               : <span className="text-muted">{depth.note === "terre" ? "Terre" : "Profondeur indisponible"}</span>}
