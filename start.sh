@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 source .venv/bin/activate
 
 echo "Base et API..."
-docker compose up -d db backend web
+docker compose up -d db backend web web
 
 echo "Service d'inférence..."
 uvicorn inference.app:app --port 8001 > logs/inference.log 2>&1 &
