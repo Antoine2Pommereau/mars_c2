@@ -36,8 +36,9 @@ CABLE_LAYERS = ["pcablesnve", "pcablesbshcontis", "pcablesrijks", "pcablesshom",
                 "cicacables", "ukfibrecables", "maltacables"]
 PIPELINE_LAYERS = ["pipelines"]
 
-NAME_KEYS = ["name", "NAME", "cable_name", "label", "LABEL", "title"]
-OPERATOR_KEYS = ["operator", "owner", "company", "OPERATOR", "OWNER"]
+# Clés multilingues : navn/eier (Norvège, NVE), naam/eigenaar (Pays Bas, Rijks), génériques
+NAME_KEYS = ["navn", "naam", "name", "cable_name", "kabel_nr", "label", "title"]
+OPERATOR_KEYS = ["eier", "eigenaar", "operator", "owner", "company"]
 
 
 def pick(props, keys):
@@ -46,6 +47,28 @@ def pick(props, keys):
         if v not in (None, "", "NaN"):
             return str(v)
     return None
+
+
+def normalize_attrs(layer, props):
+    """Quelques infos lisibles, normalisées selon la source, pour la fiche au clic."""
+    a = {}
+    if layer == "pcablesnve":
+        a["type"] = "Câble électrique"
+        if props.get("spenning_k"):
+            a["tension_kv"] = props["spenning_k"]
+        if props.get("driftsatta"):
+            a["annee"] = props["driftsatta"]
+        if props.get("nettnivaa"):
+            a["reseau"] = props["nettnivaa"]
+    elif layer == "rijkscables":
+        a["type"] = props.get("kabelsoort") or props.get("kabel_type") or "Câble"
+        if props.get("trace_van") and props.get("trace_tot"):
+            a["trace"] = f"{props['trace_van']} vers {props['trace_tot']}"
+        if props.get("omschrivi") or props.get("omschrijvi"):
+            a["description"] = props.get("omschrijvi") or props.get("omschrivi")
+    elif layer in PIPELINE_LAYERS:
+        a["type"] = "Pipeline"
+    return {k: v for k, v in a.items() if v not in (None, "", "NaN")}
 
 
 def leaves_minmax(coords, acc):
@@ -111,10 +134,10 @@ def provision_infrastructure(cur, region_id, bbox):
                 continue
             props = f.get("properties", {})
             cur.execute(
-                "INSERT INTO infrastructure (region_id, kind, name, operator, source, geom) "
-                "VALUES (%s, %s, %s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)::geography)",
+                "INSERT INTO infrastructure (region_id, kind, name, operator, source, attrs, geom) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)::geography)",
                 (region_id, kind, pick(props, NAME_KEYS), pick(props, OPERATOR_KEYS),
-                 f"EMODnet:{layer}", json.dumps(g)))
+                 f"EMODnet:{layer}", json.dumps(normalize_attrs(layer, props)), json.dumps(g)))
             total += 1
         print(f"  {layer:22s} {len(feats):>4} objets")
     # Vérification : les objets doivent bien tomber dans la région

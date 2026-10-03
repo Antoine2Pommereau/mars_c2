@@ -97,9 +97,20 @@ export default function MapView(p: Props) {
       // Couches de contexte provisionnées (régions), sous les données opérationnelles
       map.addLayer({ id: "bathymetry", type: "line", source: "bathymetry", layout: { visibility: "none" },
         paint: { "line-color": BATHY_CONTOUR, "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.4, 11, 1], "line-opacity": 0.55 } });
+      // Étiquettes de profondeur le long des isobathes (depth_m est négatif, on affiche la profondeur positive)
+      map.addLayer({ id: "bathymetry-labels", type: "symbol", source: "bathymetry",
+        layout: {
+          visibility: "none", "symbol-placement": "line", "symbol-spacing": 400, "text-max-angle": 30,
+          "text-field": expr(["concat", ["to-string", ["round", ["*", ["get", "depth_m"], -1]]], " m"]),
+          "text-font": ["Open Sans Regular"], "text-size": 10,
+        },
+        paint: { "text-color": "#8fa6b6", "text-halo-color": "#0e1419", "text-halo-width": 1.3, "text-opacity": 0.9 } });
       map.addLayer({ id: "infrastructure", type: "line", source: "infrastructure",
         layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
         paint: { "line-color": INFRA_COLOR, "line-width": 1.4, "line-opacity": 0.85 } });
+      // Couche invisible plus large pour faciliter le clic sur les lignes fines
+      map.addLayer({ id: "infrastructure-hit", type: "line", source: "infrastructure", layout: { visibility: "none" },
+        paint: { "line-color": "#000", "line-opacity": 0, "line-width": 12 } });
       map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
         paint: { "fill-color": ALERT_COLOR.RENDEZVOUS, "fill-opacity": 0.12, "fill-outline-color": ALERT_COLOR.RENDEZVOUS } });
       map.addLayer({ id: "reception", type: "fill", source: "reception", layout: { visibility: "none" },
@@ -182,6 +193,12 @@ export default function MapView(p: Props) {
         const [lon, lat] = (f.geometry as any).coordinates;
         onSelect.current({ kind: "detection", properties: { ...(f.properties as any), lon, lat } });
       });
+      map.on("click", "infrastructure-hit", (e) => {
+        if (drawing.current) return;
+        const props = e.features![0].properties as any;
+        const attrs = typeof props.attrs === "string" ? JSON.parse(props.attrs || "{}") : (props.attrs ?? {});
+        onSelect.current({ kind: "infrastructure", properties: { ...props, attrs } });
+      });
       for (const id of ["alerts", "live"]) {
         map.on("click", id, (e) => {
           if (drawing.current) return;
@@ -189,7 +206,7 @@ export default function MapView(p: Props) {
           if (f) onSelect.current({ kind: "alert", feature: f });
         });
       }
-      for (const id of ["traffic", "det", "alerts", "live"]) {
+      for (const id of ["traffic", "det", "alerts", "live", "infrastructure-hit"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
       }
@@ -234,8 +251,8 @@ export default function MapView(p: Props) {
     vis(["aoi", "det", "alerts"], p.show.analysis);
     vis(["zones"], p.show.zones);
     vis(["reception"], p.show.reception);
-    vis(["infrastructure"], p.show.infrastructure);
-    vis(["bathymetry"], p.show.bathymetry);
+    vis(["infrastructure", "infrastructure-hit"], p.show.infrastructure);
+    vis(["bathymetry", "bathymetry-labels"], p.show.bathymetry);
     map.setPaintProperty("traffic", "icon-color", p.show.byType ? SHIP_COLOR : NEUTRAL);
   }, [ready, p.show]);
 

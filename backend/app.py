@@ -715,10 +715,11 @@ async def regions():
 async def region_infrastructure(region_id: int):
     async with app.state.pool.acquire() as c:
         rows = await c.fetch(
-            "SELECT kind, name, operator, source, ST_AsGeoJSON(geom)::json AS geometry "
+            "SELECT kind, name, operator, source, attrs, ST_AsGeoJSON(geom)::json AS geometry "
             "FROM infrastructure WHERE region_id = $1", region_id)
     return collection([feature(r["geometry"],
-                       {"kind": r["kind"], "name": r["name"], "operator": r["operator"], "source": r["source"]})
+                       {"kind": r["kind"], "name": r["name"], "operator": r["operator"], "source": r["source"],
+                        "attrs": json.loads(r["attrs"]) if isinstance(r["attrs"], str) else (r["attrs"] or {})})
                        for r in rows])
 
 

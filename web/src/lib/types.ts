@@ -182,9 +182,19 @@ export interface StreamPayload {
   analyses: ActiveAnalysis[];
   live_alerts: FC<AlertProps>;
 }
+/** Propriétés d'une infrastructure sous marine (câble, pipeline). */
+export interface InfraProps {
+  kind: string;
+  name: string | null;
+  operator: string | null;
+  source: string;
+  attrs?: Record<string, unknown>;
+}
+
 export type Selection =
   | { kind: "alert"; feature: Feature<AlertProps> }
   | { kind: "vessel"; properties: VesselProps }
-  | { kind: "detection"; properties: DetectionProps };
+  | { kind: "detection"; properties: DetectionProps }
+  | { kind: "infrastructure"; properties: InfraProps };
 
 export const EMPTY: FC<any> = { type: "FeatureCollection", features: [] };

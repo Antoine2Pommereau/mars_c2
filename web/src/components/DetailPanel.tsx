@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AisCandidate, AlertProps, GapPartner, Selection, VesselRef } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, SEVERITY, SIGNAL, STATUS_LABEL, hm, num, utc } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, SEVERITY, SIGNAL, STATUS_LABEL, hm, num, utc } from "../lib/format";
 import AlertActions from "./AlertActions";
 import Chip from "./Chip";
 
@@ -153,6 +153,23 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus }: 
         <Row label="Dernier message">il y a {num((p.age_s ?? 0) / 60, 0)} min</Row>
       </>
     );
+  } else if (selection.kind === "infrastructure") {
+    const p = selection.properties;
+    const attrs = p.attrs ?? {};
+    color = p.kind === "pipeline" ? INFRA_PIPELINE : INFRA_CABLE;
+    title = p.name || (p.kind === "pipeline" ? "Pipeline" : "Câble sous marin");
+    body = (
+      <>
+        <Row label="Type">{String(attrs.type ?? (p.kind === "pipeline" ? "Pipeline" : "Câble"))}</Row>
+        <Row label="Opérateur">{p.operator ?? "non renseigné"}</Row>
+        {attrs.tension_kv != null && <Row label="Tension">{String(attrs.tension_kv)} kV</Row>}
+        {attrs.annee != null && <Row label="Mise en service">{String(attrs.annee)}</Row>}
+        {attrs.reseau != null && <Row label="Réseau">{String(attrs.reseau)}</Row>}
+        {attrs.trace != null && <Row label="Tracé">{String(attrs.trace)}</Row>}
+        {attrs.description != null && <Row label="Description">{String(attrs.description)}</Row>}
+      </>
+    );
+    footer = <>Source {p.source}</>;
   } else {
     const p = selection.properties;
     const status = p.mask_reason && p.mask_reason !== "null" ? `Écartée (${p.mask_reason})`
