@@ -1,11 +1,12 @@
-import { Bell, Layers, Radar } from "lucide-react";
+import { Bell, Globe2, Layers, Radar } from "lucide-react";
 
-export type PanelId = "alertes" | "analyses" | "couches";
+export type PanelId = "alertes" | "analyses" | "couches" | "regions";
 
 const ITEMS: { id: PanelId; label: string; short: string; Icon: typeof Bell }[] = [
   { id: "alertes", label: "Alertes", short: "Alertes", Icon: Bell },
   { id: "analyses", label: "Analyses radar", short: "Analyses", Icon: Radar },
   { id: "couches", label: "Couches et légende", short: "Couches", Icon: Layers },
+  { id: "regions", label: "Régions", short: "Régions", Icon: Globe2 },
 ];
 
 interface Props {

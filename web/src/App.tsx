@@ -7,6 +7,7 @@ import LayersPanel, { type LayerState } from "./components/LayersPanel";
 import MapView from "./components/MapView";
 import NewAnalysis from "./components/NewAnalysis";
 import Rail, { type PanelId } from "./components/Rail";
+import RegionsPanel from "./components/RegionsPanel";
 import Timeline from "./components/Timeline";
 import { api, bathymetryImageUrl, type Pass } from "./lib/api";
 import { replayStart, HIGHLIGHT_PRIMARY, HIGHLIGHT_SECONDARY, HIGHLIGHT_DASHED } from "./lib/format";
@@ -23,6 +24,7 @@ export default function App() {
   const [focus, setFocus] = useState<{ center: [number, number]; zoom: number } | null>(null);
   const [drawing, setDrawing] = useState(false);
   const [draft, setDraft] = useState<number[] | null>(null);
+  const [drawTarget, setDrawTarget] = useState<"analysis" | "region" | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
   const [bounds, setBounds] = useState<number[] | null>(null);
 
@@ -49,7 +51,8 @@ export default function App() {
   const daysQ = useQuery({ queryKey: ["days"], queryFn: api.days, staleTime: Infinity });
 
   // Région active et ses couches de contexte provisionnées (câbles, pipelines, isobathes)
-  const regionsQ = useQuery({ queryKey: ["regions"], queryFn: api.regions, staleTime: Infinity });
+  const regionsQ = useQuery({ queryKey: ["regions"], queryFn: api.regions,
+    refetchInterval: (q) => (q.state.data?.some((r) => r.layers?.some((l) => l.status === "en_cours")) ? 2000 : false) });
   const activeRegion = regionsQ.data?.find((r) => r.active) ?? regionsQ.data?.[0];
   const regionId = activeRegion?.id;
   const infraQ = useQuery({ queryKey: ["infrastructure", regionId], queryFn: (ctx) => api.infrastructure(regionId!, ctx), enabled: !!regionId && layers.infrastructure, staleTime: Infinity });
@@ -85,10 +88,26 @@ export default function App() {
 
   // Nouvelle analyse : tracé, puis lancement ; le rejeu se place juste avant le passage choisi
   const startDraw = useCallback(() => {
-    setPanel("analyses"); setSelection(null); setDraft(null); setDrawing(true);
+    setPanel("analyses"); setSelection(null); setDraft(null); setDrawTarget("analysis"); setDrawing(true);
+  }, []);
+  const startRegionDraw = useCallback(() => {
+    setPanel("regions"); setSelection(null); setDraft(null); setDrawTarget("region"); setDrawing(true);
   }, []);
   const onDraw = useCallback((b: number[]) => { setDraft(b); setDrawing(false); }, []);
-  const cancelDraw = useCallback(() => { setDraft(null); setDrawing(false); }, []);
+  const cancelDraw = useCallback(() => { setDraft(null); setDrawing(false); setDrawTarget(null); }, []);
+  const onCreateRegion = useCallback(async (name: string, bbox: number[]) => {
+    try {
+      const { id } = await api.createRegion(name, bbox);
+      await api.provisionRegion(id);
+      await api.activateRegion(id);
+      setDraft(null); setDrawTarget(null);
+      qc.invalidateQueries({ queryKey: ["regions"] });
+    } catch { /* nom déjà pris ou erreur réseau : le formulaire reste ouvert */ }
+  }, [qc]);
+  const onActivateRegion = useCallback(async (id: number) => {
+    await api.activateRegion(id);
+    qc.invalidateQueries({ queryKey: ["regions"] });
+  }, [qc]);
   const onLaunched = useCallback((id: number, pass: Pass) => {
     setDraft(null);
     setPinned(id);
@@ -193,9 +212,14 @@ export default function App() {
           {panel === "analyses" && (
             <AnalysesPanel jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0}
               history={done.slice(0, 8)} onPick={pickAnalysis}
-              launcher={<NewAnalysis drawing={drawing} draft={draft} onStartDraw={startDraw} onCancel={cancelDraw} onLaunched={onLaunched} />} />
+              launcher={<NewAnalysis drawing={drawTarget !== "region" && drawing} draft={drawTarget === "region" ? null : draft} onStartDraw={startDraw} onCancel={cancelDraw} onLaunched={onLaunched} />} />
           )}
           {panel === "couches" && <LayersPanel state={layers} onChange={setLayers} />}
+          {panel === "regions" && (
+            <RegionsPanel regions={regionsQ.data ?? []} activeId={regionId}
+              drawing={drawing && drawTarget === "region"} draft={drawTarget === "region" ? draft : null}
+              onStartDraw={startRegionDraw} onCancelDraw={cancelDraw} onCreate={onCreateRegion} onActivate={onActivateRegion} />
+          )}
         </aside>
       )}
       <main className="relative flex-1">
@@ -211,6 +235,7 @@ export default function App() {
           infrastructure={infraQ.data ?? null}
           bathymetry={bathyQ.data ?? null}
           bathymetryImage={bathymetryImage}
+          regionBbox={activeRegion?.bbox ?? null}
           highlight={highlight}
           show={layers}
           focus={focus}

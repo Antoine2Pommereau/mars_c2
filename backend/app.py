@@ -786,6 +786,80 @@ async def region_depth(region_id: int, lon: float, lat: float):
     return {"depth_m": round(-v, 1)}
 
 
+class NewRegion(BaseModel):
+    name: str
+    bbox: list[float]
+
+
+@app.post("/api/regions", status_code=201)
+async def create_region(req: NewRegion):
+    """Crée une région tracée à la main (emprise rectangulaire) et inscrit ses couches en attente."""
+    bbox = check_bbox(req.bbox)
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(422, "Nom de région requis")
+    async with app.state.pool.acquire() as c:
+        row = await c.fetchrow(
+            "INSERT INTO regions (name, origin, geom, active) "
+            "VALUES ($1, 'manuelle', ST_MakeEnvelope($2, $3, $4, $5, 4326)::geography, false) "
+            "ON CONFLICT (name) DO NOTHING RETURNING id", name, bbox[0], bbox[1], bbox[2], bbox[3])
+        if not row:
+            raise HTTPException(409, "Une région porte déjà ce nom")
+        rid = row["id"]
+        await c.execute(
+            "INSERT INTO region_layers (region_id, layer, usage) "
+            "SELECT $1, v.layer, v.usage FROM (VALUES "
+            "('coastline', 'operationnelle'), ('bathymetry', 'affichage'), ('infrastructure', 'operationnelle')"
+            ") AS v(layer, usage) ON CONFLICT (region_id, layer) DO NOTHING", rid)
+    return {"id": rid}
+
+
+@app.post("/api/regions/{region_id}/activate")
+async def activate_region(region_id: int):
+    async with app.state.pool.acquire() as c:
+        if not await c.fetchval("SELECT true FROM regions WHERE id = $1", region_id):
+            raise HTTPException(404, "Région inconnue")
+        await c.execute("UPDATE regions SET active = (id = $1)", region_id)
+    return {"active": region_id}
+
+
+def _provision_sync(region_id: int, bbox: list[float]):
+    """Exécuté dans un fil : télécharge et stocke la donnée statique, met à jour le manifeste."""
+    import logging
+    from mars.db import connect
+    from mars.regions.provision import provision
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            provision(cur, region_id, bbox, which="all")
+            conn.commit()
+        _BATHY_CACHE.pop(region_id, None)
+    except Exception:
+        logging.getLogger("mars.regions").exception("Provisionnement région %s en échec", region_id)
+        try:
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE region_layers SET status = 'echec' WHERE region_id = %s AND status = 'en_cours'", (region_id,))
+                conn.commit()
+        except Exception:
+            pass
+
+
+@app.post("/api/regions/{region_id}/provision", status_code=202)
+async def provision_region_endpoint(region_id: int):
+    """Lance le provisionnement de la région en tâche de fond ; le manifeste passe en 'en_cours'."""
+    from fastapi.concurrency import run_in_threadpool
+    async with app.state.pool.acquire() as c:
+        row = await c.fetchrow(
+            "SELECT ST_XMin(b) AS x0, ST_YMin(b) AS y0, ST_XMax(b) AS x1, ST_YMax(b) AS y1 "
+            "FROM (SELECT ST_Envelope(geom::geometry) AS b FROM regions WHERE id = $1) q", region_id)
+        if not row:
+            raise HTTPException(404, "Région inconnue")
+        await c.execute("UPDATE region_layers SET status = 'en_cours' "
+                        "WHERE region_id = $1 AND layer IN ('infrastructure', 'bathymetry')", region_id)
+    bbox = [row["x0"], row["y0"], row["x1"], row["y1"]]
+    asyncio.create_task(run_in_threadpool(_provision_sync, region_id, bbox))
+    return {"status": "provisioning"}
+
+
 async def _rule_days(c, day: str | None):
     if day:
         return [parse_day(day)]

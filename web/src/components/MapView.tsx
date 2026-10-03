@@ -51,6 +51,7 @@ interface Props {
   infrastructure: FC | null;
   bathymetry: FC | null;
   bathymetryImage: { url: string; bbox: number[] } | null;
+  regionBbox: number[] | null;
   highlight: FC;
   show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean; infrastructure: boolean; bathymetry: boolean };
   focus: { center: [number, number]; zoom: number } | null;
@@ -307,6 +308,17 @@ export default function MapView(p: Props) {
   useEffect(() => {
     if (ready && p.focus) mapRef.current!.flyTo({ center: p.focus.center, zoom: p.focus.zoom });
   }, [ready, p.focus]);
+
+  // Recentrage sur la région active quand elle change
+  const lastRegion = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready || !mapRef.current || !p.regionBbox) return;
+    const key = p.regionBbox.join(",");
+    if (lastRegion.current === key) return;
+    lastRegion.current = key;
+    const [w, s, e, n] = p.regionBbox;
+    mapRef.current.fitBounds([[w, s], [e, n]], { padding: 40, duration: 800 });
+  }, [ready, p.regionBbox]);
 
   // Mode tracé : la carte ne se déplace plus au glisser, le curseur devient une croix
   useEffect(() => {

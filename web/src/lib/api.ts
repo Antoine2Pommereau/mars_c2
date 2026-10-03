@@ -60,6 +60,9 @@ export const api = {
   bathymetry: (regionId: number, ctx?: QueryCtx) => get<FC>(`/regions/${regionId}/bathymetry/contours`, ctx?.signal),
   depth: (regionId: number, lon: number, lat: number, signal?: AbortSignal) =>
     get<{ depth_m: number | null; note?: string }>(`/regions/${regionId}/depth?lon=${lon}&lat=${lat}`, signal),
+  createRegion: (name: string, bbox: number[]) => post<{ id: number }>("/regions", { name, bbox }),
+  activateRegion: (id: number) => post<{ active: number }>(`/regions/${id}/activate`, {}),
+  provisionRegion: (id: number) => post<{ status: string }>(`/regions/${id}/provision`, {}),
   track: (vesselId: number, start: string, end: string) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
   clock: (body: { action: "play" | "pause" | "speed" | "seek"; speed?: number; time?: string }) =>
