@@ -50,6 +50,7 @@ interface Props {
   reception: FC | null;
   infrastructure: FC | null;
   bathymetry: FC | null;
+  bathymetryImage: { url: string; bbox: number[] } | null;
   highlight: FC;
   show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean; infrastructure: boolean; bathymetry: boolean };
   focus: { center: [number, number]; zoom: number } | null;
@@ -59,6 +60,7 @@ interface Props {
   onDraw: (bbox: number[]) => void;
   spotlight: { alertId: number | null; vesselIds: number[] } | null;
   onBounds: (b: number[]) => void;
+  onProbe: (p: { lon: number; lat: number } | null) => void;
 }
 
 // Opacités de base, et mode focus : tout ce qui ne concerne pas la sélection s'efface
@@ -79,6 +81,10 @@ export default function MapView(p: Props) {
   onDraw.current = p.onDraw;
   const onBounds = useRef(p.onBounds);
   onBounds.current = p.onBounds;
+  const onProbe = useRef(p.onProbe);
+  onProbe.current = p.onProbe;
+  const probeOn = useRef(p.show.bathymetry);
+  probeOn.current = p.show.bathymetry;
 
   // Création de la carte et des couches, une seule fois
   useEffect(() => {
@@ -186,6 +192,17 @@ export default function MapView(p: Props) {
         });
       });
 
+      // Relevé de profondeur au survol, quand la bathymétrie est affichée (limité à cinq par seconde)
+      let probeTs = 0;
+      map.on("mousemove", (e) => {
+        if (!probeOn.current || drawing.current) return;
+        const t = e.originalEvent.timeStamp;
+        if (t - probeTs < 180) return;
+        probeTs = t;
+        onProbe.current({ lon: e.lngLat.lng, lat: e.lngLat.lat });
+      });
+      map.on("mouseout", () => onProbe.current(null));
+
       map.on("click", "traffic", (e) => { if (!drawing.current) onSelect.current({ kind: "vessel", properties: e.features![0].properties as any }); });
       map.on("click", "det", (e) => {
         if (drawing.current) return;
@@ -239,6 +256,26 @@ export default function MapView(p: Props) {
   useEffect(() => setData("bathymetry", p.bathymetry), [ready, p.bathymetry]);
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
 
+  // Overlay coloré du fond marin : source image ajoutée dès que la région est connue, sous les isobathes
+  useEffect(() => {
+    if (!ready || !mapRef.current) return;
+    const map = mapRef.current;
+    const img = p.bathymetryImage;
+    if (!img) return;
+    const [w, s, e, n] = img.bbox;
+    const coordinates: [[number, number], [number, number], [number, number], [number, number]] =
+      [[w, n], [e, n], [e, s], [w, s]];
+    const existing = map.getSource("bathymetry-img") as { updateImage?: (o: unknown) => void } | undefined;
+    if (existing?.updateImage) {
+      existing.updateImage({ url: img.url, coordinates });
+    } else {
+      map.addSource("bathymetry-img", { type: "image", url: img.url, coordinates });
+      map.addLayer({ id: "bathymetry-shade", type: "raster", source: "bathymetry-img",
+        layout: { visibility: p.show.bathymetry ? "visible" : "none" },
+        paint: { "raster-opacity": 0.55, "raster-fade-duration": 0 } }, "bathymetry");
+    }
+  }, [ready, p.bathymetryImage]);
+
   useEffect(() => {
     alertIndex.current.clear();
     for (const f of [...p.analysisAlerts.features, ...p.liveAlerts.features]) alertIndex.current.set(f.properties.id, f);
@@ -253,6 +290,7 @@ export default function MapView(p: Props) {
     vis(["reception"], p.show.reception);
     vis(["infrastructure", "infrastructure-hit"], p.show.infrastructure);
     vis(["bathymetry", "bathymetry-labels"], p.show.bathymetry);
+    if (map.getLayer("bathymetry-shade")) map.setLayoutProperty("bathymetry-shade", "visibility", p.show.bathymetry ? "visible" : "none");
     map.setPaintProperty("traffic", "icon-color", p.show.byType ? SHIP_COLOR : NEUTRAL);
   }, [ready, p.show]);
 

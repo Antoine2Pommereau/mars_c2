@@ -178,6 +178,8 @@ def provision_bathymetry(cur, region_id, bbox, refresh=False):
         print(f"  bathymétrie {out.stat().st_size/1e6:.1f} Mo -> {out.relative_to(ROOT)}")
     n = compute_contours(cur, region_id, out)
     print(f"  {n} isobathes calculées aux profondeurs {CONTOUR_LEVELS} m")
+    png = render_shading(out)
+    print(f"  ombrage coloré -> {png.relative_to(ROOT)} ({png.stat().st_size/1e6:.1f} Mo)")
     set_layer(cur, region_id, "bathymetry", status="prete",
               source="EMODnet Bathymetry emodnet__mean (WCS)", source_url=BATHY_WCS,
               license=BATHY_LICENSE, size_bytes=out.stat().st_size)
@@ -215,6 +217,27 @@ def compute_contours(cur, region_id, tif_path):
             n += 1
     plt.close(fig)
     return n
+
+
+def render_shading(tif_path):
+    """Image colorée du fond marin (dégradé par profondeur), transparente sur la terre, pour l'overlay carte."""
+    import numpy as np
+    import rasterio
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.colors as mcolors
+    import matplotlib.image as mpimg
+    with rasterio.open(tif_path) as ds:
+        z = ds.read(1, masked=True)
+    depth = np.asarray(-z.filled(np.nan))  # profondeur positive en mer, négative sur terre, nan hors donnée
+    sea = np.isfinite(depth) & (depth > 0)
+    norm = mcolors.Normalize(vmin=0, vmax=300, clip=True)  # dégradé sur 0 à 300 m, au delà saturé
+    cmap = matplotlib.colormaps["Blues"]
+    rgba = cmap(norm(np.where(sea, depth, 0.0)))
+    rgba[..., 3] = np.where(sea, 1.0, 0.0)  # opaque en mer, transparent ailleurs ; l'opacité finale est réglée sur la couche
+    out = tif_path.with_name("bathymetry.png")
+    mpimg.imsave(out, rgba)
+    return out
 
 
 def main():

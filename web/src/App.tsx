@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AlertsPanel from "./components/AlertsPanel";
 import AnalysesPanel from "./components/AnalysesPanel";
 import DetailPanel from "./components/DetailPanel";
@@ -8,7 +8,7 @@ import MapView from "./components/MapView";
 import NewAnalysis from "./components/NewAnalysis";
 import Rail, { type PanelId } from "./components/Rail";
 import Timeline from "./components/Timeline";
-import { api, type Pass } from "./lib/api";
+import { api, bathymetryImageUrl, type Pass } from "./lib/api";
 import { replayStart, HIGHLIGHT_PRIMARY, HIGHLIGHT_SECONDARY, HIGHLIGHT_DASHED } from "./lib/format";
 import { EMPTY, type AlertProps, type AlertStatus, type FC, type Feature, type Selection, type VesselRef } from "./lib/types";
 import { useStream } from "./lib/useStream";
@@ -50,9 +50,24 @@ export default function App() {
 
   // Région active et ses couches de contexte provisionnées (câbles, pipelines, isobathes)
   const regionsQ = useQuery({ queryKey: ["regions"], queryFn: api.regions, staleTime: Infinity });
-  const regionId = (regionsQ.data?.find((r) => r.active) ?? regionsQ.data?.[0])?.id;
+  const activeRegion = regionsQ.data?.find((r) => r.active) ?? regionsQ.data?.[0];
+  const regionId = activeRegion?.id;
   const infraQ = useQuery({ queryKey: ["infrastructure", regionId], queryFn: (ctx) => api.infrastructure(regionId!, ctx), enabled: !!regionId && layers.infrastructure, staleTime: Infinity });
   const bathyQ = useQuery({ queryKey: ["bathymetry", regionId], queryFn: (ctx) => api.bathymetry(regionId!, ctx), enabled: !!regionId && layers.bathymetry, staleTime: Infinity });
+  const bathymetryImage = regionId && layers.bathymetry && activeRegion
+    ? { url: bathymetryImageUrl(regionId), bbox: activeRegion.bbox } : null;
+
+  // Relevé de profondeur au survol de la carte, quand la bathymétrie est affichée
+  const [depth, setDepth] = useState<{ depth_m: number | null; note?: string } | null>(null);
+  const depthAbort = useRef<AbortController | null>(null);
+  const onProbe = useCallback(async (pt: { lon: number; lat: number } | null) => {
+    if (!pt || !regionId) { setDepth(null); return; }
+    depthAbort.current?.abort();
+    const ac = new AbortController();
+    depthAbort.current = ac;
+    try { setDepth(await api.depth(regionId, pt.lon, pt.lat, ac.signal)); }
+    catch { /* survol interrompu, on ignore */ }
+  }, [regionId]);
 
   const day = stream?.clock.now.slice(0, 10);
   const dayAlertsQ = useQuery({ queryKey: ["dayAlerts", day], queryFn: (ctx) => api.alertsOfDay(day!, ctx), enabled: !!day, staleTime: 60_000 });
@@ -195,6 +210,7 @@ export default function App() {
           reception={receptionQ.data ?? null}
           infrastructure={infraQ.data ?? null}
           bathymetry={bathyQ.data ?? null}
+          bathymetryImage={bathymetryImage}
           highlight={highlight}
           show={layers}
           focus={focus}
@@ -204,7 +220,15 @@ export default function App() {
           onDraw={onDraw}
           spotlight={spotlight}
           onBounds={setBounds}
+          onProbe={onProbe}
         />
+        {layers.bathymetry && depth && (
+          <div className="absolute bottom-28 left-4 z-10 rounded-md border border-hair bg-panel/90 px-3 py-1.5 text-[12px] backdrop-blur">
+            {depth.depth_m != null
+              ? <><span className="text-muted">Profondeur</span> <span className="tabular-nums text-ink">{Math.round(depth.depth_m)} m</span></>
+              : <span className="text-muted">{depth.note === "terre" ? "Terre" : "Profondeur indisponible"}</span>}
+          </div>
+        )}
         <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-md border border-hair bg-panel/90 px-3 py-1.5 text-[12px] text-muted backdrop-blur">
           <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-signal" : "bg-gap"}`} />
           {connected ? `${vessels} navires` : "Reconnexion…"}

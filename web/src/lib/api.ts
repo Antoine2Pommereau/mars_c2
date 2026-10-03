@@ -36,6 +36,8 @@ export interface Region { id: number; name: string; origin: string; active: bool
 export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
   `/api/chip?lon=${lon}&lat=${lat}&time=${encodeURIComponent(time)}&size_m=${sizeM}`;
 
+export const bathymetryImageUrl = (regionId: number) => `/api/regions/${regionId}/bathymetry/image`;
+
 // TanStack Query passe { signal, ... } à queryFn ; on en extrait l'AbortSignal pour le relayer à fetch.
 type QueryCtx = { signal?: AbortSignal };
 
@@ -56,6 +58,8 @@ export const api = {
   regions: (ctx?: QueryCtx) => get<Region[]>("/regions", ctx?.signal),
   infrastructure: (regionId: number, ctx?: QueryCtx) => get<FC>(`/regions/${regionId}/infrastructure`, ctx?.signal),
   bathymetry: (regionId: number, ctx?: QueryCtx) => get<FC>(`/regions/${regionId}/bathymetry/contours`, ctx?.signal),
+  depth: (regionId: number, lon: number, lat: number, signal?: AbortSignal) =>
+    get<{ depth_m: number | null; note?: string }>(`/regions/${regionId}/depth?lon=${lon}&lat=${lat}`, signal),
   track: (vesselId: number, start: string, end: string) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
   clock: (body: { action: "play" | "pause" | "speed" | "seek"; speed?: number; time?: string }) =>

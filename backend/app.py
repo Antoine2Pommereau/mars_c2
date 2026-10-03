@@ -732,6 +732,60 @@ async def region_bathymetry_contours(region_id: int):
     return collection([feature(r["geometry"], {"depth_m": r["depth_m"]}) for r in rows])
 
 
+@app.get("/api/regions/{region_id}/bathymetry/image")
+async def region_bathymetry_image(region_id: int):
+    """Image colorée du fond marin, provisionnée en local, pour l'overlay carte."""
+    from fastapi.responses import FileResponse
+    from mars.config import ROOT
+    path = ROOT / "data" / "zones" / str(region_id) / "bathymetry.png"
+    if not path.exists():
+        raise HTTPException(404, "Image bathymétrique non provisionnée")
+    return FileResponse(path, media_type="image/png")
+
+
+# Cache mémoire du raster bathymétrique par région : évite de rouvrir le GeoTIFF à chaque relevé
+_BATHY_CACHE: dict = {}
+
+
+def _load_bathy(region_id: int):
+    if region_id not in _BATHY_CACHE:
+        import numpy as np
+        import rasterio
+        from mars.config import ROOT
+        path = ROOT / "data" / "zones" / str(region_id) / "bathymetry.tif"
+        if not path.exists():
+            _BATHY_CACHE[region_id] = None
+        else:
+            with rasterio.open(path) as ds:
+                arr = ds.read(1, masked=True).filled(np.nan).astype("float32")
+                _BATHY_CACHE[region_id] = (arr, ds.transform, tuple(ds.bounds))
+    return _BATHY_CACHE[region_id]
+
+
+@app.get("/api/regions/{region_id}/depth")
+async def region_depth(region_id: int, lon: float, lat: float):
+    """Profondeur de la mer au point demandé, échantillonnée dans le raster provisionné."""
+    import math
+    from fastapi.concurrency import run_in_threadpool
+    data = await run_in_threadpool(_load_bathy, region_id)
+    if not data:
+        raise HTTPException(404, "Bathymétrie non provisionnée pour cette région")
+    arr, transform, bounds = data
+    left, bottom, right, top = bounds
+    if not (left <= lon <= right and bottom <= lat <= top):
+        return {"depth_m": None, "note": "hors zone"}
+    col = int((lon - transform.c) / transform.a)
+    row = int((lat - transform.f) / transform.e)
+    if row < 0 or col < 0 or row >= arr.shape[0] or col >= arr.shape[1]:
+        return {"depth_m": None, "note": "hors zone"}
+    v = float(arr[row, col])
+    if not math.isfinite(v):
+        return {"depth_m": None, "note": "indisponible"}
+    if v >= 0:
+        return {"depth_m": None, "note": "terre"}
+    return {"depth_m": round(-v, 1)}
+
+
 async def _rule_days(c, day: str | None):
     if day:
         return [parse_day(day)]
