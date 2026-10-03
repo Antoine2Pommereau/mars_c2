@@ -24,7 +24,7 @@ from mars.fusion.pipeline import fuse
 from mars.geo import bbox_size_km
 from mars.sar.catalog import get_token, search_passes
 from rules import (build_reception_cells, build_stationary_zones, find_gaps, run_ais_gap,
-                   run_rendezvous, run_rendezvous_selftest)
+                   run_infrastructure, run_infrastructure_selftest, run_rendezvous, run_rendezvous_selftest)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("mars.api")
@@ -982,6 +982,32 @@ async def rendezvous_selftest(req: RuleRun):
         day = (await _rule_days(c, req.day))[0]
         start = pd.Timestamp(day, tz="UTC").to_pydatetime()
         result = await run_rendezvous_selftest(c, start, start + pd.Timedelta(days=1), rules)
+    return {"jour": day.isoformat(), **result}
+
+
+@app.post("/api/rules/infrastructure/run")
+async def infrastructure_run(req: RuleRun):
+    rules = load_rules()
+    async with app.state.pool.acquire() as c:
+        if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM infrastructure)"):
+            raise HTTPException(422, "Aucune infrastructure provisionnée : provisionner une région d'abord")
+        days = await _rule_days(c, req.day)
+        results = {}
+        for d in days:
+            start = pd.Timestamp(d, tz="UTC").to_pydatetime()
+            results[d.isoformat()] = await run_infrastructure(c, start, start + pd.Timedelta(days=1), rules)
+    return results
+
+
+@app.post("/api/rules/infrastructure/selftest")
+async def infrastructure_selftest(req: RuleRun):
+    """Test par injection : un navire synthétique stationne sur un corridor au delà du seuil, dans une
+    transaction annulée, et on vérifie que la règle lève l'alerte INFRA_THREAT. La base n'est pas modifiée."""
+    rules = load_rules()
+    async with app.state.pool.acquire() as c:
+        day = (await _rule_days(c, req.day))[0]
+        start = pd.Timestamp(day, tz="UTC").to_pydatetime()
+        result = await run_infrastructure_selftest(c, start, start + pd.Timedelta(days=1), rules)
     return {"jour": day.isoformat(), **result}
 
 

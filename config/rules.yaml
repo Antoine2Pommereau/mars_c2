@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.16"
+version: "2026.10.17"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -107,3 +107,22 @@ ais_gap:
   high_duration_min: 360 # silence sans réapparition : sévérité élevée au delà de 6 heures
   excluded_ship_types: [Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement", "Port tender",
                         Dredging, Diving, Military, Medical, "Anti-pollution"]
+
+infrastructure:
+  # Menace possible sur un câble ou un gazoduc : proximité d'un corridor plus comportement anormal.
+  # On détecte un motif suspect (loitering, arrêt, traîne d'ancre au large sur une infrastructure),
+  # jamais une attribution. Les corridors viennent de la couche provisionnée de la région active.
+  corridor_buffer_m: 1000   # proximité d'un câble ou gazoduc
+  max_speed_kn: 3.0         # lent ou arrêté : capte l'arrêt franc comme la traîne d'ancre
+  min_duration_min: 30      # présence prolongée au dessus du corridor
+  high_duration_min: 120    # sévérité élevée au delà
+  slot_min: 10              # positions regroupées par tranches de 10 minutes
+  max_gap_min: 20           # deux tranches séparées de 20 minutes au plus restent dans le même épisode
+  min_coast_km: 0.5         # écarte les abords immédiats de la côte et des ports
+  drag_min_span_m: 300      # déplacement au delà duquel on suspecte une traîne d'ancre plutôt qu'un arrêt franc
+  min_length_m: 50          # le sabotage par traîne d'ancre vise de gros navires ; les petites unités (pêche, 8 à 32 m) écartées
+  # La pêche domine le trafic lent près des câbles du Skagerrak (chalutiers qui traînent) : ce n'est pas le
+  # schéma du sabotage, qui vise de gros navires traînant l'ancre. Service et pose de câbles travaillent aussi
+  # légitimement sur place. Exclus, comme pour les rendez vous. Piste : un contexte pêche dédié.
+  excluded_ship_types: [Fishing, Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement",
+                        "Port tender", Dredging, Diving, Military, Medical, "Anti-pollution"]

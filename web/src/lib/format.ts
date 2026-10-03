@@ -39,12 +39,14 @@ export const ALERT_LABEL: Record<string, string> = {
   RENDEZVOUS: "Rendez vous suspect",
   AIS_GAP: "Coupure AIS",
   AIS_UNCONFIRMED: "Position AIS non confirmée",
+  INFRA_THREAT: "Menace infrastructure",
 };
 
 // Teintes centralisées : couleur réservée aux alertes, palette neutre par type de navire.
 // Seul point de vérité ; réutilisé dans l'interface et dans les expressions MapLibre.
 export const ALERT_COLOR: Record<string, string> = {
   DARK_SHIP: "#e85bc7", RENDEZVOUS: "#f0a84b", AIS_GAP: "#ef6461", AIS_UNCONFIRMED: "#e8d45a",
+  INFRA_THREAT: "#e03030",
 };
 export const ALERT_FALLBACK = "#ffffff";
 export const SIGNAL = "#4fb6c8";

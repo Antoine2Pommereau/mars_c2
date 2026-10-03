@@ -1,4 +1,4 @@
-export type AlertType = "DARK_SHIP" | "RENDEZVOUS" | "AIS_GAP" | "AIS_UNCONFIRMED";
+export type AlertType = "DARK_SHIP" | "RENDEZVOUS" | "AIS_GAP" | "AIS_UNCONFIRMED" | "INFRA_THREAT";
 export type Severity = "faible" | "moyenne" | "elevee" | "critique";
 export type AlertStatus = "nouvelle" | "acquittee" | "confirmee" | "classee";
 
@@ -78,11 +78,24 @@ export interface AisUnconfirmedDetails extends AlertDetailsBase {
   tolerance_en_travers_m?: number | null;
 }
 
+export interface InfraThreatDetails extends AlertDetailsBase {
+  navire?: VesselRef;
+  debut?: string;
+  fin?: string;
+  duree_min?: number;
+  infrastructure?: { nom?: string | null; type?: string | null; operateur?: string | null; distance_m?: number | null };
+  distance_corridor_m?: number;
+  vitesse_moyenne_kn?: number;
+  deplacement_episode_m?: number;
+  traine_ancre_possible?: boolean;
+}
+
 export type AlertDetails =
   | DarkShipDetails
   | RendezvousDetails
   | AisGapDetails
-  | AisUnconfirmedDetails;
+  | AisUnconfirmedDetails
+  | InfraThreatDetails;
 
 interface AlertPropsBase {
   id: number;
@@ -97,7 +110,8 @@ export type AlertProps =
   | (AlertPropsBase & { type: "DARK_SHIP"; details?: DarkShipDetails })
   | (AlertPropsBase & { type: "RENDEZVOUS"; details?: RendezvousDetails })
   | (AlertPropsBase & { type: "AIS_GAP"; details?: AisGapDetails })
-  | (AlertPropsBase & { type: "AIS_UNCONFIRMED"; details?: AisUnconfirmedDetails });
+  | (AlertPropsBase & { type: "AIS_UNCONFIRMED"; details?: AisUnconfirmedDetails })
+  | (AlertPropsBase & { type: "INFRA_THREAT"; details?: InfraThreatDetails });
 
 /** Propriétés d'une trajectoire surlignée (couleur, pointillés). */
 export interface TrackProps {

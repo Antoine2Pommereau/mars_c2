@@ -102,6 +102,23 @@ function AlertBody({ p }: { p: AlertProps }) {
         </>
       );
     }
+    case "INFRA_THREAT": {
+      const d = p.details ?? {};
+      const infra = d.infrastructure;
+      return (
+        <>
+          <Row label="Navire">{vessel(d.navire)}</Row>
+          <Row label="Infrastructure">
+            {infra?.nom ?? (infra?.type === "pipeline" ? "Gazoduc" : "Câble")}{infra?.operateur ? ` (${infra.operateur})` : ""}
+          </Row>
+          <Row label="Distance au corridor">{d.distance_corridor_m} m</Row>
+          <Row label="Durée sur zone">{d.duree_min} min, de {hm(d.debut)} à {hm(d.fin)} UTC</Row>
+          <Row label="Vitesse moyenne">{num(d.vitesse_moyenne_kn)} nœuds</Row>
+          <Row label="Déplacement">{d.deplacement_episode_m} m{d.traine_ancre_possible ? ", traîne d'ancre possible" : ""}</Row>
+          <Context items={d.contexte} />
+        </>
+      );
+    }
     default:
       return null;
   }

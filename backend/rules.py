@@ -444,3 +444,163 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
             kept += 1
     return {"silences_detectes": len(rows), "exclus_sortie_de_couverture": exits, "coupures_retenues": kept,
             "avec_partenaire_possible": with_partner}
+
+
+INFRASTRUCTURE_SQL = """
+WITH corridor AS (
+    -- Tous les câbles et pipelines de la région active, fondus en une géométrie
+    SELECT ST_Union(geom::geometry)::geography AS geom
+    FROM infrastructure
+    WHERE region_id = (SELECT id FROM regions WHERE active ORDER BY id LIMIT 1)
+),
+slots AS (
+    SELECT DISTINCT ON (p.vessel_id, slot)
+           p.vessel_id, slot, p.geom, p.sog_kn, p.cog_deg, p.nav_status
+    FROM (
+        SELECT vessel_id, geom, sog_kn, cog_deg, nav_status, ts,
+               to_timestamp(floor(extract(epoch FROM ts) / ($3::int * 60)) * ($3::int * 60)) AS slot
+        FROM positions
+        WHERE ts >= $1::timestamptz AND ts < $2::timestamptz
+    ) p
+    ORDER BY p.vessel_id, slot, p.ts DESC
+),
+near AS (
+    -- Tranches lentes à proximité d'un corridor, au large
+    SELECT s.*, ST_Distance(s.geom, corr.geom) AS corr_m
+    FROM slots s, corridor corr
+    WHERE corr.geom IS NOT NULL
+      AND s.sog_kn IS NOT NULL AND s.sog_kn < $4::float8
+      AND ST_DWithin(s.geom, corr.geom, $5::float8)
+      AND NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, s.geom, $6::float8))
+),
+marked AS (
+    SELECT *, CASE WHEN lag(slot) OVER w IS NULL OR slot - lag(slot) OVER w > make_interval(mins => $7::int) THEN 1 ELSE 0 END AS new_ep
+    FROM near WINDOW w AS (PARTITION BY vessel_id ORDER BY slot)
+),
+episodes AS (
+    SELECT *, sum(new_ep) OVER (PARTITION BY vessel_id ORDER BY slot) AS ep FROM marked
+),
+grouped AS (
+    SELECT vessel_id, ep,
+           min(slot) AS t_start, max(slot) + make_interval(mins => $3::int) AS t_end,
+           count(*) AS n_slots, min(corr_m) AS corr_min_m, avg(sog_kn) AS sog_avg,
+           ST_Centroid(ST_Collect(geom::geometry)) AS mid,
+           array_agg(geom::geometry ORDER BY slot) AS geoms
+    FROM episodes GROUP BY vessel_id, ep
+)
+SELECT g.vessel_id, v.mmsi, v.name, v.ship_type, v.length_m,
+       g.t_start, g.t_end, g.n_slots, g.corr_min_m, g.sog_avg,
+       ST_Distance((g.geoms[1])::geography, (g.geoms[array_length(g.geoms, 1)])::geography) AS span_m,
+       ST_X(g.mid) AS lon, ST_Y(g.mid) AS lat,
+       i.name AS infra_name, i.kind AS infra_kind, i.operator AS infra_operator,
+       ST_Distance(g.mid::geography, i.geom) AS infra_dist_m
+FROM grouped g
+JOIN vessels v ON v.id = g.vessel_id
+LEFT JOIN LATERAL (
+    -- Corridor le plus proche du barycentre de l'épisode, pour nommer l'infrastructure concernée
+    SELECT name, kind, operator, geom FROM infrastructure
+    WHERE region_id = (SELECT id FROM regions WHERE active ORDER BY id LIMIT 1)
+    ORDER BY geom::geometry <-> g.mid LIMIT 1
+) i ON true
+WHERE g.t_end - g.t_start >= make_interval(mins => $8::int)
+  AND NOT (coalesce(v.ship_type, '') = ANY($9::text[]))
+  AND coalesce(v.length_m, 0) >= $10::float8
+"""
+
+
+async def run_infrastructure(c, day_start, day_end, rules: dict) -> dict:
+    """Menace sur une infrastructure : navire lent ou arrêté au dessus d'un corridor, au large.
+
+    Compose les primitives existantes (stationnement, proximité) avec le géorepérage sur la couche
+    infrastructure provisionnée. On détecte un motif suspect, jamais une attribution.
+    """
+    r = rules["infrastructure"]
+    rows = await c.fetch(INFRASTRUCTURE_SQL, day_start, day_end, r["slot_min"], r["max_speed_kn"],
+                         r["corridor_buffer_m"], r["min_coast_km"] * 1000.0, r["max_gap_min"], r["min_duration_min"],
+                         r["excluded_ship_types"], r["min_length_m"])
+    kept = 0
+    async with c.transaction():
+        await c.execute("DELETE FROM alerts WHERE type = 'INFRA_THREAT' AND (details->>'debut')::timestamptz >= $1 "
+                        "AND (details->>'debut')::timestamptz < $2", day_start, day_end)
+        for x in rows:
+            duration_min = (x["t_end"] - x["t_start"]).total_seconds() / 60
+            span_m = x["span_m"] or 0.0
+            drifting = span_m > r["drag_min_span_m"]
+            infra_label = x["infra_name"] or ("gazoduc" if x["infra_kind"] == "pipeline" else "câble")
+            context = [
+                f"À moins de {round(x['corr_min_m'])} m d'un corridor ({infra_label})",
+                f"Vitesse moyenne {x['sog_avg']:.1f} nœuds pendant {round(duration_min)} min au dessus du corridor",
+            ]
+            if drifting:
+                context.append(f"Déplacement lent de {round(span_m)} m pendant l'épisode : compatible avec une traîne d'ancre")
+            else:
+                context.append("Quasi immobile sur le corridor : mouillage ou arrêt")
+            severity = "elevee" if (duration_min >= r["high_duration_min"] or drifting) else "moyenne"
+            details = {
+                "navire": {"vessel_id": x["vessel_id"], "mmsi": x["mmsi"], "name": x["name"],
+                           "ship_type": x["ship_type"], "length_m": _finite(x["length_m"])},
+                "debut": x["t_start"].isoformat(), "fin": x["t_end"].isoformat(),
+                "duree_min": round(duration_min),
+                "infrastructure": {"nom": x["infra_name"], "type": x["infra_kind"], "operateur": x["infra_operator"],
+                                   "distance_m": None if x["infra_dist_m"] is None else round(x["infra_dist_m"])},
+                "distance_corridor_m": round(x["corr_min_m"]),
+                "vitesse_moyenne_kn": round(x["sog_avg"], 1),
+                "deplacement_episode_m": round(span_m),
+                "traine_ancre_possible": bool(drifting),
+                "contexte": context,
+                "motif": "Navire lent ou arrêté à proximité d'un câble ou gazoduc sous marin, au large",
+                "parametres": {k: r[k] for k in ("corridor_buffer_m", "max_speed_kn", "min_duration_min", "min_coast_km")},
+            }
+            event_time = x["t_start"] + timedelta(minutes=r["min_duration_min"])
+            alert_id = await c.fetchval(
+                "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
+                "VALUES ('INFRA_THREAT', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) RETURNING id",
+                severity, event_time, x["lon"], x["lat"], details, rules["version"])
+            await c.execute("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, 'vessel', $2) ON CONFLICT DO NOTHING",
+                            alert_id, x["vessel_id"])
+            kept += 1
+    return {"episodes_detectes": len(rows), "alertes": kept}
+
+
+class _InfraRollback(Exception):
+    """Annule la transaction du test par injection après vérification."""
+
+
+async def run_infrastructure_selftest(c, day_start, day_end, rules: dict) -> dict:
+    """Test par injection : un navire synthétique reste lent sur un corridor au delà de la durée seuil ;
+    on vérifie que la règle lève une alerte INFRA_THREAT, puis on annule la transaction. Prouve que la
+    règle n'est pas silencieuse. La base n'est jamais modifiée."""
+    r = rules["infrastructure"]
+    pt = await c.fetchrow(
+        "SELECT ST_X(p) AS lon, ST_Y(p) AS lat FROM ("
+        "  SELECT ST_LineInterpolatePoint(d.geom, 0.5) AS p FROM ("
+        "    SELECT (ST_Dump(geom::geometry)).geom AS geom FROM infrastructure"
+        "    WHERE region_id = (SELECT id FROM regions WHERE active ORDER BY id LIMIT 1)"
+        "  ) d ORDER BY ST_Length(d.geom) DESC LIMIT 1) q")
+    if pt is None or pt["lon"] is None:
+        return {"erreur": "Aucune infrastructure provisionnée dans la région active : rien à tester"}
+    lon, lat = pt["lon"], pt["lat"]
+    duration_min = r["min_duration_min"] + 2 * r["slot_min"]
+    n_slots = duration_min // r["slot_min"] + 1
+    t0 = day_start + timedelta(hours=6)
+    result = {"point": [round(lon, 4), round(lat, 4)], "duree_injectee_min": duration_min}
+    try:
+        async with c.transaction():
+            v = await c.fetchval(
+                "INSERT INTO vessels (mmsi, name, ship_type, length_m, ais_class, first_seen, last_seen) "
+                "VALUES (111000003, 'TEST INFRA ALPHA', 'Cargo', 120, 'A', $1, $2) RETURNING id", t0, t0)
+            for k in range(int(n_slots) + 1):
+                ts = t0 + timedelta(minutes=k * r["slot_min"])
+                await c.execute(
+                    "INSERT INTO positions (vessel_id, ts, geom, sog_kn, cog_deg, nav_status) "
+                    "VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7)",
+                    v, ts, lon, lat, 0.1, 0.0, 0)
+            await run_infrastructure(c, day_start, day_end, rules)
+            hit = await c.fetchval(
+                "SELECT count(*) FROM alerts a WHERE a.type = 'INFRA_THREAT' AND EXISTS ("
+                "  SELECT 1 FROM alert_evidence e WHERE e.alert_id = a.id AND e.evidence_type = 'vessel' AND e.evidence_id = $1)", v)
+            result["detectee"] = bool(hit)
+            raise _InfraRollback()
+    except _InfraRollback:
+        pass
+    return result
