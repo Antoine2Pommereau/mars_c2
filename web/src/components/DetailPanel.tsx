@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
-import type { AisCandidate, AlertProps, GapPartner, Selection, VesselRef } from "../lib/types";
+import type { AisCandidate, AisGapDetails, AlertProps, GapPartner, Selection, VesselRef } from "../lib/types";
 import { api } from "../lib/api";
 import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, PA_LINE, SEVERITY, SIGNAL, STATUS_LABEL, dayLabel, hm, num, utc } from "../lib/format";
 import AlertActions from "./AlertActions";
@@ -172,9 +172,10 @@ interface PanelProps {
   passTime: string | null;
   onStatus: (status: string) => void;
   onOpenDossier: (vesselId: number) => void;
+  onTipCue: (alertId: number) => void;
 }
 
-export default function DetailPanel({ selection, onClose, passTime, onStatus, onOpenDossier }: PanelProps) {
+export default function DetailPanel({ selection, onClose, passTime, onStatus, onOpenDossier, onTipCue }: PanelProps) {
   const vesselId = selection?.kind === "vessel_dossier" ? selection.vesselId : undefined;
   const dossierQ = useQuery({ queryKey: ["dossier", vesselId], queryFn: (ctx) => api.dossier(vesselId!, ctx),
     enabled: vesselId !== undefined, staleTime: 10_000 });
@@ -272,6 +273,13 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
         <p className="mb-3 text-ink/90">{d.motif}</p>
         {withChip && p.event_time && <Chip lon={lon} lat={lat} time={p.event_time} />}
         <AlertBody p={p} />
+        {p.type === "AIS_GAP" && (p.details as AisGapDetails | undefined)?.derniere_position && (
+          <button onClick={() => onTipCue(p.id)}
+            title="Projette la zone atteignable et lance une analyse radar sur le prochain passage qui la couvre"
+            className="mt-3 w-full rounded-md border border-signal px-3 py-1.5 text-[12.5px] text-ink hover:bg-raised">
+            Chercher ce navire
+          </button>
+        )}
         <AlertActions id={p.id} status={p.status ?? "nouvelle"} onStatus={onStatus} />
       </>
     );

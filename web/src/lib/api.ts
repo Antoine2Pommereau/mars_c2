@@ -27,6 +27,16 @@ export interface Pass {
 
 export interface AlertActionRow { action: string; note: string | null; author: string; at: string }
 
+export interface TipCueResult {
+  alert_id: number;
+  navire: { mmsi: number | null; name: string | null };
+  zone_atteignable: Feature;
+  emprise: number[];
+  passage: { product_name: string; acquired_at: string; delai_min: number } | null;
+  analyse_id: number | null;
+  raison: string | null;
+}
+
 export interface RegionLayer {
   layer: string; usage: string; status: string; source: string | null;
   license: string | null; feature_count: number | null; size_bytes: number | null; fetched_at: string | null;
@@ -63,6 +73,7 @@ export const api = {
   alertActions: (id: number) => get<AlertActionRow[]>(`/alerts/${id}/actions`),
   act: (id: number, action: string, note: string) =>
     post<{ id: number; status: string }>(`/alerts/${id}/actions`, { action, note }),
+  tipcue: (id: number, launch = true) => post<TipCueResult>(`/alerts/${id}/tipcue`, { launch }),
   passes: (bbox: number[]) => get<Pass[]>(`/passes?bbox=${bbox.join(",")}`),
   launch: (bbox: number[], product_name: string) => post<{ id: number }>("/analyses", { bbox, product_name, mode: "fast" }),
   analyses: (ctx?: QueryCtx) => get<FC>("/analyses", ctx?.signal),

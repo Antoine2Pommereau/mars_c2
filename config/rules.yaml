@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.20"
+version: "2026.10.21"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -165,3 +165,12 @@ protected_areas:
   fishing_ship_types: [Fishing]   # sévérité élevée si pêche déclarée (ship_type) ou nav_status 7 (en pêche)
   excluded_ship_types: [Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement",
                         "Port tender", Dredging, Diving, Military, Medical, "Anti-pollution"]
+
+tipcue:
+  # Tip and Cue (inspiré d'Unseenlabs) : depuis une coupure AIS, zone atteignable par le navire et
+  # lancement d'une analyse radar sur le prochain passage qui la couvre. La zone grandit avec le temps
+  # jusqu'au passage ; elle est bornée à l'emprise d'analyse maximale (50 km de côté).
+  marge_vitesse: 1.3        # un navire qui coupe son AIS peut accélérer : 30 % au dessus de la vitesse déclarée
+  v_plancher_kn: 12         # vitesse de référence minimale (un navire à l'arrêt déclaré peut repartir)
+  v_plafond_kn: 25          # cap dur, au delà on sort du domaine des navires marchands de la zone
+  horizon_h: 24             # horizon de recherche d'un passage postérieur à la coupure

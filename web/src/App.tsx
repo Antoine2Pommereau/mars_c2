@@ -22,6 +22,8 @@ export default function App() {
   const [layers, setLayers] = useState<LayerState>({ analysis: true, zones: false, reception: false, byType: false, infrastructure: false, bathymetry: false, protectedAreas: false });
   const [selection, setSelection] = useState<Selection | null>(null);
   const [highlight, setHighlight] = useState<FC>(EMPTY);
+  const [reach, setReach] = useState<FC>(EMPTY);
+  const [tipcueMsg, setTipcueMsg] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ center: [number, number]; zoom: number } | null>(null);
   const [drawing, setDrawing] = useState(false);
   const [draft, setDraft] = useState<number[] | null>(null);
@@ -142,6 +144,24 @@ export default function App() {
     setFocus({ center: f.geometry.coordinates as [number, number], zoom: 11 });
   }, []);
   const openDossier = useCallback((vesselId: number) => setSelection({ kind: "vessel_dossier", vesselId }), []);
+  // Tip and Cue : zone atteignable affichee, analyse radar lancee sur le prochain passage qui la couvre
+  const onTipCue = useCallback(async (alertId: number) => {
+    setTipcueMsg(null);
+    try {
+      const r = await api.tipcue(alertId, true);
+      setReach({ type: "FeatureCollection", features: [r.zone_atteignable] });
+      if (r.analyse_id && r.passage) {
+        setPinned(r.analyse_id);
+        onCommand({ action: "seek", time: replayStart(r.passage.acquired_at) });
+        qc.invalidateQueries({ queryKey: ["analyses"] });
+        setPanel("analyses");
+      } else if (r.raison) {
+        setTipcueMsg(r.raison);
+      }
+    } catch {
+      setTipcueMsg("Tip and cue indisponible pour cette alerte.");
+    }
+  }, [onCommand, qc]);
 
   // Trajectoires surlignées pour les rendez vous et les coupures AIS
   useEffect(() => {
@@ -242,6 +262,7 @@ export default function App() {
           protectedAreas={protectedQ.data ?? null}
           bathymetryImage={bathymetryImage}
           regionBbox={activeRegion?.bbox ?? null}
+          reach={reach}
           highlight={highlight}
           show={layers}
           focus={focus}
@@ -269,8 +290,14 @@ export default function App() {
             ${drawing ? "border-signal bg-panel/95 text-ink" : "border-hair bg-panel/90 text-ink hover:border-signal"}`}>
           {drawing ? "Cliquez deux coins opposés, Échap pour annuler" : draft ? "Annuler le tracé" : "Nouvelle analyse"}
         </button>
+        {tipcueMsg && (
+          <div className="absolute left-1/2 top-4 z-20 flex -translate-x-1/2 items-center gap-3 rounded-md border border-hair bg-panel/95 px-3 py-2 text-[12.5px] text-ink backdrop-blur">
+            {tipcueMsg}
+            <button onClick={() => { setTipcueMsg(null); setReach(EMPTY); }} className="text-muted hover:text-ink" aria-label="Fermer">✕</button>
+          </div>
+        )}
         <DetailPanel selection={selection} onClose={() => setSelection(null)}
-          passTime={analysis?.properties.acquired_at ?? null} onStatus={onStatus} onOpenDossier={openDossier} />
+          passTime={analysis?.properties.acquired_at ?? null} onStatus={onStatus} onOpenDossier={openDossier} onTipCue={onTipCue} />
         <Timeline clock={stream?.clock ?? null} days={(daysQ.data ?? []).map((d) => d.day)}
           dayAlerts={dayAlertsQ.data ?? EMPTY} passes={passes} onCommand={timelineCommand} />
       </main>

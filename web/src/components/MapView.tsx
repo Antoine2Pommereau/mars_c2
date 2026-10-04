@@ -55,6 +55,7 @@ interface Props {
   protectedAreas: FC | null;
   bathymetryImage: { url: string; bbox: number[] } | null;
   regionBbox: number[] | null;
+  reach: FC;
   highlight: FC;
   show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean; infrastructure: boolean; bathymetry: boolean; protectedAreas: boolean };
   focus: { center: [number, number]; zoom: number } | null;
@@ -102,7 +103,7 @@ export default function MapView(p: Props) {
     map.on("load", () => {
       if (disposed) return;
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["bathymetry", "protected_areas", "infrastructure", "zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
+      ["bathymetry", "protected_areas", "infrastructure", "zones", "reception", "reach", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
 
       // Couches de contexte provisionnées (régions), sous les données opérationnelles
       map.addLayer({ id: "bathymetry", type: "line", source: "bathymetry", layout: { visibility: "none" },
@@ -129,6 +130,11 @@ export default function MapView(p: Props) {
         paint: { "fill-color": ALERT_COLOR.RENDEZVOUS, "fill-opacity": 0.12, "fill-outline-color": ALERT_COLOR.RENDEZVOUS } });
       map.addLayer({ id: "reception", type: "fill", source: "reception", layout: { visibility: "none" },
         paint: { "fill-color": SIGNAL, "fill-opacity": 0.07, "fill-outline-color": SIGNAL } });
+      // Zone atteignable d'un Tip and Cue (cercle en pointillés, couleur coupure AIS)
+      map.addLayer({ id: "reach-fill", type: "fill", source: "reach",
+        paint: { "fill-color": ALERT_COLOR.AIS_GAP, "fill-opacity": 0.08 } });
+      map.addLayer({ id: "reach-line", type: "line", source: "reach",
+        paint: { "line-color": ALERT_COLOR.AIS_GAP, "line-width": 1.5, "line-dasharray": [3, 2] } });
       map.addLayer({ id: "trails", type: "line", source: "trails",
         paint: { "line-color": "#7c8b97", "line-width": 1, "line-opacity": 0.45 } });
       map.addImage("chevron", makeIcon("chevron"), { sdf: true });
@@ -269,6 +275,7 @@ export default function MapView(p: Props) {
   useEffect(() => setData("infrastructure", p.infrastructure), [ready, p.infrastructure]);
   useEffect(() => setData("protected_areas", p.protectedAreas), [ready, p.protectedAreas]);
   useEffect(() => setData("bathymetry", p.bathymetry), [ready, p.bathymetry]);
+  useEffect(() => setData("reach", p.reach), [ready, p.reach]);
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
 
   // Overlay coloré du fond marin : source image ajoutée dès que la région est connue, sous les isobathes

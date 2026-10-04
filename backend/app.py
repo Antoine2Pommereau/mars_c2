@@ -676,6 +676,91 @@ async def create_analysis(req: AnalysisRequest):
     return {"id": analysis_id, "status": "pending"}
 
 
+class TipCueRequest(BaseModel):
+    launch: bool = True
+
+
+def _reach_bbox(lon0: float, lat0: float, radius_m: float) -> list[float]:
+    import math
+    dlat = radius_m / 110574.0
+    dlon = radius_m / (111320.0 * math.cos(math.radians(lat0)))
+    return [lon0 - dlon, lat0 - dlat, lon0 + dlon, lat0 + dlat]
+
+
+def _reach_feature(lon0: float, lat0: float, radius_m: float, v_ref: float, cap, tronquee: bool) -> dict:
+    """Zone atteignable, en cercle (V1), autour de la dernière position."""
+    import math
+    kx = radius_m / (111320.0 * math.cos(math.radians(lat0)))
+    ky = radius_m / 110574.0
+    ring = [[round(lon0 + kx * math.cos(t), 5), round(lat0 + ky * math.sin(t), 5)]
+            for t in [i * math.pi / 18 for i in range(37)]]
+    return {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [ring]},
+            "properties": {"rayon_m": round(radius_m), "centre": [round(lon0, 4), round(lat0, 4)],
+                           "vitesse_ref_kn": round(v_ref, 1), "cap_deg": cap, "tronquee": bool(tronquee)}}
+
+
+MAX_REACH_M = 24000.0   # rayon tel que l'emprise reste sous les 50 km de côté
+
+
+@app.post("/api/alerts/{alert_id}/tipcue")
+async def tipcue(alert_id: int, req: TipCueRequest):
+    """Depuis une coupure AIS : zone atteignable par le navire, et analyse radar sur le prochain passage
+    qui la couvre. Boucle de fusion de capteurs tracée par alert_evidence."""
+    rules = load_rules()
+    tc = rules["tipcue"]
+    pool = app.state.pool
+    async with pool.acquire() as c:
+        a = await c.fetchrow("SELECT type, details FROM alerts WHERE id = $1", alert_id)
+        if a is None:
+            raise HTTPException(404, "Alerte inconnue")
+        if a["type"] != "AIS_GAP":
+            raise HTTPException(422, "Tip and cue réservé aux coupures AIS")
+        d = a["details"] if isinstance(a["details"], dict) else json.loads(a["details"])
+        pos, t_last = d.get("derniere_position"), d.get("dernier_message")
+        if not pos or not t_last:
+            raise HTTPException(422, "Coupure sans dernière position exploitable")
+        lon0, lat0 = float(pos[0]), float(pos[1])
+        t_last_dt = datetime.fromisoformat(t_last)
+        v_ref = min(tc["v_plafond_kn"], max((d.get("vitesse_avant_kn") or 0) * tc["marge_vitesse"], tc["v_plancher_kn"]))
+        pr = await c.fetchrow(
+            "SELECT product_name, acquired_at FROM sar_passes s WHERE s.acquired_at > $1::timestamptz "
+            "AND s.acquired_at <= $1::timestamptz + make_interval(hours => $2::int) "
+            "AND EXISTS (SELECT 1 FROM ais_days dd WHERE dd.day = (s.acquired_at AT TIME ZONE 'UTC')::date) "
+            "ORDER BY s.acquired_at LIMIT 1", t_last_dt, int(tc["horizon_h"]))
+    nav = d.get("navire") or {}
+    base = {"alert_id": alert_id, "navire": {"mmsi": nav.get("mmsi"), "name": nav.get("name")}}
+    cap = d.get("cap_avant_deg")
+    if pr is None:
+        dt_s = tc["horizon_h"] * 3600
+        r_full = v_ref * 0.514444 * dt_s
+        r = min(r_full, MAX_REACH_M)
+        return {**base, "zone_atteignable": _reach_feature(lon0, lat0, r, v_ref, cap, r_full > r),
+                "emprise": _reach_bbox(lon0, lat0, r), "passage": None, "analyse_id": None,
+                "raison": "Aucun passage Sentinel 1 postérieur à la coupure avec AIS chargé sur l'horizon"}
+    dt_s = (pr["acquired_at"] - t_last_dt).total_seconds()
+    r_full = v_ref * 0.514444 * dt_s
+    r = min(r_full, MAX_REACH_M)
+    bbox = check_bbox(_reach_bbox(lon0, lat0, r))
+    feature = _reach_feature(lon0, lat0, r, v_ref, cap, r_full > r)
+    delai_min = round(dt_s / 60)
+    analyse_id = None
+    if req.launch:
+        async with pool.acquire() as c:
+            p = await c.fetchrow("SELECT id, acquired_at FROM sar_passes WHERE product_name = $1", pr["product_name"])
+            analyse_id = await c.fetchval(
+                "INSERT INTO analyses (pass_id, aoi, mode, status, model_version) "
+                "VALUES ($1, ST_MakeEnvelope($2, $3, $4, $5, 4326)::geography, 'fast', 'pending', $6) RETURNING id",
+                p["id"], bbox[0], bbox[1], bbox[2], bbox[3], rules["model"]["version"])
+            await c.execute("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, 'analysis', $2) ON CONFLICT DO NOTHING",
+                            alert_id, analyse_id)
+        task = asyncio.create_task(run_analysis(analyse_id, bbox, p["acquired_at"], pr["product_name"], "fast", rules))
+        TASKS.add(task)
+        task.add_done_callback(TASKS.discard)
+    return {**base, "zone_atteignable": feature, "emprise": bbox,
+            "passage": {"product_name": pr["product_name"], "acquired_at": pr["acquired_at"].isoformat(), "delai_min": delai_min},
+            "analyse_id": analyse_id, "raison": None}
+
+
 @app.get("/api/analyses/{analysis_id}")
 async def get_analysis(analysis_id: int):
     async with app.state.pool.acquire() as c:
