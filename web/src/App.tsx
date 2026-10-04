@@ -8,6 +8,7 @@ import MapView from "./components/MapView";
 import NewAnalysis from "./components/NewAnalysis";
 import Rail, { type PanelId } from "./components/Rail";
 import RegionsPanel from "./components/RegionsPanel";
+import VesselsPanel from "./components/VesselsPanel";
 import Timeline from "./components/Timeline";
 import { api, bathymetryImageUrl, type Pass } from "./lib/api";
 import { replayStart, HIGHLIGHT_PRIMARY, HIGHLIGHT_SECONDARY, HIGHLIGHT_DASHED } from "./lib/format";
@@ -139,6 +140,7 @@ export default function App() {
     setSelection({ kind: "alert", feature: f });
     setFocus({ center: f.geometry.coordinates as [number, number], zoom: 11 });
   }, []);
+  const openDossier = useCallback((vesselId: number) => setSelection({ kind: "vessel_dossier", vesselId }), []);
 
   // Trajectoires surlignées pour les rendez vous et les coupures AIS
   useEffect(() => {
@@ -214,6 +216,7 @@ export default function App() {
               history={done.slice(0, 8)} onPick={pickAnalysis}
               launcher={<NewAnalysis drawing={drawTarget !== "region" && drawing} draft={drawTarget === "region" ? null : draft} onStartDraw={startDraw} onCancel={cancelDraw} onLaunched={onLaunched} />} />
           )}
+          {panel === "navires" && <VesselsPanel onOpen={openDossier} />}
           {panel === "couches" && <LayersPanel state={layers} onChange={setLayers} />}
           {panel === "regions" && (
             <RegionsPanel regions={regionsQ.data ?? []} activeId={regionId}
@@ -264,7 +267,7 @@ export default function App() {
           {drawing ? "Cliquez deux coins opposés, Échap pour annuler" : draft ? "Annuler le tracé" : "Nouvelle analyse"}
         </button>
         <DetailPanel selection={selection} onClose={() => setSelection(null)}
-          passTime={analysis?.properties.acquired_at ?? null} onStatus={onStatus} />
+          passTime={analysis?.properties.acquired_at ?? null} onStatus={onStatus} onOpenDossier={openDossier} />
         <Timeline clock={stream?.clock ?? null} days={(daysQ.data ?? []).map((d) => d.day)}
           dayAlerts={dayAlertsQ.data ?? EMPTY} passes={passes} onCommand={timelineCommand} />
       </main>

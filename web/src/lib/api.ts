@@ -33,6 +33,24 @@ export interface RegionLayer {
 }
 export interface Region { id: number; name: string; origin: string; active: boolean; bbox: number[]; layers: RegionLayer[] }
 
+export interface VesselHit {
+  vessel_id: number; mmsi: number; name: string | null; ship_type: string | null;
+  flag: string | null; length_m: number | null; last_seen: string | null; n_alertes: number;
+}
+export interface DossierContribution { alert_id: number; type: string; severity: string; status: string; jour: string; points: number }
+export interface DossierAlert { id: number; type: string; severity: string; status: string; event_time: string; lon: number; lat: number; motif: string | null }
+export interface Dossier {
+  vessel_id: number;
+  identite: { mmsi: number; imo: number | null; name: string | null; ship_type: string | null; flag: string | null;
+              length_m: number | null; ais_class: string | null; mid: number; first_seen: string | null; last_seen: string | null };
+  anomalies_identite: Record<string, boolean>;
+  comptages: { par_type: Record<string, number>; total: number; confirmees: number; classees: number;
+               jours_distincts: number; premiere_alerte: string | null; derniere_alerte: string | null };
+  risque: { score: number; bande: string; contributions: DossierContribution[]; bonus_recurrence: number;
+            jours_distincts: number; terme_identite: number; version: string };
+  alertes: DossierAlert[];
+}
+
 export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
   `/api/chip?lon=${lon}&lat=${lat}&time=${encodeURIComponent(time)}&size_m=${sizeM}`;
 
@@ -63,6 +81,8 @@ export const api = {
   createRegion: (name: string, bbox: number[]) => post<{ id: number }>("/regions", { name, bbox }),
   activateRegion: (id: number) => post<{ active: number }>(`/regions/${id}/activate`, {}),
   provisionRegion: (id: number) => post<{ status: string }>(`/regions/${id}/provision`, {}),
+  searchVessels: (q: string, ctx?: QueryCtx) => get<VesselHit[]>(`/vessels?q=${encodeURIComponent(q)}`, ctx?.signal),
+  dossier: (vesselId: number, ctx?: QueryCtx) => get<Dossier>(`/vessels/${vesselId}/dossier`, ctx?.signal),
   track: (vesselId: number, start: string, end: string) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
   clock: (body: { action: "play" | "pause" | "speed" | "seek"; speed?: number; time?: string }) =>

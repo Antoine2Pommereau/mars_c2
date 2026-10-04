@@ -220,6 +220,7 @@ export type Selection =
   | { kind: "alert"; feature: Feature<AlertProps> }
   | { kind: "vessel"; properties: VesselProps }
   | { kind: "detection"; properties: DetectionProps }
-  | { kind: "infrastructure"; properties: InfraProps };
+  | { kind: "infrastructure"; properties: InfraProps }
+  | { kind: "vessel_dossier"; vesselId: number };
 
 export const EMPTY: FC<any> = { type: "FeatureCollection", features: [] };

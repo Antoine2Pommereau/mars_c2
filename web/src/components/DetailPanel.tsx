@@ -1,9 +1,25 @@
+import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AisCandidate, AlertProps, GapPartner, Selection, VesselRef } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, SEVERITY, SIGNAL, STATUS_LABEL, hm, num, utc } from "../lib/format";
+import { api } from "../lib/api";
+import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, SEVERITY, SIGNAL, STATUS_LABEL, dayLabel, hm, num, utc } from "../lib/format";
 import AlertActions from "./AlertActions";
 import Chip from "./Chip";
+
+const BAND: Record<string, { label: string; color: string }> = {
+  neutre: { label: "neutre", color: "#7c8b97" },
+  faible: { label: "faible", color: "#e8d45a" },
+  a_surveiller: { label: "à surveiller", color: "#f0a84b" },
+  eleve: { label: "élevé", color: "#ef6461" },
+  prioritaire: { label: "prioritaire", color: "#e03030" },
+};
+const ANOM_LABEL: Record<string, string> = {
+  mid_incoherent: "Code pays MMSI incohérent", mmsi_hors_format: "MMSI hors format",
+  longueur_manquante: "Longueur manquante", imo_manquant_classe_a: "IMO manquant (classe A)",
+  pavillon_manquant: "Pavillon manquant",
+};
+const PANEL = "absolute right-4 top-4 z-10 max-h-[calc(100%-11rem)] w-[380px] overflow-y-auto rounded-lg border border-hair bg-panel/95 p-4 shadow-2xl backdrop-blur";
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -142,10 +158,87 @@ interface PanelProps {
   onClose: () => void;
   passTime: string | null;
   onStatus: (status: string) => void;
+  onOpenDossier: (vesselId: number) => void;
 }
 
-export default function DetailPanel({ selection, onClose, passTime, onStatus }: PanelProps) {
+export default function DetailPanel({ selection, onClose, passTime, onStatus, onOpenDossier }: PanelProps) {
+  const vesselId = selection?.kind === "vessel_dossier" ? selection.vesselId : undefined;
+  const dossierQ = useQuery({ queryKey: ["dossier", vesselId], queryFn: (ctx) => api.dossier(vesselId!, ctx),
+    enabled: vesselId !== undefined, staleTime: 10_000 });
   if (!selection) return null;
+
+  if (selection.kind === "vessel_dossier") {
+    const d = dossierQ.data;
+    const band = d ? (BAND[d.risque.bande] ?? BAND.neutre) : BAND.neutre;
+    const anomalies = d ? Object.entries(d.anomalies_identite).filter(([, on]) => on) : [];
+    return (
+      <div className={PANEL}>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <h3 className="text-[15px] font-semibold leading-snug">{d?.identite.name ?? "Dossier navire"}</h3>
+          <button onClick={onClose} className="text-muted hover:text-ink" aria-label="Fermer"><X size={16} /></button>
+        </div>
+        {!d ? <p className="text-muted">Chargement…</p> : (
+          <>
+            <div className="mb-3 flex items-center gap-3 rounded-md border border-hair bg-raised px-3 py-2.5">
+              <span className="font-cond text-[30px] font-medium leading-none tabular-nums" style={{ color: band.color }}>{d.risque.score}</span>
+              <div>
+                <div className="text-[13px] font-medium" style={{ color: band.color }}>{band.label}</div>
+                <div className="text-[11.5px] text-muted">score de risque</div>
+              </div>
+            </div>
+            <Row label="MMSI">{d.identite.mmsi}</Row>
+            <Row label="IMO">{d.identite.imo ?? "n.d."}</Row>
+            <Row label="Type">{d.identite.ship_type ?? "non renseigné"}</Row>
+            <Row label="Pavillon">{d.identite.flag ?? "n.d."}</Row>
+            <Row label="Longueur">{d.identite.length_m ? `${num(d.identite.length_m, 0)} m` : "n.d."}</Row>
+            <Row label="Classe AIS">{d.identite.ais_class ?? "n.d."}</Row>
+            {anomalies.length > 0 && (
+              <div className="mt-3">
+                <div className="mb-1 font-semibold">Anomalies d'identité</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {anomalies.map(([k]) => (
+                    <span key={k} className="rounded-full border border-hair px-2 py-0.5 text-[11.5px] text-[#e8d45a]">{ANOM_LABEL[k] ?? k}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {d.risque.contributions.length > 0 && <div className="mb-1 mt-4 font-semibold">Décomposition du score</div>}
+            {d.risque.contributions.map((c) => (
+              <div key={c.alert_id} className="flex justify-between gap-3 border-b border-hair/70 py-1.5 text-[12.5px]">
+                <span className="text-muted">{ALERT_LABEL[c.type] ?? c.type} · {dayLabel(c.jour)} · {SEVERITY[c.severity] ?? c.severity}</span>
+                <span className="tabular-nums text-ink">{num(c.points)}</span>
+              </div>
+            ))}
+            {d.risque.bonus_recurrence > 0 && (
+              <div className="flex justify-between gap-3 border-b border-hair/70 py-1.5 text-[12.5px]">
+                <span className="text-muted">Récurrence, {d.risque.jours_distincts} jours</span>
+                <span className="tabular-nums text-ink">{num(d.risque.bonus_recurrence)}</span>
+              </div>
+            )}
+            {d.risque.terme_identite > 0 && (
+              <div className="flex justify-between gap-3 border-b border-hair/70 py-1.5 text-[12.5px]">
+                <span className="text-muted">Anomalies d'identité</span>
+                <span className="tabular-nums text-ink">{num(d.risque.terme_identite)}</span>
+              </div>
+            )}
+            <div className="mb-1 mt-4 font-semibold">Historique ({d.comptages.total})</div>
+            {d.alertes.length === 0 && <p className="text-muted">Aucune alerte enregistrée.</p>}
+            {d.alertes.map((a) => (
+              <div key={a.id} className={`flex items-center justify-between gap-3 border-b border-hair/70 py-1.5 text-[12.5px] ${a.status === "classee" ? "opacity-55" : ""}`}>
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: ALERT_COLOR[a.type] ?? "#fff" }} />
+                  {ALERT_LABEL[a.type] ?? a.type}
+                </span>
+                <span className="text-muted">{dayLabel(a.event_time.slice(0, 10))} {hm(a.event_time)}</span>
+              </div>
+            ))}
+          </>
+        )}
+        {d && <p className="mt-4 border-t border-hair pt-3 text-[12px] text-muted">Score version {d.risque.version}</p>}
+      </div>
+    );
+  }
+
   let title = "";
   let color = SIGNAL;
   let body: ReactNode = null;
@@ -181,6 +274,10 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus }: 
         <Row label="Vitesse">{num(p.sog_kn)} nœuds</Row>
         <Row label="Route">{num(p.cog_deg, 0)}°</Row>
         <Row label="Dernier message">il y a {num((p.age_s ?? 0) / 60, 0)} min</Row>
+        <button onClick={() => onOpenDossier(p.vessel_id)}
+          className="mt-3 w-full rounded-md border border-hair px-3 py-1.5 text-[12.5px] text-ink hover:border-signal">
+          Ouvrir le dossier
+        </button>
       </>
     );
   } else if (selection.kind === "infrastructure") {
