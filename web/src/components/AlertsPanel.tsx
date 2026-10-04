@@ -1,7 +1,7 @@
 import { Check, ChevronDown } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { AlertProps, AlertType, FC, Feature } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, downloadJson, hm, num } from "../lib/format";
 
 type Alert = Feature<AlertProps>;
 const TYPES: AlertType[] = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED", "INFRA_THREAT", "IDENTITY_MISMATCH"];
@@ -88,7 +88,14 @@ export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, s
     <div className="flex h-full flex-col">
       <header className="border-b border-hair px-4 pb-3 pt-4">
         <h2 className="flex items-baseline justify-between text-[15px] font-semibold">
-          Alertes <span className="text-[12px] font-normal text-muted">{shown.length} sur {all.length}</span>
+          Alertes
+          <span className="flex items-baseline gap-3">
+            {shown.length > 0 && (
+              <button onClick={() => downloadJson("alertes.geojson", { type: "FeatureCollection", features: shown })}
+                className="text-[12px] font-normal text-signal hover:underline" title="Exporter les alertes affichées en GeoJSON">Exporter</button>
+            )}
+            <span className="text-[12px] font-normal text-muted">{shown.length} sur {all.length}</span>
+          </span>
         </h2>
         <div className="mt-3 flex items-center gap-2 text-[12px]">
           {/* Filtre par type : menu repliable, les types sans alerte sont masqués */}

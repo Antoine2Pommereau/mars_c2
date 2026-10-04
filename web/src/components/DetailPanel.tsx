@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AisCandidate, AisGapDetails, AlertProps, GapPartner, Selection, VesselRef } from "../lib/types";
 import { api } from "../lib/api";
-import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, PA_LINE, SEVERITY, SIGNAL, STATUS_LABEL, dayLabel, hm, num, utc } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, PA_LINE, SEVERITY, SIGNAL, STATUS_LABEL, dayLabel, downloadJson, hm, num, utc } from "../lib/format";
 import AlertActions from "./AlertActions";
 import Chip from "./Chip";
 
@@ -189,7 +189,10 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
       <div className={PANEL}>
         <div className="mb-3 flex items-start justify-between gap-3">
           <h3 className="text-[15px] font-semibold leading-snug">{d?.identite.name ?? "Dossier navire"}</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink" aria-label="Fermer"><X size={16} /></button>
+          <div className="flex items-center gap-3">
+            {d && <button onClick={() => downloadJson(`dossier-${d.identite.mmsi}.json`, d)} className="text-[12px] text-signal hover:underline" title="Exporter le dossier">Exporter</button>}
+            <button onClick={onClose} className="text-muted hover:text-ink" aria-label="Fermer"><X size={16} /></button>
+          </div>
         </div>
         {!d ? <p className="text-muted">Chargement…</p> : (
           <>

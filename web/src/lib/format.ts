@@ -89,6 +89,17 @@ export function toInputValue(iso: string): string {
   return iso.slice(0, 16);
 }
 
+// Téléchargement d'un objet en fichier JSON (export GeoJSON ou dossier), côté client
+export function downloadJson(filename: string, data: unknown): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // Le rejeu se place dix minutes avant l'instant d'un passage
 const REPLAY_LEAD_MS = 600_000;
 export function replayStart(acquiredAt: string): string {
