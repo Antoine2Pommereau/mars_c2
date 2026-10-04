@@ -1063,6 +1063,80 @@ async def infrastructure_selftest(req: RuleRun):
     return {"jour": day.isoformat(), **result}
 
 
+@app.get("/api/vessels")
+async def search_vessels(q: str, limit: int = 20):
+    """Recherche de navires par MMSI (chiffres) ou par nom, triés par nombre d'alertes."""
+    if len(q.strip()) < 2:
+        raise HTTPException(422, "Recherche d'au moins deux caractères")
+    async with app.state.pool.acquire() as c:
+        rows = await c.fetch(
+            "SELECT v.id AS vessel_id, v.mmsi, v.name, v.ship_type, v.flag, v.length_m, v.last_seen, "
+            "count(ae.alert_id) AS n_alertes "
+            "FROM vessels v LEFT JOIN alert_evidence ae ON ae.evidence_type = 'vessel' AND ae.evidence_id = v.id "
+            "WHERE CASE WHEN $1 ~ '^[0-9]+$' THEN v.mmsi::text LIKE $1 || '%' ELSE v.name ILIKE '%' || $1 || '%' END "
+            "GROUP BY v.id, v.mmsi, v.name, v.ship_type, v.flag, v.length_m, v.last_seen "
+            "ORDER BY n_alertes DESC, v.last_seen DESC NULLS LAST LIMIT $2::int", q.strip(), limit)
+    return [{"vessel_id": r["vessel_id"], "mmsi": r["mmsi"], "name": r["name"], "ship_type": r["ship_type"],
+             "flag": r["flag"], "length_m": float(r["length_m"]) if r["length_m"] is not None else None,
+             "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None, "n_alertes": r["n_alertes"]}
+            for r in rows]
+
+
+@app.get("/api/vessels/{vessel_id}/dossier")
+async def vessel_dossier(vessel_id: int):
+    """Dossier navire : identité, anomalies, historique d'alertes et score de risque auditable."""
+    from risk import score_vessel
+    rules = load_rules()
+    async with app.state.pool.acquire() as c:
+        v = await c.fetchrow(
+            "SELECT v.id AS vessel_id, v.mmsi, v.imo, v.name, v.ship_type, v.flag, v.length_m, v.ais_class, "
+            "v.first_seen, v.last_seen, floor(v.mmsi / 1000000)::int AS mid, "
+            "(v.mmsi < 100000000 OR v.mmsi >= 1000000000) AS mmsi_hors_format, "
+            "(floor(v.mmsi / 1000000)::int NOT BETWEEN 201 AND 775) AS mid_incoherent, "
+            "(v.length_m IS NULL) AS longueur_manquante, "
+            "(v.imo IS NULL AND v.ais_class = 'A') AS imo_manquant_classe_a, "
+            "(v.flag IS NULL) AS pavillon_manquant "
+            "FROM vessels v WHERE v.id = $1", vessel_id)
+        if not v:
+            raise HTTPException(404, "Navire inconnu")
+        rows = await c.fetch(
+            "SELECT a.id, a.type, a.severity, a.status, a.event_time, "
+            "ST_X(a.geom::geometry) AS lon, ST_Y(a.geom::geometry) AS lat, a.details->>'motif' AS motif, "
+            "greatest(0, extract(epoch FROM sim_now() - a.event_time) / 86400.0) AS age_jours, "
+            "(a.event_time AT TIME ZONE 'UTC')::date AS jour "
+            "FROM alerts a WHERE EXISTS (SELECT 1 FROM alert_evidence e WHERE e.alert_id = a.id "
+            "AND e.evidence_type = 'vessel' AND e.evidence_id = $1) ORDER BY a.event_time DESC", vessel_id)
+    anomalies = {k: bool(v[k]) for k in ("mid_incoherent", "mmsi_hors_format", "longueur_manquante",
+                                         "imo_manquant_classe_a", "pavillon_manquant")}
+    alerts = [{"id": r["id"], "type": r["type"], "severity": r["severity"], "status": r["status"],
+               "age_jours": float(r["age_jours"]), "jour": r["jour"].isoformat()} for r in rows]
+    risque = score_vessel(alerts, anomalies, rules["risk_score"])
+    risque["version"] = rules["version"]
+    par_type: dict[str, int] = {}
+    confirmees = classees = 0
+    for r in rows:
+        par_type[r["type"]] = par_type.get(r["type"], 0) + 1
+        confirmees += r["status"] == "confirmee"
+        classees += r["status"] == "classee"
+    return {
+        "vessel_id": v["vessel_id"],
+        "identite": {"mmsi": v["mmsi"], "imo": v["imo"], "name": v["name"], "ship_type": v["ship_type"],
+                     "flag": v["flag"], "length_m": float(v["length_m"]) if v["length_m"] is not None else None,
+                     "ais_class": v["ais_class"], "mid": v["mid"],
+                     "first_seen": v["first_seen"].isoformat() if v["first_seen"] else None,
+                     "last_seen": v["last_seen"].isoformat() if v["last_seen"] else None},
+        "anomalies_identite": anomalies,
+        "comptages": {"par_type": par_type, "total": len(rows), "confirmees": confirmees, "classees": classees,
+                      "jours_distincts": risque["jours_distincts"],
+                      "premiere_alerte": rows[-1]["event_time"].isoformat() if rows else None,
+                      "derniere_alerte": rows[0]["event_time"].isoformat() if rows else None},
+        "risque": risque,
+        "alertes": [{"id": r["id"], "type": r["type"], "severity": r["severity"], "status": r["status"],
+                     "event_time": r["event_time"].isoformat(), "lon": r["lon"], "lat": r["lat"], "motif": r["motif"]}
+                    for r in rows],
+    }
+
+
 @app.get("/api/chip")
 async def chip(lon: float, lat: float, time: str, size_m: float = 800):
     """Vignette radar autour d'un point, produite par le service d'inférence qui détient les extraits."""
