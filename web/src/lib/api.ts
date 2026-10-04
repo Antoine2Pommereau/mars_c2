@@ -75,6 +75,7 @@ export const api = {
   days: (ctx?: QueryCtx) => get<{ day: string; messages: number; vessels: number }[]>("/ais/days", ctx?.signal),
   regions: (ctx?: QueryCtx) => get<Region[]>("/regions", ctx?.signal),
   infrastructure: (regionId: number, ctx?: QueryCtx) => get<FC>(`/regions/${regionId}/infrastructure`, ctx?.signal),
+  protectedAreas: (regionId: number, ctx?: QueryCtx) => get<FC>(`/regions/${regionId}/protected_areas`, ctx?.signal),
   bathymetry: (regionId: number, ctx?: QueryCtx) => get<FC>(`/regions/${regionId}/bathymetry/contours`, ctx?.signal),
   depth: (regionId: number, lon: number, lat: number, signal?: AbortSignal) =>
     get<{ depth_m: number | null; note?: string }>(`/regions/${regionId}/depth?lon=${lon}&lat=${lat}`, signal),

@@ -2,7 +2,7 @@ import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map 
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
 import { bboxPolygon } from "../lib/geo";
-import { ALERT_COLOR, ALERT_FALLBACK, BATHY_CONTOUR, INFRA_CABLE, INFRA_PIPELINE, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE, SIGNAL } from "../lib/format";
+import { ALERT_COLOR, ALERT_FALLBACK, BATHY_CONTOUR, INFRA_CABLE, INFRA_PIPELINE, PA_FILL, PA_LINE, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE, SIGNAL } from "../lib/format";
 import { EMPTY, type AlertProps, type FC, type Feature, type Selection } from "../lib/types";
 
 const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -16,7 +16,8 @@ const SHIP_COLOR: ExpressionSpecification = ["match", ["coalesce", ["get", "ship
 const ALERT_STROKE: ExpressionSpecification = ["match", ["get", "type"],
   "DARK_SHIP", ALERT_COLOR.DARK_SHIP, "RENDEZVOUS", ALERT_COLOR.RENDEZVOUS,
   "AIS_GAP", ALERT_COLOR.AIS_GAP, "AIS_UNCONFIRMED", ALERT_COLOR.AIS_UNCONFIRMED,
-  "INFRA_THREAT", ALERT_COLOR.INFRA_THREAT, "IDENTITY_MISMATCH", ALERT_COLOR.IDENTITY_MISMATCH, ALERT_FALLBACK];
+  "INFRA_THREAT", ALERT_COLOR.INFRA_THREAT, "IDENTITY_MISMATCH", ALERT_COLOR.IDENTITY_MISMATCH,
+  "ZONE_BREACH", ALERT_COLOR.ZONE_BREACH, ALERT_FALLBACK];
 const NEUTRAL = SHIP_NEUTRAL;
 
 // Couleur des infrastructures provisionnées : câble ou pipeline
@@ -51,10 +52,11 @@ interface Props {
   reception: FC | null;
   infrastructure: FC | null;
   bathymetry: FC | null;
+  protectedAreas: FC | null;
   bathymetryImage: { url: string; bbox: number[] } | null;
   regionBbox: number[] | null;
   highlight: FC;
-  show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean; infrastructure: boolean; bathymetry: boolean };
+  show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean; infrastructure: boolean; bathymetry: boolean; protectedAreas: boolean };
   focus: { center: [number, number]; zoom: number } | null;
   onSelect: (s: Selection) => void;
   drawing: boolean;
@@ -100,7 +102,7 @@ export default function MapView(p: Props) {
     map.on("load", () => {
       if (disposed) return;
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["bathymetry", "infrastructure", "zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
+      ["bathymetry", "protected_areas", "infrastructure", "zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
 
       // Couches de contexte provisionnées (régions), sous les données opérationnelles
       map.addLayer({ id: "bathymetry", type: "line", source: "bathymetry", layout: { visibility: "none" },
@@ -113,6 +115,10 @@ export default function MapView(p: Props) {
           "text-font": ["Open Sans Regular"], "text-size": 10,
         },
         paint: { "text-color": "#8fa6b6", "text-halo-color": "#0e1419", "text-halo-width": 1.3, "text-opacity": 0.9 } });
+      map.addLayer({ id: "protected_areas", type: "fill", source: "protected_areas", layout: { visibility: "none" },
+        paint: { "fill-color": PA_FILL, "fill-opacity": 0.12 } });
+      map.addLayer({ id: "protected_areas-line", type: "line", source: "protected_areas", layout: { visibility: "none" },
+        paint: { "line-color": PA_LINE, "line-width": 0.8, "line-opacity": 0.6 } });
       map.addLayer({ id: "infrastructure", type: "line", source: "infrastructure",
         layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
         paint: { "line-color": INFRA_COLOR, "line-width": 1.4, "line-opacity": 0.85 } });
@@ -218,6 +224,12 @@ export default function MapView(p: Props) {
         const attrs = typeof props.attrs === "string" ? JSON.parse(props.attrs || "{}") : (props.attrs ?? {});
         onSelect.current({ kind: "infrastructure", properties: { ...props, attrs } });
       });
+      map.on("click", "protected_areas", (e) => {
+        if (drawing.current) return;
+        const props = e.features![0].properties as any;
+        const attrs = typeof props.attrs === "string" ? JSON.parse(props.attrs || "{}") : (props.attrs ?? {});
+        onSelect.current({ kind: "protected_area", properties: { ...props, attrs } });
+      });
       for (const id of ["alerts", "live"]) {
         map.on("click", id, (e) => {
           if (drawing.current) return;
@@ -225,7 +237,7 @@ export default function MapView(p: Props) {
           if (f) onSelect.current({ kind: "alert", feature: f });
         });
       }
-      for (const id of ["traffic", "det", "alerts", "live", "infrastructure-hit"]) {
+      for (const id of ["traffic", "det", "alerts", "live", "infrastructure-hit", "protected_areas"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
       }
@@ -255,6 +267,7 @@ export default function MapView(p: Props) {
   useEffect(() => setData("zones", p.zones), [ready, p.zones]);
   useEffect(() => setData("reception", p.reception), [ready, p.reception]);
   useEffect(() => setData("infrastructure", p.infrastructure), [ready, p.infrastructure]);
+  useEffect(() => setData("protected_areas", p.protectedAreas), [ready, p.protectedAreas]);
   useEffect(() => setData("bathymetry", p.bathymetry), [ready, p.bathymetry]);
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
 
@@ -291,7 +304,12 @@ export default function MapView(p: Props) {
     vis(["zones"], p.show.zones);
     vis(["reception"], p.show.reception);
     vis(["infrastructure", "infrastructure-hit"], p.show.infrastructure);
+    vis(["protected_areas", "protected_areas-line"], p.show.protectedAreas);
     vis(["bathymetry", "bathymetry-labels"], p.show.bathymetry);
+    // Les alertes de zone protégée ne s'affichent qu'avec la couche : hors couche, le fil reste aux alertes à fort signal
+    const zbFilter = (p.show.protectedAreas ? null : ["!=", ["get", "type"], "ZONE_BREACH"]) as null;
+    map.setFilter("live", zbFilter);
+    map.setFilter("alerts", zbFilter);
     if (map.getLayer("bathymetry-shade")) map.setLayoutProperty("bathymetry-shade", "visibility", p.show.bathymetry ? "visible" : "none");
     map.setPaintProperty("traffic", "icon-color", p.show.byType ? SHIP_COLOR : NEUTRAL);
   }, [ready, p.show]);

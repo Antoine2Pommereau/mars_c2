@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AisCandidate, AlertProps, GapPartner, Selection, VesselRef } from "../lib/types";
 import { api } from "../lib/api";
-import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, SEVERITY, SIGNAL, STATUS_LABEL, dayLabel, hm, num, utc } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, PA_LINE, SEVERITY, SIGNAL, STATUS_LABEL, dayLabel, hm, num, utc } from "../lib/format";
 import AlertActions from "./AlertActions";
 import Chip from "./Chip";
 
@@ -144,6 +144,19 @@ function AlertBody({ p }: { p: AlertProps }) {
           <Row label="Longueur AIS déclarée">{d.longueur_ais_m} m</Row>
           <Row label="Écart">{d.ecart_m} m, rapport {num(d.rapport)}</Row>
           <Row label="Score navire">{num(d.vessel_score, 2)}</Row>
+          <Context items={d.contexte} />
+        </>
+      );
+    }
+    case "ZONE_BREACH": {
+      const d = p.details ?? {};
+      return (
+        <>
+          <Row label="Navire">{vessel(d.navire)}</Row>
+          <Row label="Aire protégée">{d.aire?.nom ?? "aire marine protégée"}{d.aire?.designation ? ` (${d.aire.designation})` : ""}</Row>
+          <Row label="Durée">{d.duree_min} min, de {hm(d.debut)} à {hm(d.fin)} UTC</Row>
+          <Row label="Vitesse moyenne">{num(d.vitesse_moyenne_kn)} nœuds</Row>
+          {d.en_peche && <Row label="Activité">pêche</Row>}
           <Context items={d.contexte} />
         </>
       );
@@ -294,6 +307,21 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
         {attrs.reseau != null && <Row label="Réseau">{String(attrs.reseau)}</Row>}
         {attrs.trace != null && <Row label="Tracé">{String(attrs.trace)}</Row>}
         {attrs.description != null && <Row label="Description">{String(attrs.description)}</Row>}
+      </>
+    );
+    footer = <>Source {p.source}</>;
+  } else if (selection.kind === "protected_area") {
+    const p = selection.properties;
+    const attrs = p.attrs ?? {};
+    color = PA_LINE;
+    title = p.name || "Aire marine protégée";
+    body = (
+      <>
+        <Row label="Désignation">{p.designation ?? String(attrs.designation ?? "n.d.")}</Row>
+        <Row label="Type">{p.kind === "natura2000" ? "Natura 2000" : "Aire marine protégée"}</Row>
+        {p.country && <Row label="Pays">{p.country}</Row>}
+        {attrs.convention != null && <Row label="Convention">{String(attrs.convention)}</Row>}
+        {attrs.autorite != null && <Row label="Autorité">{String(attrs.autorite)}</Row>}
       </>
     );
     footer = <>Source {p.source}</>;

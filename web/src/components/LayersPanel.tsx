@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ALERT_COLOR, ALERT_LABEL, BATHY_CONTOUR, INFRA_CABLE, INFRA_PIPELINE, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, BATHY_CONTOUR, INFRA_CABLE, INFRA_PIPELINE, PA_LINE, SHIP_NEUTRAL, SHIP_OTHER, SHIP_PALETTE } from "../lib/format";
 
 export interface LayerState {
   analysis: boolean;
@@ -8,6 +8,7 @@ export interface LayerState {
   byType: boolean;
   infrastructure: boolean;
   bathymetry: boolean;
+  protectedAreas: boolean;
 }
 
 // Libellés de la légende, dans l'ordre de la palette centralisée ; les teintes viennent de SHIP_PALETTE
@@ -46,6 +47,7 @@ export default function LayersPanel({ state, onChange }: { state: LayerState; on
       <Switch on={state.reception} onChange={set("reception")} label="Réception AIS fiable" hint="Là où un silence est significatif" />
       <Switch on={state.infrastructure} onChange={set("infrastructure")} label="Infrastructures" hint="Câbles et pipelines sous marins (EMODnet)" />
       <Switch on={state.bathymetry} onChange={set("bathymetry")} label="Bathymétrie" hint="Isobathes, profondeur (EMODnet)" />
+      <Switch on={state.protectedAreas} onChange={set("protectedAreas")} label="Zones protégées" hint="Aires marines protégées et alertes d'activité (Natura 2000, MPA)" />
 
       <section className="px-4 py-4">
         <div className="mb-2 font-medium">Navires</div>
@@ -74,6 +76,9 @@ export default function LayersPanel({ state, onChange }: { state: LayerState; on
 
         <div className="mb-2 mt-5 font-medium">Bathymétrie</div>
         <Key swatch={<span className="h-0.5 w-4 rounded" style={{ background: BATHY_CONTOUR }} />}>Isobathe</Key>
+
+        <div className="mb-2 mt-5 font-medium">Zones protégées</div>
+        <Key swatch={<span className="h-3 w-3 rounded-sm border" style={{ borderColor: PA_LINE, background: "rgba(79,182,122,0.15)" }} />}>Aire marine protégée</Key>
         <div className="mt-3 text-[11px] text-faint">Source EMODnet, CC BY 4.0</div>
       </section>
     </div>

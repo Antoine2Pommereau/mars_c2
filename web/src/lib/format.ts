@@ -41,13 +41,14 @@ export const ALERT_LABEL: Record<string, string> = {
   AIS_UNCONFIRMED: "Position AIS non confirmée",
   INFRA_THREAT: "Menace infrastructure",
   IDENTITY_MISMATCH: "Identité incohérente",
+  ZONE_BREACH: "Zone protégée",
 };
 
 // Teintes centralisées : couleur réservée aux alertes, palette neutre par type de navire.
 // Seul point de vérité ; réutilisé dans l'interface et dans les expressions MapLibre.
 export const ALERT_COLOR: Record<string, string> = {
   DARK_SHIP: "#e85bc7", RENDEZVOUS: "#f0a84b", AIS_GAP: "#ef6461", AIS_UNCONFIRMED: "#e8d45a",
-  INFRA_THREAT: "#e03030", IDENTITY_MISMATCH: "#9b6cf5",
+  INFRA_THREAT: "#e03030", IDENTITY_MISMATCH: "#9b6cf5", ZONE_BREACH: "#4fb67a",
 };
 export const ALERT_FALLBACK = "#ffffff";
 export const SIGNAL = "#4fb6c8";
@@ -56,6 +57,8 @@ export const SIGNAL = "#4fb6c8";
 export const INFRA_CABLE = "#6f8fa6";
 export const INFRA_PIPELINE = "#b08d57";
 export const BATHY_CONTOUR = "#4a6072";
+export const PA_FILL = "#2f7d57";    // aire marine protégée, remplissage désaturé
+export const PA_LINE = "#4fb67a";    // bordure d'aire protégée
 
 // Surlignage des trajectoires : navire principal en orange rendez vous, autres en signal, trajet présumé en rouge coupure
 export const HIGHLIGHT_PRIMARY = ALERT_COLOR.RENDEZVOUS;

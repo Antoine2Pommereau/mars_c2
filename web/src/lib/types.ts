@@ -1,4 +1,4 @@
-export type AlertType = "DARK_SHIP" | "RENDEZVOUS" | "AIS_GAP" | "AIS_UNCONFIRMED" | "INFRA_THREAT" | "IDENTITY_MISMATCH";
+export type AlertType = "DARK_SHIP" | "RENDEZVOUS" | "AIS_GAP" | "AIS_UNCONFIRMED" | "INFRA_THREAT" | "IDENTITY_MISMATCH" | "ZONE_BREACH";
 export type Severity = "faible" | "moyenne" | "elevee" | "critique";
 export type AlertStatus = "nouvelle" | "acquittee" | "confirmee" | "classee";
 
@@ -99,13 +99,24 @@ export interface IdentityMismatchDetails extends AlertDetailsBase {
   vessel_score?: number;
 }
 
+export interface ZoneBreachDetails extends AlertDetailsBase {
+  navire?: VesselRef;
+  debut?: string;
+  fin?: string;
+  duree_min?: number;
+  aire?: { nom?: string | null; designation?: string | null; type?: string | null };
+  vitesse_moyenne_kn?: number;
+  en_peche?: boolean;
+}
+
 export type AlertDetails =
   | DarkShipDetails
   | RendezvousDetails
   | AisGapDetails
   | AisUnconfirmedDetails
   | InfraThreatDetails
-  | IdentityMismatchDetails;
+  | IdentityMismatchDetails
+  | ZoneBreachDetails;
 
 interface AlertPropsBase {
   id: number;
@@ -122,7 +133,8 @@ export type AlertProps =
   | (AlertPropsBase & { type: "AIS_GAP"; details?: AisGapDetails })
   | (AlertPropsBase & { type: "AIS_UNCONFIRMED"; details?: AisUnconfirmedDetails })
   | (AlertPropsBase & { type: "INFRA_THREAT"; details?: InfraThreatDetails })
-  | (AlertPropsBase & { type: "IDENTITY_MISMATCH"; details?: IdentityMismatchDetails });
+  | (AlertPropsBase & { type: "IDENTITY_MISMATCH"; details?: IdentityMismatchDetails })
+  | (AlertPropsBase & { type: "ZONE_BREACH"; details?: ZoneBreachDetails });
 
 /** Propriétés d'une trajectoire surlignée (couleur, pointillés). */
 export interface TrackProps {
@@ -216,11 +228,22 @@ export interface InfraProps {
   attrs?: Record<string, unknown>;
 }
 
+/** Propriétés d'une aire marine protégée. */
+export interface ProtectedAreaProps {
+  kind: string;
+  name: string | null;
+  designation: string | null;
+  country: string | null;
+  source: string;
+  attrs?: Record<string, unknown>;
+}
+
 export type Selection =
   | { kind: "alert"; feature: Feature<AlertProps> }
   | { kind: "vessel"; properties: VesselProps }
   | { kind: "detection"; properties: DetectionProps }
   | { kind: "infrastructure"; properties: InfraProps }
+  | { kind: "protected_area"; properties: ProtectedAreaProps }
   | { kind: "vessel_dossier"; vesselId: number };
 
 export const EMPTY: FC<any> = { type: "FeatureCollection", features: [] };

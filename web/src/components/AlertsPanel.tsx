@@ -54,7 +54,8 @@ export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, s
   const [view, setView] = useState<"todo" | "confirmed" | "all">("todo");
 
   const all = useMemo(() => {
-    const list = [...analysisAlerts.features, ...liveAlerts.features];
+    // ZONE_BREACH est une couche à activer sur la carte, pas une alerte du fil : on l'exclut ici.
+    const list = [...analysisAlerts.features, ...liveAlerts.features].filter((a) => a.properties.type !== "ZONE_BREACH");
     return list.sort((a, b) =>
       (RANK[a.properties.severity] ?? 9) - (RANK[b.properties.severity] ?? 9) ||
       String(b.properties.event_time).localeCompare(String(a.properties.event_time)));

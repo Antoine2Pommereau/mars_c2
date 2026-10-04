@@ -19,7 +19,7 @@ export default function App() {
   const qc = useQueryClient();
   const { data: stream, connected } = useStream();
   const [panel, setPanel] = useState<PanelId | null>("alertes");
-  const [layers, setLayers] = useState<LayerState>({ analysis: true, zones: false, reception: false, byType: false, infrastructure: false, bathymetry: false });
+  const [layers, setLayers] = useState<LayerState>({ analysis: true, zones: false, reception: false, byType: false, infrastructure: false, bathymetry: false, protectedAreas: false });
   const [selection, setSelection] = useState<Selection | null>(null);
   const [highlight, setHighlight] = useState<FC>(EMPTY);
   const [focus, setFocus] = useState<{ center: [number, number]; zoom: number } | null>(null);
@@ -58,6 +58,7 @@ export default function App() {
   const regionId = activeRegion?.id;
   const infraQ = useQuery({ queryKey: ["infrastructure", regionId], queryFn: (ctx) => api.infrastructure(regionId!, ctx), enabled: !!regionId && layers.infrastructure, staleTime: Infinity });
   const bathyQ = useQuery({ queryKey: ["bathymetry", regionId], queryFn: (ctx) => api.bathymetry(regionId!, ctx), enabled: !!regionId && layers.bathymetry, staleTime: Infinity });
+  const protectedQ = useQuery({ queryKey: ["protected", regionId], queryFn: (ctx) => api.protectedAreas(regionId!, ctx), enabled: !!regionId && layers.protectedAreas, staleTime: Infinity });
   const bathymetryImage = regionId && layers.bathymetry && activeRegion
     ? { url: bathymetryImageUrl(regionId), bbox: activeRegion.bbox } : null;
 
@@ -184,9 +185,10 @@ export default function App() {
   const passes = useMemo(() => (analysesQ.data?.features ?? [])
     .filter((f) => f.properties.status === "done")
     .map((f) => ({ id: f.properties.id, time: f.properties.acquired_at })), [analysesQ.data]);
-  // Pastille du rail = nombre d'alertes à traiter, cohérent avec l'onglet « À traiter » du panneau
+  // Pastille du rail = nombre d'alertes à traiter, cohérent avec l'onglet « À traiter » du panneau.
+  // Les alertes de zone protégée sont une couche à activer, pas dans le fil : exclues du compte.
   const todoAlerts = [...analysisAlerts.features, ...liveAlerts.features]
-    .filter((a) => (a.properties.status ?? "nouvelle") === "nouvelle").length;
+    .filter((a) => a.properties.type !== "ZONE_BREACH" && (a.properties.status ?? "nouvelle") === "nouvelle").length;
   const selectedId = selection?.kind === "alert" ? selection.feature.properties.id : null;
 
   // Navires concernés par la sélection, pour le mode focus de la carte
@@ -237,6 +239,7 @@ export default function App() {
           reception={receptionQ.data ?? null}
           infrastructure={infraQ.data ?? null}
           bathymetry={bathyQ.data ?? null}
+          protectedAreas={protectedQ.data ?? null}
           bathymetryImage={bathymetryImage}
           regionBbox={activeRegion?.bbox ?? null}
           highlight={highlight}
