@@ -1288,20 +1288,28 @@ class AlertAction(BaseModel):
 
 
 STATUS_OF = {"acquitter": "acquittee", "confirmer": "confirmee", "classer": "classee", "rouvrir": "nouvelle"}
+# Actions de collaboration : trace dans le journal sans changer le statut
+NO_STATUS_ACTIONS = {"commenter", "assigner"}
 
 
 @app.post("/api/alerts/{alert_id}/actions")
 async def alert_action(alert_id: int, a: AlertAction):
-    """Décision d'un opérateur sur une alerte : nouveau statut, et trace dans le journal."""
-    if a.action not in STATUS_OF:
+    """Décision ou collaboration sur une alerte : statut éventuel, et trace dans le journal."""
+    if a.action not in STATUS_OF and a.action not in NO_STATUS_ACTIONS:
         raise HTTPException(422, "Action inconnue")
+    note = (a.note or "").strip() or None
+    if a.action in NO_STATUS_ACTIONS and not note:
+        raise HTTPException(422, "Un commentaire ou un nom d'opérateur est requis")
     async with app.state.pool.acquire() as c, c.transaction():
-        status = await c.fetchval("UPDATE alerts SET status = $2 WHERE id = $1 RETURNING status",
-                                  alert_id, STATUS_OF[a.action])
+        if a.action in STATUS_OF:
+            status = await c.fetchval("UPDATE alerts SET status = $2 WHERE id = $1 RETURNING status",
+                                      alert_id, STATUS_OF[a.action])
+        else:
+            status = await c.fetchval("SELECT status FROM alerts WHERE id = $1", alert_id)
         if status is None:
             raise HTTPException(404, "Alerte inconnue")
         await c.execute("INSERT INTO alert_actions (alert_id, action, note, author) VALUES ($1, $2, $3, $4)",
-                        alert_id, a.action, (a.note or "").strip() or None, a.author)
+                        alert_id, a.action, note, a.author)
     return {"id": alert_id, "status": status}
 
 

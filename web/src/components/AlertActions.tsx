@@ -8,7 +8,10 @@ const ACTIONS: { id: string; label: string; to: string; tone: string }[] = [
   { id: "confirmer", label: "Confirmer", to: "confirmee", tone: "border-gap/60 text-gap hover:border-gap" },
   { id: "classer", label: "Classer", to: "classee", tone: "border-hair text-muted hover:text-ink" },
 ];
-const VERB: Record<string, string> = { acquitter: "Acquittée", confirmer: "Confirmée", classer: "Classée", rouvrir: "Rouverte" };
+const VERB: Record<string, string> = {
+  acquitter: "Acquittée", confirmer: "Confirmée", classer: "Classée", rouvrir: "Rouverte",
+  commenter: "Commentaire", assigner: "Assignée à", tip_and_cue: "Tip and cue",
+};
 
 /** Décisions de l'opérateur sur une alerte : acquitter, confirmer, classer, rouvrir, avec une note. */
 export default function AlertActions({ id, status, onStatus }: { id: number; status: string; onStatus: (s: string) => void }) {
@@ -31,7 +34,7 @@ export default function AlertActions({ id, status, onStatus }: { id: number; sta
         <span className="font-medium">Décision</span>
         <span className="text-[12px] text-muted">Statut : {STATUS_LABEL[status] ?? status}</span>
       </div>
-      <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Note (facultative)"
+      <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Note pour la décision, commentaire, ou nom pour assigner"
         className="w-full resize-none rounded-md border border-hair bg-abyss px-2.5 py-2 text-[12.5px] text-ink placeholder:text-faint focus:border-signal focus:outline-none" />
       <div className="mt-2 flex gap-2">
         {status === "nouvelle" ? ACTIONS.map((a) => (
@@ -43,6 +46,14 @@ export default function AlertActions({ id, status, onStatus }: { id: number; sta
             Rouvrir l'alerte
           </button>
         )}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <button disabled={act.isPending || !note.trim()} onClick={() => act.mutate("commenter")}
+          className="flex-1 rounded-md border border-hair py-1.5 text-[12.5px] text-ink hover:border-muted disabled:opacity-40"
+          title="Ajouter un commentaire au journal">Commenter</button>
+        <button disabled={act.isPending || !note.trim()} onClick={() => act.mutate("assigner")}
+          className="flex-1 rounded-md border border-hair py-1.5 text-[12.5px] text-ink hover:border-muted disabled:opacity-40"
+          title="Assigner l'alerte à l'opérateur nommé dans la note">Assigner</button>
       </div>
       {act.isError && <p className="mt-2 text-[12px] text-gap">{(act.error as Error).message}</p>}
       {(history.data ?? []).length > 0 && (
