@@ -16,7 +16,7 @@ const SHIP_COLOR: ExpressionSpecification = ["match", ["coalesce", ["get", "ship
 const ALERT_STROKE: ExpressionSpecification = ["match", ["get", "type"],
   "DARK_SHIP", ALERT_COLOR.DARK_SHIP, "RENDEZVOUS", ALERT_COLOR.RENDEZVOUS,
   "AIS_GAP", ALERT_COLOR.AIS_GAP, "AIS_UNCONFIRMED", ALERT_COLOR.AIS_UNCONFIRMED,
-  "INFRA_THREAT", ALERT_COLOR.INFRA_THREAT, ALERT_FALLBACK];
+  "INFRA_THREAT", ALERT_COLOR.INFRA_THREAT, "IDENTITY_MISMATCH", ALERT_COLOR.IDENTITY_MISMATCH, ALERT_FALLBACK];
 const NEUTRAL = SHIP_NEUTRAL;
 
 // Couleur des infrastructures provisionnées : câble ou pipeline

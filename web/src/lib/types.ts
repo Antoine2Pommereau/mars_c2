@@ -1,4 +1,4 @@
-export type AlertType = "DARK_SHIP" | "RENDEZVOUS" | "AIS_GAP" | "AIS_UNCONFIRMED" | "INFRA_THREAT";
+export type AlertType = "DARK_SHIP" | "RENDEZVOUS" | "AIS_GAP" | "AIS_UNCONFIRMED" | "INFRA_THREAT" | "IDENTITY_MISMATCH";
 export type Severity = "faible" | "moyenne" | "elevee" | "critique";
 export type AlertStatus = "nouvelle" | "acquittee" | "confirmee" | "classee";
 
@@ -90,12 +90,22 @@ export interface InfraThreatDetails extends AlertDetailsBase {
   traine_ancre_possible?: boolean;
 }
 
+export interface IdentityMismatchDetails extends AlertDetailsBase {
+  navire?: VesselRef;
+  longueur_radar_m?: number;
+  longueur_ais_m?: number;
+  ecart_m?: number;
+  rapport?: number;
+  vessel_score?: number;
+}
+
 export type AlertDetails =
   | DarkShipDetails
   | RendezvousDetails
   | AisGapDetails
   | AisUnconfirmedDetails
-  | InfraThreatDetails;
+  | InfraThreatDetails
+  | IdentityMismatchDetails;
 
 interface AlertPropsBase {
   id: number;
@@ -111,7 +121,8 @@ export type AlertProps =
   | (AlertPropsBase & { type: "RENDEZVOUS"; details?: RendezvousDetails })
   | (AlertPropsBase & { type: "AIS_GAP"; details?: AisGapDetails })
   | (AlertPropsBase & { type: "AIS_UNCONFIRMED"; details?: AisUnconfirmedDetails })
-  | (AlertPropsBase & { type: "INFRA_THREAT"; details?: InfraThreatDetails });
+  | (AlertPropsBase & { type: "INFRA_THREAT"; details?: InfraThreatDetails })
+  | (AlertPropsBase & { type: "IDENTITY_MISMATCH"; details?: IdentityMismatchDetails });
 
 /** Propriétés d'une trajectoire surlignée (couleur, pointillés). */
 export interface TrackProps {

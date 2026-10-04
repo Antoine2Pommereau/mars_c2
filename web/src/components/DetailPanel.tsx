@@ -119,6 +119,19 @@ function AlertBody({ p }: { p: AlertProps }) {
         </>
       );
     }
+    case "IDENTITY_MISMATCH": {
+      const d = p.details ?? {};
+      return (
+        <>
+          <Row label="Navire déclaré">{vessel(d.navire)}</Row>
+          <Row label="Longueur radar">{d.longueur_radar_m} m</Row>
+          <Row label="Longueur AIS déclarée">{d.longueur_ais_m} m</Row>
+          <Row label="Écart">{d.ecart_m} m, rapport {num(d.rapport)}</Row>
+          <Row label="Score navire">{num(d.vessel_score, 2)}</Row>
+          <Context items={d.contexte} />
+        </>
+      );
+    }
     default:
       return null;
   }

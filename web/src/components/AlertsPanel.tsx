@@ -4,7 +4,7 @@ import type { AlertProps, AlertType, FC, Feature } from "../lib/types";
 import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num } from "../lib/format";
 
 type Alert = Feature<AlertProps>;
-const TYPES: AlertType[] = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED", "INFRA_THREAT"];
+const TYPES: AlertType[] = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED", "INFRA_THREAT", "IDENTITY_MISMATCH"];
 const RANK: Record<string, number> = { critique: 0, elevee: 1, moyenne: 2, faible: 3 };
 
 function headline(a: Alert): string {
@@ -18,6 +18,7 @@ function headline(a: Alert): string {
     }
     case "AIS_GAP": return p.details?.navire?.name ?? `MMSI ${p.details?.navire?.mmsi}`;
     case "INFRA_THREAT": return p.details?.navire?.name ?? `MMSI ${p.details?.navire?.mmsi}`;
+    case "IDENTITY_MISMATCH": return p.details?.navire?.name ?? `MMSI ${p.details?.navire?.mmsi}`;
     default: return "";
   }
 }
@@ -30,6 +31,7 @@ function detail(a: Alert): string {
     case "RENDEZVOUS": return `${p.details?.duree_min} min, ${p.details?.distance_min_m} m au plus près`;
     case "AIS_GAP": return `silence de ${p.details?.duree_min} min`;
     case "INFRA_THREAT": return `à ${p.details?.distance_corridor_m} m d'un corridor`;
+    case "IDENTITY_MISMATCH": return `écho ${p.details?.longueur_radar_m} m contre ${p.details?.longueur_ais_m} m déclarés`;
     default: return "";
   }
 }

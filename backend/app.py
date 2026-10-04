@@ -436,6 +436,15 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
             pos["ts"] = pd.to_datetime(pos.ts, utc=True)
             for col in ["lat", "lon", "sog", "cog", "length_m"]:
                 pos[col] = pd.to_numeric(pos[col], errors="coerce")
+        # Identité déclarée par navire AIS (longueur, MMSI, nom), pour le contrôle de cohérence avec le radar
+        pos_by_v = {}
+        if len(pos):
+            for v, grp in pos.groupby("vessel_id"):
+                row = grp.iloc[0]
+                dl = grp.length_m.dropna()
+                pos_by_v[int(v)] = {"mmsi": int(row.mmsi) if pd.notna(row.mmsi) else None,
+                                    "name": None if pd.isna(row["name"]) else row["name"],
+                                    "length_m": float(dl.iloc[0]) if len(dl) else None}
         det = pd.DataFrame(result["detections"],
                            columns=["lon", "lat", "objectness", "vessel_score", "fishing_score", "length_m", "contrast_vv_db"])
         det["contrast_vv_db"] = pd.to_numeric(det.contrast_vv_db, errors="coerce")
@@ -563,12 +572,55 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                 await c.executemany("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                                     [(alert_id, "analysis", analysis_id), (alert_id, "vessel", x["vessel_id"])])
 
+            # Cohérence d'identité : écho radar apparié dont la longueur contredit celle déclarée en AIS
+            idc = rules["identity"]
+            n_identity = 0
+            for i, d in det.iterrows():
+                if pd.isna(d.matched_vessel_id) or pd.notna(d.mask_reason):
+                    continue
+                info = pos_by_v.get(int(d.matched_vessel_id))
+                declared = info["length_m"] if info else None
+                radar_len = float(d.length_m) if pd.notna(d.length_m) else None
+                if radar_len is None or declared is None or declared < idc["min_declared_length_m"]:
+                    continue
+                # Unidirectionnel : le radar sous estime la longueur des grands navires, donc radar < AIS est
+                # du bruit de mesure. Seul un écho nettement PLUS grand que le déclaré est suspect (petit MMSI
+                # masquant un grand navire), cas d'usurpation du document de référence.
+                excess = radar_len - declared
+                tol = max(idc["abs_tolerance_m"], idc["rel_tolerance"] * declared)
+                if excess <= tol:
+                    continue
+                ratio = radar_len / max(declared, 1.0)
+                severity = "elevee" if ratio >= idc["high_ratio"] else "moyenne"
+                details = {
+                    "analysis_id": analysis_id, "pass": product_name,
+                    "navire": {"vessel_id": int(d.matched_vessel_id), "mmsi": info["mmsi"], "name": info["name"],
+                               "length_m": round(declared)},
+                    "longueur_radar_m": round(radar_len), "longueur_ais_m": round(declared),
+                    "ecart_m": round(excess), "rapport": round(ratio, 1),
+                    "vessel_score": round(float(d.vessel_score), 2),
+                    "motif": f"L'écho radar apparié mesure {round(radar_len)} m alors que l'AIS n'en déclare que {round(declared)} : "
+                             "un navire déclaré petit apparaît bien plus grand sur le radar, identité suspecte (MMSI usurpé)",
+                    "contexte": ["Le radar sous estime souvent la longueur des grands navires : on ne retient qu'un écho "
+                                 "nettement plus grand que le déclaré, le cas du petit MMSI masquant un grand navire",
+                                 "La longueur AIS est déclarative et parfois fausse : indice à recouper, pas une preuve"],
+                    "parametres": dict(idc)}
+                alert_id = await c.fetchval(
+                    "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
+                    "VALUES ('IDENTITY_MISMATCH', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) RETURNING id",
+                    severity, t0, float(d.lon), float(d.lat), details, rules["version"])
+                await c.executemany("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                                    [(alert_id, "analysis", analysis_id), (alert_id, "detection", det_ids[i]),
+                                     (alert_id, "vessel", int(d.matched_vessel_id))])
+                n_identity += 1
+
             fusion_s = round(asyncio.get_running_loop().time() - t_fusion, 2)
             timings = {**result["timings"], "fusion_s": fusion_s,
                        "total_s": round(asyncio.get_running_loop().time() - started, 2)}
             summary = {"detections": len(det), "retenues": int(det.mask_reason.isna().sum()) if len(det) else 0,
                        "appariees": int(det.matched_vessel_id.notna().sum()) if len(det) else 0,
                        "alertes": len(alerts), "positions_non_confirmees": len(unconfirmed), "echos_fixes": n_fixed,
+                       "incoherences_identite": n_identity,
                        "decalages": extras["offsets"], "direction_de_vol_deg": heading,
                        "navires_ais": n_ais, "tuiles": result["n_tiles"],
                        "accelerateur": result["device"], "precision_mixte": result["amp"]}

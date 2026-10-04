@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.17"
+version: "2026.10.18"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -126,3 +126,15 @@ infrastructure:
   # légitimement sur place. Exclus, comme pour les rendez vous. Piste : un contexte pêche dédié.
   excluded_ship_types: [Fishing, Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement",
                         "Port tender", Dredging, Diving, Military, Medical, "Anti-pollution"]
+
+identity:
+  # Cohérence d'identité AIS contre radar (inspiré de la caractérisation d'émetteur d'Unseenlabs).
+  # Le radar mesure la longueur de chaque navire apparié ; un navire déclaré petit en AIS mais qui apparaît
+  # bien plus grand sur le radar trahit une identité suspecte (MMSI usurpé masquant un grand navire).
+  # Calibration : le radar SOUS estime la longueur des grands navires (ex. PRIMULA SEAWAYS mesuré 120 m pour
+  # 231 m déclarés, TORM STRONG 107 pour 183). Donc radar < AIS est du bruit de mesure : la règle est
+  # unidirectionnelle, on ne retient que l'écho nettement PLUS grand que le déclaré.
+  min_declared_length_m: 20   # on ignore les très petites unités (longueur AIS souvent absente ou fausse)
+  abs_tolerance_m: 40         # écho au moins 40 m plus grand que le déclaré
+  rel_tolerance: 0.5          # ou 50 % de plus que la longueur déclarée, la plus grande des deux tolérances s'applique
+  high_ratio: 2.0             # sévérité élevée si l'écho fait plus du double du déclaré
