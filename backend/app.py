@@ -24,7 +24,8 @@ from mars.fusion.pipeline import fuse
 from mars.geo import bbox_size_km
 from mars.sar.catalog import get_token, search_passes
 from rules import (build_reception_cells, build_stationary_zones, find_gaps, run_ais_gap,
-                   run_infrastructure, run_infrastructure_selftest, run_rendezvous, run_rendezvous_selftest)
+                   run_infrastructure, run_infrastructure_selftest, run_protected_areas,
+                   run_protected_areas_selftest, run_rendezvous, run_rendezvous_selftest)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("mars.api")
@@ -775,6 +776,19 @@ async def region_infrastructure(region_id: int):
                        for r in rows])
 
 
+@app.get("/api/regions/{region_id}/protected_areas")
+async def region_protected_areas(region_id: int):
+    async with app.state.pool.acquire() as c:
+        rows = await c.fetch(
+            "SELECT kind, name, designation, country, source, attrs, ST_AsGeoJSON(geom)::json AS geometry "
+            "FROM protected_areas WHERE region_id = $1", region_id)
+    return collection([feature(r["geometry"],
+                       {"kind": r["kind"], "name": r["name"], "designation": r["designation"],
+                        "country": r["country"], "source": r["source"],
+                        "attrs": json.loads(r["attrs"]) if isinstance(r["attrs"], str) else (r["attrs"] or {})})
+                       for r in rows])
+
+
 @app.get("/api/regions/{region_id}/bathymetry/contours")
 async def region_bathymetry_contours(region_id: int):
     async with app.state.pool.acquire() as c:
@@ -861,7 +875,8 @@ async def create_region(req: NewRegion):
         await c.execute(
             "INSERT INTO region_layers (region_id, layer, usage) "
             "SELECT $1, v.layer, v.usage FROM (VALUES "
-            "('coastline', 'operationnelle'), ('bathymetry', 'affichage'), ('infrastructure', 'operationnelle')"
+            "('coastline', 'operationnelle'), ('bathymetry', 'affichage'), ('infrastructure', 'operationnelle'), "
+            "('protected_areas', 'operationnelle')"
             ") AS v(layer, usage) ON CONFLICT (region_id, layer) DO NOTHING", rid)
     return {"id": rid}
 
@@ -906,7 +921,7 @@ async def provision_region_endpoint(region_id: int):
         if not row:
             raise HTTPException(404, "Région inconnue")
         await c.execute("UPDATE region_layers SET status = 'en_cours' "
-                        "WHERE region_id = $1 AND layer IN ('infrastructure', 'bathymetry')", region_id)
+                        "WHERE region_id = $1 AND layer IN ('infrastructure', 'bathymetry', 'protected_areas')", region_id)
     bbox = [row["x0"], row["y0"], row["x1"], row["y1"]]
     asyncio.create_task(run_in_threadpool(_provision_sync, region_id, bbox))
     return {"status": "provisioning"}
@@ -1060,6 +1075,32 @@ async def infrastructure_selftest(req: RuleRun):
         day = (await _rule_days(c, req.day))[0]
         start = pd.Timestamp(day, tz="UTC").to_pydatetime()
         result = await run_infrastructure_selftest(c, start, start + pd.Timedelta(days=1), rules)
+    return {"jour": day.isoformat(), **result}
+
+
+@app.post("/api/rules/protected_areas/run")
+async def protected_areas_run(req: RuleRun):
+    rules = load_rules()
+    async with app.state.pool.acquire() as c:
+        if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM protected_areas)"):
+            raise HTTPException(422, "Aucune aire protégée provisionnée : provisionner une région d'abord")
+        days = await _rule_days(c, req.day)
+        results = {}
+        for d in days:
+            start = pd.Timestamp(d, tz="UTC").to_pydatetime()
+            results[d.isoformat()] = await run_protected_areas(c, start, start + pd.Timedelta(days=1), rules)
+    return results
+
+
+@app.post("/api/rules/protected_areas/selftest")
+async def protected_areas_selftest(req: RuleRun):
+    """Test par injection : un navire de pêche synthétique stationne dans une aire protégée, et on vérifie
+    que la règle lève l'alerte ZONE_BREACH. Transaction annulée, base non modifiée."""
+    rules = load_rules()
+    async with app.state.pool.acquire() as c:
+        day = (await _rule_days(c, req.day))[0]
+        start = pd.Timestamp(day, tz="UTC").to_pydatetime()
+        result = await run_protected_areas_selftest(c, start, start + pd.Timedelta(days=1), rules)
     return {"jour": day.isoformat(), **result}
 
 

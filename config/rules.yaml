@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.19"
+version: "2026.10.20"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -150,3 +150,18 @@ risk_score:
   identity_point: 4         # points par anomalie d'identité structurelle (MID incohérent, longueur manquante, etc.)
   identity_cap: 12          # plafond du terme d'anomalie d'identité
   identity_flags: [mid_incoherent, mmsi_hors_format, longueur_manquante, imo_manquant_classe_a, pavillon_manquant]
+
+protected_areas:
+  # Activité anormale d'un navire DANS une aire marine protégée (Natura 2000 marin, MPA régionales).
+  # Les aires viennent de la couche provisionnée de la région active. Donne un sens aux coupures et
+  # ralentissements de pêche : l'AIS est obligatoire au delà de 15 m en Europe, et la pêche dans une
+  # aire protégée est l'infraction typique. On ne détecte qu'un motif, jamais une infraction prouvée.
+  max_speed_kn: 4.0          # ralenti : loitering ou pêche qui traîne
+  min_duration_min: 60       # présence vraiment prolongée dans la zone (un simple ralentissement de passage ne suffit pas)
+  high_duration_min: 180     # sévérité élevée au delà
+  slot_min: 10
+  max_gap_min: 20
+  min_length_m: 15           # obligation AIS au delà de 15 m ; plancher anti bruit
+  fishing_ship_types: [Fishing]   # sévérité élevée si pêche déclarée (ship_type) ou nav_status 7 (en pêche)
+  excluded_ship_types: [Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement",
+                        "Port tender", Dredging, Diving, Military, Medical, "Anti-pollution"]

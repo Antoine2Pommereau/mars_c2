@@ -41,7 +41,7 @@ def region_bbox(cur, region_id):
 def main():
     ap = argparse.ArgumentParser(description="Provisionnement de la donnée statique d'une région")
     ap.add_argument("--region", help="Nom ou identifiant de région ; par défaut la région active")
-    ap.add_argument("--only", choices=["infrastructure", "bathymetry"], help="Un seul fournisseur")
+    ap.add_argument("--only", choices=["infrastructure", "bathymetry", "protected_areas"], help="Un seul fournisseur")
     ap.add_argument("--refresh", action="store_true", help="Retélécharge même si le fichier local existe")
     args = ap.parse_args()
     load_env()

@@ -604,3 +604,141 @@ async def run_infrastructure_selftest(c, day_start, day_end, rules: dict) -> dic
     except _InfraRollback:
         pass
     return result
+
+
+ZONE_BREACH_SQL = """
+WITH slots AS (
+    SELECT DISTINCT ON (p.vessel_id, slot)
+           p.vessel_id, slot, p.geom, p.sog_kn, p.nav_status
+    FROM (
+        SELECT vessel_id, geom, sog_kn, nav_status, ts,
+               to_timestamp(floor(extract(epoch FROM ts) / ($3::int * 60)) * ($3::int * 60)) AS slot
+        FROM positions
+        WHERE ts >= $1::timestamptz AND ts < $2::timestamptz
+    ) p
+    ORDER BY p.vessel_id, slot, p.ts DESC
+),
+inside AS (
+    -- Tranches lentes à l'intérieur d'une aire protégée (jointure spatiale indexée sur les aires simplifiées et valides)
+    SELECT s.*
+    FROM slots s
+    WHERE s.sog_kn IS NOT NULL AND s.sog_kn < $4::float8
+      AND EXISTS (SELECT 1 FROM protected_areas pa
+                  WHERE pa.region_id = (SELECT id FROM regions WHERE active ORDER BY id LIMIT 1)
+                    AND ST_Intersects(s.geom, pa.geom))
+),
+marked AS (
+    SELECT *, CASE WHEN lag(slot) OVER w IS NULL OR slot - lag(slot) OVER w > make_interval(mins => $5::int) THEN 1 ELSE 0 END AS new_ep
+    FROM inside WINDOW w AS (PARTITION BY vessel_id ORDER BY slot)
+),
+episodes AS (
+    SELECT *, sum(new_ep) OVER (PARTITION BY vessel_id ORDER BY slot) AS ep FROM marked
+),
+grouped AS (
+    SELECT vessel_id, ep, min(slot) AS t_start, max(slot) + make_interval(mins => $3::int) AS t_end,
+           count(*) AS n_slots, avg(sog_kn) AS sog_avg, bool_or(nav_status = 7) AS en_peche_status,
+           ST_Centroid(ST_Collect(geom::geometry)) AS mid
+    FROM episodes GROUP BY vessel_id, ep
+)
+SELECT g.vessel_id, v.mmsi, v.name, v.ship_type, v.length_m,
+       g.t_start, g.t_end, g.sog_avg, g.en_peche_status,
+       ST_X(g.mid) AS lon, ST_Y(g.mid) AS lat,
+       a.name AS area_name, a.designation AS area_designation, a.kind AS area_kind
+FROM grouped g
+JOIN vessels v ON v.id = g.vessel_id
+LEFT JOIN LATERAL (
+    -- Aire la plus spécifique (la plus petite) contenant le barycentre de l'épisode
+    SELECT name, designation, kind FROM protected_areas
+    WHERE region_id = (SELECT id FROM regions WHERE active ORDER BY id LIMIT 1)
+      AND ST_Intersects(geom::geometry, g.mid)
+    ORDER BY ST_Area(geom::geometry) ASC LIMIT 1
+) a ON true
+WHERE g.t_end - g.t_start >= make_interval(mins => $6::int)
+  AND NOT (coalesce(v.ship_type, '') = ANY($7::text[]))
+  AND coalesce(v.length_m, 0) >= $8::float8
+  AND NOT EXISTS (SELECT 1 FROM stationary_zones z WHERE ST_DWithin(z.geom, g.mid::geography, 1000))
+"""
+
+
+async def run_protected_areas(c, day_start, day_end, rules: dict) -> dict:
+    """Activité anormale dans une aire marine protégée : navire lent ou en pêche à l'intérieur de la zone."""
+    r = rules["protected_areas"]
+    rows = await c.fetch(ZONE_BREACH_SQL, day_start, day_end, r["slot_min"], r["max_speed_kn"],
+                         r["max_gap_min"], r["min_duration_min"], r["excluded_ship_types"], r["min_length_m"])
+    fishing = r["fishing_ship_types"]
+    kept = 0
+    async with c.transaction():
+        await c.execute("DELETE FROM alerts WHERE type = 'ZONE_BREACH' AND (details->>'debut')::timestamptz >= $1 "
+                        "AND (details->>'debut')::timestamptz < $2", day_start, day_end)
+        for x in rows:
+            duration_min = (x["t_end"] - x["t_start"]).total_seconds() / 60
+            en_peche = bool(x["en_peche_status"]) or (x["ship_type"] in fishing)
+            area = x["area_name"] or "une aire marine protégée"
+            context = [f"Dans {area}" + (f" ({x['area_designation']})" if x["area_designation"] else ""),
+                       f"Ralenti à {x['sog_avg']:.1f} nœuds pendant {round(duration_min)} min"]
+            if en_peche:
+                context.append("Navire de pêche actif dans une aire marine protégée")
+            severity = "elevee" if (en_peche or duration_min >= r["high_duration_min"]) else "moyenne"
+            details = {
+                "navire": {"vessel_id": x["vessel_id"], "mmsi": x["mmsi"], "name": x["name"],
+                           "ship_type": x["ship_type"], "length_m": _finite(x["length_m"])},
+                "debut": x["t_start"].isoformat(), "fin": x["t_end"].isoformat(),
+                "duree_min": round(duration_min),
+                "aire": {"nom": x["area_name"], "designation": x["area_designation"], "type": x["area_kind"]},
+                "vitesse_moyenne_kn": round(x["sog_avg"], 1),
+                "en_peche": en_peche,
+                "contexte": context,
+                "motif": "Navire ralenti ou en pêche à l'intérieur d'une aire marine protégée",
+                "parametres": {k: r[k] for k in ("max_speed_kn", "min_duration_min", "min_length_m")},
+            }
+            event_time = x["t_start"] + timedelta(minutes=r["min_duration_min"])
+            alert_id = await c.fetchval(
+                "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
+                "VALUES ('ZONE_BREACH', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) RETURNING id",
+                severity, event_time, x["lon"], x["lat"], details, rules["version"])
+            await c.execute("INSERT INTO alert_evidence (alert_id, evidence_type, evidence_id) VALUES ($1, 'vessel', $2) ON CONFLICT DO NOTHING",
+                            alert_id, x["vessel_id"])
+            kept += 1
+    return {"episodes_detectes": len(rows), "alertes": kept}
+
+
+class _ZoneRollback(Exception):
+    """Annule la transaction du test par injection après vérification."""
+
+
+async def run_protected_areas_selftest(c, day_start, day_end, rules: dict) -> dict:
+    """Test par injection : un navire de pêche synthétique stationne dans une aire protégée au delà du seuil ;
+    on vérifie que la règle lève une alerte ZONE_BREACH, puis on annule la transaction."""
+    r = rules["protected_areas"]
+    pt = await c.fetchrow(
+        "SELECT ST_X(p) AS lon, ST_Y(p) AS lat FROM ("
+        "  SELECT ST_PointOnSurface(geom::geometry) AS p FROM protected_areas"
+        "  WHERE region_id = (SELECT id FROM regions WHERE active ORDER BY id LIMIT 1)"
+        "  ORDER BY ST_Area(geom::geometry) DESC LIMIT 1) q")
+    if pt is None or pt["lon"] is None:
+        return {"erreur": "Aucune aire protégée provisionnée dans la région active : rien à tester"}
+    lon, lat = pt["lon"], pt["lat"]
+    duration_min = r["min_duration_min"] + 2 * r["slot_min"]
+    n_slots = duration_min // r["slot_min"] + 1
+    t0 = day_start + timedelta(hours=6)
+    result = {"point": [round(lon, 4), round(lat, 4)], "duree_injectee_min": duration_min}
+    try:
+        async with c.transaction():
+            v = await c.fetchval(
+                "INSERT INTO vessels (mmsi, name, ship_type, length_m, ais_class, first_seen, last_seen) "
+                "VALUES (111000004, 'TEST ZONE ALPHA', 'Fishing', 24, 'A', $1, $2) RETURNING id", t0, t0)
+            for k in range(int(n_slots) + 1):
+                ts = t0 + timedelta(minutes=k * r["slot_min"])
+                await c.execute(
+                    "INSERT INTO positions (vessel_id, ts, geom, sog_kn, cog_deg, nav_status) "
+                    "VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7)",
+                    v, ts, lon, lat, 0.1, 0.0, 7)
+            await run_protected_areas(c, day_start, day_end, rules)
+            hit = await c.fetchval(
+                "SELECT count(*) FROM alerts a WHERE a.type = 'ZONE_BREACH' AND EXISTS ("
+                "  SELECT 1 FROM alert_evidence e WHERE e.alert_id = a.id AND e.evidence_type = 'vessel' AND e.evidence_id = $1)", v)
+            result["detectee"] = bool(hit)
+            raise _ZoneRollback()
+    except _ZoneRollback:
+        pass
+    return result

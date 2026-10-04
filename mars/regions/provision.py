@@ -24,6 +24,11 @@ CABLE_LAYERS = ["pcablesnve", "pcablesbshcontis", "pcablesrijks", "pcablesshom",
 PIPELINE_LAYERS = ["pipelines"]
 CONTOUR_LEVELS = [-500, -200, -100, -50, -20, -10]
 
+# Aires marines protégées : Natura 2000 (couche mixte, filtrée au marin) et MPA des conventions régionales
+PROTECTED_LAYERS = ["natura2000areas", "marineprotectedareas"]
+PROTECTED_LICENSE = "EMODnet Human Activities, source EEA, réutilisation libre avec attribution"
+PA_NAME_KEYS = ["sitename", "name", "orig_name"]
+
 # Clés multilingues : navn/eier (Norvège, NVE), naam/eigenaar (Pays Bas, Rijks), génériques
 NAME_KEYS = ["navn", "naam", "name", "cable_name", "kabel_nr", "label", "title"]
 OPERATOR_KEYS = ["eier", "eigenaar", "operator", "owner", "company"]
@@ -56,6 +61,28 @@ def normalize_attrs(layer, props):
             a["description"] = props.get("omschrijvi")
     elif layer in PIPELINE_LAYERS:
         a["type"] = "Pipeline"
+    return {k: v for k, v in a.items() if v not in (None, "", "NaN")}
+
+
+def normalize_pa_attrs(layer, props):
+    """Infos lisibles d'une aire protégée, normalisées selon la source, pour la fiche au clic."""
+    a = {}
+    if layer == "natura2000areas":
+        a["designation"] = props.get("sitedesc") or props.get("directive")
+        if props.get("sitecode"):
+            a["code"] = props["sitecode"]
+        if props.get("area_ha"):
+            a["surface_ha"] = props["area_ha"]
+    elif layer == "marineprotectedareas":
+        a["designation"] = props.get("designatio")
+        if props.get("rsc"):
+            a["convention"] = props["rsc"]
+        if props.get("iucn_cat"):
+            a["iucn"] = props["iucn_cat"]
+        if props.get("status"):
+            a["statut"] = props["status"]
+        if props.get("mang_auth"):
+            a["autorite"] = props["mang_auth"]
     return {k: v for k, v in a.items() if v not in (None, "", "NaN")}
 
 
@@ -97,11 +124,12 @@ def set_layer(cur, region_id, layer, **cols):
 
 
 def ensure_layers(cur, region_id):
-    """Inscrit les trois couches attendues de la région si elles n'existent pas encore."""
+    """Inscrit les couches attendues de la région si elles n'existent pas encore."""
     cur.execute(
         "INSERT INTO region_layers (region_id, layer, usage) "
         "SELECT %s, c.layer, c.usage FROM (VALUES "
-        "('coastline', 'operationnelle'), ('bathymetry', 'affichage'), ('infrastructure', 'operationnelle')"
+        "('coastline', 'operationnelle'), ('bathymetry', 'affichage'), ('infrastructure', 'operationnelle'), "
+        "('protected_areas', 'operationnelle')"
         ") AS c(layer, usage) ON CONFLICT (region_id, layer) DO NOTHING",
         (region_id,))
 
@@ -229,10 +257,58 @@ def render_shading(tif_path):
     return out
 
 
+def provision_protected_areas(cur, region_id, bbox):
+    lon_min, lat_min, lon_max, lat_max = bbox
+    bbox_param = f"{lat_min},{lon_min},{lat_max},{lon_max},urn:ogc:def:crs:EPSG::4326"
+    set_layer(cur, region_id, "protected_areas", status="en_cours")
+    cur.execute("DELETE FROM protected_areas WHERE region_id = %s", (region_id,))
+    total = 0
+    for layer in PROTECTED_LAYERS:
+        kind = "natura2000" if layer == "natura2000areas" else "mpa"
+        params = {"service": "WFS", "version": "2.0.0", "request": "GetFeature",
+                  "typeNames": f"emodnet:{layer}", "outputFormat": "application/json",
+                  "srsName": "EPSG:4326", "bbox": bbox_param}
+        r = requests.get(HA_WFS, params=params, timeout=180)
+        r.raise_for_status()
+        feats = r.json().get("features", [])
+        if layer == "natura2000areas":   # couche mixte terre et mer : on ne garde que le marin
+            feats = [f for f in feats if (f.get("properties", {}).get("coast_mar") == 1
+                                          or (f.get("properties", {}).get("mar_perc") or 0) > 0)]
+        if not feats:
+            continue
+        geoms = [f["geometry"] for f in feats if f.get("geometry")]
+        ensure_lonlat(geoms, bbox)
+        for f in feats:
+            g = f.get("geometry")
+            if not g:
+                continue
+            props = f.get("properties", {})
+            country = props.get("country") or props.get("ms")
+            designation = props.get("sitedesc") or props.get("designatio")
+            # Simplifié à environ 100 m : des polygones Natura 2000 bruts ont des milliers de sommets, ce qui
+            # rend le test « navire dans la zone » très lent sans rien apporter à l'échelle d'un navire.
+            cur.execute(
+                "INSERT INTO protected_areas (region_id, kind, name, designation, country, source, attrs, geom) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, "
+                "ST_CollectionExtract(ST_MakeValid(ST_SimplifyPreserveTopology("
+                "    ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)), 0.001)), 3)::geography)",
+                (region_id, kind, pick(props, PA_NAME_KEYS), designation, country,
+                 f"EMODnet:{layer}", json.dumps(normalize_pa_attrs(layer, props)), json.dumps(g)))
+            total += 1
+        print(f"  {layer:22s} {len(feats):>4} objets")
+    set_layer(cur, region_id, "protected_areas", status="prete",
+              source="EMODnet Human Activities (WFS)", source_url=HA_WFS, license=PROTECTED_LICENSE,
+              feature_count=total)
+    cur.execute("UPDATE region_layers SET fetched_at = now() WHERE region_id = %s AND layer = 'protected_areas'", (region_id,))
+    return total
+
+
 def provision(cur, region_id, bbox, which="all", refresh=False):
-    """Orchestre les fournisseurs d'une région. which vaut all, infrastructure ou bathymetry."""
+    """Orchestre les fournisseurs. which vaut all, infrastructure, bathymetry ou protected_areas."""
     ensure_layers(cur, region_id)
     if which in ("all", "infrastructure"):
         provision_infrastructure(cur, region_id, bbox)
     if which in ("all", "bathymetry"):
         provision_bathymetry(cur, region_id, bbox, refresh=refresh)
+    if which in ("all", "protected_areas"):
+        provision_protected_areas(cur, region_id, bbox)
