@@ -297,7 +297,7 @@ export default function App() {
           </div>
         )}
         <DetailPanel selection={selection} onClose={() => setSelection(null)}
-          passTime={analysis?.properties.acquired_at ?? null} onStatus={onStatus} onOpenDossier={openDossier} onTipCue={onTipCue} />
+          passTime={analysis?.properties.acquired_at ?? null} onStatus={onStatus} onTipCue={onTipCue} />
         <Timeline clock={stream?.clock ?? null} days={(daysQ.data ?? []).map((d) => d.day)}
           dayAlerts={dayAlertsQ.data ?? EMPTY} passes={passes} onCommand={timelineCommand} />
       </main>

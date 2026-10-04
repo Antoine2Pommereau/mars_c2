@@ -2,10 +2,10 @@ import { useState } from "react";
 import { chipUrl } from "../lib/api";
 
 /** Vignette radar (polarisation VV) centrée sur un point, avec réticule et échelle. */
-export default function Chip({ lon, lat, time, sizeM = 800 }: { lon: number; lat: number; time: string; sizeM?: number }) {
+export default function Chip({ lon, lat, time, sizeM = 800, className = "mt-3" }: { lon: number; lat: number; time: string; sizeM?: number; className?: string }) {
   const [state, setState] = useState<"loading" | "ok" | "error">("loading");
   return (
-    <figure className="mt-3">
+    <figure className={className}>
       <div className="relative aspect-square w-full overflow-hidden rounded-md border border-hair bg-abyss">
         <img src={chipUrl(lon, lat, time, sizeM)} alt="Vignette radar autour de l'écho"
           onLoad={() => setState("ok")} onError={() => setState("error")}

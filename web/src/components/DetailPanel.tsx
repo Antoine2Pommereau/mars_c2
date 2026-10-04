@@ -6,6 +6,8 @@ import { api } from "../lib/api";
 import { ALERT_COLOR, ALERT_LABEL, INFRA_CABLE, INFRA_PIPELINE, PA_LINE, SEVERITY, SIGNAL, STATUS_LABEL, dayLabel, downloadJson, hm, num, utc } from "../lib/format";
 import AlertActions from "./AlertActions";
 import Chip from "./Chip";
+import Slideshow from "./Slideshow";
+import VesselPhoto from "./VesselPhoto";
 
 const BAND: Record<string, { label: string; color: string }> = {
   neutre: { label: "neutre", color: "#7c8b97" },
@@ -171,32 +173,45 @@ interface PanelProps {
   onClose: () => void;
   passTime: string | null;
   onStatus: (status: string) => void;
-  onOpenDossier: (vesselId: number) => void;
   onTipCue: (alertId: number) => void;
 }
 
-export default function DetailPanel({ selection, onClose, passTime, onStatus, onOpenDossier, onTipCue }: PanelProps) {
-  const vesselId = selection?.kind === "vessel_dossier" ? selection.vesselId : undefined;
+export default function DetailPanel({ selection, onClose, passTime, onStatus, onTipCue }: PanelProps) {
+  // Le clic sur un navire (carte) et l'ouverture d'un dossier (recherche) affichent la même fiche complète.
+  const live = selection?.kind === "vessel" ? selection.properties : undefined;
+  const vesselId = selection?.kind === "vessel_dossier" ? selection.vesselId
+    : live ? live.vessel_id : undefined;
   const dossierQ = useQuery({ queryKey: ["dossier", vesselId], queryFn: (ctx) => api.dossier(vesselId!, ctx),
     enabled: vesselId !== undefined, staleTime: 10_000 });
   if (!selection) return null;
 
-  if (selection.kind === "vessel_dossier") {
+  if (vesselId !== undefined) {
     const d = dossierQ.data;
     const band = d ? (BAND[d.risque.bande] ?? BAND.neutre) : BAND.neutre;
     const anomalies = d ? Object.entries(d.anomalies_identite).filter(([, on]) => on) : [];
+    const mmsi = d?.identite.mmsi ?? live?.mmsi ?? undefined;
+    const shipType = d?.identite.ship_type ?? live?.ship_type;
+    const lengthM = d?.identite.length_m ?? live?.length_m;
     return (
       <div className={PANEL}>
         <div className="mb-3 flex items-start justify-between gap-3">
-          <h3 className="text-[15px] font-semibold leading-snug">{d?.identite.name ?? "Dossier navire"}</h3>
+          <h3 className="text-[15px] font-semibold leading-snug">{d?.identite.name ?? live?.name ?? "Navire sans nom"}</h3>
           <div className="flex items-center gap-3">
             {d && <button onClick={() => downloadJson(`dossier-${d.identite.mmsi}.json`, d)} className="text-[12px] text-signal hover:underline" title="Exporter le dossier">Exporter</button>}
             <button onClick={onClose} className="text-muted hover:text-ink" aria-label="Fermer"><X size={16} /></button>
           </div>
         </div>
-        {!d ? <p className="text-muted">Chargement…</p> : (
+        <VesselPhoto mmsi={mmsi} shipType={shipType} lengthM={lengthM} className="mb-3" />
+        {live && (
           <>
-            <div className="mb-3 flex items-center gap-3 rounded-md border border-hair bg-raised px-3 py-2.5">
+            <Row label="Vitesse">{num(live.sog_kn)} nœuds</Row>
+            <Row label="Route">{num(live.cog_deg, 0)}°</Row>
+            <Row label="Dernier message">il y a {num((live.age_s ?? 0) / 60, 0)} min</Row>
+          </>
+        )}
+        {!d ? <p className="mt-3 text-muted">Chargement du dossier…</p> : (
+          <>
+            <div className="mb-3 mt-3 flex items-center gap-3 rounded-md border border-hair bg-raised px-3 py-2.5">
               <span className="font-cond text-[30px] font-medium leading-none tabular-nums" style={{ color: band.color }}>{d.risque.score}</span>
               <div>
                 <div className="text-[13px] font-medium" style={{ color: band.color }}>{band.label}</div>
@@ -265,7 +280,19 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
     const p = selection.feature.properties;
     const d = p.details ?? {};
     const [lon, lat] = selection.feature.geometry.coordinates as [number, number];
-    const withChip = (p.type === "DARK_SHIP" || p.type === "AIS_UNCONFIRMED") && p.event_time;
+    // Navire rattaché à l'alerte (pour la photo AIS en regard de l'image satellite)
+    const nav = (p.type === "AIS_UNCONFIRMED" || p.type === "IDENTITY_MISMATCH") ? p.details?.navire : undefined;
+    const canChip = p.type === "DARK_SHIP" || p.type === "AIS_UNCONFIRMED" || p.type === "IDENTITY_MISMATCH";
+    let media: ReactNode = null;
+    if (canChip && p.event_time) {
+      // Avec un navire AIS, on compare sa photo à l'écho satellite ; sinon la vignette seule
+      media = nav?.mmsi ? (
+        <Slideshow slides={[
+          { key: "sat", node: <Chip lon={lon} lat={lat} time={p.event_time} className="" /> },
+          { key: "photo", node: <VesselPhoto mmsi={nav.mmsi} shipType={nav.ship_type} lengthM={nav.length_m} className="" /> },
+        ]} />
+      ) : <Chip lon={lon} lat={lat} time={p.event_time} />;
+    }
     title = `${ALERT_LABEL[p.type] ?? p.type}, ${SEVERITY[p.severity] ?? p.severity}`;
     color = ALERT_COLOR[p.type] ?? color;
     body = (
@@ -274,7 +301,7 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
           <span className="mb-2 inline-block rounded-full bg-raised px-2 py-0.5 text-[11.5px] text-muted">{STATUS_LABEL[p.status]}</span>
         )}
         <p className="mb-3 text-ink/90">{d.motif}</p>
-        {withChip && p.event_time && <Chip lon={lon} lat={lat} time={p.event_time} />}
+        {media}
         <AlertBody p={p} />
         {p.type === "AIS_GAP" && (p.details as AisGapDetails | undefined)?.derniere_position && (
           <button onClick={() => onTipCue(p.id)}
@@ -287,23 +314,6 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
       </>
     );
     footer = <>Règles {p.rule_version}{p.event_time ? `, alerte levée le ${utc(p.event_time)}` : ""}</>;
-  } else if (selection.kind === "vessel") {
-    const p = selection.properties;
-    title = p.name || "Navire sans nom";
-    body = (
-      <>
-        <Row label="MMSI">{p.mmsi}</Row>
-        <Row label="Type">{p.ship_type ?? "non renseigné"}</Row>
-        <Row label="Longueur">{p.length_m ? `${num(p.length_m, 0)} m` : "n.d."}</Row>
-        <Row label="Vitesse">{num(p.sog_kn)} nœuds</Row>
-        <Row label="Route">{num(p.cog_deg, 0)}°</Row>
-        <Row label="Dernier message">il y a {num((p.age_s ?? 0) / 60, 0)} min</Row>
-        <button onClick={() => onOpenDossier(p.vessel_id)}
-          className="mt-3 w-full rounded-md border border-hair px-3 py-1.5 text-[12.5px] text-ink hover:border-signal">
-          Ouvrir le dossier
-        </button>
-      </>
-    );
   } else if (selection.kind === "infrastructure") {
     const p = selection.properties;
     const attrs = p.attrs ?? {};
@@ -336,10 +346,13 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
       </>
     );
     footer = <>Source {p.source}</>;
-  } else {
+  } else if (selection.kind === "detection") {
     const p = selection.properties;
     const status = p.mask_reason && p.mask_reason !== "null" ? `Écartée (${p.mask_reason})`
       : p.matched_mmsi && p.matched_mmsi !== "null" ? `Appariée à ${p.matched_name ?? p.matched_mmsi}` : "Sans AIS";
+    const matchedMmsi = typeof p.matched_mmsi === "number" ? p.matched_mmsi
+      : p.matched_mmsi && p.matched_mmsi !== "null" && Number.isFinite(Number(p.matched_mmsi)) ? Number(p.matched_mmsi) : undefined;
+    const hasChip = passTime && p.lon != null && p.lat != null;
     title = "Détection radar";
     body = (
       <>
@@ -348,7 +361,12 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
         <Row label="Contraste local VV">{num(p.contrast_vv_db)} dB</Row>
         <Row label="Score de présence">{num(p.objectness, 2)}</Row>
         <Row label="Score navire">{num(p.vessel_score, 2)}</Row>
-        {passTime && p.lon != null && p.lat != null && <Chip lon={p.lon} lat={p.lat} time={passTime} />}
+        {hasChip && (matchedMmsi ? (
+          <Slideshow slides={[
+            { key: "sat", node: <Chip lon={p.lon!} lat={p.lat!} time={passTime!} className="" /> },
+            { key: "photo", node: <VesselPhoto mmsi={matchedMmsi} lengthM={p.length_m} className="" /> },
+          ]} />
+        ) : <Chip lon={p.lon!} lat={p.lat!} time={passTime!} />)}
       </>
     );
   }

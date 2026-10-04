@@ -66,6 +66,8 @@ export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
 
 export const bathymetryImageUrl = (regionId: number) => `/api/regions/${regionId}/bathymetry/image`;
 
+export const vesselPhotoUrl = (mmsi: number) => `/api/vessels/${mmsi}/photo`;
+
 // TanStack Query passe { signal, ... } à queryFn ; on en extrait l'AbortSignal pour le relayer à fetch.
 type QueryCtx = { signal?: AbortSignal };
 

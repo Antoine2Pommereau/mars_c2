@@ -8,15 +8,17 @@ import json
 import logging
 import math
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 import asyncpg
 import httpx
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from mars.config import load_env, load_rules
@@ -39,6 +41,13 @@ MAX_ANALYSES = 2          # nombre maximal d'analyses menées de front
 MAX_STREAMS = 32          # nombre maximal de flux SSE simultanés
 CHIP_MIN_M = 50           # taille minimale d'une vignette radar
 CHIP_MAX_M = 5000         # taille maximale d'une vignette radar
+PHOTO_DIR = Path(os.environ.get("PHOTO_DIR", "data/photos"))
+# Photo de navire par MMSI. On peut deposer data/photos/<mmsi>.jpg a la main (hors ligne).
+# VESSEL_PHOTO_URL, si defini, est un modele d'URL image directe ({mmsi}). Sinon on lit la fiche
+# VesselFinder et on en extrait la vignette. Source a usage personnel, a remplacer selon les droits.
+VESSEL_PHOTO_URL = os.environ.get("VESSEL_PHOTO_URL", "")
+VESSELFINDER_PAGE = "https://www.vesselfinder.com/vessels/details/{mmsi}"
+_PHOTO_RE = re.compile(r"https://static\.vesselfinder\.net/ship-photo/[^\"'\s]+")
 TASKS: set = set()
 _ANALYSIS_SEM = asyncio.Semaphore(MAX_ANALYSES)
 _STREAM_SEM = asyncio.Semaphore(MAX_STREAMS)
@@ -1261,6 +1270,38 @@ async def vessel_dossier(vessel_id: int):
                      "event_time": r["event_time"].isoformat(), "lon": r["lon"], "lat": r["lat"], "motif": r["motif"]}
                     for r in rows],
     }
+
+
+@app.get("/api/vessels/{mmsi}/photo")
+async def vessel_photo(mmsi: int):
+    """Photo AIS du navire par MMSI. Cache disque, puis telechargement en ligne configurable, sinon 404.
+    Une marque negative evite de reinterroger la source pour un navire sans photo."""
+    if not (100000000 <= mmsi < 1000000000):
+        raise HTTPException(422, "MMSI hors format")
+    PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+    path = PHOTO_DIR / f"{mmsi}.jpg"
+    absent = PHOTO_DIR / f"{mmsi}.absent"
+    if path.exists():
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+    if absent.exists():
+        raise HTTPException(404, "Pas de photo pour ce navire")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=4), follow_redirects=True,
+                                     headers={"User-Agent": "Mozilla/5.0 (MARS C2)"}) as client:
+            if VESSEL_PHOTO_URL:
+                r = await client.get(VESSEL_PHOTO_URL.format(mmsi=mmsi))
+            else:
+                page = await client.get(VESSELFINDER_PAGE.format(mmsi=mmsi))
+                m = _PHOTO_RE.search(page.text) if page.status_code == 200 else None
+                r = await client.get(m.group(0)) if m else None
+    except httpx.HTTPError:
+        raise HTTPException(503, "Source de photo injoignable")
+    # On ne retient que de vraies images ; un corps minuscule trahit un pixel ou une page d'erreur
+    if r is not None and r.status_code == 200 and r.headers.get("content-type", "").startswith("image/") and len(r.content) > 2048:
+        path.write_bytes(r.content)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+    absent.write_bytes(b"")
+    raise HTTPException(404, "Pas de photo pour ce navire")
 
 
 @app.get("/api/chip")
