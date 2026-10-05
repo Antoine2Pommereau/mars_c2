@@ -19,6 +19,22 @@ const SHIP_COLOR: any = ["match", ["coalesce", ["get", "ship_type"], ""],
 const ALERT_STROKE: any = ["match", ["get", "type"],
   "DARK_SHIP", "#e85bc7", "RENDEZVOUS", "#f0a84b", "AIS_GAP", "#ef6461", "AIS_UNCONFIRMED", "#e8d45a", "#ffffff"];
 const NEUTRAL = "#c9d3da";
+// Infrastructures : câble télécom en cyan, câble électrique en ambre, pipeline en orange, parc éolien en vert
+const INFRA_LINE: any = ["match", ["get", "type"], "Câble électrique", "#f0a84b", "Pipeline", "#e07a5f", "#4fb6c8"];
+const WINDFARM = "#5fd38d";
+
+/** Plus petit cadre englobant un ensemble de géométries GeoJSON (coordonnées imbriquées). */
+function fitExtent(fc: FC): [[number, number], [number, number]] | null {
+  const acc = [1e9, 1e9, -1e9, -1e9];
+  const walk = (c: any) => {
+    if (typeof c[0] === "number") {
+      acc[0] = Math.min(acc[0], c[0]); acc[1] = Math.min(acc[1], c[1]);
+      acc[2] = Math.max(acc[2], c[0]); acc[3] = Math.max(acc[3], c[1]);
+    } else c.forEach(walk);
+  };
+  for (const f of fc.features) if (f.geometry) walk((f.geometry as any).coordinates);
+  return acc[0] <= acc[2] ? [[acc[0], acc[1]], [acc[2], acc[3]]] : null;
+}
 
 /** Icônes en champ de distance signé (teintables) : chevron pour un navire en route, point pour un navire immobile. */
 function makeIcon(kind: "chevron" | "dot") {
@@ -44,8 +60,9 @@ interface Props {
   liveAlerts: FC;
   zones: FC | null;
   reception: FC | null;
+  infrastructure: FC | null;
   highlight: FC;
-  show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean };
+  show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean; infrastructure: boolean };
   focus: { center: [number, number]; zoom: number } | null;
   onSelect: (s: Selection) => void;
   drawing: boolean;
@@ -82,7 +99,18 @@ export default function MapView(p: Props) {
 
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
+      ["zones", "reception", "infra", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
+
+      // Infrastructures sous marines (sous le trafic) : câbles et pipelines en lignes, parcs éoliens en surface
+      map.addLayer({ id: "infra-wind-fill", type: "fill", source: "infra", layout: { visibility: "none" },
+        filter: ["==", ["get", "kind"], "windfarm"],
+        paint: { "fill-color": WINDFARM, "fill-opacity": 0.12 } });
+      map.addLayer({ id: "infra-wind-line", type: "line", source: "infra", layout: { visibility: "none" },
+        filter: ["==", ["get", "kind"], "windfarm"],
+        paint: { "line-color": WINDFARM, "line-width": 1, "line-opacity": 0.8 } });
+      map.addLayer({ id: "infra-lines", type: "line", source: "infra", layout: { visibility: "none", "line-cap": "round" },
+        filter: ["!=", ["get", "kind"], "windfarm"],
+        paint: { "line-color": INFRA_LINE, "line-width": 1.5, "line-opacity": 0.85 } });
 
       map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
         paint: { "fill-color": "#f0a84b", "fill-opacity": 0.12, "fill-outline-color": "#f0a84b" } });
@@ -116,7 +144,7 @@ export default function MapView(p: Props) {
             ["!=", ["get", "mask_reason"], null], "#4c5a66",
             ["!=", ["get", "matched_mmsi"], null], "#e6ecf0",
             "#e85bc7"],
-        } });
+        } as any });
       // Trajectoires surlignées (traits pleins) et trajet présumé d'une coupure AIS (pointillés)
       map.addLayer({ id: "highlight", type: "line", source: "highlight", filter: ["!=", ["get", "dashed"], true],
         paint: { "line-color": ["coalesce", ["get", "color"], "#f0a84b"], "line-width": 2.5 } });
@@ -167,6 +195,18 @@ export default function MapView(p: Props) {
           if (f) onSelect.current({ kind: "alert", feature: f });
         });
       }
+      // Infrastructure : infobulle légère au clic (le détail va en popup, pas dans la fiche d'alerte)
+      const infraPopup = new maplibregl.Popup({ closeButton: false, offset: 8 });
+      for (const id of ["infra-lines", "infra-wind-fill"]) {
+        map.on("click", id, (e) => {
+          if (drawing.current) return;
+          const pr = e.features![0].properties as any;
+          const lines = [pr.name, pr.type, pr.operator].filter(Boolean).map((t) => `<div>${t}</div>`).join("");
+          infraPopup.setLngLat(e.lngLat).setHTML(`<div style="font:12px/1.4 sans-serif;color:#0e1419">${lines || "Infrastructure"}</div>`).addTo(map);
+        });
+        map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
+        map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
+      }
       for (const id of ["traffic", "det", "alerts", "live"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
@@ -192,7 +232,16 @@ export default function MapView(p: Props) {
   useEffect(() => setData("live", p.liveAlerts), [ready, p.liveAlerts]);
   useEffect(() => setData("zones", p.zones), [ready, p.zones]);
   useEffect(() => setData("reception", p.reception), [ready, p.reception]);
+  useEffect(() => setData("infra", p.infrastructure), [ready, p.infrastructure]);
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
+
+  // Première fois qu'on active les infrastructures et qu'elles sont chargées : cadrer dessus (zones France)
+  const infraFitted = useRef(false);
+  useEffect(() => {
+    if (!ready || !mapRef.current || !p.show.infrastructure || infraFitted.current) return;
+    const ext = p.infrastructure && p.infrastructure.features.length ? fitExtent(p.infrastructure) : null;
+    if (ext) { mapRef.current.fitBounds(ext, { padding: 60, duration: 800 }); infraFitted.current = true; }
+  }, [ready, p.show.infrastructure, p.infrastructure]);
 
   useEffect(() => {
     alertIndex.current.clear();
@@ -206,6 +255,7 @@ export default function MapView(p: Props) {
     vis(["aoi", "det", "alerts"], p.show.analysis);
     vis(["zones"], p.show.zones);
     vis(["reception"], p.show.reception);
+    vis(["infra-lines", "infra-wind-fill", "infra-wind-line"], p.show.infrastructure);
     map.setPaintProperty("traffic", "icon-color", p.show.byType ? SHIP_COLOR : NEUTRAL);
   }, [ready, p.show]);
 

@@ -542,6 +542,31 @@ async def stationary_zones():
     return collection([feature(r["geometry"], clean(r)) for r in rows])
 
 
+# Périmètre France de la section 0 : par défaut on ne sert que ces zones (la base peut contenir
+# d'autres régions issues du worktree de calibration danois). ?region=<id> cible une zone précise.
+FRANCE_REGIONS = ("Bretagne", "Mediterranee")
+
+
+@app.get("/api/infrastructure")
+async def infrastructure(region: int | None = None):
+    """Câbles, pipelines et parcs éoliens provisionnés depuis EMODnet (table infrastructure), en GeoJSON."""
+    sql = ("SELECT i.id, i.kind, i.name, i.operator, i.source, i.attrs->>'type' AS type, "
+           "r.name AS region, ST_AsGeoJSON(i.geom)::json AS geometry "
+           "FROM infrastructure i JOIN regions r ON r.id = i.region_id")
+    if region is not None:
+        sql += " WHERE i.region_id = $1::int"
+        args: list = [region]
+    else:
+        sql += " WHERE r.name = ANY($1::text[])"
+        args = [list(FRANCE_REGIONS)]
+    async with app.state.pool.acquire() as c:
+        rows = await c.fetch(sql, *args)
+    return collection([feature(r["geometry"], {
+        "id": r["id"], "kind": r["kind"], "name": r["name"], "operator": r["operator"],
+        "type": r["type"], "source": r["source"], "region": r["region"],
+    }) for r in rows])
+
+
 @app.post("/api/masks/reception")
 async def rebuild_reception_cells():
     async with app.state.pool.acquire() as c:

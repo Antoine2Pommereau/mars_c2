@@ -43,6 +43,7 @@ export const api = {
   alertsOfDay: (day: string) => get<FC>(`/alerts/day?day=${day}`),
   zones: () => get<FC>("/masks/stationary"),
   reception: () => get<FC>("/masks/reception"),
+  infrastructure: () => get<FC>("/infrastructure"),
   days: () => get<{ day: string; messages: number; vessels: number }[]>("/ais/days"),
   track: (vesselId: number, start: string, end: string) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),

@@ -4,7 +4,63 @@ Ce fichier est la mémoire du projet. Lis le en entier avant toute tâche, et ti
 (nouvelle règle, calibration, phase terminée, piège découvert). La spécification de référence est dans `docs/`
 (version 2.4) si Antoine l'y a déposée.
 
-## 1. Le projet
+## 0. Nouvelle direction (octobre 2026) : à lire en premier
+
+Le projet a pivoté. La version décrite dans les sections 3 à 15 (rejeu de journées AIS danoises, analyse radar à la
+demande) reste le socle technique, mais **l'objectif et le périmètre ont changé**. Le document de référence complet
+est la Claude Doc « MARS C2, mise à jour du projet » :
+https://claude.ai/code/artifact/00f50730-d117-4ad4-94ac-0cb9b967f002 (si elle n'est pas accessible, demander à
+Antoine de la déposer dans `docs/`).
+
+**Objectif.** Un outil opérationnel, en direct, qui protège les infrastructures maritimes françaises (câbles,
+interconnexions, pipelines, parcs éoliens) et suit les navires de la flotte fantôme dans les eaux françaises, en
+confrontant l'AIS déclaratif à des capteurs satellitaires indépendants. Client imaginé : une autorité française
+de l'action de l'État en mer.
+
+**Périmètre.** France uniquement, deux zones collectées dès le départ :
+
+| Zone | Emprise (lat_min, lon_min, lat_max, lon_max) | Rôle |
+|---|---|---|
+| `bretagne` (rail d'Ouessant, entrée de la Manche) | 47.3, -6.8, 49.6, -3.0 | Zone pilote : flotte fantôme, câbles, approches de Brest, GeoTrackNet préentraîné |
+| `mediterranee` (golfe du Lion, Marseille, Toulon, Côte d'Azur, Corse) | 41.2, 3.0, 43.7, 9.8 | Collectée dès maintenant pour accumuler l'historique ; nœud de câbles de Marseille |
+
+**Pistes retenues.** 1. Infrastructures sous marines (ancre traînante, arrêt ou flânerie dans un corridor, coupure
+AIS, rendez vous, écho sans AIS). 2. Flotte fantôme (navire de la liste identifié par son **OMI**, changements de
+nom ou de pavillon, transbordement, incohérence radar et AIS). La piste brouillage GNSS est écartée.
+
+**Sources.** AIS en direct par AISStream (WebSocket gratuit, en bêta, débit limité ; plan B : récepteur personnel
+et AISHub ; MarineTraffic écarté pour son coût) ; Sentinel 1 et 2 ; VIIRS ; EMODnet (infrastructures et densités de
+trafic) ; liste de la flotte fantôme du catalogue GUR (reprise par `shadow-fleet-tracker-light`, fichier `Vessels1.db`) et
+OpenSanctions. Les archives (jeu de l'École navale de Brest, jeu d'Ouessant, données de GeoTrackNet, routes de
+Brest, DMA) servent **uniquement à entraîner** les modèles de comportement.
+
+**Modèles.** `allenai/vessel-detection-sentinels` (radar et optique, cap et vitesse estimés ; GPU loué à chaque
+passage) ; `allenai/vessel-detection-viirs` (nuit, CPU) ; **GeoTrackNet en pilote** (modèle préentraîné sur les
+cargos et pétroliers d'Ouessant, aucun réentraînement pour la zone pilote) ; TrAISformer ensuite pour anticiper
+(réentraînement obligatoire : sa grille est calée sur la zone d'entraînement) ; le modèle actuel CircleNet reste en
+repli et en comparaison. Environ trois mois de données suffisent pour entraîner.
+
+**Interface.** Une seule vue, opérationnelle (fil d'alertes au centre, design actuel conservé), enrichie de quatre
+emprunts à Global Fishing Watch : couches par source avec indicateur d'état, cartes de chaleur sur une période,
+frise avec plage de dates, recherche et fiche navire (reprenant les fonctionnalités de `shadow-fleet-tracker-light`
+dans notre interface React, pas son interface Folium).
+
+**Stack cible.** Ingestion Python asynchrone sur un petit serveur loué allumé en permanence ; PostgreSQL, PostGIS
+et TimescaleDB (30 jours en clair, compression au delà) ; archive brute en Parquet sur stockage objet ; GPU loué à
+la demande. Budget : 15 à 25 € par mois.
+
+**Plan.** 1. Socle en direct (collecte, base, archive, EMODnet, listes, mesure de couverture) ; 2. règles en
+continu, recherche, fiche navire, frise par période ; 3. satellites (VIIRS chaque nuit, Sentinel 1 déclenché au
+passage sur les corridors, cartes de chaleur, couches) ; 4. anticipation (TrAISformer). Le pilote GeoTrackNet
+avance en parallèle : reproduire l'article, intégrer au fil d'alertes, évaluer au cas par cas (et sur les routes de
+Brest), réentraîner après trois mois de collecte.
+
+**État au 05/10/2026.** `scripts/ais_live.py` existe : `collect` archive le flux AISStream des deux zones en
+Parquet (`data/ais_live/{positions,statiques}/zone=…/date=…/`), `report` mesure volume, navires, cargos et
+pétroliers, retard du flux et continuité des trajectoires, avec une carte de couverture par cellule de 0,1°.
+Premier point de passage : **la couverture d'AISStream autour d'Ouessant est elle suffisante ?** Sinon, récepteur.
+
+## 1. Le projet (version initiale)
 
 **MARS C2** est une plateforme de surveillance maritime (Maritime Domain Awareness) qui fusionne deux sources :
 l'**AIS**, déclaratif et falsifiable (chaque navire annonce sa position), et l'**imagerie radar Sentinel 1**,
@@ -354,22 +410,10 @@ L'interface n'a pas de tests ; `npm run typecheck` vérifie les types.
 * 4 éoliennes d'Anholt non reconnues (une troisième date les rattraperait).
 * Le seuil de 0,20 et le contraste de 10 dB n'ont pas été validés sur une vérité terrain : c'est l'objet de la phase 6.
 
-## 17. Suite : phase 6
+## 17. Suite
 
-Ordre convenu avec Antoine : **évaluation**, puis **documentation**, puis le mode complet seulement s'il reste de
-l'énergie. La partie « démonstration guidée » a été écartée.
-
-1. **Évaluation chiffrée sur le jeu public xView3** (le volet le plus important). Faire tourner exactement notre
-   chaîne (extraction Sentinel Hub avec SIGMA0 bilinéaire, détection, fusion des fragments, contraste) sur des
-   scènes annotées du jeu de validation xView3, et mesurer précision, rappel et F1 selon la métrique xView3
-   (appariement d'une détection à une annotation à moins de 200 m). Le fichier de correspondance
-   `ESA_xView3_sceneName_mapping.csv` (sur Drive, utilisé en phase 0D) relie les noms de scènes xView3 aux produits
-   ESA. Puis balayer le seuil de présence et le seuil de contraste sur ces scènes pour les fixer sur des faits, et
-   comparer au balayage danois. Prévoir un script `scripts/evaluate_xview3.py` et un rapport chiffré.
-2. **Documentation finale** : README (présentation, architecture, captures, résultats chiffrés, démarche de
-   calibration avec les cas réels), spec mise à jour, ce fichier à jour.
-3. **Mode complet** (optionnel) : l'ensemble des 12 modèles sur GPU distant (Colab), appelé par la plateforme comme
-   un second service d'inférence ; vérifier qu'il rattrape AIDANOVA et MAERSK INVOLVER.
+Remplacée par le plan de la section 0. L'ancienne phase 6 (évaluation sur xView3) reste utile comme volet
+d'évaluation du détecteur radar, mais n'est plus prioritaire.
 
 ## 18. Historique des phases
 

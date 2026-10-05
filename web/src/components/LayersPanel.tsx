@@ -6,6 +6,7 @@ export interface LayerState {
   zones: boolean;
   reception: boolean;
   byType: boolean;
+  infrastructure: boolean;
 }
 
 const SHIP_TYPES: [string, string][] = [
@@ -40,6 +41,7 @@ export default function LayersPanel({ state, onChange }: { state: LayerState; on
       <Switch on={state.byType} onChange={set("byType")} label="Couleur par type de navire" hint="Sinon, tous les navires en gris neutre" />
       <Switch on={state.zones} onChange={set("zones")} label="Zones de mouillage" hint="Déduites de l'AIS, rencontres déclassées" />
       <Switch on={state.reception} onChange={set("reception")} label="Réception AIS fiable" hint="Là où un silence est significatif" />
+      <Switch on={state.infrastructure} onChange={set("infrastructure")} label="Infrastructures sous marines" hint="Câbles, pipelines et parcs éoliens, source EMODnet" />
 
       <section className="px-4 py-4">
         <div className="mb-2 font-medium">Navires</div>
@@ -61,6 +63,16 @@ export default function LayersPanel({ state, onChange }: { state: LayerState; on
         {Object.entries(ALERT_LABEL).map(([t, l]) => (
           <Key key={t} swatch={<span className="h-3.5 w-3.5 rounded-full border-2" style={{ borderColor: ALERT_COLOR[t] }} />}>{l}</Key>
         ))}
+
+        {state.infrastructure && (
+          <>
+            <div className="mb-2 mt-5 font-medium">Infrastructures</div>
+            <Key swatch={<span className="h-0.5 w-4 bg-[#4fb6c8]" />}>Câble télécom</Key>
+            <Key swatch={<span className="h-0.5 w-4 bg-[#f0a84b]" />}>Câble électrique</Key>
+            <Key swatch={<span className="h-0.5 w-4 bg-[#e07a5f]" />}>Pipeline</Key>
+            <Key swatch={<span className="h-2.5 w-2.5 bg-[#5fd38d]/30 border border-[#5fd38d]" />}>Parc éolien</Key>
+          </>
+        )}
       </section>
     </div>
   );

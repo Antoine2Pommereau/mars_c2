@@ -16,7 +16,7 @@ export default function App() {
   const qc = useQueryClient();
   const { data: stream, connected } = useStream();
   const [panel, setPanel] = useState<PanelId | null>("alertes");
-  const [layers, setLayers] = useState<LayerState>({ analysis: true, zones: false, reception: false, byType: false });
+  const [layers, setLayers] = useState<LayerState>({ analysis: true, zones: false, reception: false, byType: false, infrastructure: false });
   const [selection, setSelection] = useState<Selection | null>(null);
   const [highlight, setHighlight] = useState<FC>(EMPTY);
   const [focus, setFocus] = useState<{ center: [number, number]; zoom: number } | null>(null);
@@ -43,6 +43,7 @@ export default function App() {
   const trailsQ = useQuery({ queryKey: ["trails"], queryFn: api.trails, refetchInterval: 3000 });
   const zonesQ = useQuery({ queryKey: ["zones"], queryFn: api.zones, enabled: layers.zones, staleTime: Infinity });
   const receptionQ = useQuery({ queryKey: ["reception"], queryFn: api.reception, enabled: layers.reception, staleTime: Infinity });
+  const infraQ = useQuery({ queryKey: ["infrastructure"], queryFn: api.infrastructure, enabled: layers.infrastructure, staleTime: Infinity });
   const daysQ = useQuery({ queryKey: ["days"], queryFn: api.days, staleTime: Infinity });
 
   const day = stream?.clock.now.slice(0, 10);
@@ -182,6 +183,7 @@ export default function App() {
           liveAlerts={liveAlerts}
           zones={zonesQ.data ?? null}
           reception={receptionQ.data ?? null}
+          infrastructure={infraQ.data ?? null}
           highlight={highlight}
           show={layers}
           focus={focus}

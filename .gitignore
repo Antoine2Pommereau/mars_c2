@@ -9,3 +9,8 @@ models/*
 web/node_modules/
 web/dist/
 logs/
+
+mars_c2/
+data/ais_live/
+logs/
+.DS_Store
