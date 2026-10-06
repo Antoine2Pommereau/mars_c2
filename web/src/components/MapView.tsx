@@ -1,9 +1,12 @@
 import maplibregl, { type GeoJSONSource, type Map as MLMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
-import { WATCH_COLOR } from "../lib/format";
 import { bboxPolygon } from "../lib/geo";
+import { L } from "../lib/libelles";
 import { EMPTY, type FC, type Feature, type Selection } from "../lib/types";
+import { zonesGeoJSON } from "../lib/zones";
+import { COULEUR_LISTE, STROKE_ALERTE } from "../registres/alertes";
+import { COUCHES, COULEURS_INFRA } from "../registres/couches";
 
 const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
@@ -17,28 +20,20 @@ const SHIP_COLOR: any = ["match", ["coalesce", ["get", "ship_type"], ""],
    "Dredging", "Diving", "Anti-pollution", "Medical"], "#e07a5f",
   "#9fb3c2"];
 
-const ALERT_STROKE: any = ["match", ["get", "type"],
-  "DARK_SHIP", "#e85bc7", "RENDEZVOUS", "#f0a84b", "AIS_GAP", "#ef6461", "AIS_UNCONFIRMED", "#e8d45a",
-  "WATCHLIST", "#b48cf2", "IDENTITY_CHANGE", "#5fd3a5", "#ffffff"];
 const NEUTRAL = "#c9d3da";
-// Navire d'une liste de surveillance : teinte dédiée, quel que soit le mode de couleur
-const withWatch = (base: any): any => ["case", ["to-boolean", ["get", "watch"]], WATCH_COLOR, base];
-// Infrastructures : câble télécom en cyan, câble électrique en ambre, pipeline en orange, parc éolien en vert
-const INFRA_LINE: any = ["match", ["get", "type"], "Câble électrique", "#f0a84b", "Pipeline", "#e07a5f", "#4fb6c8"];
-const WINDFARM = "#5fd38d";
-
-/** Plus petit cadre englobant un ensemble de géométries GeoJSON (coordonnées imbriquées). */
-function fitExtent(fc: FC): [[number, number], [number, number]] | null {
-  const acc = [1e9, 1e9, -1e9, -1e9];
-  const walk = (c: any) => {
-    if (typeof c[0] === "number") {
-      acc[0] = Math.min(acc[0], c[0]); acc[1] = Math.min(acc[1], c[1]);
-      acc[2] = Math.max(acc[2], c[0]); acc[3] = Math.max(acc[3], c[1]);
-    } else c.forEach(walk);
-  };
-  for (const f of fc.features) if (f.geometry) walk((f.geometry as any).coordinates);
-  return acc[0] <= acc[2] ? [[acc[0], acc[1]], [acc[2], acc[3]]] : null;
-}
+// Couleur d'un navire : celle de son alerte ouverte la plus grave, sinon violet s'il est sur une liste, sinon neutre
+const shipColor = (base: any): any => ["case", ["to-boolean", ["get", "alerte"]], ["get", "alerte"],
+  ["to-boolean", ["get", "watch"]], COULEUR_LISTE, base];
+// Navire qui demande l'attention : il reste net et plus grand aux échelles larges
+const IMPORTANT: any = ["any", ["to-boolean", ["get", "alerte"]], ["to-boolean", ["get", "watch"]]];
+// Aux échelles larges, le trafic ordinaire s'estompe ; le détail revient en zoomant
+const TRAFFIC_OPACITY: any = ["interpolate", ["linear"], ["zoom"],
+  5, ["case", IMPORTANT, 1, 0.22],
+  8.5, ["case", IMPORTANT, 1, [">", ["get", "age_s"], 600], 0.3, 0.9]];
+// Infrastructures : estompées et fines aux échelles larges, nettes en zoomant (tracés simplifiés par l'API)
+const INFRA_OPACITY: any = ["interpolate", ["linear"], ["zoom"], 5, 0.35, 9, 0.9];
+const INFRA_WIDTH: any = ["interpolate", ["linear"], ["zoom"], 5, 0.7, 10, 1.6];
+const INFRA_LIGNES = COUCHES.filter((c) => c.infra && c.infra !== "Parc éolien");
 
 /** Icônes en champ de distance signé (teintables) : chevron pour un navire en route, point pour un navire immobile. */
 function makeIcon(kind: "chevron" | "dot") {
@@ -66,18 +61,19 @@ interface Props {
   reception: FC | null;
   infrastructure: FC | null;
   highlight: FC;
-  show: { analysis: boolean; zones: boolean; reception: boolean; byType: boolean; infrastructure: boolean };
+  actives: string[];                     // couches actives (registres/couches.ts)
+  byType: boolean;
+  zone: string | null;                   // filtre par zone des infrastructures
+  concernedInfra: number[] | null;       // mode « concernées seulement » : identifiants à montrer
   focus: { center: [number, number]; zoom: number } | null;
   onSelect: (s: Selection) => void;
   drawing: boolean;
   draft: number[] | null;
   onDraw: (bbox: number[]) => void;
   spotlight: { alertId: number | null; vesselIds: number[] } | null;
-  onBounds: (b: number[]) => void;
 }
 
-// Opacités de base, et mode focus : tout ce qui ne concerne pas la sélection s'efface
-const TRAFFIC_OPACITY: any = ["case", [">", ["get", "age_s"], 600], 0.3, 0.9];
+// Mode focus : tout ce qui ne concerne pas la sélection s'efface
 const ALERT_OPACITY: any = ["case", ["any", ["==", ["get", "severity"], "faible"],
   ["==", ["get", "status"], "classee"], ["==", ["get", "status"], "acquittee"]], 0.35, 1];
 
@@ -92,8 +88,6 @@ export default function MapView(p: Props) {
   drawing.current = p.drawing;
   const onDraw = useRef(p.onDraw);
   onDraw.current = p.onDraw;
-  const onBounds = useRef(p.onBounds);
-  onBounds.current = p.onBounds;
 
   // Création de la carte et des couches, une seule fois
   useEffect(() => {
@@ -103,18 +97,30 @@ export default function MapView(p: Props) {
 
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["zones", "reception", "infra", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
+      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
+      // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
+      map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
+      map.addSource("couverture", { type: "geojson", data: zonesGeoJSON() as any });
 
-      // Infrastructures sous marines (sous le trafic) : câbles et pipelines en lignes, parcs éoliens en surface
-      map.addLayer({ id: "infra-wind-fill", type: "fill", source: "infra", layout: { visibility: "none" },
-        filter: ["==", ["get", "kind"], "windfarm"],
-        paint: { "fill-color": WINDFARM, "fill-opacity": 0.12 } });
-      map.addLayer({ id: "infra-wind-line", type: "line", source: "infra", layout: { visibility: "none" },
-        filter: ["==", ["get", "kind"], "windfarm"],
-        paint: { "line-color": WINDFARM, "line-width": 1, "line-opacity": 0.8 } });
-      map.addLayer({ id: "infra-lines", type: "line", source: "infra", layout: { visibility: "none", "line-cap": "round" },
-        filter: ["!=", ["get", "kind"], "windfarm"],
-        paint: { "line-color": INFRA_LINE, "line-width": 1.5, "line-opacity": 0.85 } });
+      // Infrastructures sous marines (sous le trafic), une couche par type
+      map.addLayer({ id: "infra-eoliens-fond", type: "fill", source: "infra", layout: { visibility: "none" },
+        filter: ["==", ["get", "type"], "Parc éolien"],
+        paint: { "fill-color": COULEURS_INFRA["Parc éolien"], "fill-opacity": 0.12 } });
+      map.addLayer({ id: "infra-eoliens", type: "line", source: "infra", layout: { visibility: "none" },
+        filter: ["==", ["get", "type"], "Parc éolien"],
+        paint: { "line-color": COULEURS_INFRA["Parc éolien"], "line-width": 1, "line-opacity": INFRA_OPACITY } });
+      for (const c of INFRA_LIGNES) {
+        map.addLayer({ id: c.calques[0], type: "line", source: "infra", layout: { visibility: "none", "line-cap": "round" },
+          filter: ["==", ["get", "type"], c.infra!],
+          paint: { "line-color": c.couleur!, "line-width": INFRA_WIDTH, "line-opacity": INFRA_OPACITY } });
+      }
+      // Noms des infrastructures, à partir du zoom 9
+      map.addLayer({ id: "infra-noms", type: "symbol", source: "infra", minzoom: 9,
+        layout: { "symbol-placement": "line", "text-field": ["coalesce", ["get", "name"], ""], "text-size": 10.5,
+                  "text-font": ["Montserrat Regular", "Open Sans Regular", "Noto Sans Regular"] },
+        paint: { "text-color": "#7c8b97", "text-halo-color": "#0e1419", "text-halo-width": 1.2 } });
+      map.addLayer({ id: "couverture", type: "line", source: "couverture", layout: { visibility: "none" },
+        paint: { "line-color": "#4fb6c8", "line-width": 1, "line-opacity": 0.5, "line-dasharray": [3, 3] } });
 
       map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
         paint: { "fill-color": "#f0a84b", "fill-opacity": 0.12, "fill-outline-color": "#f0a84b" } });
@@ -127,14 +133,16 @@ export default function MapView(p: Props) {
       map.addLayer({ id: "traffic", type: "symbol", source: "traffic",
         layout: {
           "icon-image": ["case", ["<", ["coalesce", ["get", "sog_kn"], 0], 0.5], "dot", "chevron"],
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 6, 0.22, 10, 0.34, 13, 0.5],
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 5, ["case", IMPORTANT, 0.34, 0.18], 10, ["case", IMPORTANT, 0.42, 0.34],
+                        13, ["case", IMPORTANT, 0.56, 0.5]],
+          "symbol-sort-key": ["case", IMPORTANT, 1, 0],
           "icon-rotate": ["coalesce", ["get", "cog_deg"], 0],
           "icon-rotation-alignment": "map",
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
         paint: {
-          "icon-color": withWatch(NEUTRAL),
+          "icon-color": shipColor(NEUTRAL),
           "icon-opacity": TRAFFIC_OPACITY,
         } });
       map.addLayer({ id: "aoi", type: "line", source: "aoi",
@@ -158,7 +166,7 @@ export default function MapView(p: Props) {
         map.addLayer({ id, type: "circle", source: id,
           paint: {
             "circle-radius": 14, "circle-color": "rgba(255,255,255,0.04)", "circle-stroke-width": 2,
-            "circle-stroke-color": ALERT_STROKE,
+            "circle-stroke-color": STROKE_ALERTE,
             "circle-stroke-opacity": ALERT_OPACITY,
           } });
       }
@@ -201,12 +209,14 @@ export default function MapView(p: Props) {
       }
       // Infrastructure : infobulle légère au clic (le détail va en popup, pas dans la fiche d'alerte)
       const infraPopup = new maplibregl.Popup({ closeButton: false, offset: 8 });
-      for (const id of ["infra-lines", "infra-wind-fill"]) {
+      for (const id of [...INFRA_LIGNES.map((c) => c.calques[0]), "infra-eoliens-fond"]) {
         map.on("click", id, (e) => {
           if (drawing.current) return;
           const pr = e.features![0].properties as any;
-          const lines = [pr.name, pr.type, pr.operator].filter(Boolean).map((t) => `<div>${t}</div>`).join("");
-          infraPopup.setLngLat(e.lngLat).setHTML(`<div style="font:12px/1.4 sans-serif;color:#0e1419">${lines || "Infrastructure"}</div>`).addTo(map);
+          // Noms issus des données EMODnet : échappés avant insertion dans l'infobulle
+          const esc = (t: string) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+          const lines = [pr.name, pr.type, pr.operator].filter(Boolean).map((t) => `<div>${esc(String(t))}</div>`).join("");
+          infraPopup.setLngLat(e.lngLat).setHTML(`<div style="font:12px/1.4 sans-serif;color:#0e1419">${lines || L.carte.infrastructure}</div>`).addTo(map);
         });
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
@@ -215,9 +225,6 @@ export default function MapView(p: Props) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
       }
-      const emitBounds = () => { const b = map.getBounds(); onBounds.current([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]); };
-      map.on("moveend", emitBounds);
-      emitBounds();
       setReady(true);
     });
     return () => map.remove();
@@ -239,29 +246,38 @@ export default function MapView(p: Props) {
   useEffect(() => setData("infra", p.infrastructure), [ready, p.infrastructure]);
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
 
-  // Première fois qu'on active les infrastructures et qu'elles sont chargées : cadrer dessus (zones France)
-  const infraFitted = useRef(false);
-  useEffect(() => {
-    if (!ready || !mapRef.current || !p.show.infrastructure || infraFitted.current) return;
-    const ext = p.infrastructure && p.infrastructure.features.length ? fitExtent(p.infrastructure) : null;
-    if (ext) { mapRef.current.fitBounds(ext, { padding: 60, duration: 800 }); infraFitted.current = true; }
-  }, [ready, p.show.infrastructure, p.infrastructure]);
 
   useEffect(() => {
     alertIndex.current.clear();
     for (const f of [...p.analysisAlerts.features, ...p.liveAlerts.features]) alertIndex.current.set(f.properties.id, f);
   }, [p.analysisAlerts, p.liveAlerts]);
 
+  // Couches actives (registre), couleur par type, filtres des infrastructures (zone, concernées seulement)
+  const activesKey = p.actives.join(",");
   useEffect(() => {
     if (!ready || !mapRef.current) return;
     const map = mapRef.current;
-    const vis = (layers: string[], on: boolean) => layers.forEach((l) => map.setLayoutProperty(l, "visibility", on ? "visible" : "none"));
-    vis(["aoi", "det", "alerts"], p.show.analysis);
-    vis(["zones"], p.show.zones);
-    vis(["reception"], p.show.reception);
-    vis(["infra-lines", "infra-wind-fill", "infra-wind-line"], p.show.infrastructure);
-    map.setPaintProperty("traffic", "icon-color", withWatch(p.show.byType ? SHIP_COLOR : NEUTRAL));
-  }, [ready, p.show]);
+    for (const c of COUCHES) for (const l of c.calques) {
+      if (map.getLayer(l)) map.setLayoutProperty(l, "visibility", p.actives.includes(c.id) ? "visible" : "none");
+    }
+    const anyInfra = COUCHES.some((c) => c.infra && p.actives.includes(c.id));
+    map.setLayoutProperty("infra-noms", "visibility", anyInfra ? "visible" : "none");
+    map.setLayoutProperty("live", "visibility", "visible");
+    map.setPaintProperty("traffic", "icon-color", shipColor(p.byType ? SHIP_COLOR : NEUTRAL));
+  }, [ready, activesKey, p.byType]);
+
+  const concernedKey = p.concernedInfra ? p.concernedInfra.join(",") : "tout";
+  useEffect(() => {
+    if (!ready || !mapRef.current) return;
+    const map = mapRef.current;
+    const extra: any[] = [];
+    if (p.zone) extra.push(["==", ["downcase", ["coalesce", ["get", "region"], ""]], p.zone]);
+    if (p.concernedInfra) extra.push(["in", ["get", "id"], ["literal", p.concernedInfra]]);
+    const withExtra = (base: any) => (extra.length ? ["all", base, ...extra] : base);
+    for (const c of INFRA_LIGNES) map.setFilter(c.calques[0], withExtra(["==", ["get", "type"], c.infra!]));
+    for (const l of ["infra-eoliens-fond", "infra-eoliens"]) map.setFilter(l, withExtra(["==", ["get", "type"], "Parc éolien"]));
+    map.setFilter("infra-noms", extra.length ? ["all", ...extra] : null);
+  }, [ready, p.zone, concernedKey]);
 
   // Cadrage sur la zone analysée quand une nouvelle analyse s'affiche
   const lastAoi = useRef<number | null>(null);
@@ -295,6 +311,8 @@ export default function MapView(p: Props) {
     const s = p.spotlight;
     const ids = ["literal", s?.vesselIds ?? []];
     map.setPaintProperty("traffic", "icon-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 1, 0.12] : TRAFFIC_OPACITY);
+    map.setLayoutProperty("traffic", "symbol-sort-key", s ? ["case", ["in", ["get", "vessel_id"], ids], 2, IMPORTANT, 1, 0]
+      : ["case", IMPORTANT, 1, 0]);
     map.setPaintProperty("trails", "line-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 0.9, 0.06] : 0.45);
     map.setPaintProperty("det", "circle-stroke-opacity", s ? 0.35 : 1);
     for (const id of ["alerts", "live"]) {

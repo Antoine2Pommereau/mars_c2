@@ -1,148 +1,143 @@
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { FC, Feature } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, WATCH_LABEL, hm, num } from "../lib/format";
+import { FILTRES_DEFAUT, filtrer, grouper, statutDe, trier, zoneAlerte, type Filtres, type Vue } from "../lib/fil";
+import { hm, jourHeure } from "../lib/format";
+import { L } from "../lib/libelles";
+import type { Feature, Props } from "../lib/types";
+import { ZONE_KEYS } from "../lib/zones";
+import { naviresAlerte, TYPES_ALERTE, typeAlerte } from "../registres/alertes";
+import { Tag } from "./Elements";
 
-const TYPES = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED", "WATCHLIST", "IDENTITY_CHANGE"];
-// Alertes du flux en direct : filtrées par période ; celles d'une analyse radar restent attachées à l'analyse
-const LIVE_TYPES = ["RENDEZVOUS", "AIS_GAP", "WATCHLIST", "IDENTITY_CHANGE"];
-const RANK: Record<string, number> = { critique: 0, elevee: 1, moyenne: 2, faible: 3 };
-
-function headline(a: Feature): string {
-  const d = a.properties.details ?? {};
-  switch (a.properties.type) {
-    case "DARK_SHIP": return `Écho de ${num(d.length_m, 0)} m sans AIS`;
-    case "AIS_UNCONFIRMED": return d.navire?.name ?? `MMSI ${d.navire?.mmsi}`;
-    case "RENDEZVOUS": {
-      const [v1, v2] = d.navires ?? [];
-      return `${v1?.name ?? v1?.mmsi} et ${v2?.name ?? v2?.mmsi}`;
-    }
-    case "AIS_GAP": return d.navire?.name ?? `MMSI ${d.navire?.mmsi}`;
-    case "WATCHLIST": return d.navire?.name ?? `MMSI ${d.navire?.mmsi}`;
-    case "IDENTITY_CHANGE": return d.changement === "nom" ? `${d.ancien_nom} devenu ${d.nouveau_nom}` : `OMI ${d.omi}`;
-    default: return "";
-  }
-}
-
-function detail(a: Feature): string {
-  const d = a.properties.details ?? {};
-  switch (a.properties.type) {
-    case "DARK_SHIP": return `contraste ${num(d.contrast_vv_db, 0)} dB`;
-    case "AIS_UNCONFIRMED": return `${num(d.navire?.length_m, 0)} m déclarés, aucun écho`;
-    case "RENDEZVOUS": return `${d.duree_min} min, ${d.distance_min_m} m au plus près`;
-    case "AIS_GAP": return `silence de ${d.duree_min} min`;
-    case "WATCHLIST": return `${WATCH_LABEL[d.niveau] ?? d.niveau}, ${(d.zones ?? []).join(", ")}`;
-    case "IDENTITY_CHANGE": return d.changement === "nom" ? `MMSI ${d.navire?.mmsi}`
-      : `sous un autre MMSI${d.pavillon_change ? ", pavillon changé" : ""}`;
-    default: return "";
-  }
-}
-
-interface Props {
-  bounds: number[] | null;
-  now: string | null;
-  analysisAlerts: FC;
-  liveAlerts: FC;
+interface PanelProps {
+  alerts: Feature[];            // alertes de la plage
+  filtres: Filtres;
+  onFiltres: (f: Filtres) => void;
+  vessels: Map<number, Props>;  // navires affichés, pour le pavillon et le nom
+  now: number;
   selectedId: number | null;
   onPick: (f: Feature) => void;
 }
 
-const PERIODS: [number, string][] = [[1, "1 h"], [6, "6 h"], [12, "12 h"]];
+const GRAVITES = FILTRES_DEFAUT.gravites;
+const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
-export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, selectedId, onPick }: Props) {
-  const [inView, setInView] = useState(false);
-  const [hours, setHours] = useState(12);
-  const [types, setTypes] = useState<string[]>(TYPES);
-  const [view, setView] = useState<"todo" | "confirmed" | "all">("todo");
+function Ligne({ a, vessels, now, selected, onPick, indent }:
+  { a: Feature; vessels: Map<number, Props>; now: number; selected: boolean; onPick: (f: Feature) => void; indent?: boolean }) {
+  const t = typeAlerte(a.properties.type);
+  const d = a.properties.details ?? {};
+  const n = naviresAlerte(a)[0];
+  const flag = n?.flag ?? (n ? vessels.get(n.vessel_id)?.flag : null);
+  const zone = zoneAlerte(a);
+  const low = a.properties.severity === "faible" || ["classee", "acquittee"].includes(statutDe(a));
+  const quand = now - Date.parse(a.properties.event_time) < 20 * 3600_000 ? hm : jourHeure;
+  return (
+    <button onClick={() => onPick(a)}
+      className={`grid w-full grid-cols-[16px_1fr_auto] items-start gap-x-2.5 border-b border-hair/70 py-2.5 pr-4 text-left transition-colors
+        ${indent ? "pl-9" : "pl-4"} ${selected ? "bg-raised" : "hover:bg-raised/60"} ${low ? "opacity-55" : ""}`}>
+      <t.Icone size={14} strokeWidth={1.8} className="mt-0.5" style={{ color: t.couleur }} />
+      <span className="min-w-0">
+        <span className="flex items-center gap-1.5">
+          <span className="truncate font-medium text-ink">{indent ? L.alertes[a.properties.type] : t.titre(d)}</span>
+          {!indent && flag && <Tag>{flag}</Tag>}
+        </span>
+        <span className="mt-0.5 flex flex-wrap items-center gap-1 text-[12px] text-muted">
+          {t.signe(d)}{zone && <span>{L.zones[zone]}</span>}
+        </span>
+      </span>
+      <span className="text-right text-[12px]">
+        <span className="block text-ink/80">{quand(a.properties.event_time)}</span>
+        <span className="block text-muted">{statutDe(a) === "nouvelle" ? L.gravite[a.properties.severity] : L.statut[statutDe(a)]}</span>
+      </span>
+    </button>
+  );
+}
 
-  const all = useMemo(() => {
-    const list = [...analysisAlerts.features, ...liveAlerts.features];
-    return list.sort((a, b) =>
-      (RANK[a.properties.severity] ?? 9) - (RANK[b.properties.severity] ?? 9) ||
-      String(b.properties.event_time).localeCompare(String(a.properties.event_time)));
-  }, [analysisAlerts, liveAlerts]);
-
-  const statusOf = (a: Feature) => a.properties.status ?? "nouvelle";
-  const since = now ? new Date(now).getTime() - hours * 3600_000 : 0;
-  const visible = (a: Feature) => {
-    if (!inView || !bounds) return true;
-    const [lon, lat] = a.geometry.coordinates;
-    return lon >= bounds[0] && lon <= bounds[2] && lat >= bounds[1] && lat <= bounds[3];
-  };
-  // Un navire des listes compte comme récent tant qu'il est vu (fin du passage), pas seulement à son entrée
-  const lastSeen = (a: Feature) => a.properties.type === "WATCHLIST" && a.properties.details?.fin
-    ? a.properties.details.fin : a.properties.event_time;
-  const recent = (a: Feature) => !LIVE_TYPES.includes(a.properties.type)
-    || new Date(lastSeen(a)).getTime() >= since;
-  const shown = all.filter((a) => types.includes(a.properties.type) && visible(a) && recent(a) &&
-    (view === "all" || (view === "todo" ? statusOf(a) === "nouvelle" : statusOf(a) === "confirmee")));
-  const todoCount = all.filter((a) => statusOf(a) === "nouvelle").length;
-
-  const count = (t: string) => all.filter((a) => a.properties.type === t).length;
+/** Fil d'alertes de la plage : filtres par type, gravité, statut et zone ; tri par gravité puis date ; alertes d'un
+ *  même navire regroupées. */
+export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, now, selectedId, onPick }: PanelProps) {
+  const [ouverts, setOuverts] = useState<Set<string>>(new Set());
+  const sansVue = useMemo(() => filtrer(alerts, filtres, false), [alerts, filtres]);
+  const shown = useMemo(() => trier(filtrer(alerts, filtres)), [alerts, filtres]);
+  const groupes = useMemo(() => grouper(shown), [shown]);
+  const count = (type: string) => alerts.filter((a) => a.properties.type === type).length;
+  const todo = sansVue.filter((a) => statutDe(a) === "nouvelle").length;
+  const set = (p: Partial<Filtres>) => onFiltres({ ...filtres, ...p });
 
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-hair px-4 pb-3 pt-4">
         <h2 className="flex items-baseline justify-between text-[15px] font-semibold">
-          Alertes <span className="text-[12px] font-normal text-muted">{shown.length} sur {all.length}</span>
+          {L.fil.titre} <span className="text-[12px] font-normal text-muted">{L.fil.surTotal(shown.length, alerts.length)}</span>
         </h2>
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {TYPES.map((t) => {
-            const on = types.includes(t);
+        <div className="mt-3 flex flex-wrap gap-1.5" role="group" aria-label={L.fil.type}>
+          {TYPES_ALERTE.map((t) => {
+            const on = filtres.types.includes(t.type);
+            const title = t.actif ? L.alertes[t.type] : `${L.alertes[t.type]}, ${L.commun.aVenir} (${L.etapes[t.etape] ?? t.etape})`;
             return (
-              <button key={t} onClick={() => setTypes(on ? types.filter((x) => x !== t) : [...types, t])}
-                className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors
-                  ${on ? "border-hair bg-raised text-ink" : "border-transparent text-faint"}`}>
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: on ? ALERT_COLOR[t] : "#4c5a66" }} />
-                {ALERT_LABEL[t]} <span className="text-muted">{count(t)}</span>
+              <button key={t.type} disabled={!t.actif} title={title} onClick={() => set({ types: toggle(filtres.types, t.type) })}
+                className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11.5px] transition-colors
+                  ${!t.actif ? "border-transparent text-faint/50" : on ? "border-hair bg-raised text-ink" : "border-transparent text-faint"}`}>
+                <t.Icone size={11} strokeWidth={2} style={{ color: t.actif && on ? t.couleur : undefined }} />
+                {L.alertes[t.type]}{t.actif && <span className="text-muted">{count(t.type)}</span>}
               </button>
             );
           })}
         </div>
-        <div className="mt-3 flex items-center justify-between gap-3 text-[12px]">
-          <label className="flex cursor-pointer items-center gap-2 text-muted">
-            <input type="checkbox" checked={inView} onChange={(e) => setInView(e.target.checked)} /> Zone affichée
-          </label>
-          <div className="flex rounded-md border border-hair p-0.5" aria-label="Période des alertes comportementales">
-            {PERIODS.map(([h, l]) => (
-              <button key={h} onClick={() => setHours(h)}
-                className={`rounded px-2 py-0.5 ${hours === h ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>{l}</button>
+        <div className="mt-2 flex items-center gap-2 text-[11.5px]">
+          <div className="flex rounded-md border border-hair p-0.5" role="group" aria-label={L.fil.gravite}>
+            {GRAVITES.map((g) => (
+              <button key={g} onClick={() => set({ gravites: toggle(filtres.gravites, g) })}
+                className={`rounded px-1 py-0.5 ${filtres.gravites.includes(g) ? "bg-raised text-ink" : "text-faint hover:text-muted"}`}>{L.gravite[g]}</button>
             ))}
           </div>
+          <select aria-label={L.fil.zone} value={filtres.zone ?? ""} onChange={(e) => set({ zone: e.target.value || null })}
+            className="min-w-0 flex-1 rounded-md border border-hair bg-abyss px-1 py-1 text-ink">
+            <option value="">{L.fil.toutesZones}</option>
+            {ZONE_KEYS.map((z) => <option key={z} value={z}>{L.zones[z]}</option>)}
+          </select>
         </div>
         <div className="mt-2 flex rounded-md border border-hair p-0.5 text-[12px]" role="tablist">
-          {([["todo", `À traiter ${todoCount}`], ["confirmed", "Confirmées"], ["all", "Toutes"]] as const).map(([k, l]) => (
-            <button key={k} role="tab" aria-selected={view === k} onClick={() => setView(k)}
-              className={`flex-1 rounded px-2 py-1 ${view === k ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>{l}</button>
+          {(["todo", "confirmed", "all"] as Vue[]).map((k) => (
+            <button key={k} role="tab" aria-selected={filtres.vue === k} onClick={() => set({ vue: k })}
+              className={`flex-1 rounded px-2 py-1 ${filtres.vue === k ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>
+              {L.fil.onglets[k]}{k === "todo" ? ` ${todo}` : ""}
+            </button>
           ))}
         </div>
       </header>
 
       <ul className="flex-1 overflow-y-auto">
         {shown.length === 0 && (
-          <li className="px-4 py-6 text-muted">
-            {view === "todo" ? "Aucune alerte à traiter à cet instant." : "Aucune alerte."}
-          </li>
+          <li className="px-4 py-6 text-muted">{filtres.vue === "todo" ? L.fil.aucune.todo : L.fil.aucune.autre}</li>
         )}
-        {shown.map((a) => {
-          const low = a.properties.severity === "faible" || ["classee", "acquittee"].includes(statusOf(a));
-          const selected = a.properties.id === selectedId;
+        {groupes.map((g) => {
+          if (g.alertes.length === 1) {
+            const a = g.alertes[0];
+            return <li key={g.cle}><Ligne a={a} vessels={vessels} now={now} selected={a.properties.id === selectedId} onPick={onPick} /></li>;
+          }
+          const open = ouverts.has(g.cle) || g.alertes.some((a) => a.properties.id === selectedId);
+          const first = g.alertes[0];
+          const t = typeAlerte(first.properties.type);
+          const n = naviresAlerte(first)[0];
+          const v = g.vesselId != null ? vessels.get(g.vesselId) : undefined;
+          const flag = n?.flag ?? v?.flag;
           return (
-            <li key={`${a.properties.type}${a.properties.id}`}>
-              <button onClick={() => onPick(a)}
-                className={`grid w-full grid-cols-[10px_1fr_auto] items-start gap-x-3 border-b border-hair/70 px-4 py-3 text-left transition-colors
-                  ${selected ? "bg-raised" : "hover:bg-raised/60"} ${low ? "opacity-55" : ""}`}>
-                <span className="mt-1.5 h-2 w-2 rounded-full" style={{ background: ALERT_COLOR[a.properties.type] }} />
-                <span className="min-w-0">
-                  <span className="block truncate font-medium text-ink">{headline(a)}</span>
-                  <span className="block truncate text-[12px] text-muted">{detail(a)}</span>
+            <li key={g.cle}>
+              <button onClick={() => setOuverts((s) => { const x = new Set(s); if (x.has(g.cle)) x.delete(g.cle); else x.add(g.cle); return x; })}
+                className="grid w-full grid-cols-[16px_1fr_auto] items-center gap-x-2.5 border-b border-hair/70 px-4 py-2.5 text-left hover:bg-raised/60">
+                {open ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate font-medium text-ink">{n?.name ?? v?.name ?? t.titre(first.properties.details ?? {})}</span>
+                  {flag && <Tag>{flag}</Tag>}
+                  <span className="flex gap-0.5">{g.alertes.map((a) => (
+                    <span key={a.properties.id} className="h-1.5 w-1.5 rounded-full" style={{ background: typeAlerte(a.properties.type).couleur }} />
+                  ))}</span>
                 </span>
-                <span className="text-right text-[12px]">
-                  <span className="block text-ink/80">{hm(a.properties.event_time)}</span>
-                  <span className="block text-muted">
-                    {statusOf(a) === "nouvelle" ? SEVERITY[a.properties.severity] : STATUS_LABEL[statusOf(a)]}
-                  </span>
-                </span>
+                <span className="text-right text-[12px] text-muted">{L.fil.groupe(g.alertes.length)}</span>
               </button>
+              {open && g.alertes.map((a) => (
+                <Ligne key={a.properties.id} a={a} vessels={vessels} now={now} selected={a.properties.id === selectedId} onPick={onPick} indent />
+              ))}
             </li>
           );
         })}

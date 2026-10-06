@@ -24,3 +24,4 @@ logs/
 
 # Ancien clone imbriqué
 mars_c2/
+.gstack/

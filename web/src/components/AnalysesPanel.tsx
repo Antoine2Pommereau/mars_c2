@@ -2,8 +2,9 @@ import { Check, Loader2, X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ActiveAnalysis, Feature } from "../lib/types";
 import { num, utc } from "../lib/format";
+import { L } from "../lib/libelles";
 
-const STEPS: [string, string][] = [["extraction", "Extrait radar"], ["inference", "Détection"], ["fusion", "Fusion avec l'AIS"]];
+const STEPS = ["extraction", "inference", "fusion"];
 
 function Job({ a }: { a: ActiveAnalysis }) {
   const steps: Record<string, any> = {};
@@ -11,9 +12,10 @@ function Job({ a }: { a: ActiveAnalysis }) {
   return (
     <div className="border-b border-hair px-4 py-3">
       <div className="mb-2 font-medium">
-        Analyse n° {a.id} {a.status === "failed" ? "en échec" : a.status === "done" ? "terminée" : "en cours"}
+        {L.analyses.numero(a.id, a.status === "failed" ? L.analyses.enEchec : a.status === "done" ? L.analyses.terminee : L.analyses.enCours)}
       </div>
-      {STEPS.map(([k, label]) => {
+      {STEPS.map((k) => {
+        const label = L.analyses.etapes[k];
         const s = steps[k];
         const Icon = !s ? null : s.state === "done" ? Check : Loader2;
         return (
@@ -24,7 +26,7 @@ function Job({ a }: { a: ActiveAnalysis }) {
               </span>
               {label}
             </span>
-            <span className="text-muted">{s?.state === "done" ? `${num(s.seconds)} s` : s ? "en cours" : ""}</span>
+            <span className="text-muted">{s?.state === "done" ? `${num(s.seconds)} s` : s ? L.analyses.enCours : ""}</span>
           </div>
         );
       })}
@@ -48,44 +50,44 @@ export default function AnalysesPanel({ history, onPick, launcher, jobs, analysi
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <header className="border-b border-hair px-4 pb-3 pt-4">
-        <h2 className="text-[15px] font-semibold">Analyses radar</h2>
+        <h2 className="text-[15px] font-semibold">{L.analyses.titre}</h2>
       </header>
       {launcher}
       {jobs.map((a) => <Job key={a.id} a={a} />)}
       {analysis ? (
         <section className="px-4 py-4">
-          <div className="text-[15px] font-medium">Passage du {utc(analysis.properties.acquired_at)}</div>
+          <div className="text-[15px] font-medium">{L.analyses.passageDu(utc(analysis.properties.acquired_at))}</div>
           <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
             {[
-              ["Détections", nDetections],
-              ["Retenues après filtres", s.retenues],
-              ["Appariées à l'AIS", s.appariees],
-              ["Navires sombres", s.alertes],
-              ["Positions non confirmées", s.positions_non_confirmees],
-              ["Échos fixes reconnus", s.echos_fixes],
+              [L.analyses.detections, nDetections],
+              [L.analyses.retenues, s.retenues],
+              [L.analyses.appariees, s.appariees],
+              [L.analyses.sombres, s.alertes],
+              [L.analyses.nonConfirmees, s.positions_non_confirmees],
+              [L.analyses.echosFixes, s.echos_fixes],
             ].map(([label, v]) => (
               <div key={label as string}>
                 <dt className="text-[12px] text-muted">{label}</dt>
-                <dd className="font-cond text-[22px] font-medium leading-tight">{v ?? "n.d."}</dd>
+                <dd className="font-cond text-[22px] font-medium leading-tight">{v ?? L.commun.nd}</dd>
               </div>
             ))}
           </dl>
-          <p className="mt-4 text-[12.5px] text-muted">Traitée en {num(t.total_s)} s</p>
+          <p className="mt-4 text-[12.5px] text-muted">{L.analyses.traiteeEn(num(t.total_s))}</p>
         </section>
       ) : (
-        <p className="px-4 py-6 text-muted">Aucune analyse.</p>
+        <p className="px-4 py-6 text-muted">{L.analyses.aucune}</p>
       )}
       {history.length > 1 && (
         <section className="border-t border-hair px-4 py-4">
-          <div className="mb-2 font-medium">Analyses précédentes</div>
+          <div className="mb-2 font-medium">{L.analyses.precedentes}</div>
           {history.map((f) => {
             const on = f.properties.id === analysis?.properties.id;
             return (
               <button key={f.properties.id} onClick={() => onPick(f)}
                 className={`flex w-full justify-between rounded-md px-2 py-1.5 text-left text-[12.5px]
                   ${on ? "bg-raised text-ink" : "text-muted hover:bg-raised/60 hover:text-ink"}`}>
-                <span>n° {f.properties.id}, {utc(f.properties.acquired_at).slice(0, 10)}</span>
-                <span>{f.properties.summary?.alertes ?? 0} alerte{(f.properties.summary?.alertes ?? 0) > 1 ? "s" : ""}</span>
+                <span>{L.analyses.ligne(f.properties.id, utc(f.properties.acquired_at).slice(0, 10))}</span>
+                <span>{L.analyses.nAlertes(f.properties.summary?.alertes ?? 0)}</span>
               </button>
             );
           })}

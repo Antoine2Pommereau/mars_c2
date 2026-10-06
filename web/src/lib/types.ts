@@ -29,9 +29,7 @@ export interface ActiveAnalysis {
 }
 export interface StreamPayload {
   clock: Clock;
-  traffic: FC;
   analyses: ActiveAnalysis[];
-  live_alerts: FC;
 }
 export type Selection =
   | { kind: "alert"; feature: Feature }

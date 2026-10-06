@@ -1,80 +1,122 @@
 import type { ReactNode } from "react";
-import { ALERT_COLOR, ALERT_LABEL } from "../lib/format";
+import { L } from "../lib/libelles";
+import { ZONE_KEYS } from "../lib/zones";
+import { COULEUR_LISTE } from "../registres/alertes";
+import { COUCHES, GROUPES, disponible, type Couche } from "../registres/couches";
 
-export interface LayerState {
-  analysis: boolean;
-  zones: boolean;
-  reception: boolean;
+interface Props {
+  actives: string[];
+  onActives: (ids: string[]) => void;
+  zone: string | null;
+  onZone: (z: string | null) => void;
+  concernees: boolean;
+  onConcernees: (v: boolean) => void;
   byType: boolean;
-  infrastructure: boolean;
+  onByType: (v: boolean) => void;
+  infraCounts: Record<string, number>;     // tracés par type d'infrastructure
+  vesselCount: number;
 }
 
-const SHIP_TYPES: [string, string][] = [
-  ["#6ea8fe", "Cargo"], ["#f0a35e", "Pétrolier"], ["#5fd38d", "Pêche"], ["#c792ea", "Passagers"],
-  ["#f5e663", "Plaisance, voile"], ["#e07a5f", "Service"], ["#9fb3c2", "Autre ou non renseigné"],
-];
+const C = L.couches;
 
-function Switch({ on, onChange, label, hint }: { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) {
+function Switch({ on, onChange, label, hint, disabled, right }:
+  { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string; disabled?: boolean; right?: ReactNode }) {
   return (
-    <button onClick={() => onChange(!on)} role="switch" aria-checked={on} title={hint}
-      className="flex w-full items-center justify-between gap-4 border-b border-hair px-4 py-2.5 text-left hover:bg-raised/50">
-      <span className="font-medium">{label}</span>
-      <span className={`flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors ${on ? "bg-signal" : "bg-hair"}`}>
-        <span className={`h-4 w-4 rounded-full bg-ink transition-transform ${on ? "translate-x-4" : ""}`} />
+    <button onClick={() => !disabled && onChange(!on)} role="switch" aria-checked={on} title={hint} disabled={disabled}
+      className={`flex w-full items-center justify-between gap-3 px-4 py-2 text-left ${disabled ? "cursor-default" : "hover:bg-raised/50"}`}>
+      <span className={disabled ? "text-faint/70" : "text-ink"}>{label}</span>
+      <span className="flex items-center gap-2">
+        {right}
+        <span className={`flex h-4.5 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors ${on && !disabled ? "bg-signal" : "bg-hair"}`}>
+          <span className={`h-3.5 w-3.5 rounded-full ${disabled ? "bg-faint/50" : "bg-ink"} transition-transform ${on && !disabled ? "translate-x-3.5" : ""}`} />
+        </span>
       </span>
     </button>
   );
 }
 
 function Key({ swatch, children }: { swatch: ReactNode; children: ReactNode }) {
-  return <div className="flex items-center gap-3 py-1 text-[12.5px]"><span className="flex w-4 justify-center">{swatch}</span>{children}</div>;
+  return <div className="flex items-center gap-3 py-0.5 text-[12px] text-muted"><span className="flex w-4 justify-center">{swatch}</span>{children}</div>;
 }
 
-export default function LayersPanel({ state, onChange }: { state: LayerState; onChange: (s: LayerState) => void }) {
-  const set = (k: keyof LayerState) => (v: boolean) => onChange({ ...state, [k]: v });
-  return (
-    <div className="flex h-full flex-col overflow-y-auto">
-      <header className="border-b border-hair px-4 pb-3 pt-4">
-        <h2 className="text-[15px] font-semibold">Couches et légende</h2>
-      </header>
-      <Switch on={state.analysis} onChange={set("analysis")} label="Analyse radar" hint="Zone analysée, détections et leurs alertes" />
-      <Switch on={state.byType} onChange={set("byType")} label="Couleur par type de navire" hint="Sinon, tous les navires en gris neutre" />
-      <Switch on={state.zones} onChange={set("zones")} label="Zones de mouillage" hint="Déduites de l'AIS, rencontres déclassées" />
-      <Switch on={state.reception} onChange={set("reception")} label="Réception AIS fiable" hint="Là où un silence est significatif" />
-      <Switch on={state.infrastructure} onChange={set("infrastructure")} label="Infrastructures sous marines" hint="Câbles, pipelines et parcs éoliens, source EMODnet" />
-
-      <section className="px-4 py-4">
-        <div className="mb-2 font-medium">Navires</div>
-        <Key swatch={<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1 L10 11 L6 8.5 L2 11 Z" fill="#c9d3da" /></svg>}>En route</Key>
-        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da]" />}>Immobile</Key>
-        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da] opacity-35" />}>Silencieux</Key>
-        <Key swatch={<span className="h-2 w-2 rounded-full bg-watch" />}>Sur liste de surveillance</Key>
-        {state.byType && (
-          <div className="mt-2 grid grid-cols-2 gap-x-3">
-            {SHIP_TYPES.map(([c, l]) => <Key key={l} swatch={<span className="h-2 w-2 rounded-full" style={{ background: c }} />}>{l}</Key>)}
+function Legende({ c, byType }: { c: Couche; byType: boolean }) {
+  if (c.id === "navires") {
+    return (
+      <div className="px-4 pb-2 pl-8">
+        <Key swatch={<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1 L10 11 L6 8.5 L2 11 Z" fill="#c9d3da" /></svg>}>{C.legende.enRoute}</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da]" />}>{C.legende.immobile}</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da] opacity-35" />}>{C.legende.silencieux}</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full" style={{ background: COULEUR_LISTE }} />}>{C.legende.surListe}</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-gap" />}>{C.legende.enAlerte}</Key>
+        {byType && (
+          <div className="mt-1 grid grid-cols-2 gap-x-3">
+            {C.typesNavire.map(([col, l]) => <Key key={l} swatch={<span className="h-2 w-2 rounded-full" style={{ background: col }} />}>{l}</Key>)}
           </div>
         )}
+      </div>
+    );
+  }
+  if (c.id === "detections") {
+    return (
+      <div className="px-4 pb-2 pl-8">
+        <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-[#e6ecf0]" />}>{C.legende.avecAis}</Key>
+        <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-dark" />}>{C.legende.sansAis}</Key>
+        <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-faint" />}>{C.legende.ecartee}</Key>
+      </div>
+    );
+  }
+  return null;
+}
 
-        <div className="mb-2 mt-5 font-medium">Détections radar</div>
-        <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-[#e6ecf0]" />}>Avec AIS</Key>
-        <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-dark" />}>Sans AIS</Key>
-        <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-faint" />}>Écartée</Key>
+function Pastille({ c }: { c: Couche }) {
+  if (!c.couleur) return null;
+  return c.legende === "surface"
+    ? <span className="h-2.5 w-2.5 rounded-sm border" style={{ borderColor: c.couleur, background: `${c.couleur}33` }} />
+    : <span className="h-0.5 w-4" style={{ background: c.couleur }} />;
+}
 
-        <div className="mb-2 mt-5 font-medium">Alertes</div>
-        {Object.entries(ALERT_LABEL).map(([t, l]) => (
-          <Key key={t} swatch={<span className="h-3.5 w-3.5 rounded-full border-2" style={{ borderColor: ALERT_COLOR[t] }} />}>{l}</Key>
-        ))}
-
-        {state.infrastructure && (
-          <>
-            <div className="mb-2 mt-5 font-medium">Infrastructures</div>
-            <Key swatch={<span className="h-0.5 w-4 bg-[#4fb6c8]" />}>Câble télécom</Key>
-            <Key swatch={<span className="h-0.5 w-4 bg-[#f0a84b]" />}>Câble électrique</Key>
-            <Key swatch={<span className="h-0.5 w-4 bg-[#e07a5f]" />}>Pipeline</Key>
-            <Key swatch={<span className="h-2.5 w-2.5 bg-[#5fd38d]/30 border border-[#5fd38d]" />}>Parc éolien</Key>
-          </>
-        )}
-      </section>
+/** Couches et légende, déduites du registre : une carte par groupe, les couches à venir grisées avec leur étape. */
+export default function LayersPanel(p: Props) {
+  const set = (id: string, on: boolean) => p.onActives(on ? [...p.actives, id] : p.actives.filter((x) => x !== id));
+  return (
+    <div className="flex h-full flex-col overflow-y-auto pb-4">
+      <header className="border-b border-hair px-4 pb-3 pt-4">
+        <h2 className="text-[15px] font-semibold">{C.titre}</h2>
+      </header>
+      {GROUPES.map((g) => (
+        <section key={g} className="mx-3 mt-3 rounded-md border border-hair/70">
+          <div className="px-4 pb-1 pt-2.5 text-[11.5px] font-medium uppercase tracking-wide text-faint">{C.groupes[g]}</div>
+          {COUCHES.filter((c) => c.groupe === g).map((c) => {
+            const on = p.actives.includes(c.id) && disponible(c);
+            const etat = !disponible(c) ? `${L.commun.aVenir}, ${L.commun.etape(c.etape!)}`
+              : c.infra ? C.traces(p.infraCounts[c.infra] ?? 0)
+              : c.id === "navires" ? C.navires(p.vesselCount) : "";
+            return (
+              <div key={c.id}>
+                <Switch on={on} disabled={!disponible(c)} onChange={(v) => set(c.id, v)} label={C.noms[c.id]}
+                  right={<><span className="text-[11px] text-faint">{etat}</span><Pastille c={c} /></>} />
+                {on && <Legende c={c} byType={p.byType} />}
+                {on && c.id === "navires" && (
+                  <div className="pl-4"><Switch on={p.byType} onChange={p.onByType} label={C.couleurParType} /></div>
+                )}
+              </div>
+            );
+          })}
+          {g === "infrastructures" && (
+            <div className="border-t border-hair/70">
+              <Switch on={p.concernees} onChange={p.onConcernees} label={C.concernees} />
+              <label className="flex items-center justify-between px-4 pb-2.5 pt-1 text-ink">
+                {C.zone}
+                <select value={p.zone ?? ""} onChange={(e) => p.onZone(e.target.value || null)}
+                  className="rounded-md border border-hair bg-abyss px-1.5 py-1 text-[12px] text-ink">
+                  <option value="">{L.fil.toutesZones}</option>
+                  {ZONE_KEYS.map((z) => <option key={z} value={z}>{L.zones[z]}</option>)}
+                </select>
+              </label>
+            </div>
+          )}
+        </section>
+      ))}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api, type Pass } from "../lib/api";
 import { MAX_ZONE_KM, bboxSizeKm } from "../lib/geo";
 import { num, utc } from "../lib/format";
+import { L } from "../lib/libelles";
 
 interface Props {
   drawing: boolean;
@@ -11,8 +12,6 @@ interface Props {
   onCancel: () => void;
   onLaunched: (id: number, pass: Pass) => void;
 }
-
-const ORBIT: Record<string, string> = { ascending: "ascendant", descending: "descendant" };
 
 /** Nouvelle analyse : tracer une zone, choisir un passage Sentinel 1, lancer. */
 export default function NewAnalysis({ drawing, draft, onStartDraw, onCancel, onLaunched }: Props) {
@@ -43,7 +42,7 @@ export default function NewAnalysis({ drawing, draft, onStartDraw, onCancel, onL
     return (
       <div className="border-b border-hair px-4 py-3">
         <button onClick={onStartDraw}
-          className="w-full rounded-md bg-ink py-2 font-medium text-abyss hover:bg-white">Nouvelle analyse</button>
+          className="w-full rounded-md bg-ink py-2 font-medium text-abyss hover:bg-white">{L.analyses.nouvelle}</button>
       </div>
     );
   }
@@ -51,34 +50,34 @@ export default function NewAnalysis({ drawing, draft, onStartDraw, onCancel, onL
   return (
     <div className="border-b border-hair px-4 py-3">
       {drawing && !draft && (
-        <p className="text-ink">Cliquez un premier coin de la zone sur la carte, puis le coin opposé.</p>
+        <p className="text-ink">{L.analyses.tracer}</p>
       )}
       {size && (
         <div className="flex items-baseline justify-between">
-          <span className="font-medium">Zone de {num(size.w, 0)} × {num(size.h, 0)} km</span>
-          <button onClick={onStartDraw} className="text-[12px] text-muted hover:text-ink">Retracer</button>
+          <span className="font-medium">{L.analyses.zoneDe(num(size.w, 0), num(size.h, 0))}</span>
+          <button onClick={onStartDraw} className="text-[12px] text-muted hover:text-ink">{L.analyses.retracer}</button>
         </div>
       )}
-      {tooBig && <p className="mt-1 text-[12.5px] text-gap">Au delà de {MAX_ZONE_KM} km de côté, retracez une zone plus petite.</p>}
+      {tooBig && <p className="mt-1 text-[12.5px] text-gap">{L.analyses.tropGrande(MAX_ZONE_KM)}</p>}
 
       {draft && !tooBig && (
         <div className="mt-3">
-          {passesQ.isLoading && <p className="text-muted">Recherche des passages Sentinel 1…</p>}
-          {passesQ.isError && <p className="text-gap">Recherche impossible : {(passesQ.error as Error).message}</p>}
-          {passesQ.data && passesQ.data.length === 0 && <p className="text-muted">Aucun passage sur cette zone.</p>}
+          {passesQ.isLoading && <p className="text-muted">{L.analyses.recherche}</p>}
+          {passesQ.isError && <p className="text-gap">{L.analyses.impossible((passesQ.error as Error).message)}</p>}
+          {passesQ.data && passesQ.data.length === 0 && <p className="text-muted">{L.analyses.aucunPassage}</p>}
           <ul className="space-y-1">
             {(passesQ.data ?? []).map((p) => {
               const on = chosen === p.product_name;
               return (
                 <li key={p.product_name}>
                   <button disabled={!p.ais_available} onClick={() => setChosen(p.product_name)}
-                    title={p.ais_available ? "" : "Pas d'AIS chargé pour cette journée"}
+                    title={p.ais_available ? "" : L.analyses.sansAisJournee}
                     className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-[12.5px]
                       ${on ? "border-signal bg-raised" : "border-hair hover:bg-raised/60"} disabled:cursor-not-allowed disabled:opacity-35`}>
                     <span>
                       <span className="block text-ink">{utc(p.acquired_at).slice(0, 16)}</span>
                       <span className="block text-muted">
-                        {ORBIT[p.orbit_direction ?? ""] ?? "orbite inconnue"}, {p.ais_available ? "AIS chargé" : "sans AIS"}
+                        {L.analyses.orbite[p.orbit_direction ?? ""] ?? L.analyses.orbiteInconnue}, {p.ais_available ? L.analyses.aisCharge : L.analyses.sansAis}
                       </span>
                     </span>
                     <span className="text-muted">{p.coverage == null ? "" : `${num(p.coverage * 100, 0)} %`}</span>
@@ -92,10 +91,10 @@ export default function NewAnalysis({ drawing, draft, onStartDraw, onCancel, onL
 
       {launch.isError && <p className="mt-2 text-[12.5px] text-gap">{(launch.error as Error).message}</p>}
       <div className="mt-3 flex gap-2">
-        <button onClick={onCancel} className="flex-1 rounded-md border border-hair py-2 text-muted hover:text-ink">Annuler</button>
+        <button onClick={onCancel} className="flex-1 rounded-md border border-hair py-2 text-muted hover:text-ink">{L.commun.annuler}</button>
         <button disabled={!draft || tooBig || !chosen || launch.isPending} onClick={() => launch.mutate()}
           className="flex-1 rounded-md bg-ink py-2 font-medium text-abyss hover:bg-white disabled:opacity-35">
-          {launch.isPending ? "Lancement…" : "Lancer l'analyse"}
+          {launch.isPending ? L.analyses.lancement : L.analyses.lancer}
         </button>
       </div>
     </div>

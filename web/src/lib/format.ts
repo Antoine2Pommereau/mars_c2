@@ -1,57 +1,37 @@
-// Formats d'affichage : pas de tiret, dates en JJ/MM/AAAA
+import { L } from "./libelles";
+
+// Formats d'affichage : pas de tiret, dates en JJ/MM/AAAA, heures UTC. Les libellés sont dans libelles.ts.
 const pad = (n: number) => String(n).padStart(2, "0");
 
 export function utc(iso?: string | null): string {
-  if (!iso) return "n.d.";
+  if (!iso) return L.commun.nd;
   const d = new Date(iso);
   return `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} ` +
     `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} UTC`;
 }
 
-export function hm(iso?: string | null): string {
-  if (!iso) return "n.d.";
+export function hm(iso?: string | number | null): string {
+  if (iso == null) return L.commun.nd;
   const d = new Date(iso);
   return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 }
 
+/** Date courte JJ/MM HH:MM (frise, lignes du fil sur des plages longues) */
+export function jourHeure(iso?: string | number | null): string {
+  if (iso == null) return L.commun.nd;
+  const d = new Date(iso);
+  return `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
 export function num(v: unknown, digits = 1): string {
-  if (v === null || v === undefined || Number.isNaN(Number(v))) return "n.d.";
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return L.commun.nd;
   return Number(v).toLocaleString("fr-FR", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
-export const SEVERITY: Record<string, string> = {
-  faible: "faible", moyenne: "moyenne", elevee: "élevée", critique: "critique",
-};
-
-export const STATUS_LABEL: Record<string, string> = {
-  nouvelle: "à traiter", acquittee: "acquittée", confirmee: "confirmée", classee: "classée",
-};
-
-export const ALERT_LABEL: Record<string, string> = {
-  DARK_SHIP: "Navire sombre",
-  RENDEZVOUS: "Rendez vous suspect",
-  AIS_GAP: "Coupure AIS",
-  AIS_UNCONFIRMED: "Position AIS non confirmée",
-  WATCHLIST: "Navire sur liste",
-  IDENTITY_CHANGE: "Changement d'identité",
-};
-
-export const ALERT_COLOR: Record<string, string> = {
-  DARK_SHIP: "#e85bc7", RENDEZVOUS: "#f0a84b", AIS_GAP: "#ef6461", AIS_UNCONFIRMED: "#e8d45a",
-  WATCHLIST: "#b48cf2", IDENTITY_CHANGE: "#5fd3a5",
-};
-
-// Listes de surveillance : niveau de signal, du plus fort au plus faible
-export const WATCH_LABEL: Record<string, string> = {
-  fort: "Signal fort", sanctionne: "Sanctionné", flotte_fantome: "Flotte fantôme",
-  suspect_gur: "Suspect GUR", autre_risque: "Autre risque",
-};
-export const WATCH_COLOR = "#b48cf2";
-export const MATCHED_BY: Record<string, string> = {
-  omi: "par OMI", mmsi: "par MMSI seul, moins sûr", mmsi_omi_different: "par MMSI, OMI différent",
-};
-
-export function dayLabel(day: string): string {
+export function dayLabel(day?: string | null): string {
+  if (!day) return L.commun.nd;
   const [y, m, d] = day.slice(0, 10).split("-");
   return `${d}/${m}/${y}`;
 }
+
+export const RANG_GRAVITE: Record<string, number> = { critique: 0, elevee: 1, moyenne: 2, faible: 3 };

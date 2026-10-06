@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { chipUrl } from "../lib/api";
+import { L } from "../lib/libelles";
 
 /** Vignette radar (polarisation VV) centrée sur un point, avec réticule et échelle. */
 export default function Chip({ lon, lat, time, sizeM = 800 }: { lon: number; lat: number; time: string; sizeM?: number }) {
@@ -7,7 +8,7 @@ export default function Chip({ lon, lat, time, sizeM = 800 }: { lon: number; lat
   return (
     <figure className="mt-3">
       <div className="relative aspect-square w-full overflow-hidden rounded-md border border-hair bg-abyss">
-        <img src={chipUrl(lon, lat, time, sizeM)} alt="Vignette radar autour de l'écho"
+        <img src={chipUrl(lon, lat, time, sizeM)} alt={L.vignette.alt}
           onLoad={() => setState("ok")} onError={() => setState("error")}
           className="h-full w-full object-cover" style={{ imageRendering: "pixelated", opacity: state === "ok" ? 1 : 0 }} />
         {state === "ok" && (
@@ -21,11 +22,11 @@ export default function Chip({ lon, lat, time, sizeM = 800 }: { lon: number; lat
         )}
         {state !== "ok" && (
           <span className="absolute inset-0 flex items-center justify-center p-4 text-center text-[12px] text-muted">
-            {state === "loading" ? "Chargement de l'image radar…" : "Image radar indisponible (service d'inférence arrêté ?)"}
+            {state === "loading" ? L.vignette.chargement : L.vignette.indisponible}
           </span>
         )}
       </div>
-      <figcaption className="mt-1 text-[11.5px] text-muted">Sentinel 1, polarisation VV, {sizeM} m de côté</figcaption>
+      <figcaption className="mt-1 text-[11.5px] text-muted">{L.vignette.legende(sizeM)}</figcaption>
     </figure>
   );
 }
