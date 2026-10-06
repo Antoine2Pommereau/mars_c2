@@ -24,6 +24,12 @@ def zones_extent() -> tuple[float, float, float, float]:
     return min(b[1] for b in z), min(b[0] for b in z), max(b[3] for b in z), max(b[2] for b in z)
 
 
+def zones_wkt() -> str:
+    """Zones collectées en multipolygone WKT (rectangles éventuellement superposés : l'union se fait en SQL)."""
+    rings = [f"(({b} {a},{d} {a},{d} {c},{b} {c},{b} {a}))" for a, b, c, d in ZONES.values()]
+    return "MULTIPOLYGON(" + ",".join(rings) + ")"
+
+
 def parse_times(s: pd.Series) -> pd.Series:
     """Format AISStream : '2026-10-05 12:39:19.104049717 +0000 UTC'. La partie décimale a une longueur variable
     (les zéros finaux sont omis) : sans format ISO explicite, pandas déduit le format de la première ligne et rejette

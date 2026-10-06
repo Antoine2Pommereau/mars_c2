@@ -214,6 +214,21 @@ gaps AS (
     WHERE coalesce(p.next_ts, $2::timestamptz) - p.ts >= make_interval(mins => $3::int)
       AND coalesce(p.sog_kn, 0) >= $4::float8
       AND p.prior_n >= $12::int
+),
+-- Couverture des données de chaque journée : union des zones collectées (à défaut, rectangle de l'import). Son bord
+-- n'est une sortie possible qu'en mer : les portions de bord qui passent sur la terre sont retirées.
+area AS (
+    SELECT d.day, coalesce(d.coverage, ST_MakeEnvelope(d.lon_min, d.lat_min, d.lon_max, d.lat_max, 4326)) AS g
+    FROM ais_days d
+    WHERE d.day BETWEEN ($1::timestamptz AT TIME ZONE 'UTC')::date AND ($2::timestamptz AT TIME ZONE 'UTC')::date
+),
+edge AS (
+    SELECT a.day, a.g AS area,
+           coalesce(ST_Difference(ST_Boundary(a.g),
+                                  (SELECT ST_Union(l.geom::geometry) FROM land l
+                                   WHERE ST_Intersects(l.geom::geometry, ST_Boundary(a.g)))),
+                    ST_Boundary(a.g)) AS sea_edge
+    FROM area a
 )
 SELECT g.vessel_id, v.mmsi, v.name, v.ship_type, v.length_m, v.ais_class, g.prior_n,
        g.ts AS t_last, g.next_ts AS t_next, extract(epoch FROM g.duration)::float8 / 60 AS duration_min,
@@ -225,17 +240,15 @@ SELECT g.vessel_id, v.mmsi, v.name, v.ship_type, v.length_m, v.ais_class, g.prio
        (g.proj IS NULL OR (
             EXISTS (SELECT 1 FROM reception_cells r2
                     WHERE r2.cx = floor(ST_X(g.proj) / $5::float8)::int AND r2.cy = floor(ST_Y(g.proj) / $6::float8)::int)
-            AND ST_X(g.proj) BETWEEN d.lon_min + $9::float8 AND d.lon_max - $9::float8
-            AND ST_Y(g.proj) BETWEEN d.lat_min + $9::float8 AND d.lat_max - $9::float8)) AS projection_couverte
+            AND ST_Within(g.proj, e.area) AND NOT ST_DWithin(g.proj, e.sea_edge, $9::float8))) AS projection_couverte
 FROM gaps g
 JOIN vessels v ON v.id = g.vessel_id
 JOIN reception_cells rc
   ON rc.cx = floor(ST_X(g.geom::geometry) / $5::float8)::int AND rc.cy = floor(ST_Y(g.geom::geometry) / $6::float8)::int
-JOIN ais_days d ON d.day = (g.ts AT TIME ZONE 'UTC')::date
+JOIN edge e ON e.day = (g.ts AT TIME ZONE 'UTC')::date
 WHERE coalesce(v.ais_class, '') = ANY($7::text[])
   AND NOT (coalesce(v.ship_type, '') = ANY($8::text[]))
-  AND ST_X(g.geom::geometry) BETWEEN d.lon_min + $9::float8 AND d.lon_max - $9::float8
-  AND ST_Y(g.geom::geometry) BETWEEN d.lat_min + $9::float8 AND d.lat_max - $9::float8
+  AND ST_Within(g.geom::geometry, e.area) AND NOT ST_DWithin(g.geom::geometry, e.sea_edge, $9::float8)
   AND NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, g.geom, $10::float8))
 """
 

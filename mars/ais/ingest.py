@@ -14,7 +14,7 @@ import pandas as pd
 import psycopg
 
 from mars.ais.live import (Thinner, clean_positions, clean_text, parse_times, ship_type_label, valid_imo,
-                           zones_extent)
+                           zones_extent, zones_wkt)
 from mars.ais.mid import flag_of
 
 MIN_FILE_AGE_S = 5           # un fichier plus récent est peut être encore en cours d'écriture
@@ -252,19 +252,21 @@ class Ingestor:
     # Tâches de fin de cycle
 
     def update_days(self):
-        """Journées disponibles (ais_days), sur lesquelles s'appuient le rejeu et les analyses radar."""
+        """Journées disponibles (ais_days), sur lesquelles s'appuient le rejeu et les analyses radar. La couverture
+        (union des zones collectées) sert à la règle des coupures AIS pour situer le bord des données."""
         lon0, lat0, lon1, lat1 = zones_extent()
         for day in sorted(self.touched_days):
             self.conn.execute(
-                """INSERT INTO ais_days (day, messages, vessels, lon_min, lat_min, lon_max, lat_max)
-                   SELECT %(d)s::date, count(*), count(DISTINCT vessel_id), %(lon0)s, %(lat0)s, %(lon1)s, %(lat1)s
+                """INSERT INTO ais_days (day, messages, vessels, lon_min, lat_min, lon_max, lat_max, coverage)
+                   SELECT %(d)s::date, count(*), count(DISTINCT vessel_id), %(lon0)s, %(lat0)s, %(lon1)s, %(lat1)s,
+                          ST_Multi(ST_UnaryUnion(ST_GeomFromText(%(zones)s, 4326)))
                    FROM positions
                    WHERE ts >= (%(d)s::date)::timestamp AT TIME ZONE 'UTC'
                      AND ts < (%(d)s::date + 1)::timestamp AT TIME ZONE 'UTC'
                    ON CONFLICT (day) DO UPDATE SET messages = EXCLUDED.messages, vessels = EXCLUDED.vessels,
                        lon_min = EXCLUDED.lon_min, lat_min = EXCLUDED.lat_min, lon_max = EXCLUDED.lon_max,
-                       lat_max = EXCLUDED.lat_max, imported_at = now()""",
-                {"d": day, "lon0": lon0, "lat0": lat0, "lon1": lon1, "lat1": lat1})
+                       lat_max = EXCLUDED.lat_max, coverage = EXCLUDED.coverage, imported_at = now()""",
+                {"d": day, "lon0": lon0, "lat0": lat0, "lon1": lon1, "lat1": lat1, "zones": zones_wkt()})
         self.touched_days.clear()
 
     def refresh_watch(self, force: bool = False) -> bool:

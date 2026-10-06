@@ -177,13 +177,6 @@ async def read_live_alerts(c, now: datetime) -> dict:
     return collection([feature(r["geometry"], clean(r)) for r in rows])
 
 
-@app.get("/api/traffic")
-async def traffic():
-    async with app.state.pool.acquire() as c:
-        clock = await read_clock(c)
-        return {"clock": clock_json(clock), "traffic": await read_traffic(c, clock["now"])}
-
-
 @app.get("/api/traffic/trails")
 async def trails(minutes: int = TRAIL_MIN):
     async with app.state.pool.acquire() as c:
@@ -643,8 +636,8 @@ async def infrastructure(region: int | None = None):
         sql += " WHERE i.region_id = $1::int"
         args: list = [region]
     else:
-        sql += " WHERE r.name = ANY($1::text[])"
-        args = [list(FRANCE_REGIONS)]
+        sql += " WHERE lower(r.name) = ANY($1::text[])"
+        args = [[n.lower() for n in FRANCE_REGIONS]]   # régions saisies à la main : casse indifférente
     async with app.state.pool.acquire() as c:
         rows = await c.fetch(sql, *args)
     return collection([feature(r["geometry"], {
@@ -702,22 +695,41 @@ async def ais_gap_selftest(req: RuleRun):
         start = pd.Timestamp(day, tz="UTC").to_pydatetime()
         t_cut = start + pd.Timedelta(hours=11)
         t_back = t_cut + pd.Timedelta(hours=3)
+        # Candidats : navires de classe A qui satisfont, avant la coupure, l'exigence de la règle elle même
+        # (min_prior_messages dans la fenêtre prior_window), faisaient route et réapparaissent dans l'heure qui suit.
+        # Les critères suivent les paramètres de la règle et non une densité fixe : l'AIS en base est allégé (un
+        # point par minute au plus en route), et l'ancien seuil de 100 messages en 5 heures supposait l'AIS danois
+        # non allégé.
+        g = rules["ais_gap"]
         candidates = await c.fetch(
-            """SELECT p.vessel_id, v.mmsi, v.name FROM positions p JOIN vessels v ON v.id = p.vessel_id
-               WHERE p.ts BETWEEN $1::timestamptz - interval '1 hour' AND $2::timestamptz + interval '1 hour'
+            """SELECT p.vessel_id, v.mmsi, v.name,
+                      count(*) FILTER (WHERE p.ts < $1::timestamptz) AS avant
+               FROM positions p JOIN vessels v ON v.id = p.vessel_id
+               WHERE p.ts >= $1::timestamptz - make_interval(mins => $4::int) AND p.ts < $2::timestamptz + interval '1 hour'
                  AND v.ais_class = 'A' AND NOT (coalesce(v.ship_type, '') = ANY($3::text[]))
                GROUP BY p.vessel_id, v.mmsi, v.name
-               HAVING count(*) >= 100 AND avg(p.sog_kn) >= 8
-               ORDER BY count(*) DESC LIMIT 40""",
-            t_cut, t_back, rules["ais_gap"]["excluded_ship_types"])
-        # On teste la détection elle même : navires au large (plus de 10 km des côtes) au moment de la coupure
-        offshore = []
+               HAVING count(*) FILTER (WHERE p.ts < $1::timestamptz) >= $5::int + 1
+                  AND count(*) FILTER (WHERE p.ts >= $2::timestamptz) >= 1
+                  AND avg(p.sog_kn) FILTER (WHERE p.ts < $1::timestamptz) >= 8
+               ORDER BY avant DESC LIMIT 200""",
+            t_cut, t_back, g["excluded_ship_types"], g["prior_window_min"], g["min_prior_messages"])
+        candidates_all = candidates
+        # On teste la détection elle même : dernière position avant la coupure au large (plus de 10 km des côtes)
+        # et dans la zone de réception fiable, là où la règle doit voir le silence
+        offshore, rejected = [], {"pres_des_cotes": 0, "hors_zone_de_reception_fiable": 0}
         for cand in candidates:
-            far = await c.fetchval(
-                """SELECT NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, p.geom, 10000))
+            where = await c.fetchrow(
+                """SELECT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, p.geom, 10000)) AS cote,
+                          EXISTS (SELECT 1 FROM reception_cells rc
+                                  WHERE rc.cx = floor(ST_X(p.geom::geometry) / $3::float8)::int
+                                    AND rc.cy = floor(ST_Y(p.geom::geometry) / $4::float8)::int) AS fiable
                    FROM positions p WHERE p.vessel_id = $1 AND p.ts < $2 ORDER BY p.ts DESC LIMIT 1""",
-                cand["vessel_id"], t_cut)
-            if far:
+                cand["vessel_id"], t_cut, rules["reception"]["cell_deg_lon"], rules["reception"]["cell_deg_lat"])
+            if where["cote"]:
+                rejected["pres_des_cotes"] += 1
+            elif not where["fiable"]:
+                rejected["hors_zone_de_reception_fiable"] += 1
+            else:
                 offshore.append(cand)
             if len(offshore) == 5:
                 break
@@ -759,7 +771,8 @@ async def ais_gap_selftest(req: RuleRun):
             trials.append(result)
     detected = [t for t in trials if t.get("detectee")]
     return {"coupure_simulee": f"{t_cut:%H:%M} à {t_back:%H:%M} UTC", "detectees": len(detected),
-            "essais": len(trials), "details": trials}
+            "essais": len(trials), "candidats": len(candidates_all), "candidats_ecartes": rejected,
+            "details": trials}
 
 
 @app.post("/api/rules/rendezvous/run")
@@ -840,13 +853,6 @@ async def alerts_of_day(day: str):
                  AND al.event_time >= $1::timestamptz AND al.event_time < $1::timestamptz + interval '1 day'
                ORDER BY al.event_time""", start)
     return collection([feature(r["geometry"], clean(r)) for r in rows])
-
-
-@app.get("/api/alerts/live")
-async def live_alerts():
-    async with app.state.pool.acquire() as c:
-        clock = await read_clock(c)
-        return await read_live_alerts(c, clock["now"])
 
 
 # Consultation

@@ -83,3 +83,17 @@ def test_watchlist_rows():
     assert g[:4] == ("gur", "273123456", 9289518, 273123456)
     assert o[2] is None and o[3] is None             # OMI à clé fausse écarté, pas de MMSI
     assert o[8] is True and o[9] is True             # sanctionné, flotte fantôme
+
+
+def test_zones_coverage_is_union_not_bounding_box():
+    """La couverture des données est l'union des zones : un point entre deux zones, ou au sud de la Gascogne,
+    est hors couverture alors qu'il tombe dans le rectangle englobant."""
+    import shapely
+    from mars.ais.live import zones_extent, zones_wkt
+
+    area = shapely.unary_union(shapely.from_wkt(zones_wkt()))
+    box = shapely.box(*zones_extent())
+    assert area.contains(shapely.Point(-5.59, 48.6))                 # rail d'Ouessant
+    for lon, lat in [(-2.5, 47.5), (-3.5, 43.2), (5.0, 48.0)]:      # entre zones, sud Gascogne, intérieur des terres
+        assert box.contains(shapely.Point(lon, lat)) and not area.contains(shapely.Point(lon, lat))
+    assert area.area < 0.5 * box.area
