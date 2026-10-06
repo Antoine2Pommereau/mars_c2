@@ -1,7 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
+import { api } from "../lib/api";
 import type { Props, Selection } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num, utc } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, MATCHED_BY, SEVERITY, STATUS_LABEL, WATCH_COLOR, WATCH_LABEL, dayLabel, hm, num, utc } from "../lib/format";
 import AlertActions from "./AlertActions";
 import Chip from "./Chip";
 
@@ -101,6 +103,56 @@ function AlertBody({ p }: { p: Props }) {
   }
 }
 
+/** Fiche d'un navire : identité déclarée, listes de surveillance, identités successives (même MMSI ou même OMI). */
+function VesselBody({ p }: { p: Props }) {
+  const q = useQuery({ queryKey: ["vessel", p.vessel_id], queryFn: () => api.vessel(p.vessel_id), staleTime: 60_000 });
+  const v = q.data;
+  const ids = v?.identities ?? [];
+  return (
+    <>
+      {v?.watch && (
+        <div className="mb-3 rounded-md border p-2.5" style={{ borderColor: WATCH_COLOR }}>
+          <div className="font-semibold" style={{ color: WATCH_COLOR }}>{WATCH_LABEL[v.watch.level] ?? v.watch.level}</div>
+          <div className="text-[12px] text-muted">Reconnu {MATCHED_BY[v.watch.matched_by] ?? v.watch.matched_by}</div>
+          <ul className="mt-1.5 space-y-0.5 text-[12px]">
+            {v.watch.entries.map((e, i) => (
+              <li key={i}>
+                {e.source === "gur" ? "Catalogue GUR" : "OpenSanctions"}
+                {e.name ? `, ${e.name}` : ""}
+                {e.risks?.length ? <span className="text-muted"> ({e.risks.join(", ")})</span> : null}
+                {e.url && <> <a href={e.url} target="_blank" rel="noreferrer" className="text-signal hover:underline">fiche</a></>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <Row label="MMSI">{p.mmsi}</Row>
+      <Row label="OMI">{v?.imo ?? "n.d."}</Row>
+      <Row label="Pavillon">{v?.flag ?? p.flag ?? "n.d."}</Row>
+      <Row label="Indicatif">{v?.callsign ?? "n.d."}</Row>
+      <Row label="Type">{p.ship_type ?? "non renseigné"}</Row>
+      <Row label="Longueur">{p.length_m ? `${num(p.length_m, 0)} m` : "n.d."}</Row>
+      <Row label="Destination">{v?.destination ?? "n.d."}</Row>
+      <Row label="Vitesse">{num(p.sog_kn)} nœuds</Row>
+      <Row label="Route">{num(p.cog_deg, 0)}°</Row>
+      <Row label="Dernier message">il y a {num(p.age_s / 60, 0)} min</Row>
+      {ids.length > 1 && (
+        <>
+          <div className="mt-3 font-semibold">Identités</div>
+          <table className="mt-1 w-full text-left text-[12px]">
+            <thead className="text-muted"><tr><th>Nom</th><th>Pavillon</th><th>MMSI</th><th>Période</th></tr></thead>
+            <tbody>{ids.map((x, i) => (
+              <tr key={i} className="border-t border-hair/70">
+                <td>{x.name ?? "sans nom"}</td><td>{x.flag ?? "n.d."}</td><td>{x.mmsi}</td>
+                <td>{dayLabel(x.first_seen)} au {dayLabel(x.last_seen)}</td>
+              </tr>))}</tbody>
+          </table>
+        </>
+      )}
+    </>
+  );
+}
+
 interface PanelProps {
   selection: Selection | null;
   onClose: () => void;
@@ -137,16 +189,8 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus }: 
   } else if (selection.kind === "vessel") {
     const p = selection.properties;
     title = p.name || "Navire sans nom";
-    body = (
-      <>
-        <Row label="MMSI">{p.mmsi}</Row>
-        <Row label="Type">{p.ship_type ?? "non renseigné"}</Row>
-        <Row label="Longueur">{p.length_m ? `${num(p.length_m, 0)} m` : "n.d."}</Row>
-        <Row label="Vitesse">{num(p.sog_kn)} nœuds</Row>
-        <Row label="Route">{num(p.cog_deg, 0)}°</Row>
-        <Row label="Dernier message">il y a {num(p.age_s / 60, 0)} min</Row>
-      </>
-    );
+    if (p.watch) color = WATCH_COLOR;
+    body = <VesselBody p={p} />;
   } else {
     const p = selection.properties;
     const status = p.mask_reason && p.mask_reason !== "null" ? `Écartée (${p.mask_reason})`

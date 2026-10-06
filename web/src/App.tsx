@@ -157,6 +157,7 @@ export default function App() {
     return { alertId: p.id as number, vesselIds: vs.filter(Boolean).map((v) => v.vessel_id) };
   }, [selection]);
   const vessels = stream?.traffic.features.length ?? 0;
+  const watched = stream?.traffic.features.filter((f) => f.properties.watch).length ?? 0;
 
   return (
     <div className="flex h-full">
@@ -196,7 +197,7 @@ export default function App() {
         />
         <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-md border border-hair bg-panel/90 px-3 py-1.5 text-[12px] text-muted backdrop-blur">
           <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-signal" : "bg-gap"}`} />
-          {connected ? `${vessels} navires` : "Reconnexion…"}
+          {connected ? `${vessels} navires${watched ? `, ${watched} sur liste` : ""}` : "Reconnexion…"}
         </div>
         <button onClick={drawing || draft ? cancelDraw : startDraw}
           className={`absolute left-4 top-14 z-10 rounded-md border px-3 py-1.5 text-[12.5px] backdrop-blur

@@ -48,6 +48,7 @@ export default function LayersPanel({ state, onChange }: { state: LayerState; on
         <Key swatch={<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1 L10 11 L6 8.5 L2 11 Z" fill="#c9d3da" /></svg>}>En route</Key>
         <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da]" />}>Immobile</Key>
         <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da] opacity-35" />}>Silencieux</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-watch" />}>Sur liste de surveillance</Key>
         {state.byType && (
           <div className="mt-2 grid grid-cols-2 gap-x-3">
             {SHIP_TYPES.map(([c, l]) => <Key key={l} swatch={<span className="h-2 w-2 rounded-full" style={{ background: c }} />}>{l}</Key>)}

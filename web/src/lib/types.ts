@@ -12,6 +12,7 @@ export interface Clock {
   now: string;
   speed: number;
   paused: boolean;
+  live: boolean;
 }
 export interface ProgressStep {
   step: "extraction" | "inference" | "fusion";

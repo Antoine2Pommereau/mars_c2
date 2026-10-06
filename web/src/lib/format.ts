@@ -38,6 +38,16 @@ export const ALERT_COLOR: Record<string, string> = {
   DARK_SHIP: "#e85bc7", RENDEZVOUS: "#f0a84b", AIS_GAP: "#ef6461", AIS_UNCONFIRMED: "#e8d45a",
 };
 
+// Listes de surveillance : niveau de signal, du plus fort au plus faible
+export const WATCH_LABEL: Record<string, string> = {
+  fort: "Signal fort", sanctionne: "Sanctionné", flotte_fantome: "Flotte fantôme",
+  suspect_gur: "Suspect GUR", autre_risque: "Autre risque",
+};
+export const WATCH_COLOR = "#b48cf2";
+export const MATCHED_BY: Record<string, string> = {
+  omi: "par OMI", mmsi: "par MMSI seul, moins sûr", mmsi_omi_different: "par MMSI, OMI différent",
+};
+
 export function dayLabel(day: string): string {
   const [y, m, d] = day.slice(0, 10).split("-");
   return `${d}/${m}/${y}`;

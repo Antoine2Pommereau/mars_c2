@@ -73,19 +73,23 @@ def aoi_wkt(b):
     return f"SRID=4326;POLYGON(({b[0]} {b[1]},{b[2]} {b[1]},{b[2]} {b[3]},{b[0]} {b[3]},{b[0]} {b[1]}))"
 
 
-# Horloge simulée
+# Horloge : en direct par défaut (heure réelle), rejeu d'une période passée sinon
 
 async def read_clock(c) -> dict:
-    r = await c.fetchrow("SELECT sim_now() AS now, speed, paused FROM sim_clock WHERE id = 1")
-    return {"now": r["now"], "speed": r["speed"], "paused": r["paused"]}
+    r = await c.fetchrow("SELECT sim_now() AS now, clock_timestamp() AS real, speed, paused, live FROM sim_clock WHERE id = 1")
+    if not r["live"] and not r["paused"] and r["now"] >= r["real"]:
+        # Le rejeu a rattrapé l'heure réelle : retour au direct
+        await c.execute("UPDATE sim_clock SET live = true WHERE id = 1")
+        return {"now": r["real"], "speed": r["speed"], "paused": False, "live": True}
+    return {"now": r["now"], "speed": r["speed"], "paused": r["paused"] and not r["live"], "live": r["live"]}
 
 
 def clock_json(clock: dict) -> dict:
-    return {"now": clock["now"].isoformat(), "speed": clock["speed"], "paused": clock["paused"]}
+    return {"now": clock["now"].isoformat(), "speed": clock["speed"], "paused": clock["paused"], "live": clock["live"]}
 
 
 class ClockCommand(BaseModel):
-    action: Literal["play", "pause", "speed", "seek"]
+    action: Literal["play", "pause", "speed", "seek", "live"]
     speed: float | None = None
     time: datetime | None = None
 
@@ -100,10 +104,15 @@ async def get_clock():
 async def set_clock(cmd: ClockCommand):
     rebase = "sim_anchor = sim_now(), real_anchor = clock_timestamp()"
     async with app.state.pool.acquire() as c:
-        if cmd.action == "play":
-            await c.execute(f"UPDATE sim_clock SET {rebase}, paused = false WHERE id = 1")
+        live = await c.fetchval("SELECT live FROM sim_clock WHERE id = 1")
+        if cmd.action == "live":
+            await c.execute("UPDATE sim_clock SET live = true WHERE id = 1")
+        elif cmd.action == "play":
+            if not live:
+                await c.execute(f"UPDATE sim_clock SET {rebase}, paused = false WHERE id = 1")
         elif cmd.action == "pause":
-            await c.execute(f"UPDATE sim_clock SET {rebase}, paused = true WHERE id = 1")
+            # En direct, la pause fige l'instant courant et bascule en rejeu
+            await c.execute(f"UPDATE sim_clock SET {rebase}, paused = true, live = false WHERE id = 1")
         elif cmd.action == "speed":
             if cmd.speed is None or not 0 < cmd.speed <= 3600:
                 raise HTTPException(422, "Vitesse attendue entre 0 et 3600")
@@ -111,8 +120,11 @@ async def set_clock(cmd: ClockCommand):
         elif cmd.action == "seek":
             if cmd.time is None:
                 raise HTTPException(422, "Instant attendu")
-            await c.execute("UPDATE sim_clock SET sim_anchor = $1, real_anchor = clock_timestamp() WHERE id = 1",
-                            cmd.time)
+            # Un instant futur ramène au direct ; depuis le direct, le rejeu démarre en pause
+            await c.execute(
+                "UPDATE sim_clock SET live = $1::timestamptz >= clock_timestamp(), sim_anchor = $1::timestamptz, "
+                "real_anchor = clock_timestamp(), paused = CASE WHEN live THEN true ELSE paused END WHERE id = 1",
+                cmd.time)
         return clock_json(await read_clock(c))
 
 
@@ -121,17 +133,20 @@ async def set_clock(cmd: ClockCommand):
 async def read_traffic(c, now: datetime) -> dict:
     rows = await c.fetch(
         """
-        SELECT DISTINCT ON (p.vessel_id)
-               p.vessel_id, v.mmsi, v.name, v.ship_type, v.length_m, p.sog_kn, p.cog_deg,
-               extract(epoch FROM $1::timestamptz - p.ts)::float8 AS age_s,
-               ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat
-        FROM positions p JOIN vessels v ON v.id = p.vessel_id
-        WHERE p.ts > $1::timestamptz - make_interval(mins => $2::int) AND p.ts <= $1::timestamptz
-        ORDER BY p.vessel_id, p.ts DESC
+        SELECT t.*, v.mmsi, v.name, v.ship_type, v.length_m, v.flag, w.level AS watch
+        FROM (SELECT DISTINCT ON (p.vessel_id)
+                     p.vessel_id, p.sog_kn, p.cog_deg,
+                     extract(epoch FROM $1::timestamptz - p.ts)::float8 AS age_s,
+                     ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat
+              FROM positions p
+              WHERE p.ts > $1::timestamptz - make_interval(mins => $2::int) AND p.ts <= $1::timestamptz
+              ORDER BY p.vessel_id, p.ts DESC) t
+        JOIN vessels v ON v.id = t.vessel_id
+        LEFT JOIN vessel_watch w ON w.vessel_id = t.vessel_id
         """, now, TRAFFIC_WINDOW_MIN)
+    keys = ("vessel_id", "mmsi", "name", "ship_type", "length_m", "flag", "watch", "sog_kn", "cog_deg", "age_s")
     return collection([
-        feature({"type": "Point", "coordinates": [r["lon"], r["lat"]]},
-                {k: finite(r[k]) for k in ("vessel_id", "mmsi", "name", "ship_type", "length_m", "sog_kn", "cog_deg", "age_s")})
+        feature({"type": "Point", "coordinates": [r["lon"], r["lat"]]}, {k: finite(r[k]) for k in keys})
         for r in rows
     ])
 
@@ -176,6 +191,60 @@ async def trails(minutes: int = TRAIL_MIN):
             HAVING count(*) >= 2
             """, clock["now"], minutes)
     return collection([feature(r["geometry"], {"vessel_id": r["vessel_id"]}) for r in rows])
+
+
+@app.get("/api/vessels/{vessel_id}")
+async def vessel(vessel_id: int):
+    """Fiche d'un navire : identité courante, historique des identités déclarées (y compris sous d'autres MMSI
+    portant le même OMI) et correspondances avec les listes de surveillance."""
+    async with app.state.pool.acquire() as c:
+        v = await c.fetchrow(
+            "SELECT id, mmsi, imo, name, callsign, ship_type, ship_type_code, flag, length_m, ais_class, destination, "
+            "first_seen, last_seen FROM vessels WHERE id = $1", vessel_id)
+        if v is None:
+            raise HTTPException(404, "Navire inconnu")
+        history = await c.fetch(
+            """SELECT v.mmsi, i.name, i.imo, i.callsign, i.flag, i.first_seen, i.last_seen, i.messages
+               FROM vessel_identities i JOIN vessels v ON v.id = i.vessel_id
+               WHERE i.vessel_id = $1 OR ($2::int IS NOT NULL AND i.imo = $2::int)
+               ORDER BY i.first_seen""", vessel_id, v["imo"])
+        watch = await c.fetchrow("SELECT level, matched_by, entries FROM vessel_watch WHERE vessel_id = $1", vessel_id)
+    return {**clean(v), "identities": [clean(r) for r in history], "watch": clean(watch) if watch else None}
+
+
+@app.get("/api/watchlist")
+async def watchlist_seen(hours: int = 24):
+    """Navires des listes de surveillance vus dans les dernières heures (avant l'instant de l'horloge), du signal
+    le plus fort au plus faible."""
+    async with app.state.pool.acquire() as c:
+        clock = await read_clock(c)
+        rows = await c.fetch(
+            """SELECT w.vessel_id, w.level, w.matched_by, w.entries, v.mmsi, v.imo, v.name, v.flag, v.ship_type,
+                      v.last_seen, ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat, p.ts
+               FROM vessel_watch w JOIN vessels v ON v.id = w.vessel_id
+               JOIN LATERAL (SELECT geom, ts FROM positions WHERE vessel_id = w.vessel_id
+                               AND ts <= $1::timestamptz AND ts > $1::timestamptz - make_interval(hours => $2::int)
+                             ORDER BY ts DESC LIMIT 1) p ON true
+               ORDER BY w.rank, p.ts DESC""", clock["now"], hours)
+    return collection([feature({"type": "Point", "coordinates": [r["lon"], r["lat"]]}, clean(r, drop=("lon", "lat")))
+                       for r in rows])
+
+
+@app.get("/api/ingestion")
+async def ingestion_status():
+    """État du direct : dernier fichier chargé, fraîcheur et volume de la dernière heure, listes chargées."""
+    async with app.state.pool.acquire() as c:
+        last = await c.fetchrow("SELECT folder, name, ingested_at FROM ingested_files ORDER BY ingested_at DESC LIMIT 1")
+        hour = await c.fetchrow(
+            "SELECT count(*) AS positions, count(DISTINCT vessel_id) AS navires, max(ts) AS derniere_position, "
+            "extract(epoch FROM now() - max(ts))::float8 AS retard_s "
+            "FROM positions WHERE ts > now() - interval '1 hour'")
+        files = await c.fetchrow(
+            "SELECT count(*) AS fichiers, coalesce(sum(rows_read), 0) AS lus, coalesce(sum(rows_kept), 0) AS conserves "
+            "FROM ingested_files WHERE folder LIKE 'positions/%' AND ingested_at > now() - interval '1 hour'")
+        lists = await c.fetch("SELECT source, count(*) AS navires, max(imported_at) AS importe_le FROM watchlist GROUP BY source")
+    return {"dernier_fichier": clean(last) if last else None, "derniere_heure": {**clean(hour), **clean(files)},
+            "listes": [clean(r) for r in lists]}
 
 
 @app.get("/api/vessels/{vessel_id}/track")

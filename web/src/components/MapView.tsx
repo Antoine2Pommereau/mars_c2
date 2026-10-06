@@ -1,6 +1,7 @@
 import maplibregl, { type GeoJSONSource, type Map as MLMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
+import { WATCH_COLOR } from "../lib/format";
 import { bboxPolygon } from "../lib/geo";
 import { EMPTY, type FC, type Feature, type Selection } from "../lib/types";
 
@@ -19,6 +20,8 @@ const SHIP_COLOR: any = ["match", ["coalesce", ["get", "ship_type"], ""],
 const ALERT_STROKE: any = ["match", ["get", "type"],
   "DARK_SHIP", "#e85bc7", "RENDEZVOUS", "#f0a84b", "AIS_GAP", "#ef6461", "AIS_UNCONFIRMED", "#e8d45a", "#ffffff"];
 const NEUTRAL = "#c9d3da";
+// Navire d'une liste de surveillance : teinte dédiée, quel que soit le mode de couleur
+const withWatch = (base: any): any => ["case", ["to-boolean", ["get", "watch"]], WATCH_COLOR, base];
 // Infrastructures : câble télécom en cyan, câble électrique en ambre, pipeline en orange, parc éolien en vert
 const INFRA_LINE: any = ["match", ["get", "type"], "Câble électrique", "#f0a84b", "Pipeline", "#e07a5f", "#4fb6c8"];
 const WINDFARM = "#5fd38d";
@@ -130,7 +133,7 @@ export default function MapView(p: Props) {
           "icon-ignore-placement": true,
         },
         paint: {
-          "icon-color": NEUTRAL,
+          "icon-color": withWatch(NEUTRAL),
           "icon-opacity": TRAFFIC_OPACITY,
         } });
       map.addLayer({ id: "aoi", type: "line", source: "aoi",
@@ -256,7 +259,7 @@ export default function MapView(p: Props) {
     vis(["zones"], p.show.zones);
     vis(["reception"], p.show.reception);
     vis(["infra-lines", "infra-wind-fill", "infra-wind-line"], p.show.infrastructure);
-    map.setPaintProperty("traffic", "icon-color", p.show.byType ? SHIP_COLOR : NEUTRAL);
+    map.setPaintProperty("traffic", "icon-color", withWatch(p.show.byType ? SHIP_COLOR : NEUTRAL));
   }, [ready, p.show]);
 
   // Cadrage sur la zone analysée quand une nouvelle analyse s'affiche
