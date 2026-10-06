@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 
+from contenu import router as contenu_router
 from mars.config import load_rules
 from mars.frise import timeline
 from mars.fusion.pipeline import fuse
@@ -46,6 +47,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="MARS C2", lifespan=lifespan)
+app.include_router(contenu_router)      # recherche, fiches, notes, navires suivis, photo (backend/contenu.py)
 
 
 def feature(geometry, properties):
