@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.15"
+version: "2026.10.16"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -106,3 +106,14 @@ ais_gap:
   high_duration_min: 360 # silence sans réapparition : sévérité élevée au delà de 6 heures
   excluded_ship_types: [Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement", "Port tender",
                         Dredging, Diving, Military, Medical, "Anti-pollution"]
+
+ingestion:
+  # AIS en direct chargé en base (scripts/ais_ingest.py) ; l'archive Parquet garde tous les messages.
+  # La base reçoit un point par minute en route et un toutes les dix minutes à l'arrêt, plus un point à chaque
+  # bascule entre route et arrêt et à chaque changement de statut de navigation. Compatible avec les règles :
+  # coupure AIS (10 messages dans l'heure, navire en route), réception (intervalles sous 180 s), rendez vous
+  # (tranches de 10 minutes).
+  moving_interval_s: 60
+  stopped_interval_s: 600
+  stopped_speed_kn: 0.5    # arrêté sous 0,5 nœud
+  moving_speed_kn: 1.0     # en route au delà de 1 nœud ; entre les deux, l'état précédent est conservé

@@ -18,49 +18,18 @@ Usage : python scripts/watchlist_check.py
 Sorties : tableau, data/listes/correspondances.csv, data/listes/traces_surveillance.geojson (pour geojson.io)
 """
 import json
-import re
-import sqlite3
+import sys
 from pathlib import Path
 
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from mars.watchlist import LISTS, digits, load_gur, load_os  # noqa: E402
+
 LIVE = ROOT / "data" / "ais_live"
-LISTS = ROOT / "data" / "listes"
-GUR = LISTS / "Vessels1.db"
-OS_CSV = LISTS / "maritime.csv"
 RANK = {"fort": 0, "sanctionné": 1, "flotte fantôme": 2, "suspect GUR": 3, "autre risque": 4}
-
-
-def digits(v):
-    if v is None or (isinstance(v, float) and v != v):
-        return None
-    if isinstance(v, float):
-        v = int(v)                       # 9289518.0 devient 9289518, pas 92895180
-    s = re.sub(r"\D", "", str(v))
-    return s or None
-
-
-def load_gur():
-    if not GUR.exists():
-        return pd.DataFrame(columns=["mmsi", "imo", "gur_nom"])
-    with sqlite3.connect(GUR) as c:
-        df = pd.read_sql("SELECT mmsi, imo, name AS gur_nom FROM vessels", c)
-    df["imo"], df["mmsi"] = df.imo.map(digits), df.mmsi.map(digits)
-    return df
-
-
-def load_os():
-    if not OS_CSV.exists():
-        return pd.DataFrame(columns=["mmsi", "imo", "os_nom", "os_risques", "os_sources", "os_url", "os_sanction"])
-    df = pd.read_csv(OS_CSV, dtype=str).fillna("")
-    df = df[df["type"].str.upper() == "VESSEL"]
-    out = pd.DataFrame({
-        "imo": df.imo.map(digits), "mmsi": df.mmsi.map(digits), "os_nom": df.caption,
-        "os_risques": df.risk, "os_sources": df.datasets, "os_url": df.url,
-    })
-    out["os_sanction"] = out.os_risques.str.contains("sanction", case=False)
-    return out
 
 
 def match(seen, wl, cols):
@@ -117,7 +86,7 @@ def main():
         sig = signal(h)
         par = "OMI" if "OMI" in (h.gur_par, h.os_par) else "MMSI seul (moins sûr)"
         rows.append({
-            "signal": sig, "nom": h.gur_nom if pd.notna(h.gur_nom) else h.os_nom, "nom_declare": h.nom_declare,
+            "signal": sig, "nom": (h.gur_nom if pd.notna(h.gur_nom) else "") or h.os_nom, "nom_declare": h.nom_declare,
             "omi": h.imo, "mmsi": h.mmsi, "reconnu_par": par, "zone": str(last.zone),
             "liste_gur": "oui" if pd.notna(h.gur_nom) else "non",
             "risques_opensanctions": h.os_risques if pd.notna(h.os_risques) else "",

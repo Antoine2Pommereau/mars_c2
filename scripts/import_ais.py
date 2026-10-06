@@ -102,7 +102,8 @@ def main():
         cur.execute("SELECT EXISTS (SELECT 1 FROM ais_days WHERE day = (sim_now() AT TIME ZONE 'UTC')::date)")
         if not cur.fetchone()[0]:
             start = pd.Timestamp(df.ts.min().date(), tz="UTC") + pd.Timedelta(hours=12)
-            cur.execute("UPDATE sim_clock SET sim_anchor = %s, real_anchor = clock_timestamp(), paused = true", (start,))
+            cur.execute("UPDATE sim_clock SET sim_anchor = %s, real_anchor = clock_timestamp(), paused = true, live = false",
+                        (start,))
             print(f"Horloge simulée placée au {start}")
         conn.commit()
 

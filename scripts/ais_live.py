@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import signal
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,19 +23,15 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "data" / "ais_live"
-URL = "wss://stream.aisstream.io/v0/stream"
+sys.path.insert(0, str(ROOT))
 
-# Zones : [lat_min, lon_min, lat_max, lon_max]
-ZONES = {
-    "bretagne": [47.3, -6.8, 49.6, -3.0],
-    "mediterranee": [41.2, 3.0, 43.7, 9.8],
-    "manche": [48.4, -5.0, 51.2, 2.6],
-    "gascogne": [43.3, -6.0, 47.4, -1.0],
-}
+from mars.ais.live import ZONES  # noqa: E402  (zones partagées avec l'ingestion en base)
+
+OUT = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
+URL = "wss://stream.aisstream.io/v0/stream"
 POSITION_TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport"]
 STATIC_TYPES = ["ShipStaticData", "StaticDataReport"]
-FLUSH_S = 60
+FLUSH_S = int(os.environ.get("AIS_FLUSH_S", 60))
 
 
 def zone_of(lat, lon):
@@ -99,7 +96,10 @@ class Buffer:
             for zone, g in df.groupby("zone"):
                 folder = OUT / table / f"zone={zone}" / f"date={stamp:%Y-%m-%d}"
                 folder.mkdir(parents=True, exist_ok=True)
-                g.drop(columns="zone").to_parquet(folder / f"{stamp:%H%M%S}.parquet", index=False)
+                # Écriture dans un fichier caché puis renommage : l'ingestion ne lit jamais un fichier incomplet
+                tmp = folder / f".{stamp:%H%M%S}.parquet.tmp"
+                g.drop(columns="zone").to_parquet(tmp, index=False)
+                os.replace(tmp, folder / f"{stamp:%H%M%S}.parquet")
         self.pos, self.static = [], []
 
     def status(self):
