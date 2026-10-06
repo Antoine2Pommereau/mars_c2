@@ -2,8 +2,10 @@
 
 Le serveur (`/opt/mars_c2`) fait tourner en permanence, avec Docker Compose, six services : la base (`db`),
 l'API (`backend`), l'interface (`web`), la collecte AISStream (`collector`), l'ingestion en base (`ingest`) et les
-tâches planifiées (`taches` : archivage sur R2, purge, sauvegarde, surveillance du disque). Pas de cron sur l'hôte :
-tout redémarre avec la plateforme (`restart: unless-stopped`). Le service d'inférence radar reste sur le Mac (GPU
+tâches planifiées (`taches` : règles en continu, archivage sur R2, purge, sauvegarde, surveillance du disque). Pas de
+cron sur l'hôte : tout redémarre avec la plateforme (`restart: unless-stopped`). Les images sont construites sur le
+Mac en linux/amd64 et chargées sur le serveur (section « Construire sur le Mac et déployer ») : le serveur n'a ni la
+place ni la mémoire pour les construire. Le service d'inférence radar reste sur le Mac (GPU
 Apple) ; sur le serveur, l'API le signale « injoignable », ce qui est attendu.
 
 Rien n'est ouvert sur Internet hormis SSH : la base n'a aucun port publié, l'API et l'interface écoutent sur
@@ -18,7 +20,7 @@ Sur le serveur (Ubuntu 24.04, `root`) :
 curl -fsSL https://get.docker.com | sh
 docker compose version
 
-# Mémoire d'échange : la DEV1-S n'a que 2 Go de mémoire, et la construction de l'interface en demande
+# Mémoire d'échange : la DEV1-S n'a que 2 Go de mémoire
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
@@ -34,12 +36,25 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.serveur.yml
 COMPOSE_PROFILES=direct
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
+# Seau en juridiction européenne : https://<identifiant_du_compte>.eu.r2.cloudflarestorage.com
 R2_ENDPOINT=https://<identifiant_du_compte>.r2.cloudflarestorage.com
 R2_BUCKET=mars-c2
 ```
 
 `COMPOSE_FILE` et `COMPOSE_PROFILES` font qu'un simple `docker compose up -d` applique la surcouche du serveur et
 démarre collecte, ingestion et tâches (profil `direct` inactif sur le Mac : une seule collecte par clé).
+
+Premier démarrage : charger les images depuis le Mac (section « Construire sur le Mac et déployer », étapes 1 et 2),
+copier les listes de surveillance, démarrer, importer les listes, puis construire les masques France :
+
+```bash
+# Sur le Mac
+scp data/listes/Vessels1.db data/listes/maritime.csv root@IP_DU_SERVEUR:/opt/mars_c2/data/listes/
+# Sur le serveur
+cd /opt/mars_c2 && docker compose up -d --no-build
+docker compose run --rm ingest python scripts/import_watchlist.py
+docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
+```
 
 ## Configurer Cloudflare R2
 
@@ -50,6 +65,17 @@ démarre collecte, ingestion et tâches (profil `direct` inactif sur le Mac : un
    (`https://<identifiant_du_compte>.r2.cloudflarestorage.com`) ; les reporter dans `.env`.
 3. Ne pas mettre de règle de cycle de vie sur le seau : la suppression des anciennes sauvegardes est faite par la
    tâche elle même, après vérification de la nouvelle.
+
+**Seau en juridiction européenne.** Un seau créé avec la juridiction « European Union » n'a pas la même adresse :
+`R2_ENDPOINT=https://<identifiant_du_compte>.eu.r2.cloudflarestorage.com`. Avec l'adresse sans `.eu`, tout accès est
+refusé (`AccessDenied` ou `NoSuchBucket`, alors que la clé et le nom du seau sont justes) : cas rencontré au premier
+déploiement. Le tableau de bord du seau, onglet « Settings », donne l'adresse S3 exacte à reporter.
+
+Contrôle d'accès, depuis le serveur :
+
+```bash
+docker compose exec taches python scripts/taches.py sauvegardes   # liste vide ou sauvegardes, sans erreur
+```
 
 Organisation du seau :
 
@@ -64,17 +90,41 @@ Organisation du seau :
 Chaque nuit à 02:30 UTC (`TACHES_HEURE`), dans cet ordre, chacune consignée dans la table `task_runs` :
 
 1. **Archivage** des journées terminées (veille ou avant, 30 minutes après minuit) : par dossier zone et type,
-   les petits fichiers Parquet **déjà ingérés** sont regroupés en un fichier, envoyé sur R2 avec son MD5 (R2 refuse
-   un contenu altéré), puis relu (taille et empreinte). L'archive est inscrite dans la table `archives` avec la
+   les petits fichiers Parquet **déjà ingérés** sont regroupés en un fichier, envoyé sur R2 en une seule requête avec
+   son MD5 (R2 refuse un contenu altéré), puis vérifié (voir « Confirmation des envois » ci dessous). L'archive est inscrite dans la table `archives` avec la
    liste des fichiers d'origine ; seuls ces fichiers, ingérés et confirmés, sont supprimés du serveur. Un fichier pas
    encore ingéré reste en place (signalé dans le journal) et sera archivé plus tard dans une seconde partie. Après un
    arrêt entre l'envoi et la suppression, la tâche supprime sans renvoyer : pas de doublon sur R2.
 2. **Purge** des positions de plus de 30 jours (`CONSERVATION_JOURS`), journée par journée, **seulement si la
    journée est archivée** ; retrait de la journée de `ais_days` et du registre d'ingestion des dossiers disparus.
 3. **Sauvegarde** : `pg_dump` compressé envoyé en flux sur R2, sans fichier local, **sans les données de
-   `positions`** (dans l'archive) ni du registre d'ingestion. Vérifiée par le code de sortie et la taille relue sur
-   R2 ; une sauvegarde invalide est supprimée. Les 7 dernières sont gardées (`SAUVEGARDES_GARDEES`), les plus
+   `positions`** (dans l'archive) ni du registre d'ingestion. Vérifiée par le code de sortie de `pg_dump`, puis par
+   la taille et le MD5 de l'objet stocké (relecture) ; une sauvegarde invalide est supprimée. Les 7 dernières sont gardées (`SAUVEGARDES_GARDEES`), les plus
    anciennes supprimées seulement après la vérification de la nouvelle.
+
+**Confirmation des envois.** L'ETag d'un objet envoyé en une seule requête est son MD5 : il est comparé au MD5
+calculé avant l'envoi, avec la taille. L'ETag d'un objet envoyé en plusieurs morceaux (au delà de 16 Mo, cas des
+sauvegardes en flux) n'est pas le MD5 du fichier : il se termine par « tiret, nombre de morceaux ». L'objet est
+alors relu depuis R2 et son MD5 recalculé, comparé à celui calculé pendant l'envoi. Les archives quotidiennes
+(environ 6 Mo par zone et par type) partent toujours en une requête ; la relecture ne concerne que les envois en
+morceaux. Dans tous les cas, un fichier n'est supprimé du serveur que s'il est ingéré et confirmé.
+
+**Règles en continu** (toutes les 5 minutes, section `continu` de `config/rules.yaml`), sur une fenêtre glissante
+de 24 heures bornée par la dernière position reçue :
+
+| Règle | Alerte | Prérequis |
+|---|---|---|
+| Rendez vous | `RENDEZVOUS` | trait de côte (`land`) |
+| Coupure AIS | `AIS_GAP` | zone de réception fiable (`reception_cells`) |
+| Navire d'une liste dans nos eaux | `WATCHLIST`, une par passage (12 h sans position ouvrent un passage nouveau), niveaux fort, sanctionné, flotte fantôme, suspect GUR | listes importées |
+| Changement d'identité | `IDENTITY_CHANGE` : nouveau nom confirmé 6 h, ou même OMI sous un autre MMSI | aucun |
+
+Une règle dont le prérequis manque est sautée (le motif apparaît dans `task_runs`) : lancer d'abord la construction
+des masques. Les alertes sont mises à jour en place (clé `rule_key`) : statut et décisions des opérateurs sont
+conservés ; une alerte encore vierge qui n'est plus détectée est retirée. Les minutes où le flux AIS est coupé
+(moins de 20 % de la médiane des positions par minute) ne comptent pas dans la durée d'un silence : une interruption
+d'AISStream ne fait pas apparaître une coupure sur chaque navire. Un cycle n'est journalisé que s'il crée ou retire
+des alertes ; chaque cycle est consigné dans `task_runs` (tâche `regles`, deux jours gardés).
 
 Toutes les 10 minutes : espace libre du disque. Sous 15 % (`ALERTE_DISQUE_PCT`), une ligne `ALERTE DISQUE` dans
 le journal du service, et `"alerte_disque": true` dans `/api/ingestion`.
@@ -83,19 +133,96 @@ Une tâche réussie ne rejoue pas le même jour ; une tâche en échec est reten
 démarrage dans la journée, après 02:30, les trois tâches s'exécutent tout de suite. Commandes manuelles :
 
 ```bash
-docker compose exec taches python scripts/taches.py archiver      # ou purger, sauvegarder, disque
+docker compose exec taches python scripts/taches.py archiver      # ou purger, sauvegarder, disque, regles
 docker compose exec taches python scripts/taches.py sauvegardes   # liste des sauvegardes sur R2
 ```
 
-## Mise à jour
+## Masques France (trait de côte, mouillages, réception)
+
+Ponctuellement, dans le conteneur `taches` (dépendances incluses dans l'image des scripts) :
+
+```bash
+docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
+```
+
+* **Trait de côte** : GSHHG pleine résolution, découpé sur l'emprise des quatre zones avec 0,5° de marge
+  (2 005 polygones après subdivision, 3,6 Mo en base). `--sans-cache` lit le shapefile directement dans l'archive
+  téléchargée, sans l'extraire, dans un dossier temporaire du conteneur effacé à la fin.
+* **Zones de mouillage et zone de réception fiable** : calculées par l'API sur les 7 derniers jours (`--jours 7`) ;
+  sans cette option, sur toutes les positions en base, ce qui coûte plus de mémoire et de fichiers temporaires à
+  PostgreSQL. Les seuils (`stationary_zones`, `reception`) sont ceux de la calibration danoise, à recalibrer.
+* **Coût mesuré** (image linux/amd64 émulée sur le Mac, base de test, 06/10/2026) : 61 s au total dont le
+  téléchargement de 149 Mo ; **300 Mo de mémoire au plus** pendant une minute (539 Mo avant lecture économe du
+  shapefile : le polygone de l'Eurasie compte plus d'un million de points) ; **142 Mo de disque au plus**,
+  l'archive GSHHG seule, effacée à la fin. Sur le serveur, compter le temps de téléchargement en plus ; prévoir au
+  moins 300 Mo de disque libre.
+* À relancer de temps en temps (chaque semaine par exemple) pour les zones de mouillage et la réception ; le trait
+  de côte ne change pas (`--skip-land` pour ne recalculer que les masques déduits de l'AIS).
+
+## Construire sur le Mac et déployer
+
+Le serveur ne construit rien : ni la place ni la mémoire. Les trois images (`mars_c2-backend`, `mars_c2-web`,
+`mars_c2-scripts`, cette dernière commune à `collector`, `ingest` et `taches`) sont construites sur le Mac pour
+linux/amd64, envoyées par `docker save` et `docker load`, puis démarrées sans construction.
+
+**1. Sur le Mac**, depuis le dépôt à jour :
+
+```bash
+git pull origin main
+touch .env                                         # la surcouche lit .env ; un fichier vide suffit pour construire
+DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.yml -f docker-compose.serveur.yml \
+  --profile direct build backend web collector
+docker image inspect mars_c2-backend mars_c2-web mars_c2-scripts --format '{{.RepoTags}} {{.Architecture}}'
+```
+
+Les trois doivent afficher `amd64`. Ces images remplacent sur le Mac celles du même nom : pour retrouver des images
+natives en local, relancer ensuite `docker compose build backend web`.
+
+Tailles mesurées le 06/10/2026 : `mars_c2-backend` 160 Mo, `mars_c2-web` 21 Mo, `mars_c2-scripts` 189 Mo ; flux
+compressé de l'envoi : 325 Mo. Prévoir environ 400 Mo libres sur le serveur pour charger les trois images.
+
+**2. Envoi en flux**, sans fichier intermédiaire ni sur le Mac ni sur le serveur (les couches communes ne passent
+qu'une fois) :
+
+```bash
+docker save mars_c2-backend mars_c2-web mars_c2-scripts | gzip | ssh root@IP_DU_SERVEUR 'gunzip | docker load'
+```
+
+**3. Sur le serveur**, code et migrations à jour, puis démarrage sans construction :
 
 ```bash
 cd /opt/mars_c2 && git pull origin main
-docker compose up -d --build
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/1X_nom.sql   # chaque migration nouvelle
+docker compose up -d --no-build
+docker image prune -f                              # anciennes images devenues sans nom
 ```
 
 Une nouvelle migration de `db/init` ne s'applique pas toute seule à une base existante (les scripts d'initialisation
-ne jouent qu'à la création du volume) : `docker compose exec -T db psql -U mars -d mars < db/init/1X_nom.sql`.
+ne jouent qu'à la création du volume) ; l'appliquer avant `up`, la nouvelle API pouvant en dépendre.
+
+**Disque trop juste pour garder les anciennes et les nouvelles images.** `docker load` écrit les nouvelles couches
+avant que les anciennes ne soient libérables, et une image utilisée par un conteneur, même arrêté, ne peut pas être
+supprimée. Dans ce cas, libérer d'abord, dans cet ordre (la base et ses données ne sont pas touchées, la collecte
+s'interrompt quelques minutes, sans conséquence sur les règles : les minutes de flux coupé ne comptent pas comme
+des silences) :
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose rm -sf backend web collector ingest taches   # arrêt et suppression des conteneurs, pas des volumes
+docker image rm mars_c2-backend mars_c2-web mars_c2-scripts  # libère la place des anciennes images
+# Une seule fois, au passage aux noms d'images fixes : anciennes images nommées d'après chaque service
+docker image rm mars_c2-collector mars_c2-ingest mars_c2-taches 2>/dev/null
+docker image prune -f && df -h /                            # vérifier la place libre avant le chargement
+```
+
+puis, depuis le Mac, l'envoi en flux (étape 2), et sur le serveur :
+
+```bash
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/1X_nom.sql   # migrations nouvelles
+docker compose up -d --no-build
+```
+
+Ne jamais lancer `docker system prune --volumes` : il effacerait le volume de la base.
 
 ## Vérifier
 
@@ -110,7 +237,19 @@ curl -s localhost:8000/api/clock                    # "live": true, "speed": 1.0
 
 Ce qu'on doit lire :
 * `/api/ingestion` : `retard_s` de l'ordre de la minute ; `alerte_disque` à `false` ; `disque` avec une mesure de
-  moins de 30 minutes (`perimee` à `false`) ; dans `taches`, `archivage`, `purge` et `sauvegarde` à `ok`.
+  moins de 30 minutes (`perimee` à `false`) ; dans `taches`, `archivage`, `purge`, `sauvegarde` et `regles` à `ok`
+  (`regles` daté de moins de 5 minutes).
+* Les règles, cycle par cycle, et les alertes produites :
+
+```bash
+docker compose exec taches python scripts/taches.py regles      # un cycle à la demande, détail complet
+docker compose exec db psql -U mars -d mars -c "SELECT type, severity, status, count(*) FROM alerts
+  WHERE detected_at > now() - interval '1 day' GROUP BY 1, 2, 3 ORDER BY 1, 2"
+```
+
+  Ce qu'on doit lire : pour `rendezvous` et `ais_gap`, des compteurs (et non « trait de côte absent » ou « zone de
+  réception absente », signe que les masques n'ont pas été construits) ; `exclus_coupure_du_flux` non nul seulement
+  après une interruption d'AISStream ; pour `watchlist`, autant de passages que de navires des listes présents.
 * Le journal de l'archivage, chaque matin : `fichiers_non_ingeres` à 0, `fichiers_supprimes` égal au nombre de
   fichiers de la veille (environ 11 500 pour quatre zones), `octets_envoyes` de l'ordre de 25 Mo.
 * Contrôle croisé en base :
@@ -190,6 +329,13 @@ deux semaines. Agrandir le disque avant.
   test), soit environ 26 Mo par jour, 0,77 Go par mois, 9,4 Go par an ;
 * sauvegardes sans positions : moins de 10 Mo chacune, moins de 70 Mo pour les 7 ;
 * les 10 Go gratuits sont atteints après **environ 13 mois** de collecte. Au delà, 0,015 dollar par Go et par mois.
+
+**Règles en continu** : un cycle sur 867 000 positions (24 heures au débit actuel), mesuré sur le Mac en émulation
+linux/amd64, donc une borne haute : 1,4 s pour les coupures AIS, presque rien pour les listes et les identités, et
+33 s pour les rendez vous dans un cas volontairement extrême (600 navires immobiles serrés, 5 700 épisodes) ;
+181 Mo de mémoire au plus pour le processus, environ 100 Mo de fichiers temporaires PostgreSQL. Si les rendez vous
+devenaient trop lents en vrai, la piste est d'écarter les positions proches des côtes avant de former les paires
+(changement de sémantique léger, à décider avec la recalibration).
 
 **Compression TimescaleDB** : pas utile à cette échelle. Avec 30 jours en base, 7,5 Go tiennent largement sur
 40 Go ; la compression (de l'ordre de 10 fois) demanderait de changer l'image de la base, de refaire la clé de

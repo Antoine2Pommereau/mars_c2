@@ -18,7 +18,11 @@ services:
       timeout: 3s
       retries: 20
 
+  # Noms d'images explicites : construites sur le Mac en linux/amd64, envoyées au serveur par docker save et docker
+  # load, puis démarrées avec docker compose up -d --no-build (docs/deploiement.md). Sans nom fixe, le nom dépendrait
+  # du dossier du projet.
   backend:
+    image: mars_c2-backend
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -39,6 +43,7 @@ services:
 
   # Interface tactique (React), construite puis servie par nginx ; en développement : cd web && npm run dev
   web:
+    image: mars_c2-web
     build: ./web
     depends_on:
       - backend
@@ -48,6 +53,7 @@ services:
   # AIS en direct : collecte AISStream vers l'archive Parquet (data/ais_live), puis ingestion en base.
   # Le Parquet reste l'archive complète ; la base reçoit des trajectoires allégées (config/rules.yaml, ingestion).
   collector:
+    image: mars_c2-scripts          # une seule image pour collector, ingest et taches
     build:
       context: .
       dockerfile: scripts/Dockerfile
@@ -59,6 +65,7 @@ services:
     profiles: ["direct"]
 
   ingest:
+    image: mars_c2-scripts
     build:
       context: .
       dockerfile: scripts/Dockerfile
