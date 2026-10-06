@@ -1,0 +1,10 @@
+# Contexte de construction des images (racine du dépôt) : ni données, ni modèles, ni environnements locaux
+data
+models
+logs
+.venv
+.git
+web/node_modules
+web/dist
+**/__pycache__
+.env

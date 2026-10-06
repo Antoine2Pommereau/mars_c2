@@ -45,6 +45,36 @@ services:
     ports:
       - "8080:80"
 
+  # AIS en direct : collecte AISStream vers l'archive Parquet (data/ais_live), puis ingestion en base.
+  # Le Parquet reste l'archive complète ; la base reçoit des trajectoires allégées (config/rules.yaml, ingestion).
+  collector:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile
+    command: ["python", "scripts/ais_live.py", "collect"]
+    env_file: .env          # AISSTREAM_API_KEY
+    volumes:
+      - ./data/ais_live:/app/data/ais_live
+    restart: unless-stopped
+    profiles: ["direct"]
+
+  ingest:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile
+    command: ["python", "scripts/ais_ingest.py"]
+    environment:
+      DATABASE_URL: postgresql://mars:mars@db:5432/mars
+    volumes:
+      - ./data/ais_live:/app/data/ais_live:ro
+      - ./data/listes:/app/data/listes:ro
+      - ./config:/app/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["direct"]
+
   # Variante en conteneur, sur CPU : docker compose --profile conteneur up -d
   inference:
     profiles: ["conteneur"]

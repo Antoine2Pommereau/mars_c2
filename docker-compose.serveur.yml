@@ -1,0 +1,29 @@
+# Surcouche pour le serveur Scaleway (DEV1-S) : redémarrage automatique, journaux bornés, aucun port ouvert sur
+# Internet (base fermée, API et interface sur 127.0.0.1, consultées par un tunnel SSH). Activée par le fichier .env
+# du serveur : COMPOSE_FILE=docker-compose.yml:docker-compose.serveur.yml et COMPOSE_PROFILES=direct.
+# Les étiquettes !reset et !override demandent Docker Compose 2.24.4 ou plus récent.
+x-journaux: &journaux
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  db:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *journaux
+
+  backend:
+    ports: !override ["127.0.0.1:8000:8000"]
+    restart: unless-stopped
+    logging: *journaux
+
+  web:
+    ports: !override ["127.0.0.1:8080:80"]
+    restart: unless-stopped
+    logging: *journaux
+
+  collector:
+    logging: *journaux
+
+  ingest:
+    logging: *journaux

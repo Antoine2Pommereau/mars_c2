@@ -60,6 +60,24 @@ Parquet (`data/ais_live/{positions,statiques}/zone=…/date=…/`), `report` mes
 pétroliers, retard du flux et continuité des trajectoires, avec une carte de couverture par cellule de 0,1°.
 Premier point de passage : **la couverture d'AISStream autour d'Ouessant est elle suffisante ?** Sinon, récepteur.
 
+**État au 06/10/2026 (branche `direct-ingestion`).** La collecte est branchée sur la base, prête pour le serveur
+Scaleway (DEV1-S) avec Docker Compose (guide : `docs/deploiement.md`) :
+* **Ingestion** (`scripts/ais_ingest.py`, `mars/ais/ingest.py`, service `ingest`) : relit toutes les 15 s les
+  fichiers Parquet de la collecte (service `collector`), les charge une fois et une seule (registre
+  `ingested_files`), allège les trajectoires (un point par minute en route, un toutes les dix minutes à l'arrêt, plus
+  les bascules route et arrêt et les changements de statut ; section `ingestion` de `config/rules.yaml`), tient
+  `ais_days` à jour. Navire identifié par son MMSI ; OMI conservé seulement si sa clé est juste ; pavillon déduit
+  du MMSI (`mars/ais/mid.py`) ; historique des identités déclarées dans `vessel_identities`, relié entre MMSI par
+  l'OMI (vue `imo_history`). Sur la collecte de nuit du 05/10 : 21 197 positions lues, 11 597 conservées, 1 088
+  navires, 9 s pour 460 fichiers.
+* **Mode direct** : l'horloge suit l'heure réelle par défaut (`sim_clock.live`) ; pause ou saut dans le passé
+  passent en rejeu, le bouton « Direct » ou un rejeu qui rattrape l'heure réelle y reviennent.
+* **Liste de surveillance** (`scripts/import_watchlist.py`, table `watchlist`, vue matérialisée `vessel_watch`) :
+  catalogue GUR et OpenSanctions, rapprochement par OMI puis par MMSI, niveau de signal (fort, sanctionné, flotte
+  fantôme, suspect GUR, autre risque). Navires des listes en violet sur la carte, fiche navire avec listes et
+  identités successives. 8 navires des listes dans la collecte du 05/10, dont 3 au signal fort (GELIOTROP, VULKAN,
+  PASIPHAE).
+
 ## 1. Le projet (version initiale)
 
 **MARS C2** est une plateforme de surveillance maritime (Maritime Domain Awareness) qui fusionne deux sources :
@@ -131,6 +149,9 @@ cd web && npm run dev                           # optionnel : interface de déve
 | http://localhost:8001/v1 | Service d'inférence (hors Docker, GPU Apple) |
 | localhost:5432 | PostgreSQL (`mars` / `mars`, base `mars`) |
 
+Collecte et ingestion en continu (profil `direct`, normalement sur le serveur seulement, une collecte par clé) :
+`docker compose --profile direct up -d collector ingest`.
+
 Après une modification de `backend/` : `docker compose up -d --build backend`, puis **attendre quelques secondes**
 avant d'appeler l'API (sinon « Connection reset by peer »). Après une modification de `inference/` ou de
 `mars/sar/` : **redémarrer le service d'inférence** (Python ne recharge pas le code). Après une modification de
@@ -146,6 +167,8 @@ modification de `config/rules.yaml` : rien, le fichier est relu à chaque analys
 | Interface | Docker `web`, port 8080 (nginx) ; Vite en développement | React 18, TypeScript, Vite 5, Tailwind 4, MapLibre 4, TanStack Query 5, icônes `lucide-react` | Carte, fil d'alertes, analyses, frise, fiches |
 | Inférence | **Hors Docker**, port 8001 | FastAPI, PyTorch (MPS), rasterio | Extraction Sentinel Hub, détection, vignettes radar ; détient le cache des extraits |
 | Code partagé | `mars/` | Python | Sentinel Hub, inférence, lecture AIS, appariement, moteur de fusion |
+| Collecte | Docker `collector` (profil `direct`) | Python, websockets | AISStream vers l'archive Parquet `data/ais_live` |
+| Ingestion | Docker `ingest` (profil `direct`) | Python, psycopg | Parquet vers `positions`, `vessels`, `vessel_identities`, `ais_days` ; rafraîchit `vessel_watch` |
 
 Pourquoi l'inférence est hors Docker : Docker Desktop n'a pas accès au GPU Apple (MPS). L'API joint le service via
 `host.docker.internal:8001`. Une variante conteneurisée sur CPU existe (`docker compose --profile conteneur up -d`).
@@ -169,16 +192,21 @@ journée suivante, pause à la fin de la dernière).
 mars_c2/
   CLAUDE.md               ce fichier
   start.sh                démarrage complet
-  docker-compose.yml      db, backend, web (et inference en profil conteneur)
+  docker-compose.yml      db, backend, web (inference en profil conteneur ; collector et ingest en profil direct)
+  docker-compose.serveur.yml  surcouche du serveur Scaleway (ports fermés, redémarrage, journaux bornés)
   pyproject.toml          paquet mars et dépendances (pip install -e ".[test]")
-  config/rules.yaml       tous les seuils, versionnés (version courante 2026.10.15)
-  db/init/01 à 09         schéma et migrations (idempotentes à partir de 02)
+  config/rules.yaml       tous les seuils, versionnés (version courante 2026.10.16)
+  db/init/01 à 12         schéma et migrations (idempotentes à partir de 02)
   mars/
     config.py, db.py, geo.py
     sar/sentinelhub.py    extraction SIGMA0 bilinéaire, découpage en requêtes de 2400 px, cache
     sar/catalog.py        recherche des passages Sentinel 1
     sar/inference.py      chargement du modèle, tuilage, décodage, fusion des fragments, contraste local
     ais/dma.py            lecture et nettoyage des CSV DMA, positions à l'instant t0 (interpolation, estime)
+    ais/live.py           zones, nettoyage AISStream, OMI, types, allègement des trajectoires (Thinner)
+    ais/ingest.py         chargement continu du Parquet en base, identités, journées
+    ais/mid.py            pavillon d'après le MMSI
+    watchlist.py          lecture des listes GUR et OpenSanctions
     fusion/match.py       tolérance Doppler orientée (ellipse), appariement hongrois
     fusion/pipeline.py    masques, appariement, persistance, navires sombres, positions non confirmées
   backend/app.py          API ; backend/rules.py : rendez vous, coupures AIS, mouillages, réception
@@ -192,7 +220,7 @@ mars_c2/
   logs/                   journaux de start.sh (non versionné)
 ```
 
-## 6. Base de données (treize tables)
+## 6. Base de données
 
 | Table | Contenu |
 |---|---|
@@ -210,9 +238,14 @@ mars_c2/
 | `stationary_zones` | Zones de mouillage déduites de l'AIS |
 | `reception_cells` | Zone de réception fiable : cellules, messages, navires, heures, continuité |
 | `fixed_echoes` | Registre des échos fixes : position, première et dernière observation, nombre, détections |
+| `regions`, `region_layers`, `infrastructure` | Zones France, manifeste de provisionnement, câbles, pipelines et parcs éoliens EMODnet |
+| `vessel_identities` | Identités déclarées par un navire (nom, OMI, indicatif, type, pavillon) et leur période ; vue `imo_history` |
+| `ingested_files` | Registre des fichiers Parquet chargés (dossier, nom, lus, conservés) |
+| `watchlist` | Listes de surveillance : source, OMI, MMSI, nom, thèmes, sanctionné, flotte fantôme ; vue matérialisée `vessel_watch` (niveau par navire) |
 
 Migrations : 02 horloge simulée, 03 analyses, 04 masques, 05 statut de navigation, 06 coupures AIS (classe, emprise,
-réception), 07 continuité de réception, 08 échos fixes, 09 décisions des opérateurs. Les appliquer avec
+réception), 07 continuité de réception, 08 échos fixes, 09 décisions des opérateurs, 10 régions et infrastructures, 11 direct (horloge, identités, registre), 12 liste
+de surveillance. Les appliquer avec
 `docker compose exec -T db psql -U mars -d mars < db/init/0X_nom.sql`.
 
 ## 7. API
@@ -220,10 +253,13 @@ réception), 07 continuité de réception, 08 échos fixes, 09 décisions des op
 | Route | Rôle |
 |---|---|
 | `GET /api/health`, `GET /api/inference/health` | Santé de l'API et du service d'inférence |
-| `GET, POST /api/clock` | Horloge simulée : `play`, `pause`, `speed`, `seek` |
+| `GET, POST /api/clock` | Horloge : `live` (direct), `play`, `pause`, `speed`, `seek` (un instant futur ramène au direct) |
 | `GET /api/stream` | Flux SSE (section 4) |
 | `GET /api/traffic`, `GET /api/traffic/trails` | Trafic à l'instant simulé, traînées de 30 minutes |
+| `GET /api/vessels/{id}` | Fiche navire : identité, identités successives (même MMSI ou même OMI), listes de surveillance |
 | `GET /api/vessels/{id}/track?start&end` | Trajectoire d'un navire |
+| `GET /api/watchlist?hours` | Navires des listes vus dans les dernières heures, du signal le plus fort au plus faible |
+| `GET /api/ingestion` | État du direct : dernier fichier chargé, retard, volume de la dernière heure, listes chargées |
 | `GET /api/ais/days` | Journées chargées |
 | `GET /api/passes?bbox&start&end` | Passages Sentinel 1 sur une zone, recouvrement, disponibilité de l'AIS (par défaut sur la période chargée) |
 | `POST /api/analyses` (202), `GET /api/analyses`, `GET /api/analyses/{id}`, `GET /api/analyses/{id}/detections` | Analyses radar |
@@ -291,7 +327,7 @@ CircleNet V2S, membre 4 de l'ensemble gagnant du défi xView3 (licence MIT), Tor
   identiques ; forçable par `INFERENCE_AMP=on`).
 * Seuils : présence **0,20**, navire 0,338, pêche 0,35. Fusion des fragments : 150 m ou 60 % de la longueur.
 
-## 11. Configuration (`config/rules.yaml`, version 2026.10.15)
+## 11. Configuration (`config/rules.yaml`, version 2026.10.16)
 
 | Section | Paramètres clés |
 |---|---|
@@ -305,6 +341,7 @@ CircleNet V2S, membre 4 de l'ensemble gagnant du défi xView3 (licence MIT), Tor
 | `rendezvous` | 500 m, 2 nœuds, 120 min, tranches de 10 min, 3 km des côtes, bord à bord 50 m, élevée au delà de 4 h ou 20 km, navires de service exclus, aucun statut exclu |
 | `stationary_zones` | cellules 0,04 × 0,02°, 4 navires immobiles |
 | `reception` | cellules 0,10 × 0,05°, 95 % d'intervalles sous 180 s, 200 paires, 3 navires |
+| `ingestion` | un point par minute en route, un toutes les 10 min à l'arrêt, arrêt sous 0,5 nœud, route au delà de 1 nœud (hystérésis) |
 | `ais_gap` | 120 min, 1 nœud, 10 messages dans l'heure, 3 km des côtes, marge de bord 0,25°, classe A, projection 120 min, arrêt sous 30 % de la vitesse si au moins 5 nœuds, route poursuivie au delà de 50 %, partenaire à 500 m des extrémités et lent 30 min, élevée au delà de 6 h sans réapparition |
 
 **Toujours monter la version** à chaque changement de règle, puis relancer les règles (et les analyses si besoin) :
@@ -369,7 +406,7 @@ Scripts : `import_ais.py`, `build_masks.py [--skip-land] [--source naturalearth]
 
 ## 14. Tests
 
-`python -m pytest tests` : 19 tests attendus, 1 ignoré sans `MARS_TEST_MODEL=1` (qui charge le vrai modèle).
+`python -m pytest tests` : 27 tests attendus, 1 ignoré sans `MARS_TEST_MODEL=1` (qui charge le vrai modèle).
 Couvrent le contrat du modèle (ordre des canaux, normalisation, tuilage, décodage, fusion des fragments) et le
 moteur de fusion (masques, appariement, navire sombre, tolérance orientée, position non confirmée, écho fixe).
 L'interface n'a pas de tests ; `npm run typecheck` vérifie les types.
@@ -395,6 +432,18 @@ L'interface n'a pas de tests ; `npm run typecheck` vérifie les types.
 * Avant de conclure à un manque du détecteur, regarder l'image (vignette) et les scores bruts : ni les données ni le
   GPU n'étaient en cause pour les navires géants manqués, c'était le seuil.
 * `ditto ~/Downloads/<dossier>/mars_c2 .` : vérifier le nom réel du dossier décompressé, il varie.
+* **Horodatages AISStream** : partie décimale de longueur variable (zéros finaux omis). Toujours
+  `pd.to_datetime(..., format="ISO8601")`, sinon pandas déduit le format de la première ligne et met les autres à
+  NaT sans erreur. Arrondir à la microseconde avant la base.
+* **Identités qui alternent** : le MMSI 227000000 (« FRENCH WARSHIP ») est partagé par plusieurs bâtiments de la
+  Marine nationale ; MUTIN émet tour à tour « MUTIN » et « FS MUTIN ». Une identité déjà vue est reprise, pas
+  dupliquée : deux lignes aux périodes entrelacées.
+* **Entrées GUR sans nom** : l'appartenance au catalogue ne doit pas se lire sur la présence du nom (PASIPHAE,
+  OMI 9289518, listé sous son ancien MMSI hondurien, passait pour « flotte fantôme » au lieu de « fort »).
+* psycopg n'adapte pas les entiers numpy : convertir en `int` avant toute requête.
+* Surcouche Compose : `ports` se cumule entre fichiers ; utiliser `!override` ou `!reset` (Compose 2.24.4 ou plus).
+* La collecte écrit dans un fichier caché puis renomme : l'ingestion ne lit jamais un fichier incomplet (et ignore
+  de toute façon les fichiers de moins de 5 s).
 
 ## 16. Points ouverts
 
