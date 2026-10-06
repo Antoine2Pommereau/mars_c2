@@ -3,3 +3,4 @@ pyarrow
 websockets
 psycopg[binary]
 pyyaml
+boto3

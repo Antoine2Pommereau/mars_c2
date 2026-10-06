@@ -115,7 +115,11 @@ class Ingestor:
     # Chargement d'un fichier
 
     def ingest_positions(self, folder: str, name: str) -> dict:
-        raw = pd.read_parquet(self.root / folder / name)
+        return self.load_positions(pd.read_parquet(self.root / folder / name), ledger=(folder, name))
+
+    def load_positions(self, raw: pd.DataFrame, ledger: tuple[str, str] | None = None) -> dict:
+        """Nettoie, allège et charge un lot de positions dans une transaction ; inscrit le fichier d'origine au
+        registre s'il est donné (ingestion en direct), pas pour un rechargement depuis l'archive."""
         df, stats = clean_positions(raw, pd.Timestamp.now(tz="UTC"))
         backup = {int(m): self.thin.last.get(int(m)) for m in df.mmsi.unique()}
         kept, reasons = [], {}
@@ -151,8 +155,9 @@ class Ingestor:
                         ([ids[int(m)] for m in agg.index], [t.to_pydatetime() for t in agg.t0],
                          [t.to_pydatetime() for t in agg.t1], [cls.get(m) for m in agg.index]))
                     self.touched_days.update(k.t.dt.date.unique())
-                cur.execute("INSERT INTO ingested_files (folder, name, rows_read, rows_kept) VALUES (%s, %s, %s, %s)",
-                            (folder, name, len(raw), len(kept)))
+                if ledger:
+                    cur.execute("INSERT INTO ingested_files (folder, name, rows_read, rows_kept) "
+                                "VALUES (%s, %s, %s, %s)", (*ledger, len(raw), len(kept)))
         except Exception:
             for m, v in backup.items():        # l'allègement revient à l'état d'avant le fichier
                 if v is None:

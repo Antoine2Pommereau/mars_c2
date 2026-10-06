@@ -76,12 +76,15 @@ def aoi_wkt(b):
 # Horloge : en direct par défaut (heure réelle), rejeu d'une période passée sinon
 
 async def read_clock(c) -> dict:
+    """En direct, la vitesse vaut toujours 1 : la vitesse enregistrée est celle du rejeu."""
     r = await c.fetchrow("SELECT sim_now() AS now, clock_timestamp() AS real, speed, paused, live FROM sim_clock WHERE id = 1")
     if not r["live"] and not r["paused"] and r["now"] >= r["real"]:
         # Le rejeu a rattrapé l'heure réelle : retour au direct
-        await c.execute("UPDATE sim_clock SET live = true WHERE id = 1")
-        return {"now": r["real"], "speed": r["speed"], "paused": False, "live": True}
-    return {"now": r["now"], "speed": r["speed"], "paused": r["paused"] and not r["live"], "live": r["live"]}
+        await c.execute("UPDATE sim_clock SET live = true, speed = 1 WHERE id = 1")
+        return {"now": r["real"], "speed": 1.0, "paused": False, "live": True}
+    if r["live"]:
+        return {"now": r["now"], "speed": 1.0, "paused": False, "live": True}
+    return {"now": r["now"], "speed": r["speed"], "paused": r["paused"], "live": False}
 
 
 def clock_json(clock: dict) -> dict:
@@ -106,7 +109,8 @@ async def set_clock(cmd: ClockCommand):
     async with app.state.pool.acquire() as c:
         live = await c.fetchval("SELECT live FROM sim_clock WHERE id = 1")
         if cmd.action == "live":
-            await c.execute("UPDATE sim_clock SET live = true WHERE id = 1")
+            # Retour au direct : le prochain rejeu repartira à vitesse 1
+            await c.execute("UPDATE sim_clock SET live = true, speed = 1 WHERE id = 1")
         elif cmd.action == "play":
             if not live:
                 await c.execute(f"UPDATE sim_clock SET {rebase}, paused = false WHERE id = 1")
@@ -116,6 +120,8 @@ async def set_clock(cmd: ClockCommand):
         elif cmd.action == "speed":
             if cmd.speed is None or not 0 < cmd.speed <= 3600:
                 raise HTTPException(422, "Vitesse attendue entre 0 et 3600")
+            if live:
+                raise HTTPException(409, "La vitesse ne se règle qu'en rejeu")
             await c.execute(f"UPDATE sim_clock SET {rebase}, speed = $1 WHERE id = 1", cmd.speed)
         elif cmd.action == "seek":
             if cmd.time is None:
@@ -243,8 +249,19 @@ async def ingestion_status():
             "SELECT count(*) AS fichiers, coalesce(sum(rows_read), 0) AS lus, coalesce(sum(rows_kept), 0) AS conserves "
             "FROM ingested_files WHERE folder LIKE 'positions/%' AND ingested_at > now() - interval '1 hour'")
         lists = await c.fetch("SELECT source, count(*) AS navires, max(imported_at) AS importe_le FROM watchlist GROUP BY source")
+        # Mesures écrites toutes les 10 minutes par le conteneur « taches » (serveur seulement)
+        disk = await c.fetch(
+            "SELECT path AS chemin, round(free_pct::numeric, 1)::float8 AS libre_pct, "
+            "round(free_bytes / 1e9, 1)::float8 AS libre_go, round(total_bytes / 1e9, 1)::float8 AS total_go, "
+            "alert AS alerte, checked_at AS mesure_le, checked_at < now() - interval '30 minutes' AS perimee "
+            "FROM disk_status ORDER BY path")
+        runs = await c.fetch(
+            "SELECT DISTINCT ON (task) task AS tache, status AS statut, started_at AS debut, details "
+            "FROM task_runs ORDER BY task, started_at DESC")
     return {"dernier_fichier": clean(last) if last else None, "derniere_heure": {**clean(hour), **clean(files)},
-            "listes": [clean(r) for r in lists]}
+            "listes": [clean(r) for r in lists],
+            "alerte_disque": any(r["alerte"] for r in disk), "disque": [clean(r) for r in disk],
+            "taches": [clean(r) for r in runs]}
 
 
 @app.get("/api/vessels/{vessel_id}/track")

@@ -1,6 +1,7 @@
 # Surcouche pour le serveur Scaleway (DEV1-S) : redémarrage automatique, journaux bornés, aucun port ouvert sur
 # Internet (base fermée, API et interface sur 127.0.0.1, consultées par un tunnel SSH). Activée par le fichier .env
 # du serveur : COMPOSE_FILE=docker-compose.yml:docker-compose.serveur.yml et COMPOSE_PROFILES=direct.
+# Le service « taches » n'existe que sur le serveur : archivage sur R2, purge, sauvegarde, surveillance du disque.
 # Les étiquettes !reset et !override demandent Docker Compose 2.24.4 ou plus récent.
 x-journaux: &journaux
   driver: json-file
@@ -26,4 +27,28 @@ services:
     logging: *journaux
 
   ingest:
+    logging: *journaux
+
+  # Tâches planifiées (scripts/taches.py) : pas de cron sur l'hôte, redémarre avec la plateforme.
+  # Identifiants R2 dans .env : R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET.
+  taches:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile
+    command: ["python", "scripts/taches.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://mars:mars@db:5432/mars
+      TACHES_HEURE: "02:30"          # UTC
+      CONSERVATION_JOURS: "30"
+      SAUVEGARDES_GARDEES: "7"
+      ALERTE_DISQUE_PCT: "15"
+    volumes:
+      - ./data/ais_live:/app/data/ais_live
+      - ./config:/app/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 768m                  # compactage d'une journée par zone : quelques centaines de Mo au plus
+    restart: unless-stopped
     logging: *journaux
