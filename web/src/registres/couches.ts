@@ -28,7 +28,7 @@ export const COUCHES: Couche[] = [
   { id: "telecoms", groupe: "infrastructures", etape: null, defaut: false, calques: ["infra-telecoms"], legende: "trait", couleur: COULEURS_INFRA["Câble télécom"], infra: "Câble télécom" },
   { id: "pipelines", groupe: "infrastructures", etape: null, defaut: false, calques: ["infra-pipelines"], legende: "trait", couleur: COULEURS_INFRA.Pipeline, infra: "Pipeline" },
   { id: "corridors", groupe: "infrastructures", etape: 2, defaut: false, calques: [], legende: "surface" },
-  { id: "couverture", groupe: "zones", etape: null, defaut: false, calques: ["couverture"], legende: "trait", couleur: "#4fb6c8" },
+  { id: "couverture", groupe: "zones", etape: null, defaut: false, calques: ["couverture", "couverture-fond"], legende: "trait", couleur: "#4fb6c8" },
   { id: "mouillages", groupe: "zones", etape: null, defaut: false, calques: ["zones"], legende: "surface", couleur: "#f0a84b" },
   { id: "reception", groupe: "zones", etape: null, defaut: false, calques: ["reception"], legende: "surface", couleur: "#4fb6c8" },
   { id: "detections", groupe: "satellites", etape: null, defaut: true, calques: ["aoi", "det", "alerts"], legende: "cercles" },

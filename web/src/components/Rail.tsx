@@ -1,14 +1,13 @@
 import { Bell, Eye, Layers, Radar, Search } from "lucide-react";
 import { L } from "../lib/libelles";
 
-export type PanelId = "alertes" | "analyses" | "couches";
+export type PanelId = "alertes" | "analyses" | "couches" | "suivis";
 
-// Navires suivis : emplacement prévu, contenu au prochain lot
-const ITEMS: { id: PanelId | "suivis"; label: string; Icon: typeof Bell; aVenir?: boolean }[] = [
+const ITEMS: { id: PanelId; label: string; Icon: typeof Bell; aVenir?: boolean }[] = [
   { id: "alertes", label: L.rail.alertes, Icon: Bell },
   { id: "couches", label: L.rail.couches, Icon: Layers },
   { id: "analyses", label: L.rail.analyses, Icon: Radar },
-  { id: "suivis", label: L.rail.suivis, Icon: Eye, aVenir: true },
+  { id: "suivis", label: L.rail.suivis, Icon: Eye },
 ];
 
 interface Props {
@@ -27,7 +26,7 @@ export default function Rail({ active, onSelect, onSearch, alertCount, running }
         const title = aVenir ? `${label}, ${L.commun.aVenir}` : label;
         return (
           <button key={id} title={title} aria-label={title} aria-pressed={on} disabled={aVenir}
-            onClick={() => !aVenir && onSelect(on ? null : (id as PanelId))}
+            onClick={() => !aVenir && onSelect(on ? null : id)}
             className={`relative mb-1 flex h-10 w-10 items-center justify-center rounded-md transition-colors
               ${on ? "bg-raised text-ink" : aVenir ? "cursor-default text-faint/60" : "text-muted hover:text-ink"}`}>
             <Icon size={18} strokeWidth={1.6} />

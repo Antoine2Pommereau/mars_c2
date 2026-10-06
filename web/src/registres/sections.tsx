@@ -1,28 +1,41 @@
 import type { ReactNode } from "react";
 import AlertActions from "../components/AlertActions";
 import Chip from "../components/Chip";
-import { Context, Identities, Row, Sources } from "../components/Elements";
+import { Row, Sources, Tag } from "../components/Elements";
+import { Comportement, EnTeteNavire, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
+  Trajectoire, ZoneResume, ZoneTrafic } from "../components/Fiches";
 import type { VesselCard } from "../lib/api";
-import { dayLabel, hm, num } from "../lib/format";
+import { num } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
-import { COULEUR_LISTE, couleurAlerte, libelleAlerte, typeAlerte } from "./alertes";
+import { zoneOf } from "../lib/zones";
+import { COULEUR_LISTE, naviresAlerte, typeAlerte } from "./alertes";
 
 // Registre des sections de fiche : chaque section déclare l'objet auquel elle s'applique, sa place, sa condition
 // d'affichage et son étape. La fiche les empile dans l'ordre ; une section sans donnée ne s'affiche pas, une
 // section d'une étape future non plus, tant qu'elle n'est pas branchée.
 
-export type Objet = "alerte" | "navire" | "detection";
+export type Objet = "alerte" | "navire" | "detection" | "infrastructure" | "zone";
 
 export interface Contexte {
   objet: Objet;
   alerte?: Feature;
-  navire?: Props;               // propriétés du navire sélectionné (carte, fil)
+  navire?: Props;               // propriétés du navire sélectionné (carte, fil, recherche)
   carte?: VesselCard;           // fiche navire de l'API
   detection?: Props;
+  infra?: Props;                // { id, … } de l'infrastructure sélectionnée
+  zone?: string;
   passTime?: string | null;
-  onStatus?: (status: string) => void;
-  onPickAlert?: (f: Feature) => void;
+  plage: { debut: string; fin: string };
+  suivis: Set<number>;
+  vessels: Map<number, Props>;  // navires affichés à l'instant
+  alerts: Feature[];            // alertes de la plage, filtrées
+  onStatus: (status: string) => void;
+  onPickAlert: (f: Feature) => void;
+  onPickVessel: (p: Props) => void;
+  onPickInfra: (id: number) => void;
+  onSuivre: (vesselId: number, on: boolean) => void;
+  onRejeu: (vesselId: number) => void;
 }
 
 interface Section {
@@ -35,7 +48,7 @@ interface Section {
   rendu: (c: Contexte) => ReactNode;
 }
 
-const F = L.fiche;
+const zoneOfVessel = (v: Props) => (v.lon == null ? null : zoneOf(v.lon, v.lat));
 const toujours = () => true;
 const rien = () => null;
 
@@ -52,28 +65,31 @@ const SECTIONS: Section[] = [
     } },
   { id: "preuves", objet: "alerte", ordre: 30, etape: null, titre: true, condition: toujours,
     rendu: (c) => typeAlerte(c.alerte!.properties.type).preuves(c.alerte!.properties) },
+  { id: "navires", objet: "alerte", ordre: 40, etape: null, titre: true,
+    condition: (c) => naviresAlerte(c.alerte!).length > 0,
+    rendu: (c) => (
+      <ul className="space-y-1 text-[12px]">
+        {naviresAlerte(c.alerte!).map((n) => (
+          <li key={n.vessel_id}>
+            <button onClick={() => c.onPickVessel(c.vessels.get(n.vessel_id) ?? { ...n })} className="flex items-center gap-1.5 text-left hover:text-signal">
+              <span className="text-ink">{n.name ?? c.vessels.get(n.vessel_id)?.name ?? `MMSI ${n.mmsi ?? ""}`}</span>
+              {(n.flag ?? c.vessels.get(n.vessel_id)?.flag) && <Tag>{n.flag ?? c.vessels.get(n.vessel_id)?.flag}</Tag>}
+              <span className="text-muted">{L.fiche.ouvrir}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    ) },
   { id: "decisions", objet: "alerte", ordre: 90, etape: null, titre: true, condition: toujours,
     rendu: (c) => <AlertActions id={c.alerte!.properties.id} status={c.alerte!.properties.status ?? "nouvelle"}
-      onStatus={c.onStatus ?? (() => undefined)} /> },
+      onStatus={c.onStatus} /> },
 
-  // Navire
-  { id: "identite", objet: "navire", ordre: 10, etape: null, titre: false, condition: toujours,
+  // Navire, dans l'ordre de la vision ; les sections futures sont déclarées et ne s'affichent pas
+  { id: "entete", objet: "navire", ordre: 5, etape: null, titre: false, condition: toujours,
     rendu: (c) => {
-      const p = c.navire ?? {}, v = c.carte;
-      return (
-        <>
-          <Row label={F.mmsi}>{p.mmsi ?? v?.mmsi}</Row>
-          <Row label={F.omi}>{v?.imo ?? L.commun.nd}</Row>
-          <Row label={F.pavillon}>{v?.flag ?? p.flag ?? L.commun.nd}</Row>
-          <Row label={F.indicatif}>{v?.callsign ?? L.commun.nd}</Row>
-          <Row label={F.type}>{p.ship_type ?? v?.ship_type ?? F.nonRenseigne}</Row>
-          <Row label={F.longueur}>{(p.length_m ?? v?.length_m) ? `${num(p.length_m ?? v?.length_m, 0)} m` : L.commun.nd}</Row>
-          <Row label={F.destination}>{v?.destination ?? L.commun.nd}</Row>
-          {p.sog_kn != null && <Row label={F.vitesse}>{num(p.sog_kn)} {L.commun.noeuds}</Row>}
-          {p.cog_deg != null && <Row label={F.route}>{num(p.cog_deg, 0)}°</Row>}
-          {p.age_s != null && <Row label={F.dernierMessage}>{F.ilYaMin(num(p.age_s / 60, 0))}</Row>}
-        </>
-      );
+      const id = Number(c.navire!.vessel_id);
+      return <EnTeteNavire navire={{ ...c.navire, ...(c.vessels.get(id) ?? {}) }} carte={c.carte} suivi={c.suivis.has(id)}
+        onSuivre={(on) => c.onSuivre(id, on)} />;
     } },
   { id: "listes", objet: "navire", ordre: 20, etape: null, titre: true, condition: (c) => !!c.carte?.watch,
     rendu: (c) => {
@@ -87,29 +103,34 @@ const SECTIONS: Section[] = [
       );
     } },
   { id: "identites", objet: "navire", ordre: 30, etape: null, titre: true,
-    condition: (c) => (c.carte?.identities ?? []).length > 1, rendu: (c) => <Identities rows={c.carte!.identities} /> },
+    condition: (c) => (c.carte?.identities ?? []).length > 1, rendu: (c) => <IdentitesFrise rows={c.carte!.identities} /> },
   { id: "alertes", objet: "navire", ordre: 40, etape: null, titre: true,
-    condition: (c) => (c.carte?.alerts ?? []).length > 0,
-    rendu: (c) => (
-      <ul className="space-y-1 text-[12px]">
-        {c.carte!.alerts.map((a) => (
-          <li key={a.properties.id}>
-            <button onClick={() => c.onPickAlert?.(a)} className="flex w-full items-center gap-2 text-left hover:text-ink">
-              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: couleurAlerte(a.properties.type) }} />
-              <span className="flex-1">{libelleAlerte(a.properties.type)}</span>
-              <span className="text-muted">{dayLabel(a.properties.event_time)} {hm(a.properties.event_time)}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-    ) },
-  { id: "comportement", objet: "navire", ordre: 50, etape: "lot 2", titre: true, condition: toujours, rendu: rien },
-  { id: "trajectoire", objet: "navire", ordre: 60, etape: "lot 2", titre: true, condition: toujours, rendu: rien },
+    condition: (c) => (c.carte?.alerts ?? []).length > 0, rendu: (c) => <ListeAlertes alerts={c.carte!.alerts} onPick={c.onPickAlert} /> },
+  { id: "comportement", objet: "navire", ordre: 50, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <Comportement vesselId={Number(c.navire!.vessel_id)} debut={c.plage.debut} fin={c.plage.fin} onPickInfra={c.onPickInfra} /> },
+  { id: "trajectoire", objet: "navire", ordre: 60, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <Trajectoire vesselId={Number(c.navire!.vessel_id)} debut={c.plage.debut} fin={c.plage.fin}
+      onRejeu={() => c.onRejeu(Number(c.navire!.vessel_id))} /> },
   { id: "risque", objet: "navire", ordre: 70, etape: "reporte", titre: true, condition: toujours, rendu: rien },
   { id: "satellite", objet: "navire", ordre: 80, etape: "3", titre: true, condition: toujours, rendu: rien },
   { id: "appris", objet: "navire", ordre: 85, etape: "pilote", titre: true, condition: toujours, rendu: rien },
   { id: "prediction", objet: "navire", ordre: 88, etape: "4", titre: true, condition: toujours, rendu: rien },
-  { id: "notes", objet: "navire", ordre: 90, etape: "lot 2", titre: true, condition: toujours, rendu: rien },
+  { id: "notes", objet: "navire", ordre: 90, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <Notes vesselId={Number(c.navire!.vessel_id)} /> },
+
+  // Infrastructure
+  { id: "identite", objet: "infrastructure", ordre: 10, etape: null, titre: false, condition: toujours,
+    rendu: (c) => <InfraIdentite id={c.infra!.id} debut={c.plage.debut} fin={c.plage.fin} /> },
+  { id: "passes", objet: "infrastructure", ordre: 20, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <InfraNavires id={c.infra!.id} debut={c.plage.debut} fin={c.plage.fin} onPickVessel={c.onPickVessel} /> },
+  { id: "liees", objet: "infrastructure", ordre: 30, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <InfraAlertes id={c.infra!.id} debut={c.plage.debut} fin={c.plage.fin} onPickAlert={c.onPickAlert} /> },
+
+  // Zone collectée
+  { id: "resume", objet: "zone", ordre: 10, etape: null, titre: false, condition: toujours, rendu: (c) => <ZoneResume zone={c.zone!} /> },
+  { id: "trafic", objet: "zone", ordre: 20, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <ZoneTrafic zone={c.zone!} alerts={c.alerts} onPickAlert={c.onPickAlert}
+      vessels={[...c.vessels.values()].filter((v) => zoneOfVessel(v) === c.zone)} /> },
 
   // Détection radar
   { id: "mesures", objet: "detection", ordre: 10, etape: null, titre: false, condition: toujours,

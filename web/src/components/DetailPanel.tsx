@@ -3,39 +3,61 @@ import { X } from "lucide-react";
 import { api } from "../lib/api";
 import { utc } from "../lib/format";
 import { L } from "../lib/libelles";
-import type { Feature, Selection } from "../lib/types";
+import type { Feature, Props, Selection } from "../lib/types";
 import { COULEUR_LISTE, libelleAlerte, typeAlerte } from "../registres/alertes";
+import { COULEURS_INFRA } from "../registres/couches";
 import { sectionsDe, type Contexte } from "../registres/sections";
+import { useInfraCard } from "./Fiches";
 
 interface PanelProps {
   selection: Selection | null;
   onClose: () => void;
   passTime: string | null;
+  plage: { debut: string; fin: string };
+  suivis: Set<number>;
+  vessels: Map<number, Props>;
+  alerts: Feature[];
   onStatus: (status: string) => void;
   onPickAlert: (f: Feature) => void;
+  onPickVessel: (p: Props) => void;
+  onPickInfra: (id: number) => void;
+  onSuivre: (vesselId: number, on: boolean) => void;
+  onRejeu: (vesselId: number) => void;
 }
 
-/** Fiche de l'objet sélectionné : un en tête, puis les sections du registre (registres/sections.tsx) qui
- *  s'appliquent à cet objet et ont des données, dans leur ordre. */
-export default function DetailPanel({ selection, onClose, passTime, onStatus, onPickAlert }: PanelProps) {
+/** Fiche de l'objet sélectionné (navire, alerte, infrastructure, zone, détection) : un en tête, puis les sections du
+ *  registre (registres/sections.tsx) qui s'appliquent à cet objet et ont des données, dans leur ordre. */
+export default function DetailPanel(p: PanelProps) {
+  const { selection } = p;
   const vesselId = selection?.kind === "vessel" ? Number(selection.properties.vessel_id) : null;
-  const card = useQuery({ queryKey: ["vessel", vesselId], queryFn: () => api.vessel(vesselId!), enabled: vesselId != null,
-    staleTime: 60_000 });
+  const card = useQuery({ queryKey: ["vessel", vesselId], queryFn: () => api.vessel(vesselId!), enabled: vesselId != null, staleTime: 60_000 });
+  const infraId = selection?.kind === "infrastructure" ? Number(selection.properties.id) : -1;
+  const infra = useInfraCard(infraId, p.plage.debut, p.plage.fin);
   if (!selection) return null;
 
   let title = "", color = "#4fb6c8", badge: string | null = null, footer: string | null = null;
-  const ctx: Contexte = { objet: "detection", passTime, onStatus, onPickAlert };
+  const ctx: Contexte = { objet: "detection", passTime: p.passTime, plage: p.plage, suivis: p.suivis, vessels: p.vessels,
+    alerts: p.alerts, onStatus: p.onStatus, onPickAlert: p.onPickAlert, onPickVessel: p.onPickVessel,
+    onPickInfra: p.onPickInfra, onSuivre: p.onSuivre, onRejeu: p.onRejeu };
   if (selection.kind === "alert") {
-    const p = selection.feature.properties;
+    const a = selection.feature.properties;
     Object.assign(ctx, { objet: "alerte", alerte: selection.feature });
-    title = `${libelleAlerte(p.type)}, ${L.gravite[p.severity] ?? p.severity}`;
-    color = typeAlerte(p.type).couleur;
-    badge = p.status && p.status !== "nouvelle" ? L.statut[p.status] : null;
-    footer = L.fiche.regles(p.rule_version, p.event_time ? utc(p.event_time) : undefined);
+    title = `${libelleAlerte(a.type)}, ${L.gravite[a.severity] ?? a.severity}`;
+    color = typeAlerte(a.type).couleur;
+    badge = a.status && a.status !== "nouvelle" ? L.statut[a.status] : null;
+    footer = L.fiche.regles(a.rule_version, a.event_time ? utc(a.event_time) : undefined);
   } else if (selection.kind === "vessel") {
     Object.assign(ctx, { objet: "navire", navire: selection.properties, carte: card.data });
     title = selection.properties.name || card.data?.name || L.fiche.navireSansNom;
     if (selection.properties.watch || card.data?.watch) color = COULEUR_LISTE;
+  } else if (selection.kind === "infrastructure") {
+    const d = { ...selection.properties, ...(infra.data ?? {}) };
+    Object.assign(ctx, { objet: "infrastructure", infra: { id: infraId } });
+    title = d.name || (d.type ? L.fiche.infra.sansNom(d.type, infraId) : L.carte.infrastructure);
+    color = COULEURS_INFRA[d.type] ?? color;
+  } else if (selection.kind === "zone") {
+    Object.assign(ctx, { objet: "zone", zone: selection.properties.zone });
+    title = L.zones[selection.properties.zone] ?? selection.properties.zone;
   } else {
     Object.assign(ctx, { detection: selection.properties });
     title = L.preuves.detection;
@@ -51,7 +73,7 @@ export default function DetailPanel({ selection, onClose, passTime, onStatus, on
             {badge && <span className="mt-1 inline-block rounded-full bg-raised px-2 py-0.5 text-[11.5px] text-muted">{badge}</span>}
           </div>
         </div>
-        <button onClick={onClose} className="text-muted hover:text-ink" aria-label={L.commun.fermer}><X size={16} /></button>
+        <button onClick={p.onClose} className="text-muted hover:text-ink" aria-label={L.commun.fermer}><X size={16} /></button>
       </div>
       {sectionsDe(ctx).map((s) => s.titre ? (
         <details key={s.id} open className="group mt-3 border-t border-hair pt-2">

@@ -2,10 +2,9 @@ import maplibregl, { type GeoJSONSource, type Map as MLMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
 import { bboxPolygon } from "../lib/geo";
-import { L } from "../lib/libelles";
 import { EMPTY, type FC, type Feature, type Selection } from "../lib/types";
 import { zonesGeoJSON } from "../lib/zones";
-import { COULEUR_LISTE, STROKE_ALERTE } from "../registres/alertes";
+import { COULEUR_LISTE, COULEUR_SUIVI, STROKE_ALERTE } from "../registres/alertes";
 import { COUCHES, COULEURS_INFRA } from "../registres/couches";
 
 const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -23,13 +22,16 @@ const SHIP_COLOR: any = ["match", ["coalesce", ["get", "ship_type"], ""],
 const NEUTRAL = "#c9d3da";
 // Couleur d'un navire : celle de son alerte ouverte la plus grave, sinon violet s'il est sur une liste, sinon neutre
 const shipColor = (base: any): any => ["case", ["to-boolean", ["get", "alerte"]], ["get", "alerte"],
-  ["to-boolean", ["get", "watch"]], COULEUR_LISTE, base];
-// Navire qui demande l'attention : il reste net et plus grand aux échelles larges
-const IMPORTANT: any = ["any", ["to-boolean", ["get", "alerte"]], ["to-boolean", ["get", "watch"]]];
+  ["to-boolean", ["get", "watch"]], COULEUR_LISTE, ["to-boolean", ["get", "suivi"]], COULEUR_SUIVI, base];
+// Navire qui demande l'attention (alerte, liste, suivi) : il reste net et plus grand à toutes les échelles
+const IMPORTANT: any = ["any", ["to-boolean", ["get", "alerte"]], ["to-boolean", ["get", "watch"]], ["to-boolean", ["get", "suivi"]]];
 // Aux échelles larges, le trafic ordinaire s'estompe ; le détail revient en zoomant
-const TRAFFIC_OPACITY: any = ["interpolate", ["linear"], ["zoom"],
-  5, ["case", IMPORTANT, 1, 0.22],
-  8.5, ["case", IMPORTANT, 1, [">", ["get", "age_s"], 600], 0.3, 0.9]];
+// (k < 1 : version atténuée, quand une infrastructure ou une zone est sélectionnée ; l'interpolation sur le zoom doit
+// rester l'expression la plus externe, d'où une fonction plutôt qu'un produit)
+const opaciteTrafic = (k = 1): any => ["interpolate", ["linear"], ["zoom"],
+  5, ["case", IMPORTANT, k, 0.22 * k],
+  8.5, ["case", IMPORTANT, k, [">", ["get", "age_s"], 600], 0.3 * k, 0.9 * k]];
+const TRAFFIC_OPACITY = opaciteTrafic();
 // Infrastructures : estompées et fines aux échelles larges, nettes en zoomant (tracés simplifiés par l'API)
 const INFRA_OPACITY: any = ["interpolate", ["linear"], ["zoom"], 5, 0.35, 9, 0.9];
 const INFRA_WIDTH: any = ["interpolate", ["linear"], ["zoom"], 5, 0.7, 10, 1.6];
@@ -65,12 +67,13 @@ interface Props {
   byType: boolean;
   zone: string | null;                   // filtre par zone des infrastructures
   concernedInfra: number[] | null;       // mode « concernées seulement » : identifiants à montrer
-  focus: { center: [number, number]; zoom: number } | null;
+  focus: { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] } | null;
   onSelect: (s: Selection) => void;
   drawing: boolean;
   draft: number[] | null;
   onDraw: (bbox: number[]) => void;
-  spotlight: { alertId: number | null; vesselIds: number[] } | null;
+  spotlight: { alertId: number | null; vesselIds: number[]; infraId?: number; zone?: string } | null;
+  focusGeom: FC;                         // géométrie de l'objet sélectionné, surlignée (infrastructure, zone)
 }
 
 // Mode focus : tout ce qui ne concerne pas la sélection s'efface
@@ -101,6 +104,7 @@ export default function MapView(p: Props) {
       // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
       map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
       map.addSource("couverture", { type: "geojson", data: zonesGeoJSON() as any });
+      map.addSource("focus", { type: "geojson", data: EMPTY as any });
 
       // Infrastructures sous marines (sous le trafic), une couche par type
       map.addLayer({ id: "infra-eoliens-fond", type: "fill", source: "infra", layout: { visibility: "none" },
@@ -119,8 +123,15 @@ export default function MapView(p: Props) {
         layout: { "symbol-placement": "line", "text-field": ["coalesce", ["get", "name"], ""], "text-size": 10.5,
                   "text-font": ["Montserrat Regular", "Open Sans Regular", "Noto Sans Regular"] },
         paint: { "text-color": "#7c8b97", "text-halo-color": "#0e1419", "text-halo-width": 1.2 } });
+      map.addLayer({ id: "couverture-fond", type: "fill", source: "couverture", layout: { visibility: "none" },
+        paint: { "fill-color": "#4fb6c8", "fill-opacity": 0 } });
       map.addLayer({ id: "couverture", type: "line", source: "couverture", layout: { visibility: "none" },
         paint: { "line-color": "#4fb6c8", "line-width": 1, "line-opacity": 0.5, "line-dasharray": [3, 3] } });
+      // Objet sélectionné (infrastructure, zone) : surligné au dessus de son groupe
+      map.addLayer({ id: "focus-surface", type: "fill", source: "focus", filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": "#e6ecf0", "fill-opacity": 0.05 } });
+      map.addLayer({ id: "focus-ligne", type: "line", source: "focus",
+        paint: { "line-color": "#e6ecf0", "line-width": 2.5, "line-opacity": 0.85 } });
 
       map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
         paint: { "fill-color": "#f0a84b", "fill-opacity": 0.12, "fill-outline-color": "#f0a84b" } });
@@ -207,20 +218,20 @@ export default function MapView(p: Props) {
           if (f) onSelect.current({ kind: "alert", feature: f });
         });
       }
-      // Infrastructure : infobulle légère au clic (le détail va en popup, pas dans la fiche d'alerte)
-      const infraPopup = new maplibregl.Popup({ closeButton: false, offset: 8 });
+      // Infrastructure et zone : un clic ouvre la fiche
       for (const id of [...INFRA_LIGNES.map((c) => c.calques[0]), "infra-eoliens-fond"]) {
         map.on("click", id, (e) => {
           if (drawing.current) return;
           const pr = e.features![0].properties as any;
-          // Noms issus des données EMODnet : échappés avant insertion dans l'infobulle
-          const esc = (t: string) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-          const lines = [pr.name, pr.type, pr.operator].filter(Boolean).map((t) => `<div>${esc(String(t))}</div>`).join("");
-          infraPopup.setLngLat(e.lngLat).setHTML(`<div style="font:12px/1.4 sans-serif;color:#0e1419">${lines || L.carte.infrastructure}</div>`).addTo(map);
+          onSelect.current({ kind: "infrastructure", properties: { id: pr.id, name: pr.name, type: pr.type } });
         });
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
       }
+      map.on("click", "couverture-fond", (e) => {
+        if (drawing.current || map.queryRenderedFeatures(e.point, { layers: ["traffic", "live", "alerts", "det"] }).length) return;
+        onSelect.current({ kind: "zone", properties: { zone: (e.features![0].properties as any).zone } });
+      });
       for (const id of ["traffic", "det", "alerts", "live"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
@@ -245,6 +256,7 @@ export default function MapView(p: Props) {
   useEffect(() => setData("reception", p.reception), [ready, p.reception]);
   useEffect(() => setData("infra", p.infrastructure), [ready, p.infrastructure]);
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
+  useEffect(() => setData("focus", p.focusGeom), [ready, p.focusGeom]);
 
 
   useEffect(() => {
@@ -290,7 +302,11 @@ export default function MapView(p: Props) {
   }, [ready, p.aoi]);
 
   useEffect(() => {
-    if (ready && p.focus) mapRef.current!.flyTo({ center: p.focus.center, zoom: p.focus.zoom });
+    if (!ready || !p.focus) return;
+    if ("bounds" in p.focus) {
+      const [x0, y0, x1, y1] = p.focus.bounds;
+      mapRef.current!.fitBounds([[x0, y0], [x1, y1]], { padding: 80, duration: 800, maxZoom: 11 });
+    } else mapRef.current!.flyTo({ center: p.focus.center, zoom: p.focus.zoom });
   }, [ready, p.focus]);
 
   // Mode tracé : la carte ne se déplace plus au glisser, le curseur devient une croix
@@ -304,19 +320,25 @@ export default function MapView(p: Props) {
   useEffect(() => setData("draft", p.draft ? (bboxPolygon(p.draft) as FC) : null), [ready, p.draft]);
 
   // Mode focus sur la sélection
-  const spotKey = p.spotlight ? `${p.spotlight.alertId}:${p.spotlight.vesselIds.join(",")}` : "";
+  const spotKey = p.spotlight ? `${p.spotlight.alertId}:${p.spotlight.vesselIds.join(",")}:${p.spotlight.infraId}:${p.spotlight.zone}` : "";
   useEffect(() => {
     if (!ready || !mapRef.current) return;
     const map = mapRef.current;
     const s = p.spotlight;
     const ids = ["literal", s?.vesselIds ?? []];
-    map.setPaintProperty("traffic", "icon-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 1, 0.12] : TRAFFIC_OPACITY);
+    const dimTraffic = !!s && (s.vesselIds.length > 0 || s.alertId != null);
+    map.setPaintProperty("traffic", "icon-opacity", dimTraffic ? ["case", ["in", ["get", "vessel_id"], ids], 1, 0.12]
+      : s ? opaciteTrafic(0.5) : TRAFFIC_OPACITY);
+    const infraOp = s?.infraId != null ? ["case", ["==", ["get", "id"], s.infraId], 1, 0.12] : s ? 0.25 : INFRA_OPACITY;
+    for (const c of INFRA_LIGNES) map.setPaintProperty(c.calques[0], "line-opacity", infraOp);
+    map.setPaintProperty("infra-eoliens", "line-opacity", infraOp);
     map.setLayoutProperty("traffic", "symbol-sort-key", s ? ["case", ["in", ["get", "vessel_id"], ids], 2, IMPORTANT, 1, 0]
       : ["case", IMPORTANT, 1, 0]);
     map.setPaintProperty("trails", "line-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 0.9, 0.06] : 0.45);
     map.setPaintProperty("det", "circle-stroke-opacity", s ? 0.35 : 1);
     for (const id of ["alerts", "live"]) {
-      map.setPaintProperty(id, "circle-stroke-opacity", s?.alertId != null ? ["case", ["==", ["get", "id"], s.alertId], 1, 0.15] : ALERT_OPACITY);
+      map.setPaintProperty(id, "circle-stroke-opacity", s?.alertId != null ? ["case", ["==", ["get", "id"], s.alertId], 1, 0.15]
+        : s?.zone ? ["case", ["==", ["get", "zone"], s.zone], ALERT_OPACITY, 0.12] : s ? 0.3 : ALERT_OPACITY);
     }
   }, [ready, spotKey]);
 

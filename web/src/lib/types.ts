@@ -34,6 +34,8 @@ export interface StreamPayload {
 export type Selection =
   | { kind: "alert"; feature: Feature }
   | { kind: "vessel"; properties: Props }
-  | { kind: "detection"; properties: Props };
+  | { kind: "detection"; properties: Props }
+  | { kind: "infrastructure"; properties: Props }
+  | { kind: "zone"; properties: Props };
 
 export const EMPTY: FC = { type: "FeatureCollection", features: [] };

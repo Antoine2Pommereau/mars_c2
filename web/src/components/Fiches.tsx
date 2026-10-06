@@ -1,0 +1,251 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Download, Eye, EyeOff, Play, Ship } from "lucide-react";
+import { useState } from "react";
+import { api, gpxUrl, photoUrl, type VesselCard } from "../lib/api";
+import { auteurMemorise, memoriserAuteur } from "../lib/auteur";
+import { dayLabel, jourHeure, num, utc } from "../lib/format";
+import { L } from "../lib/libelles";
+import type { Feature, Props } from "../lib/types";
+import { zoneAlerte } from "../lib/fil";
+import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
+import { Row, Tag } from "./Elements";
+
+const F = L.fiche;
+const MIN = 60_000;
+
+function ageTexte(s: number) {
+  return s < 120 ? `${Math.round(s)} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`;
+}
+
+/** En tête du navire : photo (source indiquée), niveau de signal, état et dernier message, bouton suivre, identité. */
+export function EnTeteNavire({ navire, carte, suivi, onSuivre }:
+  { navire: Props; carte?: VesselCard; suivi: boolean; onSuivre: (on: boolean) => void }) {
+  const [photo, setPhoto] = useState<"chargement" | "ok" | "absente">("chargement");
+  const id = Number(navire.vessel_id);
+  const age = navire.age_s as number | undefined;
+  const etat = age == null || age > 1800 ? "silencieux" : (navire.sog_kn ?? 0) < 0.5 ? "immobile" : "route";
+  const w = carte?.watch;
+  return (
+    <div>
+      <div className="relative mb-2 aspect-[16/9] w-full overflow-hidden rounded-md border border-hair bg-abyss">
+        {photo !== "absente" && (
+          <img src={photoUrl(id)} alt={F.photo.alt} onLoad={() => setPhoto("ok")} onError={() => setPhoto("absente")}
+            className="h-full w-full object-cover" style={{ opacity: photo === "ok" ? 1 : 0 }} />
+        )}
+        {photo !== "ok" && (
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-[11.5px] text-faint">
+            <Ship size={22} strokeWidth={1.2} />{photo === "absente" ? F.photo.aucune : ""}
+          </span>
+        )}
+      </div>
+      {photo === "ok" && <div className="-mt-1 mb-2 text-right text-[10.5px] text-faint">{F.photo.source("VesselFinder")}</div>}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        {w && <Tag color={COULEUR_LISTE}>{L.signal[w.level] ?? w.level}</Tag>}
+        <Tag>{F.etat[etat]}</Tag>
+        <span className="text-[12px] text-muted">{age != null ? F.dernierMessageIlYa(ageTexte(age)) : F.horsTrafic}</span>
+        <button onClick={() => onSuivre(!suivi)}
+          className={`ml-auto flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[12px] ${suivi ? "border-signal/60 text-signal" : "border-hair text-muted hover:text-ink"}`}>
+          {suivi ? <Eye size={13} /> : <EyeOff size={13} />}{suivi ? L.suivis.nePlusSuivre : L.suivis.suivre}
+        </button>
+      </div>
+      <Row label={F.mmsi}>{navire.mmsi ?? carte?.mmsi}</Row>
+      <Row label={F.omi}>{carte?.imo ?? L.commun.nd}</Row>
+      <Row label={F.pavillon}>{carte?.flag ?? navire.flag ?? L.commun.nd}</Row>
+      <Row label={F.type}>{navire.ship_type ?? carte?.ship_type ?? F.nonRenseigne}</Row>
+      <Row label={F.longueur}>{(navire.length_m ?? carte?.length_m) ? `${num(navire.length_m ?? carte?.length_m, 0)} m` : L.commun.nd}</Row>
+      <Row label={F.indicatif}>{carte?.callsign ?? L.commun.nd}</Row>
+      <Row label={F.destination}>{carte?.destination ?? L.commun.nd}</Row>
+      {navire.sog_kn != null && <Row label={F.vitesse}>{num(navire.sog_kn)} {L.commun.noeuds}, {num(navire.cog_deg, 0)}°</Row>}
+    </div>
+  );
+}
+
+/** Identités successives en frise compacte : une barre par identité sur la période où elle a été vue. */
+export function IdentitesFrise({ rows }: { rows: Props[] }) {
+  const t = (x: Props, k: string) => Date.parse(x[k]);
+  const a = Math.min(...rows.map((x) => t(x, "first_seen"))), b = Math.max(...rows.map((x) => t(x, "last_seen")));
+  const span = Math.max(b - a, MIN);
+  return (
+    <div className="space-y-1.5 text-[11.5px]">
+      {rows.map((x, i) => {
+        const left = ((t(x, "first_seen") - a) / span) * 100, width = Math.max(1.5, ((t(x, "last_seen") - t(x, "first_seen")) / span) * 100);
+        return (
+          <div key={i}>
+            <div className="flex justify-between gap-2"><span className="text-ink">{x.name ?? F.sansNom}</span>
+              <span className="text-muted">{[x.flag, `MMSI ${x.mmsi}`, x.callsign].filter(Boolean).join(", ")}</span></div>
+            <div className="relative mt-0.5 h-1.5 rounded bg-hair/60">
+              <span className="absolute h-1.5 rounded bg-muted" style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }} />
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex justify-between text-faint"><span>{dayLabel(new Date(a).toISOString())}</span><span>{dayLabel(new Date(b).toISOString())}</span></div>
+    </div>
+  );
+}
+
+/** Comportement sur la plage : silences, arrêts au large, passages à moins de 2 milles d'une infrastructure. */
+export function Comportement({ vesselId, debut, fin, onPickInfra }:
+  { vesselId: number; debut: string; fin: string; onPickInfra: (id: number) => void }) {
+  const q = useQuery({ queryKey: ["comportement", vesselId, debut, fin], queryFn: () => api.comportement(vesselId, debut, fin), retry: 1 });
+  const C = F.comportement;
+  if (q.isLoading) return <p className="text-muted">{L.commun.chargement}</p>;
+  const d = q.data;
+  if (!d || (!d.silences.length && !d.arrets.length && !d.passages_infra.length)) return <p className="text-muted">{C.aucun}</p>;
+  return (
+    <div className="space-y-2 text-[12px]">
+      {d.silences.length > 0 && <div><div className="text-muted">{C.silences}</div>
+        {d.silences.map((x, i) => <div key={i}>{C.silence(jourHeure(x.debut), x.duree_min)}</div>)}</div>}
+      {d.arrets.length > 0 && <div><div className="text-muted">{C.arrets}</div>
+        {d.arrets.map((x, i) => <div key={i}>{C.arret(jourHeure(x.debut), x.duree_min)}</div>)}</div>}
+      {d.passages_infra.length > 0 && <div><div className="text-muted">{C.passages}</div>
+        {d.passages_infra.map((x, i) => (
+          <button key={i} onClick={() => onPickInfra(x.infra_id)} className="block text-left hover:text-signal">
+            {C.passage(x.name ?? F.infra.sansNom(x.type, x.infra_id), x.duree_min, num(x.vitesse_min), x.distance_min_m)}
+          </button>
+        ))}</div>}
+    </div>
+  );
+}
+
+/** Trajectoire sur la plage : affichée sur la carte, rejouable, exportable en GPX. */
+export function Trajectoire({ vesselId, debut, fin, onRejeu }: { vesselId: number; debut: string; fin: string; onRejeu: () => void }) {
+  const T = F.trajectoire;
+  return (
+    <div className="text-[12px]">
+      <p className="text-muted">{T.periode(jourHeure(debut), jourHeure(fin))}, {T.carte.toLowerCase()}</p>
+      <div className="mt-2 flex gap-2">
+        <button onClick={onRejeu} className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-hair py-1.5 text-ink hover:border-muted">
+          <Play size={12} />{T.rejouer}</button>
+        <a href={gpxUrl(vesselId, debut, fin)} download className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-hair py-1.5 text-ink hover:border-muted">
+          <Download size={12} />{T.gpx}</a>
+      </div>
+    </div>
+  );
+}
+
+/** Notes de l'opérateur, horodatées et signées. */
+export function Notes({ vesselId }: { vesselId: number }) {
+  const qc = useQueryClient();
+  const [texte, setTexte] = useState("");
+  const q = useQuery({ queryKey: ["notes", vesselId], queryFn: () => api.notes(vesselId) });
+  const add = useMutation({
+    mutationFn: () => { const a = auteurMemorise(); memoriserAuteur(a); return api.addNote(vesselId, texte, a); },
+    onSuccess: () => { setTexte(""); qc.invalidateQueries({ queryKey: ["notes", vesselId] }); },
+  });
+  const N = F.notes;
+  return (
+    <div className="text-[12px]">
+      <div className="flex gap-2">
+        <input value={texte} onChange={(e) => setTexte(e.target.value)} placeholder={N.placeholder}
+          className="min-w-0 flex-1 rounded-md border border-hair bg-abyss px-2.5 py-1.5 text-ink placeholder:text-faint focus:border-signal focus:outline-none" />
+        <button disabled={!texte.trim() || add.isPending} onClick={() => add.mutate()}
+          className="rounded-md border border-hair px-2.5 text-ink hover:border-muted disabled:opacity-40">{N.ajouter}</button>
+      </div>
+      {add.isError && <p className="mt-1 text-gap">{(add.error as Error).message}</p>}
+      <ul className="mt-2 space-y-1.5">
+        {(q.data ?? []).map((n) => (
+          <li key={n.id}><span className="text-ink">{n.note}</span>
+            <span className="block text-muted">{N.par(n.author, utc(n.at).slice(0, 16))}</span></li>
+        ))}
+        {q.data && !q.data.length && <li className="text-muted">{N.aucune}</li>}
+      </ul>
+    </div>
+  );
+}
+
+/** Liste d'alertes compacte, cliquable (fiches navire, infrastructure, zone). */
+export function ListeAlertes({ alerts, onPick }: { alerts: Feature[]; onPick?: (f: Feature) => void }) {
+  return (
+    <ul className="space-y-1 text-[12px]">
+      {alerts.map((a) => (
+        <li key={a.properties.id}>
+          <button onClick={() => onPick?.(a)} className="flex w-full items-center gap-2 text-left hover:text-ink">
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: couleurAlerte(a.properties.type) }} />
+            <span className="flex-1">{libelleAlerte(a.properties.type)}</span>
+            <span className="text-muted">{jourHeure(a.properties.event_time)}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Fiche infrastructure : identité, navires passés à moins de 2 milles sur la plage, alertes liées. */
+export function useInfraCard(id: number, debut: string, fin: string) {
+  return useQuery({ queryKey: ["infraCard", id, debut, fin], queryFn: () => api.infraCard(id, debut, fin), staleTime: 60_000,
+    enabled: id > 0 });
+}
+
+export function InfraIdentite({ id, debut, fin }: { id: number; debut: string; fin: string }) {
+  const d = useInfraCard(id, debut, fin).data;
+  const I = F.infra;
+  if (!d) return <p className="text-muted">{L.commun.chargement}</p>;
+  return (
+    <>
+      <Row label={I.type}>{d.type}</Row>
+      <Row label={I.operateur}>{d.operator ?? L.commun.nd}</Row>
+      <Row label={I.longueur}>{d.longueur_km != null ? `${num(d.longueur_km)} km` : L.commun.nd}</Row>
+      <Row label={I.zone}>{L.zones[(d.region ?? "").toLowerCase()] ?? d.region}</Row>
+      <Row label={I.source}>{d.source ?? L.commun.nd}</Row>
+    </>
+  );
+}
+
+export function InfraNavires({ id, debut, fin, onPickVessel }:
+  { id: number; debut: string; fin: string; onPickVessel: (p: Props) => void }) {
+  const d = useInfraCard(id, debut, fin).data;
+  if (!d) return null;
+  if (!d.navires.length) return <p className="text-[12px] text-muted">{F.infra.aucunNavire}</p>;
+  return (
+    <ul className="space-y-1 text-[12px]">
+      {d.navires.map((v: Props) => (
+        <li key={v.vessel_id}>
+          <button onClick={() => onPickVessel(v)} className="flex w-full items-baseline justify-between gap-2 text-left hover:text-ink">
+            <span className="flex items-center gap-1.5">
+              <span className="text-ink">{v.name ?? `MMSI ${v.mmsi}`}</span>{v.flag && <Tag>{v.flag}</Tag>}
+              {v.watch && <Tag color={COULEUR_LISTE}>{L.signal[v.watch]}</Tag>}
+            </span>
+            <span className="text-muted">{F.infra.ligne(v.distance_min_m, num(v.vitesse_min), jourHeure(v.debut))}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function InfraAlertes({ id, debut, fin, onPickAlert }:
+  { id: number; debut: string; fin: string; onPickAlert: (f: Feature) => void }) {
+  const d = useInfraCard(id, debut, fin).data;
+  if (!d) return null;
+  if (!d.alertes.length) return <p className="text-[12px] text-muted">{F.infra.aucuneAlerte}</p>;
+  return <ListeAlertes alerts={d.alertes.map((a: Props) => ({ type: "Feature", geometry: null, properties: a }))}
+    onPick={(f) => api.alert(f.properties.id).then(onPickAlert)} />;
+}
+
+/** Fiche zone : surface, réception fiable, mouillages ; trafic à l'instant et alertes de la plage dans la zone. */
+export function ZoneResume({ zone }: { zone: string }) {
+  const d = useQuery({ queryKey: ["zoneCard", zone], queryFn: () => api.zoneCard(zone), staleTime: 300_000 }).data;
+  const Z = F.zone;
+  if (!d) return <p className="text-muted">{L.commun.chargement}</p>;
+  const r = d.reception ?? {};
+  return (
+    <>
+      <Row label={Z.surface}>{d.surface_km2?.toLocaleString("fr-FR")} km²</Row>
+      <Row label={Z.reception}>{r.cellules ? Z.cellules(r.cellules, r.surface_km2, num((r.continuite ?? 0) * 100, 1)) : Z.aucuneReception}</Row>
+      <Row label={Z.mouillages}>{d.mouillages}</Row>
+    </>
+  );
+}
+
+export function ZoneTrafic({ zone, vessels, alerts, onPickAlert }:
+  { zone: string; vessels: Props[]; alerts: Feature[]; onPickAlert: (f: Feature) => void }) {
+  const dans = alerts.filter((a) => zoneAlerte(a) === zone);
+  return (
+    <>
+      <Row label={F.zone.navires}>{vessels.length}</Row>
+      <div className="mt-2 text-muted">{F.zone.alertes}</div>
+      <ListeAlertes alerts={dans} onPick={onPickAlert} />
+    </>
+  );
+}

@@ -1,4 +1,4 @@
-import type { FC, Feature } from "./types";
+import type { FC, Feature, Props } from "./types";
 
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(`/api${path}`);
@@ -48,6 +48,13 @@ export interface Timeline {
   coupures: { debut: string; fin: string }[];
 }
 
+interface Resultats { navires: Props[]; infrastructures: Props[]; alertes: Props[] }
+interface Comportement { silences: Props[]; arrets: Props[]; passages_infra: Props[] }
+
+export const gpxUrl = (id: number, start: string, end: string) =>
+  `/api/vessels/${id}/track.gpx?start=${enc(start)}&end=${enc(end)}`;
+export const photoUrl = (id: number) => `/api/vessels/${id}/photo`;
+
 export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
   `/api/chip?lon=${lon}&lat=${lat}&time=${encodeURIComponent(time)}&size_m=${sizeM}`;
 
@@ -61,6 +68,21 @@ export const api = {
     get<Timeline>(`/timeline?start=${enc(start)}&end=${enc(end)}&bins=${bins}`),
   traffic: (at: string) => get<any>(`/traffic?at=${enc(at)}`),
   ingestion: () => get<any>("/ingestion"),
+  search: (q: string) => get<Resultats>(`/search?q=${enc(q)}`),
+  alert: (id: number) => get<Feature>(`/alerts/${id}`),
+  comportement: (id: number, start: string, end: string) =>
+    get<Comportement>(`/vessels/${id}/comportement?start=${enc(start)}&end=${enc(end)}`),
+  notes: (id: number) => get<{ id: number; note: string; author: string; at: string }[]>(`/vessels/${id}/notes`),
+  addNote: (id: number, note: string, author: string) => post<Props>(`/vessels/${id}/notes`, { note, author }),
+  suivis: () => get<Props[]>("/suivis"),
+  suivre: (id: number, author: string) => post<Props>("/suivis", { vessel_id: id, author }),
+  nePlusSuivre: async (id: number) => {
+    const r = await fetch(`/api/suivis/${id}`, { method: "DELETE" });
+    if (!r.ok) throw new Error(`/suivis/${id} : ${r.status}`);
+    return r.json();
+  },
+  infraCard: (id: number, start: string, end: string) => get<Props>(`/infrastructure/${id}?start=${enc(start)}&end=${enc(end)}`),
+  zoneCard: (key: string) => get<Props>(`/zones/${key}`),
   passes: (bbox: number[]) => get<Pass[]>(`/passes?bbox=${bbox.join(",")}`),
   launch: (bbox: number[], product_name: string) => post<{ id: number }>("/analyses", { bbox, product_name, mode: "fast" }),
   analyses: () => get<FC>("/analyses"),

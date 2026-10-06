@@ -37,9 +37,17 @@ export const L = {
 
   // Recherche (contenu au lot 2)
   recherche: {
-    titre: "Recherche", placeholder: "Navire, MMSI, OMI, infrastructure, alerte, lieu",
-    raccourci: "⌘ K", groupes: ["Navires", "Infrastructures", "Alertes", "Lieux"],
-    aVenir: "La recherche arrive au prochain lot.",
+    titre: "Recherche", placeholder: "Navire, ancien nom, MMSI, OMI, infrastructure, alerte, lieu",
+    raccourci: "⌘ K", groupes: { navires: "Navires", infrastructures: "Infrastructures", alertes: "Alertes", lieux: "Lieux" } as Record<string, string>,
+    aucun: "Aucun résultat", saisir: "Au moins deux caractères, ou un numéro (MMSI, OMI, alerte)",
+    par: { mmsi: "MMSI", omi: "OMI", nom: "nom", ancien_nom: "ancien nom" } as Record<string, string>,
+    ancienNom: (n: string) => `ancien nom ${n}`, alerte: (id: number) => `Alerte n° ${id}`, silencieux: "sans position récente",
+    aide: "↑ ↓ pour choisir, Entrée pour ouvrir",
+  },
+  suivis: {
+    titre: "Navires suivis", aucun: "Aucun navire suivi. Le bouton « Suivre » d'une fiche navire l'ajoute ici.",
+    suivre: "Suivre", nePlusSuivre: "Suivi", depuis: (d: string) => `suivi depuis le ${d}`,
+    dernierePosition: "Dernière position", derniereAlerte: "Dernière alerte", aucuneAlerte: "aucune alerte",
   },
 
   // Frise et temps
@@ -114,8 +122,28 @@ export const L = {
       listes: "Listes de surveillance", identite: "Identité", identites: "Identités successives", alertes: "Alertes",
       comportement: "Comportement", trajectoire: "Trajectoire", notes: "Notes de l'opérateur",
       risque: "Score de risque", satellite: "Vérification satellite", appris: "Comportement appris",
-      prediction: "Trajectoire prédite", mesures: "Mesures",
+      prediction: "Trajectoire prédite", mesures: "Mesures", navires: "Navires concernés",
+      passes: "Navires passés à moins de 2 milles", liees: "Alertes liées", resume: "Zone", trafic: "Trafic",
     } as Record<string, string>,
+    etat: { route: "en route", immobile: "immobile", silencieux: "silencieux" } as Record<string, string>,
+    dernierMessageIlYa: (t: string) => `dernier message il y a ${t}`, horsTrafic: "hors du trafic affiché",
+    photo: { source: (s: string) => `Photo : ${s}`, aucune: "Pas de photo", alt: "Photo du navire" },
+    comportement: {
+      silences: "Silences de plus de deux heures", arrets: "Arrêts au large", passages: "Passages près d'une infrastructure",
+      aucun: "Rien de notable sur la plage", silence: (d: string, min: number) => `${d}, ${min} min`,
+      arret: (d: string, min: number) => `${d}, ${min} min`, passage: (nom: string, min: number, kn: string, m: number) =>
+        `${nom}, ${min} min, ${kn} nœuds au plus lent, ${m} m au plus près`,
+    },
+    trajectoire: { periode: (a: string, b: string) => `Sur la plage, du ${a} au ${b}`, rejouer: "Rejouer", gpx: "Exporter en GPX",
+      carte: "Affichée sur la carte" },
+    notes: { ajouter: "Ajouter", placeholder: "Note sur ce navire", aucune: "Aucune note", par: (a: string, d: string) => `${a}, le ${d}` },
+    ouvrir: "Ouvrir la fiche",
+    infra: { type: "Type", operateur: "Opérateur", longueur: "Longueur", zone: "Zone", source: "Source", sansNom: (t: string, id: number) => `${t} n° ${id}`,
+      aucunNavire: "Aucun navire à moins de 2 milles sur la plage", aucuneAlerte: "Aucune alerte liée",
+      ligne: (m: number, kn: string, d: string) => `${m} m, ${kn} nœuds au plus lent, ${d}` },
+    zone: { surface: "Surface", reception: "Réception fiable", mouillages: "Mouillages connus", navires: "Navires à l'instant",
+      alertes: "Alertes de la plage", cellules: (n: number, km2: number, c: string) => `${n} cellules, ${km2} km², continuité ${c} %`,
+      aucuneReception: "pas encore calculée" },
     navireSansNom: "Navire sans nom", mmsi: "MMSI", omi: "OMI", pavillon: "Pavillon", indicatif: "Indicatif",
     type: "Type", longueur: "Longueur", destination: "Destination", vitesse: "Vitesse", route: "Route",
     dernierMessage: "Dernier message", nonRenseigne: "non renseigné", ilYaMin: (m: string) => `il y a ${m} min`,
@@ -153,6 +181,7 @@ export const L = {
       ["#f5e663", "Plaisance, voile"], ["#e07a5f", "Service"], ["#9fb3c2", "Autre ou non renseigné"]] as [string, string][],
     traces: (n: number) => `${n} tracés`, aucuneConcernee: "Aucune infrastructure concernée par la sélection",
     navires: (n: number) => `${n} navires`,
+    suivi: "Navire suivi",
   },
 
   // Analyses radar (panneau existant)

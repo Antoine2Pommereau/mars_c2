@@ -9,6 +9,12 @@ const ZONES: Record<string, [number, number, number, number]> = {
 // Ordre d'affichage, du nord ouest au sud est
 export const ZONE_KEYS = ["bretagne", "manche", "gascogne", "mediterranee"];
 
+/** Emprise d'une zone : [lon_min, lat_min, lon_max, lat_max] */
+export function zoneBbox(k: string): [number, number, number, number] {
+  const [a, b, c, d] = ZONES[k];
+  return [b, a, d, c];
+}
+
 export function zoneOf(lon: number, lat: number): string | null {
   for (const [k, [a, b, c, d]] of Object.entries(ZONES)) if (a <= lat && lat <= c && b <= lon && lon <= d) return k;
   return null;

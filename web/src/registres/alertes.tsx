@@ -36,6 +36,8 @@ const nom = (v?: Props) => v?.name ?? (v?.mmsi ? P.mmsiDe(v.mmsi) : L.commun.inc
 const aVenir = (): ReactNode => null;
 
 export const COULEUR_LISTE = "#b48cf2";
+// Navire suivi par l'opérateur, sans alerte ni liste : couleur du signal système
+export const COULEUR_SUIVI = "#4fb6c8";
 
 export const TYPES_ALERTE: TypeAlerte[] = [
   {

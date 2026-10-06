@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
-import { FILTRES_DEFAUT, filtrer, grouper, statutDe, trier, zoneAlerte, type Filtres, type Vue } from "../lib/fil";
+import { Eye } from "lucide-react";
+import { FILTRES_DEFAUT, filtrer, grouper, statutDe, suivisEnTete, trier, zoneAlerte, type Filtres, type Vue } from "../lib/fil";
 import { hm, jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
@@ -13,6 +14,7 @@ interface PanelProps {
   filtres: Filtres;
   onFiltres: (f: Filtres) => void;
   vessels: Map<number, Props>;  // navires affichés, pour le pavillon et le nom
+  suivis: Set<number>;          // navires suivis : leurs nouvelles alertes en tête du fil
   now: number;
   selectedId: number | null;
   onPick: (f: Feature) => void;
@@ -54,11 +56,11 @@ function Ligne({ a, vessels, now, selected, onPick, indent }:
 
 /** Fil d'alertes de la plage : filtres par type, gravité, statut et zone ; tri par gravité puis date ; alertes d'un
  *  même navire regroupées. */
-export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, now, selectedId, onPick }: PanelProps) {
+export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivis, now, selectedId, onPick }: PanelProps) {
   const [ouverts, setOuverts] = useState<Set<string>>(new Set());
   const sansVue = useMemo(() => filtrer(alerts, filtres, false), [alerts, filtres]);
   const shown = useMemo(() => trier(filtrer(alerts, filtres)), [alerts, filtres]);
-  const groupes = useMemo(() => grouper(shown), [shown]);
+  const groupes = useMemo(() => suivisEnTete(grouper(shown), suivis), [shown, suivis]);
   const count = (type: string) => alerts.filter((a) => a.properties.type === type).length;
   const todo = sansVue.filter((a) => statutDe(a) === "nouvelle").length;
   const set = (p: Partial<Filtres>) => onFiltres({ ...filtres, ...p });
@@ -111,9 +113,15 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, now, 
           <li className="px-4 py-6 text-muted">{filtres.vue === "todo" ? L.fil.aucune.todo : L.fil.aucune.autre}</li>
         )}
         {groupes.map((g) => {
+          const suivi = g.vesselId != null && suivis.has(g.vesselId);
           if (g.alertes.length === 1) {
             const a = g.alertes[0];
-            return <li key={g.cle}><Ligne a={a} vessels={vessels} now={now} selected={a.properties.id === selectedId} onPick={onPick} /></li>;
+            return (
+              <li key={g.cle} className="relative">
+                {suivi && <Eye size={11} className="absolute left-1 top-3.5 text-signal" aria-label={L.couches.suivi} />}
+                <Ligne a={a} vessels={vessels} now={now} selected={a.properties.id === selectedId} onPick={onPick} />
+              </li>
+            );
           }
           const open = ouverts.has(g.cle) || g.alertes.some((a) => a.properties.id === selectedId);
           const first = g.alertes[0];
@@ -129,6 +137,7 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, now, 
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span className="truncate font-medium text-ink">{n?.name ?? v?.name ?? t.titre(first.properties.details ?? {})}</span>
                   {flag && <Tag>{flag}</Tag>}
+                  {suivi && <Eye size={11} className="text-signal" aria-label={L.couches.suivi} />}
                   <span className="flex gap-0.5">{g.alertes.map((a) => (
                     <span key={a.properties.id} className="h-1.5 w-1.5 rounded-full" style={{ background: typeAlerte(a.properties.type).couleur }} />
                   ))}</span>

@@ -43,6 +43,12 @@ export const trier = (alerts: Feature[]) => [...alerts].sort((a, b) =>
 
 interface Groupe { cle: string; vesselId: number | null; alertes: Feature[] }
 
+/** Les navires suivis dont une alerte est à traiter remontent en tête du fil, dans l'ordre de gravité et de date. */
+export function suivisEnTete(groupes: Groupe[], suivis: Set<number>): Groupe[] {
+  const prio = (g: Groupe) => g.vesselId != null && suivis.has(g.vesselId) && g.alertes.some((a) => statutDe(a) === "nouvelle");
+  return [...groupes.filter(prio), ...groupes.filter((g) => !prio(g))];
+}
+
 /** Regroupe sous un même navire (le premier navire de chaque alerte) ; ordre des groupes : celui de leur alerte la
  *  plus grave et la plus récente. Une alerte sans navire forme son propre groupe. */
 export function grouper(sorted: Feature[]): Groupe[] {

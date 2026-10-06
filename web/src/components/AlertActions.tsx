@@ -1,16 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../lib/api";
+import { auteurMemorise, memoriserAuteur } from "../lib/auteur";
 import { utc } from "../lib/format";
 import { L } from "../lib/libelles";
 
 const D = L.decisions;
 const MOTIFS = Object.keys(D.motifs);
-const CLE_AUTEUR = "mars.auteur";
-
-function auteurMemorise(): string {
-  try { return localStorage.getItem(CLE_AUTEUR) || D.auteurDefaut; } catch { return D.auteurDefaut; }
-}
 
 /** Décisions de l'opérateur sur une alerte : acquitter, confirmer, classer (motif obligatoire), rouvrir, commenter.
  *  Chaque décision est horodatée et signée (champ auteur, un seul opérateur pour l'instant). */
@@ -24,7 +20,7 @@ export default function AlertActions({ id, status, onStatus }: { id: number; sta
   const act = useMutation({
     mutationFn: (b: { action: string; motif?: string; note?: string }) => api.act(id, { ...b, author }),
     onSuccess: (r, b) => {
-      try { localStorage.setItem(CLE_AUTEUR, author); } catch { /* stockage indisponible : auteur non mémorisé */ }
+      memoriserAuteur(author);
       if (b.action === "commenter") setComment(""); else setNote("");
       setClassing(false);
       onStatus(r.status);
