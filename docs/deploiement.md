@@ -119,6 +119,11 @@ de 24 heures bornée par la dernière position reçue :
 | Navire d'une liste dans nos eaux | `WATCHLIST`, une par passage (12 h sans position ouvrent un passage nouveau), niveaux fort, sanctionné, flotte fantôme, suspect GUR | listes importées |
 | Changement d'identité | `IDENTITY_CHANGE` : nouveau nom confirmé 6 h, ou même OMI sous un autre MMSI | aucun |
 
+Après les règles, chaque cycle tient aussi les statistiques de la frise de l'interface (`stats_minute`,
+`stats_10min` : positions par minute, navires par tranche de 10 minutes). Au premier cycle, elles sont calculées
+pour toutes les positions en base ; l'histogramme et les coupures du flux apparaissent donc dans la frise dans les
+5 minutes qui suivent le déploiement.
+
 Une règle dont le prérequis manque est sautée (le motif apparaît dans `task_runs`) : lancer d'abord la construction
 des masques. Les alertes sont mises à jour en place (clé `rule_key`) : statut et décisions des opérateurs sont
 conservés ; une alerte encore vierge qui n'est plus détectée est retirée. Les minutes où le flux AIS est coupé

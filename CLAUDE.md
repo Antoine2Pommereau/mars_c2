@@ -3,7 +3,8 @@
 Ce fichier est la mémoire du projet. Lis le en entier avant toute tâche, et tiens le à jour à chaque jalon. Le
 document de référence de la direction est la Claude Doc « MARS C2, mise à jour du projet » :
 https://claude.ai/code/artifact/00f50730-d117-4ad4-94ac-0cb9b967f002 (sinon, demander à Antoine de la déposer dans
-`docs/`). L'historique de la première version (rejeu de journées danoises) et ses enseignements de calibration
+`docs/`). L'interface cible des étapes 2 à 4 est décrite dans `docs/vision_interface.md` (lot 1, la charpente, fait ;
+lot 2, le contenu : recherche, fiches navire, alerte, infrastructure et zone, navires suivis). L'historique de la première version (rejeu de journées danoises) et ses enseignements de calibration
 sont dans `docs/historique_danemark.md` ; l'état du code est audité dans `docs/audit_code.md`.
 
 ## 1. Le projet
@@ -141,12 +142,16 @@ Tables principales : `positions` (30 jours), `vessels`, `vessel_identities` (vue
 comportementale (mise à jour en place, décisions des opérateurs conservées). Une migration ne
 s'applique pas seule à une base existante : `docker compose exec -T db psql -U mars -d mars < db/init/XX_nom.sql`.
 
-API : horloge (`/api/clock`, vitesse 1 en direct), flux (`/api/stream`), navires (`/api/vessels/{id}` avec
-identités, listes et alertes du navire ; trajectoire),
-listes (`/api/watchlist`), état du direct (`/api/ingestion` : retard, disque, tâches), journées (`/api/ais/days`),
-radar (`/api/passes`, `/api/analyses`, détections, `/api/chip`), alertes (`/api/alerts`, journée, décisions),
-masques (`?jours=N` pour borner le calcul) et infrastructures, règles et test par injection (`/api/rules/...`). Le détail des appelants est dans
-`docs/audit_code.md`.
+API : flux (`/api/stream?direct=1` : horloge chaque seconde, trafic en colonnes seulement quand l'ingestion a
+chargé du nouveau, au plus tard toutes les 30 s), trafic à un instant (`/api/traffic?at=`), traînées
+(`/api/traffic/trails?at=`), navires (`/api/vessels/{id}` avec identités, listes et alertes ; trajectoire allégée
+à `max_points`), listes (`/api/watchlist`), état du direct (`/api/ingestion` : retard, disque, tâches), frise
+(`/api/timeline?start&end&bins` : histogramme des navires et coupures du flux, lus dans `stats_minute` et
+`stats_10min`), alertes d'une plage (`/api/alerts?start&end`, avec `vessel_ids`) et décisions (acquitter,
+confirmer, classer avec motif obligatoire, rouvrir, commenter, champ auteur), radar (`/api/passes`,
+`/api/analyses`, détections, `/api/chip`), masques (`?jours=N`), infrastructures (`?tolerance=` pour simplifier),
+règles et test par injection (`/api/rules/...`). L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
+par l'interface : l'instant est tenu par chaque navigateur et inscrit dans l'adresse de la page.
 
 ## 7. Interface
 
@@ -155,8 +160,29 @@ Poste de commandement épuré et sombre ; **la couleur est réservée à ce qui 
 secondaire `#7c8b97`, signal système `#4fb6c8` ; navire sombre `#e85bc7`, rendez vous `#f0a84b`, coupure AIS
 `#ef6461`, position non confirmée `#e8d45a`, navire sur liste et alerte WATCHLIST `#b48cf2`, changement d'identité
 `#5fd3a5`. IBM Plex Sans et Sans Condensed, chiffres
-tabulaires. Rail d'icônes (Alertes, Analyses radar, Couches), un panneau à la fois, carte plein écran, fiche à
-droite, frise en bas (bouton « Direct », sélecteur de vitesse en rejeu seulement).
+tabulaires.
+
+Disposition (vision, lot 1 fait) : **barre d'état** en haut (flux AIS, ingestion, listes, disque, archivage, chacun
+vert, orange ou rouge avec son détail au clic ; recherche par Cmd + K, contenu au lot 2), **rail** (alertes, couches,
+analyses, navires suivis à venir), panneau contextuel, carte, **fiche** à droite, **frise** en bas.
+
+* **Temps** (`lib/temps.ts`) : modes direct (la plage glisse, 1 h à 30 jours), plage (période fixe, bornes
+  déplaçables ou saisie libre, instant placé d'un clic) et rejeu (l'instant avance à × 1 à × 300). Tout l'écran
+  s'aligne sur la plage : fil, frise, trajectoires ; les navires sont placés à l'instant.
+* **Adresse de la page** (`lib/url.ts`) : mode, plage, instant, vitesse, objet sélectionné, couches, zone. Un lien
+  rouvre la même vue.
+* **Libellés** : tous dans `web/src/lib/libelles.ts` (français, prêt pour une traduction) ; aucun texte visible en
+  dur dans les composants.
+* **Registres** (`web/src/registres/`), les quatre points d'extension de la vision : `alertes.tsx` (dix types, actifs
+  ou à venir : libellé, icône, couleur, navires, titre, signe distinctif, rendu des preuves), `couches.ts` (groupe,
+  étape, défaut, calques MapLibre, légende ; les couches futures grisées « à venir »), `sections.tsx` (sections de
+  fiche par objet, ordre, condition, étape), `frise.ts` (pistes de marqueurs) ; plus `etat.ts` pour la barre d'état.
+* **Fil** (`lib/fil.ts`) : filtres par type, gravité, statut et zone ; tri par gravité puis date ; alertes d'un même
+  navire regroupées ; le pavillon en tête de ligne, le signe distinctif du type ensuite.
+* **Carte** : infrastructures par type (par défaut câbles électriques et parcs éoliens), filtre par zone, tracés
+  simplifiés et estompés aux échelles larges, noms à partir du zoom 9, mode « concernées seulement » (alertes
+  ouvertes, ou à moins de 2 milles de la sélection) ; navires ordinaires estompés aux échelles larges, ceux des
+  listes et en alerte nets et colorés.
 
 ## 8. Modèle radar et configuration
 
@@ -204,6 +230,12 @@ quand des données tardives comblent un silence, 41 fausses coupures évitées l
 140 min. Coût sur 867 000 positions (émulation, borne haute) : 1,4 s pour les coupures, 33 s pour les rendez vous
 dans un cas extrême (5 700 épisodes), 181 Mo de mémoire.
 
+**Charpente de l'interface (07/10/2026)** : lot 1 de `docs/vision_interface.md` (section 7). Mesures sur la base de
+test (3 000 navires, 867 000 positions sur 24 h) : frise sur 24 h en 0,08 s (13,6 Ko), sur 7 et 30 jours en 0,02 s ;
+coupure du flux de 40 min retrouvée à la minute près ; trafic à un instant, 3 042 navires en 240 Ko (78 octets par
+navire) et 0,13 s ; flux en direct 274 Ko au premier envoi puis 0,1 Ko par seconde (680 Ko par seconde avant, sur
+le serveur) ; infrastructures 2,6 Mo en pleine résolution, simplifiées à 50 m par l'API.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -213,8 +245,9 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 49 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
-archivage, règles en continu, vérification R2 avec un faux client S3). `npm run typecheck` pour l'interface.
+`python -m pytest tests` : 53 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
+archivage, règles en continu, vérification R2 avec un faux client S3, frise). `npx knip` et `npm run typecheck` pour
+l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
 ## 11. Pièges connus
 
@@ -251,3 +284,10 @@ archivage, règles en continu, vérification R2 avec un faux client S3). `npm ru
 * Recharger d'anciens jours ne passe pas par l'ingestion en direct : `taches.py restaurer-positions`.
 * La collecte écrit dans un fichier caché puis renomme ; l'ingestion ignore les fichiers de moins de 5 s.
 * Tester R2 en local : `moto_server` dans un conteneur Python (MinIO n'est plus publié).
+* Le navigateur sans affichage (gstack) n'a pas WebGL : la carte ne s'y dessine pas. Une limite d'erreur
+  (`components/Garde.tsx`) garde le reste de l'écran ; pour voir la carte, l'ouvrir dans un vrai navigateur.
+* L'horloge partagée (`sim_clock`) est commune à tous les utilisateurs : un rejeu chez l'un changeait l'écran de tous.
+  L'instant est désormais tenu par l'interface (routes `?at=` sans état) ; ne plus faire dépendre l'écran de
+  `/api/clock`.
+* Une requête en mode plage a une clé fixe : sans nouvelle tentative, une erreur passagère (redémarrage de l'API) y
+  reste affichée. Garder `retry` sur les requêtes de la frise et du trafic.
