@@ -96,7 +96,7 @@ export default function MapView(p: Props) {
 
   // Création de la carte et des couches, une seule fois
   useEffect(() => {
-    const map = new maplibregl.Map({ container: container.current!, style: STYLE, center: [10.6, 57.6], zoom: 7.5, boxZoom: false });
+    const map = new maplibregl.Map({ container: container.current!, style: STYLE, center: [1.5, 46.4], zoom: 5.2, boxZoom: false });
     map.addControl(new maplibregl.NavigationControl(), "top-right");
     mapRef.current = map;
 

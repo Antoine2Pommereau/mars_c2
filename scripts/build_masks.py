@@ -3,8 +3,10 @@
 Trait de côte par défaut : GSHHG en pleine résolution (contient les petites îles, absentes de Natural Earth
 au 1:10 000 000, ce qui provoquait de faux rendez vous dans les ports d'îles comme Sejerø).
 
+Par défaut, l'emprise couvre les quatre zones collectées en France (mars/ais/live.py), avec une marge de 0,5°.
+
 Exemple :
-    python scripts/build_masks.py --region 4 53 17 60
+    python scripts/build_masks.py                    # trait de côte et masques déduits de l'AIS, France
 """
 import argparse
 import sys
@@ -18,6 +20,7 @@ import shapefile
 import shapely
 from shapely.geometry import Polygon, shape as to_shape
 
+from mars.ais.live import zones_extent
 from mars.config import ROOT, load_env
 from mars.db import connect
 
@@ -39,6 +42,8 @@ INSERT = (
     "WHERE NOT ST_IsEmpty(g)"
 )
 
+
+REGION_MARGIN = 0.5      # degrés autour des zones collectées
 
 def download(url: str, target: Path) -> Path:
     if not target.exists():
@@ -100,7 +105,9 @@ def load_shapes(cur, path: Path, source: str, region) -> int:
 
 def main():
     ap = argparse.ArgumentParser(description="Masques géographiques de MARS C2")
-    ap.add_argument("--region", nargs=4, type=float, default=[4, 53, 17, 60],
+    lon0, lat0, lon1, lat1 = zones_extent()
+    ap.add_argument("--region", nargs=4, type=float,
+                    default=[lon0 - REGION_MARGIN, lat0 - REGION_MARGIN, lon1 + REGION_MARGIN, lat1 + REGION_MARGIN],
                     metavar=("LON_MIN", "LAT_MIN", "LON_MAX", "LAT_MAX"))
     ap.add_argument("--source", choices=["gshhg", "naturalearth"], default="gshhg")
     ap.add_argument("--skip-land", action="store_true", help="Ne recalculer que les masques déduits de l'AIS")
