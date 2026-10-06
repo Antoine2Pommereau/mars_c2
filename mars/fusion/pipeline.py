@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from pyproj import Transformer
 
-from mars.ais.dma import positions_at
+from mars.fusion.positions import positions_at
 from mars.fusion.match import match, normalized_distance, tolerance
 from mars.geo import utm_epsg
 

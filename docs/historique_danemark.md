@@ -1,7 +1,7 @@
 # Historique danois : la version de rejeu et sa calibration (juin à octobre 2026)
 
-Brouillon proposé par l'audit du 06/10/2026 (`docs/audit_code.md`, section 5). Ce document rassemble ce que
-CLAUDE.md contenait sur la première version du projet : rejeu de journées AIS danoises et analyse radar à la
+Issu de l'audit du 06/10/2026 (`docs/audit_code.md`, section 5). Ce document rassemble ce que CLAUDE.md contenait
+sur la première version du projet : rejeu de journées AIS danoises et analyse radar à la
 demande. Le code de cette version reste la base technique de la plateforme française ; seules les données, les cas
 et les valeurs de calibration sont propres au Danemark. Contenu repris de CLAUDE.md sans modification de fond.
 
@@ -23,7 +23,9 @@ sur un passage du satellite et de confronter les échos aux positions déclarée
 * **Zones de test** : large Skagen `10.30 57.80 10.80 58.07`, mouillage de Skagen `10.45 57.58 10.85 57.80`, parc
   éolien d'Anholt `11.05 56.52 11.35 56.70`.
 * Import : `python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 8.5 56.0 13.0 58.6` (lecteur
-  `mars/ais/dma.py`, proposé à l'archivage dans la branche `archive/danemark`).
+  `mars/ais/dma.py`). Ces deux fichiers ont été retirés le 06/10/2026 ; ils restent dans l'historique Git :
+  `git show 5fa3151:mars/ais/dma.py` et `git show 5fa3151:scripts/import_ais.py`. La fonction `positions_at`, qui
+  n'avait rien de danois, vit maintenant dans `mars/fusion/positions.py`.
 
 ## 3. Enseignements de la calibration, cas par cas
 
