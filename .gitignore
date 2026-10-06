@@ -1,16 +1,26 @@
+# Secrets et environnements locaux
 .env
 .venv/
+
+# Python
 __pycache__/
 *.pyc
+*.egg-info/
+
+# Données et modèles (hors dépôt ; la collecte est archivée sur R2)
 data/*
 !data/.gitkeep
 models/*
 !models/.gitkeep
+
+# Interface
 web/node_modules/
 web/dist/
-logs/
 
-mars_c2/
-data/ais_live/
+# Journaux, éditeurs, système
 logs/
+.idea/
 .DS_Store
+
+# Ancien clone imbriqué
+mars_c2/
