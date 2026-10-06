@@ -33,8 +33,8 @@ GeoTrackNet, routes de Brest, DMA) servent **uniquement à entraîner** les mod�
 **Modèles.** `allenai/vessel-detection-sentinels` et `vessel-detection-viirs` ; GeoTrackNet en pilote ;
 TrAISformer ensuite ; **CircleNet** (xView3) gardé en repli et en comparaison.
 
-**Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu, recherche, fiche navire, frise par
-période ; 3. satellites (VIIRS chaque nuit, Sentinel 1 au passage sur les corridors, cartes de chaleur, couches par
+**Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu (**faites**, alertes WATCHLIST et
+IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (VIIRS chaque nuit, Sentinel 1 au passage sur les corridors, cartes de chaleur, couches par
 source) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
 
 **Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
@@ -61,8 +61,9 @@ indice, jamais une excuse).
 ## 3. Démarrer
 
 **Serveur** (Scaleway DEV1-S, `/opt/mars_c2`) : tout est décrit dans `docs/deploiement.md` (installation, R2,
-vérification, restauration). `docker compose up -d --build` démarre les six services ; le `.env` du serveur active
-la surcouche `docker-compose.serveur.yml` et le profil `direct`.
+vérification, restauration). Les images sont **construites sur le Mac en linux/amd64**, envoyées par `docker save`
+et `docker load`, puis démarrées par `docker compose up -d --no-build` (le serveur ne construit rien : ni la place
+ni la mémoire). Le `.env` du serveur active la surcouche `docker-compose.serveur.yml` et le profil `direct`.
 
 **Mac** (développement, radar) :
 
@@ -95,7 +96,7 @@ que sur le serveur.
 | `web` | Docker (nginx) ; Vite en développement | Interface React |
 | `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) |
 | `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` |
-| `taches` | Docker, serveur seulement | Chaque nuit : archivage R2, purge à 30 jours, sauvegarde ; disque toutes les 10 min |
+| `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde ; disque toutes les 10 min ; masques à la demande (`build_masks.py`) |
 | Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
 
 **Chaîne du direct** : AISStream, Parquet local, ingestion toutes les 15 s (un point par minute en route, un toutes
@@ -113,14 +114,15 @@ la fusion (`mars/fusion/pipeline.py`) et la persistance des échos fixes, écrit
 mars_c2/
   CLAUDE.md, start.sh, pyproject.toml, docker-compose.yml, docker-compose.serveur.yml
   config/rules.yaml       seuils versionnés
-  db/init/01 à 15         schéma et migrations (idempotentes à partir de 02)
+  db/init/01 à 16         schéma et migrations (idempotentes à partir de 02)
   mars/
     ais/live.py, ingest.py, mid.py   zones, nettoyage, allègement, ingestion, pavillon
     watchlist.py, archive.py, r2.py  listes, archivage et sauvegarde, client R2
     fusion/                          positions à l'instant du passage, tolérance Doppler, appariement, persistance
     sar/                             passages, extraction Sentinel Hub, CircleNet
     regions/provision.py             infrastructures EMODnet
-  backend/app.py, rules.py           API, moteur de règles
+  mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
+  backend/app.py                     API
   inference/app.py                   service d'inférence
   scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar
   tests/                             contrat du modèle, fusion, direct, archivage
@@ -135,13 +137,15 @@ Tables principales : `positions` (30 jours), `vessels`, `vessel_identities` (vue
 `fixed_echoes`, `land`, `stationary_zones`, `reception_cells`, `regions`, `infrastructure`, `ais_days`,
 `ingested_files`, `archives`, `task_runs`, `disk_status`, `sim_clock` (direct par défaut). `ais_days.coverage`
 (union des zones collectées) situe le bord des données pour la coupure AIS ; les régions `Bretagne`, `Manche`,
-`Gascogne`, `Mediterranee` portent les infrastructures EMODnet. Une migration ne
+`Gascogne`, `Mediterranee` portent les infrastructures EMODnet. `alerts.rule_key` : clé stable d'une alerte
+comportementale (mise à jour en place, décisions des opérateurs conservées). Une migration ne
 s'applique pas seule à une base existante : `docker compose exec -T db psql -U mars -d mars < db/init/XX_nom.sql`.
 
-API : horloge (`/api/clock`, vitesse 1 en direct), flux (`/api/stream`), navires (`/api/vessels/{id}`, trajectoire),
+API : horloge (`/api/clock`, vitesse 1 en direct), flux (`/api/stream`), navires (`/api/vessels/{id}` avec
+identités, listes et alertes du navire ; trajectoire),
 listes (`/api/watchlist`), état du direct (`/api/ingestion` : retard, disque, tâches), journées (`/api/ais/days`),
 radar (`/api/passes`, `/api/analyses`, détections, `/api/chip`), alertes (`/api/alerts`, journée, décisions),
-masques et infrastructures, règles et test par injection (`/api/rules/...`). Le détail des appelants est dans
+masques (`?jours=N` pour borner le calcul) et infrastructures, règles et test par injection (`/api/rules/...`). Le détail des appelants est dans
 `docs/audit_code.md`.
 
 ## 7. Interface
@@ -149,7 +153,8 @@ masques et infrastructures, règles et test par injection (`/api/rules/...`). Le
 Poste de commandement épuré et sombre ; **la couleur est réservée à ce qui demande l'attention**. Jetons
 (`web/src/styles.css`) : fond `#0e1419`, panneaux `#141c23`, surélevé `#1b252e`, filets `#26323d`, texte `#e6ecf0`,
 secondaire `#7c8b97`, signal système `#4fb6c8` ; navire sombre `#e85bc7`, rendez vous `#f0a84b`, coupure AIS
-`#ef6461`, position non confirmée `#e8d45a`, navire sur liste `#b48cf2`. IBM Plex Sans et Sans Condensed, chiffres
+`#ef6461`, position non confirmée `#e8d45a`, navire sur liste et alerte WATCHLIST `#b48cf2`, changement d'identité
+`#5fd3a5`. IBM Plex Sans et Sans Condensed, chiffres
 tabulaires. Rail d'icônes (Alertes, Analyses radar, Couches), un panneau à la fois, carte plein écran, fiche à
 droite, frise en bas (bouton « Direct », sélecteur de vitesse en rejeu seulement).
 
@@ -184,16 +189,32 @@ code mort supprimé, régions Manche et Gascogne en migration (14), bord des don
 les zones réelles, terres exclues (15), test par injection adapté à un AIS allégé, carte et masques centrés sur la
 France.
 
-**Points ouverts France** : masques (terre, mouillages, réception) à calculer pour la France
-(`scripts/build_masks.py`, emprise France par défaut) ; recalibration des seuils après une à deux semaines de
-mesures (liste et méthode : `docs/audit_code.md`, section 3) ; règles en continu (étape 2). Mesure déjà faite sur
+**Règles en continu (06/10/2026)** : dans le conteneur `taches`, toutes les 5 minutes, sur une fenêtre glissante de
+24 heures bornée par la dernière position reçue (`mars/rules.py`, `run_continuous` ; section `continu` de
+`config/rules.yaml`, version 2026.10.17, seuils de calibration inchangés) :
+* rendez vous et coupures AIS, comme avant, mais enregistrés par clé stable ; les minutes de flux AIS coupé (moins
+  de 20 % de la médiane par minute) ne comptent pas dans un silence ;
+* **WATCHLIST** : une alerte par passage dans nos eaux d'un navire des listes (fort, sanctionné, flotte fantôme,
+  suspect GUR), gravité selon le niveau, un cran de moins si reconnu par le MMSI seul ;
+* **IDENTITY_CHANGE** : nouveau nom confirmé 6 h sans retour à un nom antérieur (les alternances comme MUTIN ne
+  sont jamais signalées), ou même OMI sous un autre MMSI (pavillon changé, usage simultané) ; MMSI génériques
+  (code pays et six zéros, comme 227000000) écartés.
+Éprouvé sur une base de test : chaque cas attendu, décisions conservées d'un cycle à l'autre, alerte vierge retirée
+quand des données tardives comblent un silence, 41 fausses coupures évitées lors d'une coupure générale du flux de
+140 min. Coût sur 867 000 positions (émulation, borne haute) : 1,4 s pour les coupures, 33 s pour les rendez vous
+dans un cas extrême (5 700 épisodes), 181 Mo de mémoire.
+
+**Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
+scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
+recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
 données synthétiques : à un point toutes les 3 minutes, `reception.min_pairs` (200, valeur danoise) écarte un tiers
 des cellules d'un rail de 30 navires, et le test par injection n'a plus de candidat ; à un point toutes les
 2 minutes, 5 sur 5. Le test par injection indique désormais combien de candidats il écarte, et pourquoi.
 
 ## 10. Tests
 
-`python -m pytest tests` : 33 réussis, 1 ignoré sans `MARS_TEST_MODEL=1`. `npm run typecheck` pour l'interface.
+`python -m pytest tests` : 49 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
+archivage, règles en continu, vérification R2 avec un faux client S3). `npm run typecheck` pour l'interface.
 
 ## 11. Pièges connus
 
@@ -213,7 +234,19 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
   identité déjà vue est reprise.
 * **Entrées GUR sans nom** : l'appartenance au catalogue ne se lit pas sur le nom (cas PASIPHAE, OMI 9289518).
 * Surcouche Compose : `ports` se cumule, utiliser `!override` ou `!reset`.
-* **R2 et boto3** : `request_checksum_calculation="when_required"`, MD5 fourni ; l'ETag d'un envoi simple est le MD5.
+* **R2 et boto3** : `request_checksum_calculation="when_required"`, MD5 fourni ; l'ETag d'un envoi simple est le MD5,
+  celui d'un envoi en plusieurs morceaux (sauvegardes en flux) ne l'est pas : `R2.verify` relit alors l'objet.
+* **Seau R2 européen** : adresse en `https://<compte>.eu.r2.cloudflarestorage.com`, sinon tout accès est refusé.
+* Pas de commentaire en fin de ligne dans `.env` : `mars/config.py` ne les retire pas.
+* **Noms d'images fixes** (`mars_c2-backend`, `mars_c2-web`, `mars_c2-scripts`) : sans eux, le nom dépend du dossier
+  du projet, et une image construite sur le Mac n'aurait pas le nom attendu sur le serveur.
+* `LIKE 'préfixe%'` n'utilise pas un index btree avec la collation par défaut : charger les alertes en une requête
+  plutôt qu'une recherche par épisode.
+* Lire GSHHG avec pyshp coûte environ 120 octets par point (liste de tuples) : le polygone de l'Eurasie porte la
+  mémoire au delà de 500 Mo. `build_masks.py` lit les enregistrements en numpy (16 octets par point), et découpe
+  avant de réparer la géométrie.
+* Une règle en continu ne doit jamais effacer puis recréer ses alertes : les décisions des opérateurs seraient
+  perdues à chaque cycle (`save_alerts`).
 * `pg_dump` en version 16 (dépôt PGDG dans l'image des scripts).
 * Recharger d'anciens jours ne passe pas par l'ingestion en direct : `taches.py restaurer-positions`.
 * La collecte écrit dans un fichier caché puis renomme ; l'ingestion ignore les fichiers de moins de 5 s.
