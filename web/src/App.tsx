@@ -9,6 +9,7 @@ import NewAnalysis from "./components/NewAnalysis";
 import Rail, { type PanelId } from "./components/Rail";
 import Timeline from "./components/Timeline";
 import { api, type Pass } from "./lib/api";
+import { WATCH_COLOR } from "./lib/format";
 import { EMPTY, type FC, type Feature, type Selection } from "./lib/types";
 import { useStream } from "./lib/useStream";
 
@@ -112,6 +113,10 @@ export default function App() {
       if (p.type === "RENDEZVOUS") {
         ids = (d.navires ?? []).filter(Boolean).map((v: any) => v.vessel_id);
         start = shift(d.debut, -30); end = shift(d.fin, 30);
+      } else if (p.type === "WATCHLIST") {
+        // Trajet du navire dans nos eaux pendant ce passage
+        ids = [d.navire?.vessel_id].filter(Boolean);
+        start = d.debut; end = d.fin;
       } else if (p.type === "AIS_GAP") {
         ids = [d.navire, ...(d.partenaires_possibles ?? [])].filter(Boolean).map((v: any) => v.vessel_id);
         start = shift(d.dernier_message, -60); end = shift(d.reapparition ?? d.dernier_message, 60);
@@ -121,7 +126,8 @@ export default function App() {
         }
       }
       const tracks = await Promise.all(ids.map((id) => api.track(id, start, end).catch(() => null)));
-      tracks.forEach((t, i) => t && features.push({ ...t, properties: { color: i === 0 ? "#f0a84b" : "#4fb6c8" } }));
+      const first = p.type === "WATCHLIST" ? WATCH_COLOR : "#f0a84b";
+      tracks.forEach((t, i) => t && features.push({ ...t, properties: { color: i === 0 ? first : "#4fb6c8" } }));
       if (!cancelled) setHighlight({ type: "FeatureCollection", features });
     })();
     return () => { cancelled = true; };
@@ -152,7 +158,7 @@ export default function App() {
     const d = p.details ?? {};
     const vs: any[] = p.type === "RENDEZVOUS" ? d.navires ?? []
       : p.type === "AIS_GAP" ? [d.navire, ...(d.partenaires_possibles ?? [])]
-      : p.type === "AIS_UNCONFIRMED" ? [d.navire]
+      : ["AIS_UNCONFIRMED", "WATCHLIST", "IDENTITY_CHANGE"].includes(p.type) ? [d.navire]
       : d.candidats_ais ?? [];
     return { alertId: p.id as number, vesselIds: vs.filter(Boolean).map((v) => v.vessel_id) };
   }, [selection]);

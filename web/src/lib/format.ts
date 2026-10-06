@@ -32,10 +32,13 @@ export const ALERT_LABEL: Record<string, string> = {
   RENDEZVOUS: "Rendez vous suspect",
   AIS_GAP: "Coupure AIS",
   AIS_UNCONFIRMED: "Position AIS non confirmée",
+  WATCHLIST: "Navire sur liste",
+  IDENTITY_CHANGE: "Changement d'identité",
 };
 
 export const ALERT_COLOR: Record<string, string> = {
   DARK_SHIP: "#e85bc7", RENDEZVOUS: "#f0a84b", AIS_GAP: "#ef6461", AIS_UNCONFIRMED: "#e8d45a",
+  WATCHLIST: "#b48cf2", IDENTITY_CHANGE: "#5fd3a5",
 };
 
 // Listes de surveillance : niveau de signal, du plus fort au plus faible

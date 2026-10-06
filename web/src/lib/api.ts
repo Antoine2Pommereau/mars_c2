@@ -37,6 +37,7 @@ interface VesselCard {
   flag: string | null; length_m: number | null; destination: string | null; first_seen: string | null; last_seen: string | null;
   identities: VesselIdentity[];
   watch: { level: string; matched_by: string; entries: { source: string; name: string | null; risks: string[]; url: string | null; par: string }[] } | null;
+  alerts: Feature[];
 }
 
 interface AlertActionRow { action: string; note: string | null; author: string; at: string }

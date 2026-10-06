@@ -18,7 +18,8 @@ const SHIP_COLOR: any = ["match", ["coalesce", ["get", "ship_type"], ""],
   "#9fb3c2"];
 
 const ALERT_STROKE: any = ["match", ["get", "type"],
-  "DARK_SHIP", "#e85bc7", "RENDEZVOUS", "#f0a84b", "AIS_GAP", "#ef6461", "AIS_UNCONFIRMED", "#e8d45a", "#ffffff"];
+  "DARK_SHIP", "#e85bc7", "RENDEZVOUS", "#f0a84b", "AIS_GAP", "#ef6461", "AIS_UNCONFIRMED", "#e8d45a",
+  "WATCHLIST", "#b48cf2", "IDENTITY_CHANGE", "#5fd3a5", "#ffffff"];
 const NEUTRAL = "#c9d3da";
 // Navire d'une liste de surveillance : teinte dédiée, quel que soit le mode de couleur
 const withWatch = (base: any): any => ["case", ["to-boolean", ["get", "watch"]], WATCH_COLOR, base];

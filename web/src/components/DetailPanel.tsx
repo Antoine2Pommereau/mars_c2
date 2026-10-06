@@ -30,6 +30,38 @@ function vessel(v?: Props) {
   return `${v.name ?? "Sans nom"} (MMSI ${v.mmsi}${v.ship_type ? `, ${v.ship_type}` : ""}${v.length_m ? `, ${num(v.length_m, 0)} m` : ""})`;
 }
 
+/** Identités successives (preuve d'un changement d'identité) */
+function Identities({ rows }: { rows?: Props[] }) {
+  if (!rows?.length) return null;
+  return (
+    <table className="mt-1 w-full text-left text-[12px]">
+      <thead className="text-muted"><tr><th>Nom</th><th>Pavillon</th><th>MMSI</th><th>Vu du</th></tr></thead>
+      <tbody>{rows.map((x, i) => (
+        <tr key={i} className="border-t border-hair/70">
+          <td>{x.name ?? "sans nom"}</td><td>{x.pavillon ?? x.flag ?? "n.d."}</td><td>{x.mmsi}</td>
+          <td>{dayLabel(x.premiere_vue ?? x.first_seen)} au {dayLabel(x.derniere_vue ?? x.last_seen)}</td>
+        </tr>))}</tbody>
+    </table>
+  );
+}
+
+/** Sources d'une correspondance avec les listes de surveillance */
+function Sources({ entries }: { entries?: Props[] }) {
+  if (!entries?.length) return null;
+  return (
+    <ul className="mt-1 space-y-0.5 text-[12px]">
+      {entries.map((e, i) => (
+        <li key={i}>
+          {e.source === "gur" ? "Catalogue GUR" : "OpenSanctions"}
+          {e.name ? `, ${e.name}` : ""}{e.mmsi ? `, MMSI ${e.mmsi}` : ""}
+          {e.risks?.length ? <span className="text-muted"> ({e.risks.join(", ")})</span> : null}
+          {e.url && <> <a href={e.url} target="_blank" rel="noreferrer" className="text-signal hover:underline">fiche</a></>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function AlertBody({ p }: { p: Props }) {
   const d = p.details ?? {};
   switch (p.type) {
@@ -98,6 +130,32 @@ function AlertBody({ p }: { p: Props }) {
           )}
         </>
       );
+    case "WATCHLIST":
+      return (
+        <>
+          <Row label="Navire">{vessel(d.navire)}</Row>
+          <Row label="Signal">{WATCH_LABEL[d.niveau] ?? d.niveau}, {MATCHED_BY[d.reconnu_par] ?? d.reconnu_par}</Row>
+          <Row label="Dans nos eaux">{utc(d.debut)} au {utc(d.fin)}</Row>
+          <Row label="Zones">{(d.zones ?? []).join(", ")}</Row>
+          <Row label="Positions">{d.positions}</Row>
+          <Context items={d.contexte} />
+          <div className="mt-3 font-semibold">Sources</div>
+          <Sources entries={d.sources} />
+        </>
+      );
+    case "IDENTITY_CHANGE":
+      return (
+        <>
+          <Row label="Navire">{vessel(d.navire)}</Row>
+          {d.changement === "nom"
+            ? <Row label="Nom">{d.ancien_nom} puis {d.nouveau_nom}</Row>
+            : <Row label="OMI">{d.omi}, sous un autre MMSI</Row>}
+          <Row label="Depuis">{utc(d.debut)}</Row>
+          <Context items={d.contexte} />
+          <div className="mt-3 font-semibold">Identités successives</div>
+          <Identities rows={d.identites} />
+        </>
+      );
     default:
       return null;
   }
@@ -139,14 +197,21 @@ function VesselBody({ p }: { p: Props }) {
       {ids.length > 1 && (
         <>
           <div className="mt-3 font-semibold">Identités</div>
-          <table className="mt-1 w-full text-left text-[12px]">
-            <thead className="text-muted"><tr><th>Nom</th><th>Pavillon</th><th>MMSI</th><th>Période</th></tr></thead>
-            <tbody>{ids.map((x, i) => (
-              <tr key={i} className="border-t border-hair/70">
-                <td>{x.name ?? "sans nom"}</td><td>{x.flag ?? "n.d."}</td><td>{x.mmsi}</td>
-                <td>{dayLabel(x.first_seen)} au {dayLabel(x.last_seen)}</td>
-              </tr>))}</tbody>
-          </table>
+          <Identities rows={ids} />
+        </>
+      )}
+      {(v?.alerts ?? []).length > 0 && (
+        <>
+          <div className="mt-3 font-semibold">Alertes</div>
+          <ul className="mt-1 space-y-1 text-[12px]">
+            {v!.alerts.map((a) => (
+              <li key={a.properties.id} className="flex items-center gap-2">
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: ALERT_COLOR[a.properties.type] }} />
+                <span className="flex-1">{ALERT_LABEL[a.properties.type] ?? a.properties.type}</span>
+                <span className="text-muted">{dayLabel(a.properties.event_time)} {hm(a.properties.event_time)}</span>
+              </li>
+            ))}
+          </ul>
         </>
       )}
     </>

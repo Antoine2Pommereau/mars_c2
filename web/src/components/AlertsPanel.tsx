@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import type { FC, Feature } from "../lib/types";
-import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, hm, num } from "../lib/format";
+import { ALERT_COLOR, ALERT_LABEL, SEVERITY, STATUS_LABEL, WATCH_LABEL, hm, num } from "../lib/format";
 
-const TYPES = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED"];
+const TYPES = ["DARK_SHIP", "RENDEZVOUS", "AIS_GAP", "AIS_UNCONFIRMED", "WATCHLIST", "IDENTITY_CHANGE"];
+// Alertes du flux en direct : filtrées par période ; celles d'une analyse radar restent attachées à l'analyse
+const LIVE_TYPES = ["RENDEZVOUS", "AIS_GAP", "WATCHLIST", "IDENTITY_CHANGE"];
 const RANK: Record<string, number> = { critique: 0, elevee: 1, moyenne: 2, faible: 3 };
 
 function headline(a: Feature): string {
@@ -15,6 +17,8 @@ function headline(a: Feature): string {
       return `${v1?.name ?? v1?.mmsi} et ${v2?.name ?? v2?.mmsi}`;
     }
     case "AIS_GAP": return d.navire?.name ?? `MMSI ${d.navire?.mmsi}`;
+    case "WATCHLIST": return d.navire?.name ?? `MMSI ${d.navire?.mmsi}`;
+    case "IDENTITY_CHANGE": return d.changement === "nom" ? `${d.ancien_nom} devenu ${d.nouveau_nom}` : `OMI ${d.omi}`;
     default: return "";
   }
 }
@@ -26,6 +30,9 @@ function detail(a: Feature): string {
     case "AIS_UNCONFIRMED": return `${num(d.navire?.length_m, 0)} m déclarés, aucun écho`;
     case "RENDEZVOUS": return `${d.duree_min} min, ${d.distance_min_m} m au plus près`;
     case "AIS_GAP": return `silence de ${d.duree_min} min`;
+    case "WATCHLIST": return `${WATCH_LABEL[d.niveau] ?? d.niveau}, ${(d.zones ?? []).join(", ")}`;
+    case "IDENTITY_CHANGE": return d.changement === "nom" ? `MMSI ${d.navire?.mmsi}`
+      : `sous un autre MMSI${d.pavillon_change ? ", pavillon changé" : ""}`;
     default: return "";
   }
 }
@@ -61,8 +68,11 @@ export default function AlertsPanel({ bounds, now, analysisAlerts, liveAlerts, s
     const [lon, lat] = a.geometry.coordinates;
     return lon >= bounds[0] && lon <= bounds[2] && lat >= bounds[1] && lat <= bounds[3];
   };
-  const recent = (a: Feature) => !["RENDEZVOUS", "AIS_GAP"].includes(a.properties.type)
-    || new Date(a.properties.event_time).getTime() >= since;
+  // Un navire des listes compte comme récent tant qu'il est vu (fin du passage), pas seulement à son entrée
+  const lastSeen = (a: Feature) => a.properties.type === "WATCHLIST" && a.properties.details?.fin
+    ? a.properties.details.fin : a.properties.event_time;
+  const recent = (a: Feature) => !LIVE_TYPES.includes(a.properties.type)
+    || new Date(lastSeen(a)).getTime() >= since;
   const shown = all.filter((a) => types.includes(a.properties.type) && visible(a) && recent(a) &&
     (view === "all" || (view === "todo" ? statusOf(a) === "nouvelle" : statusOf(a) === "confirmee")));
   const todoCount = all.filter((a) => statusOf(a) === "nouvelle").length;
