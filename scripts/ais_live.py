@@ -29,6 +29,8 @@ URL = "wss://stream.aisstream.io/v0/stream"
 ZONES = {
     "bretagne": [47.3, -6.8, 49.6, -3.0],
     "mediterranee": [41.2, 3.0, 43.7, 9.8],
+    "manche": [48.4, -5.0, 51.2, 2.6],
+    "gascogne": [43.3, -6.0, 47.4, -1.0],
 }
 POSITION_TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport"]
 STATIC_TYPES = ["ShipStaticData", "StaticDataReport"]
