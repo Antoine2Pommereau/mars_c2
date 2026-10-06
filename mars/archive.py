@@ -214,7 +214,7 @@ def run_backup(r2, database_url: str, keep: int, now: datetime | None = None) ->
 
 # Rechargement des positions depuis l'archive
 
-def restore_positions(conn, r2, ingestor, day: date, workdir: Path, log=print) -> dict:
+def restore_positions(conn, r2, ingestor, day: date, workdir: Path) -> dict:
     """Recharge une journée de positions depuis R2, toutes zones réunies et dans l'ordre chronologique, avec
     l'allègement de l'ingestion (instance dédiée : l'ingestion en direct écarterait ces messages comme tardifs).
     Refuse une journée qui a déjà des positions en base, pour ne pas créer de doublons."""

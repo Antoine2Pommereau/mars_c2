@@ -50,7 +50,7 @@ def main():
         print(f"Région {region_id} : {name}")
         print(f"  emprise {bbox[0]:.2f} {bbox[1]:.2f} {bbox[2]:.2f} {bbox[3]:.2f}")
         t = time.time()
-        n = provision(cur, region_id, bbox, which=args.only)
+        provision(cur, region_id, bbox, which=args.only)
         conn.commit()
         print(f"Provisionnement terminé en {time.time() - t:.0f} s.")
 

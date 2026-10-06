@@ -27,19 +27,19 @@ export interface Pass {
 
 export type ClockAction = "play" | "pause" | "speed" | "seek" | "live";
 
-export interface VesselIdentity {
+interface VesselIdentity {
   mmsi: number; name: string | null; imo: number | null; callsign: string | null; flag: string | null;
   first_seen: string; last_seen: string; messages: number;
 }
 
-export interface VesselCard {
+interface VesselCard {
   id: number; mmsi: number; imo: number | null; name: string | null; callsign: string | null; ship_type: string | null;
   flag: string | null; length_m: number | null; destination: string | null; first_seen: string | null; last_seen: string | null;
   identities: VesselIdentity[];
   watch: { level: string; matched_by: string; entries: { source: string; name: string | null; risks: string[]; url: string | null; par: string }[] } | null;
 }
 
-export interface AlertActionRow { action: string; note: string | null; author: string; at: string }
+interface AlertActionRow { action: string; note: string | null; author: string; at: string }
 
 export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
   `/api/chip?lon=${lon}&lat=${lat}&time=${encodeURIComponent(time)}&size_m=${sizeM}`;

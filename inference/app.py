@@ -46,7 +46,7 @@ def _warmup(model, device, amp):
 
 
 @asynccontextmanager
-async def lifespan(app):
+async def lifespan(_app):
     device = pick_device(os.environ.get("INFERENCE_DEVICE", "auto"))
     model = load_model(ROOT / RULES["model"]["file"], device)
     # Précision mixte : utile sur GPU NVIDIA ; sur GPU Apple (MPS) elle ralentit le calcul (16 s contre 6 s mesurés

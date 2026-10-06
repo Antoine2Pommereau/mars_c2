@@ -52,8 +52,3 @@ export function dayLabel(day: string): string {
   const [y, m, d] = day.slice(0, 10).split("-");
   return `${d}/${m}/${y}`;
 }
-
-// Pour le champ datetime local du saut dans le temps (heure UTC)
-export function toInputValue(iso: string): string {
-  return iso.slice(0, 16);
-}

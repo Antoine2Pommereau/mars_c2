@@ -1,6 +1,6 @@
 """Listes de surveillance : catalogue GUR de la flotte fantôme (Vessels1.db, repris de shadow-fleet-tracker-light)
 et jeu maritime d'OpenSanctions (maritime.csv, licence CC BY NC 4.0). Lecture et normalisation, partagées par
-scripts/import_watchlist.py (chargement en base) et scripts/watchlist_check.py (croisement avec le Parquet)."""
+scripts/import_watchlist.py (chargement en base, rapprochement par la vue vessel_watch)."""
 import re
 import sqlite3
 from pathlib import Path

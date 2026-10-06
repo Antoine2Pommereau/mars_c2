@@ -147,7 +147,7 @@ def provision_infrastructure(cur, region_id, bbox):
     return total
 
 
-def provision(cur, region_id, bbox, which="infrastructure", refresh=False):
+def provision(cur, region_id, bbox, which="infrastructure"):
     """Orchestre les fournisseurs. Pour l'instant une seule couche : infrastructure."""
     ensure_layers(cur, region_id)
     if which in ("all", "infrastructure"):
