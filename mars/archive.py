@@ -118,7 +118,7 @@ def run_archive(conn, r2, root: Path, now: datetime | None = None, log=print) ->
         if plan.to_archive:
             data, rows = compact([path / f for f in plan.to_archive])
             key = archive_key(kind, zone, day, now)
-            sent = r2.put_verified(data, key)          # lève une exception si l'objet relu ne correspond pas
+            sent = r2.put_verified(data, key)          # lève une exception si l'objet stocké ne correspond pas
             with conn.transaction():
                 conn.execute("INSERT INTO archives (kind, zone, day, object_key, files, rows, bytes, md5) "
                              "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
@@ -176,6 +176,9 @@ def run_purge(conn, root: Path, keep_days: int, now: datetime | None = None) -> 
     gone = [f for f in old if not (root / f).exists()]
     if gone:
         stats["registre_supprime"] = conn.execute("DELETE FROM ingested_files WHERE folder = ANY(%s)", (gone,)).rowcount
+    # Journal des cycles de règles (un toutes les 5 minutes) : deux jours suffisent
+    stats["cycles_de_regles_supprimes"] = conn.execute(
+        "DELETE FROM task_runs WHERE task = 'regles' AND started_at < now() - interval '2 days'").rowcount
     return stats
 
 
@@ -203,13 +206,17 @@ def run_backup(r2, database_url: str, keep: int, now: datetime | None = None) ->
             code = proc.wait()
         err.seek(0)
         message = err.read().decode(errors="replace").strip()
-    if code != 0 or sent == 0 or r2.size(key) != sent:
-        r2.delete(key)                    # une sauvegarde tronquée ne doit pas passer pour valide
-        raise RuntimeError(f"Sauvegarde invalide (pg_dump code {code}, {sent} octets) : {message[-500:]}")
+    try:
+        if code != 0 or sent["bytes"] == 0:
+            raise RuntimeError(f"pg_dump code {code}, {sent['bytes']} octets : {message[-500:]}")
+        method = r2.verify(key, sent["md5"], sent["bytes"])     # envoi en plusieurs morceaux : relecture
+    except Exception as e:
+        r2.delete(key)                    # une sauvegarde tronquée ou altérée ne doit pas passer pour valide
+        raise RuntimeError(f"Sauvegarde invalide : {e}")
     dropped = backups_to_drop([o["key"] for o in r2.list(BACKUP_PREFIX)], keep)
     for k in dropped:
         r2.delete(k)
-    return {"cle": key, "octets": sent, "supprimees": dropped}
+    return {"cle": key, "octets": sent["bytes"], "verification": method, "supprimees": dropped}
 
 
 # Rechargement des positions depuis l'archive
