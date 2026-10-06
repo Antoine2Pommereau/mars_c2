@@ -78,6 +78,22 @@ Scaleway (DEV1-S) avec Docker Compose (guide : `docs/deploiement.md`) :
   identités successives. 8 navires des listes dans la collecte du 05/10, dont 3 au signal fort (GELIOTROP, VULKAN,
   PASIPHAE).
 
+**État au 06/10/2026, fin de l'étape 1 (serveur `/opt/mars_c2`, quatre zones, environ 680 messages par minute,
+34 000 positions conservées par heure).** Exploitation dans le conteneur `taches` (`scripts/taches.py`,
+`mars/archive.py`, `mars/r2.py`), sans cron sur l'hôte ; guide complet dans `docs/deploiement.md` :
+* **Archivage** chaque nuit à 02:30 UTC : Parquet des journées terminées compactés (zstd 9, trié par navire puis
+  instant, format brut inchangé) vers Cloudflare R2, vérifiés (MD5 à l'envoi, taille et empreinte relues), inscrits
+  dans `archives`, puis supprimés du serveur s'ils sont ingérés et confirmés.
+* **Purge** des positions au delà de 30 jours, seulement pour les journées archivées.
+* **Sauvegarde** nocturne : `pg_dump` sans les données de `positions` ni de `ingested_files`, en flux vers R2,
+  7 gardées. Restauration complète éprouvée : schéma et tables depuis la sauvegarde, positions depuis l'archive
+  (`taches.py restaurer-positions`, allègement dédié), fichiers locaux par l'ingestion.
+* **Disque** mesuré toutes les 10 minutes, alerte sous 15 % (journal et `/api/ingestion`).
+* **Horloge** : vitesse 1 en direct ; la vitesse enregistrée est celle du rejeu, remise à 1 au retour au direct.
+* **Volumes à l'équilibre** : base 7,5 Go (24,5 millions de positions à 282 octets index compris) ; R2 26 Mo par
+  jour (27,4 octets par position, 22,5 par message statique), 10 Go gratuits atteints en 13 mois environ.
+  TimescaleDB inutile à cette échelle.
+
 ## 1. Le projet (version initiale)
 
 **MARS C2** est une plateforme de surveillance maritime (Maritime Domain Awareness) qui fusionne deux sources :
@@ -193,10 +209,10 @@ mars_c2/
   CLAUDE.md               ce fichier
   start.sh                démarrage complet
   docker-compose.yml      db, backend, web (inference en profil conteneur ; collector et ingest en profil direct)
-  docker-compose.serveur.yml  surcouche du serveur Scaleway (ports fermés, redémarrage, journaux bornés)
+  docker-compose.serveur.yml  surcouche du serveur Scaleway (ports fermés, redémarrage, journaux bornés, service taches)
   pyproject.toml          paquet mars et dépendances (pip install -e ".[test]")
   config/rules.yaml       tous les seuils, versionnés (version courante 2026.10.16)
-  db/init/01 à 12         schéma et migrations (idempotentes à partir de 02)
+  db/init/01 à 13         schéma et migrations (idempotentes à partir de 02)
   mars/
     config.py, db.py, geo.py
     sar/sentinelhub.py    extraction SIGMA0 bilinéaire, découpage en requêtes de 2400 px, cache
@@ -207,6 +223,8 @@ mars_c2/
     ais/ingest.py         chargement continu du Parquet en base, identités, journées
     ais/mid.py            pavillon d'après le MMSI
     watchlist.py          lecture des listes GUR et OpenSanctions
+    archive.py            archivage R2 (sélection, compactage), purge, sauvegarde, rechargement, disque
+    r2.py                 client Cloudflare R2 (envoi vérifié, envoi en flux, liste, suppression)
     fusion/match.py       tolérance Doppler orientée (ellipse), appariement hongrois
     fusion/pipeline.py    masques, appariement, persistance, navires sombres, positions non confirmées
   backend/app.py          API ; backend/rules.py : rendez vous, coupures AIS, mouillages, réception
@@ -241,11 +259,13 @@ mars_c2/
 | `regions`, `region_layers`, `infrastructure` | Zones France, manifeste de provisionnement, câbles, pipelines et parcs éoliens EMODnet |
 | `vessel_identities` | Identités déclarées par un navire (nom, OMI, indicatif, type, pavillon) et leur période ; vue `imo_history` |
 | `ingested_files` | Registre des fichiers Parquet chargés (dossier, nom, lus, conservés) |
+| `archives` | Fichiers compactés envoyés sur R2 : type, zone, journée, clé, fichiers d'origine, lignes, octets, MD5 |
+| `task_runs`, `disk_status` | Journal des tâches planifiées ; dernière mesure du disque |
 | `watchlist` | Listes de surveillance : source, OMI, MMSI, nom, thèmes, sanctionné, flotte fantôme ; vue matérialisée `vessel_watch` (niveau par navire) |
 
 Migrations : 02 horloge simulée, 03 analyses, 04 masques, 05 statut de navigation, 06 coupures AIS (classe, emprise,
 réception), 07 continuité de réception, 08 échos fixes, 09 décisions des opérateurs, 10 régions et infrastructures, 11 direct (horloge, identités, registre), 12 liste
-de surveillance. Les appliquer avec
+de surveillance, 13 exploitation (archives, tâches, disque, vitesse 1 en direct). Les appliquer avec
 `docker compose exec -T db psql -U mars -d mars < db/init/0X_nom.sql`.
 
 ## 7. API
@@ -253,13 +273,13 @@ de surveillance. Les appliquer avec
 | Route | Rôle |
 |---|---|
 | `GET /api/health`, `GET /api/inference/health` | Santé de l'API et du service d'inférence |
-| `GET, POST /api/clock` | Horloge : `live` (direct), `play`, `pause`, `speed`, `seek` (un instant futur ramène au direct) |
+| `GET, POST /api/clock` | Horloge : `live` (direct, vitesse 1), `play`, `pause`, `speed` (rejeu seulement, 409 en direct), `seek` (un instant futur ramène au direct) |
 | `GET /api/stream` | Flux SSE (section 4) |
 | `GET /api/traffic`, `GET /api/traffic/trails` | Trafic à l'instant simulé, traînées de 30 minutes |
 | `GET /api/vessels/{id}` | Fiche navire : identité, identités successives (même MMSI ou même OMI), listes de surveillance |
 | `GET /api/vessels/{id}/track?start&end` | Trajectoire d'un navire |
 | `GET /api/watchlist?hours` | Navires des listes vus dans les dernières heures, du signal le plus fort au plus faible |
-| `GET /api/ingestion` | État du direct : dernier fichier chargé, retard, volume de la dernière heure, listes chargées |
+| `GET /api/ingestion` | État du direct : dernier fichier chargé, retard, volume de la dernière heure, listes chargées, disque (`alerte_disque`), dernière exécution de chaque tâche |
 | `GET /api/ais/days` | Journées chargées |
 | `GET /api/passes?bbox&start&end` | Passages Sentinel 1 sur une zone, recouvrement, disponibilité de l'AIS (par défaut sur la période chargée) |
 | `POST /api/analyses` (202), `GET /api/analyses`, `GET /api/analyses/{id}`, `GET /api/analyses/{id}/detections` | Analyses radar |
@@ -399,6 +419,8 @@ peut tomber dans la zone) ; seuls ceux de l'intérieur comptent pour les positio
 | Balayage du seuil (mouillage de Skagen) | appariées 14, 16, 17, 17, 18 et non confirmées 5, 4, 2, 2, 0 pour 0,30, 0,25, 0,20, 0,15, 0,10 ; 0,10 explose la latence (572 candidats) |
 | Test par injection des coupures | 5 sur 5 |
 | Persistance à Anholt | 107 échos fixes sur 111 éoliennes |
+| Taille en base d'une position (2 millions) | 282 octets : table 101, index spatial 66, navire et instant 54, instant 39, clé 22 |
+| Archive Parquet compactée (zstd 9) | 27,4 octets par position, 22,5 par message statique (petits fichiers : 123 et 249) |
 
 Scripts : `import_ais.py`, `build_masks.py [--skip-land] [--source naturalearth]`,
 `run_rules.py --day AAAA-MM-JJ [--selftest]`, `analyze_zone.py --bbox ... --time ...`,
@@ -406,7 +428,7 @@ Scripts : `import_ais.py`, `build_masks.py [--skip-land] [--source naturalearth]
 
 ## 14. Tests
 
-`python -m pytest tests` : 27 tests attendus, 1 ignoré sans `MARS_TEST_MODEL=1` (qui charge le vrai modèle).
+`python -m pytest tests` : 33 tests attendus, 1 ignoré sans `MARS_TEST_MODEL=1` (qui charge le vrai modèle).
 Couvrent le contrat du modèle (ordre des canaux, normalisation, tuilage, décodage, fusion des fragments) et le
 moteur de fusion (masques, appariement, navire sombre, tolérance orientée, position non confirmée, écho fixe).
 L'interface n'a pas de tests ; `npm run typecheck` vérifie les types.
@@ -442,6 +464,17 @@ L'interface n'a pas de tests ; `npm run typecheck` vérifie les types.
   OMI 9289518, listé sous son ancien MMSI hondurien, passait pour « flotte fantôme » au lieu de « fort »).
 * psycopg n'adapte pas les entiers numpy : convertir en `int` avant toute requête.
 * Surcouche Compose : `ports` se cumule entre fichiers ; utiliser `!override` ou `!reset` (Compose 2.24.4 ou plus).
+* **R2 et boto3** : les versions récentes de boto3 ajoutent des sommes de contrôle que R2 n'accepte pas toutes :
+  `request_checksum_calculation="when_required"`, et MD5 fourni explicitement (`ContentMD5`). L'ETag d'un envoi en
+  une requête est le MD5 : c'est ce qui est relu pour confirmer l'archive.
+* `pg_dump` doit avoir la version majeure du serveur (16) : l'image des scripts l'installe depuis le dépôt PGDG.
+* **Recharger d'anciens jours ne passe pas par l'ingestion en direct** : son allègement écarte tout message plus
+  ancien que le dernier point gardé du navire. `restaurer-positions` utilise une instance neuve, jour par jour.
+* Une sauvegarde capture sa propre tâche « en cours » : à la restauration (et après un redémarrage), la boucle des
+  tâches marque ces lignes en échec.
+* Tester R2 en local : l'image MinIO n'est plus publiée sur Docker Hub ni quay.io ; `moto_server` dans un
+  conteneur Python fait office de S3 (créer le seau en région `us-east-1`).
+* Typer `ts` en horodatage dans l'archive ne gagne que 10 % (nanosecondes incompressibles) : format brut conservé.
 * La collecte écrit dans un fichier caché puis renomme : l'ingestion ne lit jamais un fichier incomplet (et ignore
   de toute façon les fichiers de moins de 5 s).
 
