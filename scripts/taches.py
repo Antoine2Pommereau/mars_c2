@@ -8,7 +8,8 @@ Chaque nuit à TACHES_HEURE (UTC, 02:30 par défaut), dans cet ordre :
   3. sauvegarde : pg_dump compressé vers R2, sans les données de positions, SAUVEGARDES_GARDEES (7) conservées.
 Toutes les 10 minutes : espace disque, alerte sous ALERTE_DISQUE_PCT (15 %).
 Toutes les 5 minutes (section continu de config/rules.yaml) : règles comportementales sur le flux en direct
-(rendez vous, coupures AIS, navires des listes, changements d'identité), consignées dans task_runs (tâche regles).
+(rendez vous, coupures AIS, navires des listes, changements d'identité), consignées dans task_runs (tâche regles),
+puis statistiques du trafic pour la frise de l'interface (mars/frise.py).
 Une tâche réussie ne rejoue pas le même jour ; une tâche en échec est retentée une heure plus tard.
 
 Usage :
@@ -114,6 +115,7 @@ def rules_cycle() -> dict:
     """Un cycle des règles sur le flux en direct (mars/rules.py), sur une connexion asyncpg dédiée."""
     import asyncio
     import asyncpg
+    from mars.frise import refresh_stats
     from mars.rules import run_continuous
 
     async def go():
@@ -121,7 +123,10 @@ def rules_cycle() -> dict:
         for t in ("json", "jsonb"):
             await c.set_type_codec(t, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
         try:
-            return await run_continuous(c, datetime.now(timezone.utc), load_rules())
+            now = datetime.now(timezone.utc)
+            out = await run_continuous(c, now, load_rules())
+            out["frise"] = await refresh_stats(c, now)      # statistiques de la frise (densité, coupures du flux)
+            return out
         finally:
             await c.close()
 

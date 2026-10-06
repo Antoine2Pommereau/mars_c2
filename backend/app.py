@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from mars.config import load_rules
+from mars.frise import timeline
 from mars.fusion.pipeline import fuse
 from mars.geo import bbox_size_km
 from mars.sar.catalog import get_token, search_passes
@@ -136,13 +137,22 @@ async def set_clock(cmd: ClockCommand):
 
 # Trafic AIS rejoué
 
+TRAFFIC_COLS = ["vessel_id", "lon", "lat", "sog_kn", "cog_deg", "t", "mmsi", "name", "ship_type", "length_m", "flag",
+                "watch"]
+
+
 async def read_traffic(c, now: datetime) -> dict:
+    """Dernière position de chaque navire vu dans les 30 minutes précédant `now`, en colonnes : sans répéter les
+    noms de champs à chaque navire, avec des coordonnées arrondies au mètre, le trafic de plusieurs milliers de
+    navires tient en 5 fois moins d'octets que du GeoJSON. `t` : instant de la position, en secondes."""
     rows = await c.fetch(
         """
-        SELECT t.*, v.mmsi, v.name, v.ship_type, v.length_m, v.flag, w.level AS watch
+        SELECT t.vessel_id, round(t.lon::numeric, 5)::float8 AS lon, round(t.lat::numeric, 5)::float8 AS lat,
+               round(t.sog_kn::numeric, 1)::float8 AS sog_kn, round(t.cog_deg)::int AS cog_deg,
+               extract(epoch FROM t.ts)::bigint AS t,
+               v.mmsi, v.name, v.ship_type, v.length_m, v.flag, w.level AS watch
         FROM (SELECT DISTINCT ON (p.vessel_id)
-                     p.vessel_id, p.sog_kn, p.cog_deg,
-                     extract(epoch FROM $1::timestamptz - p.ts)::float8 AS age_s,
+                     p.vessel_id, p.sog_kn, p.cog_deg, p.ts,
                      ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat
               FROM positions p
               WHERE p.ts > $1::timestamptz - make_interval(mins => $2::int) AND p.ts <= $1::timestamptz
@@ -150,11 +160,8 @@ async def read_traffic(c, now: datetime) -> dict:
         JOIN vessels v ON v.id = t.vessel_id
         LEFT JOIN vessel_watch w ON w.vessel_id = t.vessel_id
         """, now, TRAFFIC_WINDOW_MIN)
-    keys = ("vessel_id", "mmsi", "name", "ship_type", "length_m", "flag", "watch", "sog_kn", "cog_deg", "age_s")
-    return collection([
-        feature({"type": "Point", "coordinates": [r["lon"], r["lat"]]}, {k: finite(r[k]) for k in keys})
-        for r in rows
-    ])
+    return {"at": now.isoformat(), "cols": TRAFFIC_COLS,
+            "rows": [[finite(r[k]) for k in TRAFFIC_COLS] for r in rows]}
 
 
 async def read_active_analyses(c) -> list:
@@ -165,25 +172,19 @@ async def read_active_analyses(c) -> list:
     return [clean(r) for r in rows]
 
 
-async def read_live_alerts(c, now: datetime) -> dict:
-    """Alertes comportementales déjà franchies à l'instant simulé (12 dernières heures simulées)."""
-    rows = await c.fetch(
-        """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,
-                  ST_AsGeoJSON(al.geom)::json AS geometry
-           FROM alerts al
-           WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP', 'WATCHLIST', 'IDENTITY_CHANGE')
-             AND al.event_time <= $1::timestamptz
-             -- un navire des listes reste dans le fil tant qu'il est vu, même entré depuis plus de 12 heures
-             AND (CASE WHEN al.type = 'WATCHLIST' THEN least((al.details->>'fin')::timestamptz, $1::timestamptz)
-                       ELSE al.event_time END) > $1::timestamptz - interval '12 hours'
-           ORDER BY al.event_time DESC""", now)
-    return collection([feature(r["geometry"], clean(r)) for r in rows])
+@app.get("/api/traffic")
+async def traffic(at: datetime | None = None):
+    """Trafic à un instant donné (plage ou rejeu de l'interface, instant porté par l'adresse de la page), sans
+    dépendre de l'horloge partagée ; sans `at`, l'heure réelle."""
+    async with app.state.pool.acquire() as c:
+        return await read_traffic(c, at or await c.fetchval("SELECT clock_timestamp()"))
 
 
 @app.get("/api/traffic/trails")
-async def trails(minutes: int = TRAIL_MIN):
+async def trails(minutes: int = TRAIL_MIN, at: datetime | None = None):
+    """Traînées des `minutes` précédant `at` (sans `at` : l'horloge partagée, comportement d'origine)."""
     async with app.state.pool.acquire() as c:
-        clock = await read_clock(c)
+        clock = {"now": at} if at else await read_clock(c)
         rows = await c.fetch(
             """
             SELECT p.vessel_id, ST_AsGeoJSON(ST_MakeLine(p.geom::geometry ORDER BY p.ts))::json AS geometry
@@ -269,27 +270,46 @@ async def ingestion_status():
 
 
 @app.get("/api/vessels/{vessel_id}/track")
-async def track(vessel_id: int, start: datetime, end: datetime):
-    """Trajectoire d'un navire sur une fenêtre de temps."""
+async def track(vessel_id: int, start: datetime, end: datetime, max_points: int = 2000):
+    """Trajectoire d'un navire sur une fenêtre de temps, allégée à `max_points` points au plus (une position sur k,
+    dans l'ordre du temps, plus la dernière) : 30 jours d'un navire en route font plus de 40 000 positions."""
     async with app.state.pool.acquire() as c:
         geometry = await c.fetchval(
-            "SELECT ST_AsGeoJSON(ST_MakeLine(geom::geometry ORDER BY ts))::json FROM positions "
-            "WHERE vessel_id = $1 AND ts BETWEEN $2 AND $3", vessel_id, start, end)
+            """WITH p AS (SELECT geom, ts, row_number() OVER (ORDER BY ts) AS k, count(*) OVER () AS n
+                          FROM positions WHERE vessel_id = $1 AND ts BETWEEN $2 AND $3)
+               SELECT ST_AsGeoJSON(ST_MakeLine(geom::geometry ORDER BY ts), 5)::json FROM p
+               WHERE n <= $4::int OR (k - 1) % ceil(n::float8 / $4::int)::int = 0 OR k = n""",
+            vessel_id, start, end, max(2, max_points))
     if geometry is None:
         raise HTTPException(404, "Aucune position sur cette fenêtre")
     return feature(geometry, {"vessel_id": vessel_id, "start": start.isoformat(), "end": end.isoformat()})
 
 
+STREAM_TRAFFIC_MAX_S = 30   # trafic renvoyé au plus tard toutes les 30 s, et dès que l'ingestion a chargé du nouveau
+
+
 @app.get("/api/stream")
-async def stream(request: Request):
-    """Flux SSE, une fois par seconde réelle : horloge, trafic, et progression des analyses en cours."""
+async def stream(request: Request, direct: bool = False):
+    """Flux SSE, une fois par seconde : horloge et progression des analyses ; trafic seulement quand il a changé.
+
+    Les positions arrivent par fichiers (une écriture par minute, une ingestion toutes les 15 s) : renvoyer chaque
+    seconde 2 000 navires coûtait 680 Ko par client et par seconde pour rien. `direct` : l'horloge est l'heure
+    réelle, quel que soit l'état de l'horloge partagée (l'instant des autres modes est tenu par l'interface)."""
     async def events():
+        last_ingest, last_sent = None, 0.0
+        loop = asyncio.get_running_loop()
         while not await request.is_disconnected():
             async with app.state.pool.acquire() as c:
-                clock = await read_clock(c)
-                payload = {"clock": clock_json(clock), "traffic": await read_traffic(c, clock["now"]),
-                           "analyses": await read_active_analyses(c),
-                           "live_alerts": await read_live_alerts(c, clock["now"])}
+                if direct:
+                    now = await c.fetchval("SELECT clock_timestamp()")
+                    clock = {"now": now, "speed": 1.0, "paused": False, "live": True}
+                else:
+                    clock = await read_clock(c)
+                payload = {"clock": clock_json(clock), "analyses": await read_active_analyses(c)}
+                ingest = await c.fetchval("SELECT max(ingested_at) FROM ingested_files")
+                if not direct or ingest != last_ingest or loop.time() - last_sent >= STREAM_TRAFFIC_MAX_S:
+                    payload["navires"] = await read_traffic(c, clock["now"])
+                    last_ingest, last_sent = ingest, loop.time()
             yield f"event: traffic\ndata: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1)
 
@@ -641,10 +661,12 @@ FRANCE_REGIONS = ("Bretagne", "Manche", "Gascogne", "Mediterranee")
 
 
 @app.get("/api/infrastructure")
-async def infrastructure(region: int | None = None):
-    """Câbles, pipelines et parcs éoliens provisionnés depuis EMODnet (table infrastructure), en GeoJSON."""
+async def infrastructure(region: int | None = None, tolerance: float = 0.0):
+    """Câbles, pipelines et parcs éoliens provisionnés depuis EMODnet (table infrastructure), en GeoJSON.
+    `tolerance` (degrés) simplifie les tracés : les 816 tracés de France pèsent 2,6 Mo en pleine résolution."""
+    geom = ("ST_SimplifyPreserveTopology(i.geom::geometry, $2::float8)" if tolerance > 0 else "i.geom::geometry")
     sql = ("SELECT i.id, i.kind, i.name, i.operator, i.source, i.attrs->>'type' AS type, "
-           "r.name AS region, ST_AsGeoJSON(i.geom)::json AS geometry "
+           f"r.name AS region, ST_AsGeoJSON({geom}, 5)::json AS geometry "
            "FROM infrastructure i JOIN regions r ON r.id = i.region_id")
     if region is not None:
         sql += " WHERE i.region_id = $1::int"
@@ -652,6 +674,8 @@ async def infrastructure(region: int | None = None):
     else:
         sql += " WHERE lower(r.name) = ANY($1::text[])"
         args = [[n.lower() for n in FRANCE_REGIONS]]   # régions saisies à la main : casse indifférente
+    if tolerance > 0:
+        args.append(tolerance)
     async with app.state.pool.acquire() as c:
         rows = await c.fetch(sql, *args)
     return collection([feature(r["geometry"], {
@@ -827,10 +851,13 @@ async def chip(lon: float, lat: float, time: str, size_m: float = 800):
 class AlertAction(BaseModel):
     action: str
     note: str | None = None
-    author: str = "Opérateur"
+    motif: str | None = None     # obligatoire pour classer : faux_positif, activite_legitime, doublon
+    author: str = "Opérateur"    # un seul opérateur pour l'instant ; le champ prépare plusieurs opérateurs
 
 
-STATUS_OF = {"acquitter": "acquittee", "confirmer": "confirmee", "classer": "classee", "rouvrir": "nouvelle"}
+STATUS_OF = {"acquitter": "acquittee", "confirmer": "confirmee", "classer": "classee", "rouvrir": "nouvelle",
+             "commenter": None}
+MOTIFS = ("faux_positif", "activite_legitime", "doublon")
 
 
 @app.post("/api/alerts/{alert_id}/actions")
@@ -838,37 +865,44 @@ async def alert_action(alert_id: int, a: AlertAction):
     """Décision d'un opérateur sur une alerte : nouveau statut, et trace dans le journal."""
     if a.action not in STATUS_OF:
         raise HTTPException(422, "Action inconnue")
+    note = (a.note or "").strip() or None
+    if a.action == "classer" and a.motif not in MOTIFS:
+        raise HTTPException(422, f"Motif de classement obligatoire : {', '.join(MOTIFS)}")
+    if a.action == "commenter" and not note:
+        raise HTTPException(422, "Commentaire vide")
+    author = (a.author or "").strip() or "Opérateur"
     async with app.state.pool.acquire() as c, c.transaction():
-        status = await c.fetchval("UPDATE alerts SET status = $2 WHERE id = $1 RETURNING status",
-                                  alert_id, STATUS_OF[a.action])
+        if STATUS_OF[a.action] is None:          # commentaire : le statut ne change pas
+            status = await c.fetchval("SELECT status FROM alerts WHERE id = $1", alert_id)
+        else:
+            status = await c.fetchval("UPDATE alerts SET status = $2 WHERE id = $1 RETURNING status",
+                                      alert_id, STATUS_OF[a.action])
         if status is None:
             raise HTTPException(404, "Alerte inconnue")
-        await c.execute("INSERT INTO alert_actions (alert_id, action, note, author) VALUES ($1, $2, $3, $4)",
-                        alert_id, a.action, (a.note or "").strip() or None, a.author)
+        await c.execute("INSERT INTO alert_actions (alert_id, action, note, motif, author) VALUES ($1, $2, $3, $4, $5)",
+                        alert_id, a.action, note, a.motif if a.action == "classer" else None, author)
     return {"id": alert_id, "status": status}
 
 
 @app.get("/api/alerts/{alert_id}/actions")
 async def alert_actions(alert_id: int):
     async with app.state.pool.acquire() as c:
-        rows = await c.fetch("SELECT action, note, author, at FROM alert_actions WHERE alert_id = $1 ORDER BY at DESC",
-                             alert_id)
+        rows = await c.fetch("SELECT action, note, motif, author, at FROM alert_actions WHERE alert_id = $1 "
+                             "ORDER BY at DESC", alert_id)
     return [clean(r) for r in rows]
 
 
-@app.get("/api/alerts/day")
-async def alerts_of_day(day: str):
-    """Alertes comportementales d'une journée, pour la frise chronologique de l'interface."""
-    start = pd.Timestamp(day, tz="UTC").to_pydatetime()
+# Frise : densité du trafic et coupures du flux AIS sur une plage
+
+@app.get("/api/timeline")
+async def timeline_route(start: datetime, end: datetime, bins: int = 240):
+    """Histogramme du nombre de navires (moyenne par tranche de 10 minutes) et coupures du flux AIS, lus dans les
+    statistiques tenues par le conteneur taches : une plage de 30 jours ne lit que quelques dizaines de milliers de
+    lignes, au lieu de millions de positions."""
+    if end <= start:
+        raise HTTPException(422, "Plage vide")
     async with app.state.pool.acquire() as c:
-        rows = await c.fetch(
-            """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,
-                      ST_AsGeoJSON(al.geom)::json AS geometry
-               FROM alerts al
-               WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP', 'WATCHLIST', 'IDENTITY_CHANGE')
-                 AND al.event_time >= $1::timestamptz AND al.event_time < $1::timestamptz + interval '1 day'
-               ORDER BY al.event_time""", start)
-    return collection([feature(r["geometry"], clean(r)) for r in rows])
+        return await timeline(c, start, end, max(10, min(bins, 1000)), load_rules()["continu"]["flux_min_ratio"])
 
 
 # Consultation
@@ -909,17 +943,26 @@ async def detections(analysis_id: int):
 
 
 @app.get("/api/alerts")
-async def alerts(analysis_id: int | None = None):
+async def alerts(analysis_id: int | None = None, start: datetime | None = None, end: datetime | None = None,
+                 limit: int = 2000):
+    """Alertes d'une analyse radar, ou d'une plage de temps [start, end] : instant de l'alerte dans la plage, ou, pour
+    un navire des listes, passage qui chevauche la plage. `vessel_ids` : navires preuves de l'alerte (regroupement
+    du fil d'alertes, navires en alerte sur la carte)."""
     q = """
     SELECT al.id, al.type, al.severity, al.status, al.event_time, al.detected_at, al.details, al.rule_version,
-           ST_AsGeoJSON(al.geom)::json AS geometry
+           ST_AsGeoJSON(al.geom, 5)::json AS geometry,
+           coalesce((SELECT array_agg(e.evidence_id) FROM alert_evidence e
+                     WHERE e.alert_id = al.id AND e.evidence_type = 'vessel'), '{}') AS vessel_ids
     FROM alerts al
-    WHERE $1::bigint IS NULL OR EXISTS (
-        SELECT 1 FROM alert_evidence e
-        WHERE e.alert_id = al.id AND e.evidence_type = 'analysis' AND e.evidence_id = $1::bigint
-    )
-    ORDER BY al.detected_at DESC
+    WHERE ($1::bigint IS NULL OR EXISTS (
+            SELECT 1 FROM alert_evidence e
+            WHERE e.alert_id = al.id AND e.evidence_type = 'analysis' AND e.evidence_id = $1::bigint))
+      AND ($2::timestamptz IS NULL OR al.event_time <= $3::timestamptz AND (
+            al.event_time >= $2::timestamptz
+            OR (al.type = 'WATCHLIST' AND (al.details->>'fin')::timestamptz >= $2::timestamptz)))
+    ORDER BY al.event_time DESC
+    LIMIT $4::int
     """
     async with app.state.pool.acquire() as c:
-        rows = await c.fetch(q, analysis_id)
+        rows = await c.fetch(q, analysis_id, start, end or (start and datetime.now(start.tzinfo)), limit)
     return collection([feature(r["geometry"], clean(r)) for r in rows])
