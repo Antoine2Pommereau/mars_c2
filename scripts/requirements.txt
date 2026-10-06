@@ -4,3 +4,7 @@ websockets
 psycopg[binary]
 pyyaml
 boto3
+asyncpg
+requests
+pyshp
+shapely

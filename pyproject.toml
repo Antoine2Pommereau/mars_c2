@@ -20,6 +20,7 @@ dependencies = [
     "shapely>=2",
     "pyarrow",
     "websockets",
+    "asyncpg",
     "boto3",
 ]
 

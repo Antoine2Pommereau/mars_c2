@@ -22,7 +22,7 @@ from mars.config import load_rules
 from mars.fusion.pipeline import fuse
 from mars.geo import bbox_size_km
 from mars.sar.catalog import get_token, search_passes
-from rules import build_reception_cells, build_stationary_zones, find_gaps, run_ais_gap, run_rendezvous
+from mars.rules import build_reception_cells, build_stationary_zones, find_gaps, run_ais_gap, run_rendezvous
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://mars:mars@localhost:5432/mars")
 INFERENCE_URL = os.environ.get("INFERENCE_URL", "http://host.docker.internal:8001")
@@ -171,8 +171,11 @@ async def read_live_alerts(c, now: datetime) -> dict:
         """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,
                   ST_AsGeoJSON(al.geom)::json AS geometry
            FROM alerts al
-           WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP')
-             AND al.event_time <= $1::timestamptz AND al.event_time > $1::timestamptz - interval '12 hours'
+           WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP', 'WATCHLIST', 'IDENTITY_CHANGE')
+             AND al.event_time <= $1::timestamptz
+             -- un navire des listes reste dans le fil tant qu'il est vu, même entré depuis plus de 12 heures
+             AND (CASE WHEN al.type = 'WATCHLIST' THEN least((al.details->>'fin')::timestamptz, $1::timestamptz)
+                       ELSE al.event_time END) > $1::timestamptz - interval '12 hours'
            ORDER BY al.event_time DESC""", now)
     return collection([feature(r["geometry"], clean(r)) for r in rows])
 
@@ -208,7 +211,15 @@ async def vessel(vessel_id: int):
                WHERE i.vessel_id = $1 OR ($2::int IS NOT NULL AND i.imo = $2::int)
                ORDER BY i.first_seen""", vessel_id, v["imo"])
         watch = await c.fetchrow("SELECT level, matched_by, entries FROM vessel_watch WHERE vessel_id = $1", vessel_id)
-    return {**clean(v), "identities": [clean(r) for r in history], "watch": clean(watch) if watch else None}
+        # Alertes dont ce navire est une preuve (listes, identité, rendez vous, coupures), les plus récentes d'abord
+        alerts = await c.fetch(
+            """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,
+                      ST_AsGeoJSON(al.geom)::json AS geometry
+               FROM alerts al JOIN alert_evidence e ON e.alert_id = al.id
+               WHERE e.evidence_type = 'vessel' AND e.evidence_id = $1
+               ORDER BY al.event_time DESC LIMIT 20""", vessel_id)
+    return {**clean(v), "identities": [clean(r) for r in history], "watch": clean(watch) if watch else None,
+            "alerts": [feature(r["geometry"], clean(r)) for r in alerts]}
 
 
 @app.get("/api/watchlist")
@@ -605,11 +616,14 @@ class RuleRun(BaseModel):
 
 
 @app.post("/api/masks/stationary")
-async def rebuild_stationary_zones():
+async def rebuild_stationary_zones(jours: int | None = None):
+    """Zones de mouillage sur toutes les journées chargées, ou sur les `jours` dernières."""
     async with app.state.pool.acquire() as c:
         span = await c.fetchrow("SELECT min(day) AS d0, max(day) AS d1 FROM ais_days")
         if span["d0"] is None:
             raise HTTPException(422, "Aucune journée AIS chargée")
+        if jours:
+            span = {"d0": max(span["d0"], span["d1"] - pd.Timedelta(days=jours - 1)), "d1": span["d1"]}
         n = await build_stationary_zones(c, span["d0"], span["d1"], load_rules())
     return {"zones": n, "du": span["d0"].isoformat(), "au": span["d1"].isoformat()}
 
@@ -647,9 +661,11 @@ async def infrastructure(region: int | None = None):
 
 
 @app.post("/api/masks/reception")
-async def rebuild_reception_cells():
+async def rebuild_reception_cells(jours: int | None = None):
+    """Zone de réception fiable sur toutes les positions, ou sur celles des `jours` derniers jours."""
+    since = None if not jours else (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=jours)).to_pydatetime()
     async with app.state.pool.acquire() as c:
-        return await build_reception_cells(c, load_rules())
+        return await build_reception_cells(c, load_rules(), since)
 
 
 @app.get("/api/masks/reception")
@@ -849,7 +865,7 @@ async def alerts_of_day(day: str):
             """SELECT al.id, al.type, al.severity, al.status, al.event_time, al.details, al.rule_version,
                       ST_AsGeoJSON(al.geom)::json AS geometry
                FROM alerts al
-               WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP')
+               WHERE al.type IN ('RENDEZVOUS', 'AIS_GAP', 'WATCHLIST', 'IDENTITY_CHANGE')
                  AND al.event_time >= $1::timestamptz AND al.event_time < $1::timestamptz + interval '1 day'
                ORDER BY al.event_time""", start)
     return collection([feature(r["geometry"], clean(r)) for r in rows])

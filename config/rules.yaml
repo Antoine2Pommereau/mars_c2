@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.16"
+version: "2026.10.17"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -117,3 +117,25 @@ ingestion:
   stopped_interval_s: 600
   stopped_speed_kn: 0.5    # arrêté sous 0,5 nœud
   moving_speed_kn: 1.0     # en route au delà de 1 nœud ; entre les deux, l'état précédent est conservé
+
+# Évaluation continue (conteneur taches, scripts/taches.py). Paramètres de fonctionnement, pas de calibration.
+continu:
+  intervalle_min: 5        # un cycle toutes les 5 minutes
+  fenetre_h: 24            # fenêtre glissante des rendez vous, coupures AIS et listes de surveillance
+  identite_fenetre_h: 72   # identités apparues depuis 3 jours
+  # Coupure du flux : minute où l'ensemble des zones reçoit moins de 20 % de la médiane des positions par minute de
+  # la fenêtre. Ces minutes ne comptent pas dans la durée d'un silence : une interruption d'AISStream ou de la
+  # collecte ne fait pas apparaître une coupure AIS sur chaque navire.
+  flux_min_ratio: 0.2
+
+watchlist:
+  # Niveaux signalés ; « autre risque » (immobilisations, avertissements) est trop bruyant
+  niveaux: [fort, sanctionne, flotte_fantome, suspect_gur]
+  passage_gap_h: 12        # sans position pendant 12 h : le passage suivant est une nouvelle alerte
+
+identite:
+  # Un nouveau nom n'est signalé qu'après 6 h sans retour à un nom antérieur : les alternances (deux émetteurs,
+  # comme MUTIN et FS MUTIN) ne sont jamais signalées
+  confirmation_min: 360
+  # MMSI écartés en plus des MMSI génériques (code pays suivi de six zéros, comme 227000000, Marine nationale)
+  mmsi_ignores: []

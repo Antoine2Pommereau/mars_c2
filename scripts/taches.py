@@ -7,11 +7,13 @@ Chaque nuit à TACHES_HEURE (UTC, 02:30 par défaut), dans cet ordre :
   2. purge : positions de plus de CONSERVATION_JOURS jours (30), seulement pour les journées archivées ;
   3. sauvegarde : pg_dump compressé vers R2, sans les données de positions, SAUVEGARDES_GARDEES (7) conservées.
 Toutes les 10 minutes : espace disque, alerte sous ALERTE_DISQUE_PCT (15 %).
+Toutes les 5 minutes (section continu de config/rules.yaml) : règles comportementales sur le flux en direct
+(rendez vous, coupures AIS, navires des listes, changements d'identité), consignées dans task_runs (tâche regles).
 Une tâche réussie ne rejoue pas le même jour ; une tâche en échec est retentée une heure plus tard.
 
 Usage :
     python scripts/taches.py                          # boucle (service Docker « taches »)
-    python scripts/taches.py archiver | purger | sauvegarder | disque
+    python scripts/taches.py archiver | purger | sauvegarder | disque | regles
     python scripts/taches.py sauvegardes              # liste des sauvegardes sur R2
     python scripts/taches.py telecharger CLE CHEMIN   # récupère un objet de R2 (restauration)
     python scripts/taches.py restaurer-positions --du 2026-10-01 --au 2026-10-30
@@ -61,7 +63,7 @@ def r2():
     return R2()
 
 
-def run(conn, task: str, fn) -> dict | None:
+def run(conn, task: str, fn, quiet: bool = False) -> dict | None:
     """Exécute une tâche et la consigne dans task_runs (traçabilité, et pas de double exécution le même jour)."""
     day = datetime.now(timezone.utc).date()
     rid = conn.execute("INSERT INTO task_runs (task, run_day, status) VALUES (%s, %s, 'en_cours') RETURNING id",
@@ -72,7 +74,8 @@ def run(conn, task: str, fn) -> dict | None:
         details["duree_s"] = round(time.time() - t, 1)
         conn.execute("UPDATE task_runs SET status = 'ok', finished_at = now(), details = %s WHERE id = %s",
                      (json.dumps(details, default=str), rid))
-        log(f"{task} : {json.dumps(details, default=str, ensure_ascii=False)}")
+        if not quiet or _changed(details):
+            log(f"{task} : {json.dumps(details, default=str, ensure_ascii=False)}")
         return details
     except Exception as e:
         conn.execute("UPDATE task_runs SET status = 'echec', finished_at = now(), details = %s WHERE id = %s",
@@ -80,6 +83,13 @@ def run(conn, task: str, fn) -> dict | None:
         log(f"{task} : ÉCHEC, {e}")
         traceback.print_exc()
         return None
+
+
+def _changed(details) -> bool:
+    """Un cycle des règles n'est journalisé que s'il crée ou retire des alertes (journaux sobres)."""
+    if isinstance(details, dict):
+        return bool(details.get("nouvelles") or details.get("retirees")) or any(_changed(v) for v in details.values())
+    return False
 
 
 def due(conn, task: str, now: datetime) -> bool:
@@ -100,6 +110,24 @@ def tasks(conn):
     }
 
 
+def rules_cycle() -> dict:
+    """Un cycle des règles sur le flux en direct (mars/rules.py), sur une connexion asyncpg dédiée."""
+    import asyncio
+    import asyncpg
+    from mars.rules import run_continuous
+
+    async def go():
+        c = await asyncpg.connect(database_url())
+        for t in ("json", "jsonb"):
+            await c.set_type_codec(t, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+        try:
+            return await run_continuous(c, datetime.now(timezone.utc), load_rules())
+        finally:
+            await c.close()
+
+    return asyncio.run(go())
+
+
 def loop(conn):
     # Une tâche restée « en cours » a été interrompue (redémarrage du conteneur, ou base restaurée depuis une
     # sauvegarde prise pendant sa propre exécution) : elle est marquée en échec et sera retentée.
@@ -109,11 +137,14 @@ def loop(conn):
         log(f"{n} tâche(s) interrompue(s) marquée(s) en échec")
     log(f"Tâches planifiées : chaque nuit à {HOUR} UTC (archivage, purge au delà de {KEEP_DAYS} jours, sauvegarde, "
         f"{KEEP_BACKUPS} gardées) ; disque toutes les {DISK_EVERY_S // 60} min, alerte sous {DISK_PCT:.0f} %")
-    last_disk = 0.0
+    last_disk = last_rules = 0.0
     while True:
         if time.time() - last_disk >= DISK_EVERY_S:
             archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log)
             last_disk = time.time()
+        if time.time() - last_rules >= 60 * load_rules()["continu"]["intervalle_min"]:
+            last_rules = time.time()
+            run(conn, "regles", rules_cycle, quiet=True)
         for task, fn in tasks(conn).items():
             if due(conn, task, datetime.now(timezone.utc)):
                 run(conn, task, fn)
@@ -123,7 +154,7 @@ def loop(conn):
 def main():
     ap = argparse.ArgumentParser(description="Tâches planifiées de MARS C2")
     ap.add_argument("commande", nargs="?", default="boucle",
-                    choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "sauvegardes", "telecharger",
+                    choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "sauvegardes", "telecharger",
                              "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
@@ -136,6 +167,9 @@ def main():
         loop(conn)
     elif a.commande in named:
         if run(conn, named[a.commande], tasks(conn)[named[a.commande]]) is None:
+            sys.exit(1)
+    elif a.commande == "regles":
+        if run(conn, "regles", rules_cycle) is None:
             sys.exit(1)
     elif a.commande == "disque":
         print(archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log))
