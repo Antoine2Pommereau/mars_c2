@@ -544,7 +544,7 @@ async def stationary_zones():
 
 # Périmètre France de la section 0 : par défaut on ne sert que ces zones (la base peut contenir
 # d'autres régions issues du worktree de calibration danois). ?region=<id> cible une zone précise.
-FRANCE_REGIONS = ("Bretagne", "Mediterranee")
+FRANCE_REGIONS = ("Bretagne", "Manche", "Gascogne", "Mediterranee")
 
 
 @app.get("/api/infrastructure")
