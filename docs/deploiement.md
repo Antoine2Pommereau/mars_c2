@@ -4,8 +4,10 @@ Le serveur (`/opt/mars_c2`) fait tourner en permanence, avec Docker Compose, six
 l'API (`backend`), l'interface (`web`), la collecte AISStream (`collector`), l'ingestion en base (`ingest`) et les
 tâches planifiées (`taches` : règles en continu, archivage sur R2, purge, sauvegarde, surveillance du disque). Pas de
 cron sur l'hôte : tout redémarre avec la plateforme (`restart: unless-stopped`). Les images sont construites sur le
-Mac en linux/amd64 et chargées sur le serveur (section « Construire sur le Mac et déployer ») : le serveur n'a ni la
-place ni la mémoire pour les construire. Le service d'inférence radar reste sur le Mac (GPU
+Mac en linux/amd64, publiées sur le registre GitHub (paquets privés `ghcr.io/antoine2pommereau/mars_c2-backend`,
+`mars_c2-web` et `mars_c2-scripts`), puis téléchargées par le serveur (section « Construire sur le Mac et déployer ») :
+le serveur n'a ni la place ni la mémoire pour les construire, et les gros transferts par SSH échouent depuis le Mac
+(« Result too large »). Le service d'inférence radar reste sur le Mac (GPU
 Apple) ; sur le serveur, l'API le signale « injoignable », ce qui est attendu.
 
 Rien n'est ouvert sur Internet hormis SSH : la base n'a aucun port publié, l'API et l'interface écoutent sur
@@ -44,14 +46,24 @@ R2_BUCKET=mars-c2
 `COMPOSE_FILE` et `COMPOSE_PROFILES` font qu'un simple `docker compose up -d` applique la surcouche du serveur et
 démarre collecte, ingestion et tâches (profil `direct` inactif sur le Mac : une seule collecte par clé).
 
-Premier démarrage : charger les images depuis le Mac (section « Construire sur le Mac et déployer », étapes 1 et 2),
-copier les listes de surveillance, démarrer, importer les listes, puis construire les masques France :
+Connexion du serveur au registre GitHub, une fois, avec un jeton personnel **en lecture seule** (GitHub, Settings,
+Developer settings, Personal access tokens, Tokens (classic), portée `read:packages`) enregistré dans un fichier lisible
+par root seulement :
 
 ```bash
-# Sur le Mac
+umask 077 && nano /root/.ghcr_lecture            # coller le jeton, enregistrer
+docker login ghcr.io -u antoine2pommereau --password-stdin < /root/.ghcr_lecture
+```
+
+Premier démarrage : publier les images depuis le Mac (section « Construire sur le Mac et déployer », étapes 1 et 2),
+copier les listes de surveillance, télécharger les images, démarrer, importer les listes, puis construire les
+masques France :
+
+```bash
+# Sur le Mac (petits fichiers : scp convient)
 scp data/listes/Vessels1.db data/listes/maritime.csv root@IP_DU_SERVEUR:/opt/mars_c2/data/listes/
 # Sur le serveur
-cd /opt/mars_c2 && docker compose up -d --no-build
+cd /opt/mars_c2 && docker compose pull && docker compose up -d --no-build
 docker compose run --rm ingest python scripts/import_watchlist.py
 docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
 ```
@@ -166,66 +178,92 @@ docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
 
 ## Construire sur le Mac et déployer
 
-Le serveur ne construit rien : ni la place ni la mémoire. Les trois images (`mars_c2-backend`, `mars_c2-web`,
-`mars_c2-scripts`, cette dernière commune à `collector`, `ingest` et `taches`) sont construites sur le Mac pour
-linux/amd64, envoyées par `docker save` et `docker load`, puis démarrées sans construction.
+Le serveur ne construit rien. Les trois images sont construites sur le Mac pour linux/amd64, publiées sur le registre
+GitHub, puis téléchargées par le serveur :
 
-**1. Sur le Mac**, depuis le dépôt à jour :
+| Image | Services | Taille (07/10/2026) |
+|---|---|---|
+| `ghcr.io/antoine2pommereau/mars_c2-backend` | `backend` | 160 Mo |
+| `ghcr.io/antoine2pommereau/mars_c2-web` | `web` | 21 Mo |
+| `ghcr.io/antoine2pommereau/mars_c2-scripts` | `collector`, `ingest`, `taches` | 190 Mo |
 
-```bash
-git pull origin main
+Chaque publication porte deux étiquettes : `latest`, que le serveur utilise par défaut, et l'empreinte courte du
+commit (par exemple `4238202`), pour revenir à une version précise (`MARS_TAG=4238202` dans le `.env` du serveur).
+Les couches inchangées ne sont ni republiées ni retéléchargées.
+
+**Connexion du Mac au registre, une fois**, avec un jeton personnel en **écriture** (portée `write:packages`, qui
+inclut la lecture), gardé dans le trousseau de macOS plutôt que dans un fichier ou l'historique du terminal :
+
+```zsh
+security add-generic-password -a antoine2pommereau -s ghcr-mars-c2 -w      # le jeton est demandé, sans écho
+security find-generic-password -a antoine2pommereau -s ghcr-mars-c2 -w | docker login ghcr.io -u antoine2pommereau --password-stdin
+```
+
+Les trois paquets sont privés : au premier envoi, GitHub les crée privés ; le jeton de lecture du serveur y a accès
+parce qu'ils appartiennent au même compte.
+
+**1. Sur le Mac : construire**, depuis le dépôt à jour (commandes compatibles zsh) :
+
+```zsh
+cd ~/Documents/"Projet Perso"/MarsC2/mars_c2/mars_c2 && git pull origin main
 touch .env                                         # la surcouche lit .env ; un fichier vide suffit pour construire
 DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.yml -f docker-compose.serveur.yml \
   --profile direct build backend web collector
-docker image inspect mars_c2-backend mars_c2-web mars_c2-scripts --format '{{.RepoTags}} {{.Architecture}}'
+R=ghcr.io/antoine2pommereau
+for i in mars_c2-backend mars_c2-web mars_c2-scripts; do docker image inspect "${R}/${i}:latest" --format "${i} {{.Architecture}}"; done
 ```
 
 Les trois doivent afficher `amd64`. Ces images remplacent sur le Mac celles du même nom : pour retrouver des images
 natives en local, relancer ensuite `docker compose build backend web`.
 
-Tailles mesurées le 06/10/2026 : `mars_c2-backend` 160 Mo, `mars_c2-web` 21 Mo, `mars_c2-scripts` 189 Mo ; flux
-compressé de l'envoi : 325 Mo. Prévoir environ 400 Mo libres sur le serveur pour charger les trois images.
+**2. Sur le Mac : publier**, avec l'étiquette du commit en plus de `latest` :
 
-**2. Envoi en flux**, sans fichier intermédiaire ni sur le Mac ni sur le serveur (les couches communes ne passent
-qu'une fois) :
-
-```bash
-docker save mars_c2-backend mars_c2-web mars_c2-scripts | gzip | ssh root@IP_DU_SERVEUR 'gunzip | docker load'
+```zsh
+R=ghcr.io/antoine2pommereau
+TAG=$(git rev-parse --short HEAD)
+for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
+  docker tag "${R}/${i}:latest" "${R}/${i}:${TAG}"
+  docker push "${R}/${i}:latest"
+  docker push "${R}/${i}:${TAG}"
+done
 ```
 
-**3. Sur le serveur**, code et migrations à jour, puis démarrage sans construction :
+Ne publier que les images qui changent est possible (retirer les autres de la liste), mais pas nécessaire : une
+couche déjà sur le registre n'est pas renvoyée.
+
+**3. Sur le serveur : télécharger et démarrer.** Code et migrations d'abord (une nouvelle migration de `db/init` ne
+s'applique pas seule à une base existante, et la nouvelle API peut en dépendre) :
 
 ```bash
 cd /opt/mars_c2 && git pull origin main
 docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/1X_nom.sql   # chaque migration nouvelle
+docker compose pull backend web collector ingest taches
 docker compose up -d --no-build
-docker image prune -f                              # anciennes images devenues sans nom
+docker image prune -f                              # anciennes versions devenues sans étiquette
 ```
 
-Une nouvelle migration de `db/init` ne s'applique pas toute seule à une base existante (les scripts d'initialisation
-ne jouent qu'à la création du volume) ; l'appliquer avant `up`, la nouvelle API pouvant en dépendre.
-
-**Disque trop juste pour garder les anciennes et les nouvelles images.** `docker load` écrit les nouvelles couches
-avant que les anciennes ne soient libérables, et une image utilisée par un conteneur, même arrêté, ne peut pas être
-supprimée. Dans ce cas, libérer d'abord, dans cet ordre (la base et ses données ne sont pas touchées, la collecte
-s'interrompt quelques minutes, sans conséquence sur les règles : les minutes de flux coupé ne comptent pas comme
-des silences) :
+**Disque juste.** `docker compose pull` télécharge les couches compressées (environ 330 Mo pour les trois images
+quand tout change) puis les décompresse (environ 370 Mo) pendant que les anciennes images sont encore présentes et
+utilisées : prévoir environ 800 Mo libres. S'il n'y en a pas assez, libérer d'abord, dans cet ordre (la base et ses
+données ne sont pas touchées ; la collecte s'interrompt quelques minutes, sans conséquence sur les règles, les minutes
+de flux coupé ne comptant pas comme des silences) :
 
 ```bash
 cd /opt/mars_c2 && git pull origin main
-docker compose rm -sf backend web collector ingest taches   # arrêt et suppression des conteneurs, pas des volumes
-docker image rm mars_c2-backend mars_c2-web mars_c2-scripts  # libère la place des anciennes images
-# Une seule fois, au passage aux noms d'images fixes : anciennes images nommées d'après chaque service
-docker image rm mars_c2-collector mars_c2-ingest mars_c2-taches 2>/dev/null
-docker image prune -f && df -h /                            # vérifier la place libre avant le chargement
-```
-
-puis, depuis le Mac, l'envoi en flux (étape 2), et sur le serveur :
-
-```bash
 docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/1X_nom.sql   # migrations nouvelles
+docker compose rm -sf backend web collector ingest taches   # arrêt et suppression des conteneurs, pas des volumes
+docker image prune -af                                      # images sans conteneur ; la base, en service, garde la sienne
+df -h /                                                     # vérifier la place libre avant le téléchargement
+docker compose pull backend web collector ingest taches
 docker compose up -d --no-build
 ```
+
+`docker image prune -af` ne retire que les images qu'aucun conteneur n'utilise : celle de la base, en service, reste.
+Au passage aux images du registre, les anciennes images locales (`mars_c2-backend`, `mars_c2-web`,
+`mars_c2-scripts`, et plus anciennes `mars_c2-collector`, `mars_c2-ingest`, `mars_c2-taches`) partent avec elles.
+
+**Revenir à une version précédente** : `MARS_TAG=<empreinte> docker compose pull` puis
+`MARS_TAG=<empreinte> docker compose up -d --no-build` (ou inscrire `MARS_TAG` dans le `.env` du serveur).
 
 Ne jamais lancer `docker system prune --volumes` : il effacerait le volume de la base.
 

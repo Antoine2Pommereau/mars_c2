@@ -33,7 +33,7 @@ services:
   # Tâches planifiées (scripts/taches.py) : pas de cron sur l'hôte, redémarre avec la plateforme.
   # Identifiants R2 dans .env : R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET.
   taches:
-    image: mars_c2-scripts
+    image: ghcr.io/antoine2pommereau/mars_c2-scripts:${MARS_TAG:-latest}
     build:
       context: .
       dockerfile: scripts/Dockerfile

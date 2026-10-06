@@ -3,8 +3,8 @@
 Ce fichier est la mémoire du projet. Lis le en entier avant toute tâche, et tiens le à jour à chaque jalon. Le
 document de référence de la direction est la Claude Doc « MARS C2, mise à jour du projet » :
 https://claude.ai/code/artifact/00f50730-d117-4ad4-94ac-0cb9b967f002 (sinon, demander à Antoine de la déposer dans
-`docs/`). L'interface cible des étapes 2 à 4 est décrite dans `docs/vision_interface.md` (lot 1, la charpente, fait ;
-lot 2, le contenu : recherche, fiches navire, alerte, infrastructure et zone, navires suivis). L'historique de la première version (rejeu de journées danoises) et ses enseignements de calibration
+`docs/`). L'interface cible des étapes 2 à 4 est décrite dans `docs/vision_interface.md` (lot 1, la charpente, et
+lot 2, le contenu, faits). L'historique de la première version (rejeu de journées danoises) et ses enseignements de calibration
 sont dans `docs/historique_danemark.md` ; l'état du code est audité dans `docs/audit_code.md`.
 
 ## 1. Le projet
@@ -62,9 +62,11 @@ indice, jamais une excuse).
 ## 3. Démarrer
 
 **Serveur** (Scaleway DEV1-S, `/opt/mars_c2`) : tout est décrit dans `docs/deploiement.md` (installation, R2,
-vérification, restauration). Les images sont **construites sur le Mac en linux/amd64**, envoyées par `docker save`
-et `docker load`, puis démarrées par `docker compose up -d --no-build` (le serveur ne construit rien : ni la place
-ni la mémoire). Le `.env` du serveur active la surcouche `docker-compose.serveur.yml` et le profil `direct`.
+vérification, restauration). Les images sont **construites sur le Mac en linux/amd64**, publiées sur le registre
+GitHub (`ghcr.io/antoine2pommereau/mars_c2-backend`, `mars_c2-web`, `mars_c2-scripts`, paquets privés, étiquettes
+`latest` et empreinte du commit), téléchargées par le serveur (jeton en lecture seule) et démarrées par
+`docker compose up -d --no-build`. Le serveur ne construit rien (ni la place ni la mémoire) ; les gros transferts par
+SSH échouent depuis le Mac. Le `.env` du serveur active la surcouche `docker-compose.serveur.yml` et le profil `direct`.
 
 **Mac** (développement, radar) :
 
@@ -115,7 +117,7 @@ la fusion (`mars/fusion/pipeline.py`) et la persistance des échos fixes, écrit
 mars_c2/
   CLAUDE.md, start.sh, pyproject.toml, docker-compose.yml, docker-compose.serveur.yml
   config/rules.yaml       seuils versionnés
-  db/init/01 à 16         schéma et migrations (idempotentes à partir de 02)
+  db/init/01 à 18         schéma et migrations (idempotentes à partir de 02)
   mars/
     ais/live.py, ingest.py, mid.py   zones, nettoyage, allègement, ingestion, pavillon
     watchlist.py, archive.py, r2.py  listes, archivage et sauvegarde, client R2
@@ -123,7 +125,7 @@ mars_c2/
     sar/                             passages, extraction Sentinel Hub, CircleNet
     regions/provision.py             infrastructures EMODnet
   mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
-  backend/app.py                     API
+  backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo
   inference/app.py                   service d'inférence
   scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar
   tests/                             contrat du modèle, fusion, direct, archivage
@@ -150,7 +152,12 @@ chargé du nouveau, au plus tard toutes les 30 s), trafic à un instant (`/api/t
 `stats_10min`), alertes d'une plage (`/api/alerts?start&end`, avec `vessel_ids`) et décisions (acquitter,
 confirmer, classer avec motif obligatoire, rouvrir, commenter, champ auteur), radar (`/api/passes`,
 `/api/analyses`, détections, `/api/chip`), masques (`?jours=N`), infrastructures (`?tolerance=` pour simplifier),
-règles et test par injection (`/api/rules/...`). L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
+règles et test par injection (`/api/rules/...`). Contenu (`backend/contenu.py`) : recherche (`/api/search?q=` :
+navires par nom actuel ou ancien, MMSI, OMI via `imo_history` ; infrastructures ; alertes par numéro), alerte par
+numéro (`/api/alerts/{id}`), comportement d'un navire sur la plage (`/api/vessels/{id}/comportement` : silences,
+arrêts au large, passages à moins de 2 milles d'une infrastructure), trajectoire GPX, notes, photo (relayée depuis
+VesselFinder, sans écriture disque, `PHOTOS=aucune` la coupe), navires suivis (`/api/suivis`), fiches infrastructure
+(`/api/infrastructure/{id}` : navires passés, alertes liées) et zone (`/api/zones/{clé}`). L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
 par l'interface : l'instant est tenu par chaque navigateur et inscrit dans l'adresse de la page.
 
 ## 7. Interface
@@ -162,9 +169,20 @@ secondaire `#7c8b97`, signal système `#4fb6c8` ; navire sombre `#e85bc7`, rende
 `#5fd3a5`. IBM Plex Sans et Sans Condensed, chiffres
 tabulaires.
 
-Disposition (vision, lot 1 fait) : **barre d'état** en haut (flux AIS, ingestion, listes, disque, archivage, chacun
-vert, orange ou rouge avec son détail au clic ; recherche par Cmd + K, contenu au lot 2), **rail** (alertes, couches,
-analyses, navires suivis à venir), panneau contextuel, carte, **fiche** à droite, **frise** en bas.
+Disposition (vision, lots 1 et 2 faits) : **barre d'état** en haut (flux AIS, ingestion, listes, disque, archivage,
+chacun vert, orange ou rouge avec son détail au clic ; **recherche** par Cmd + K dans les navires, infrastructures,
+alertes et lieux, résultats groupés, clavier), **rail** (alertes, couches, analyses, navires suivis), panneau
+contextuel, carte, **fiche** à droite, **frise** en bas.
+
+* **Fiches** (registre `registres/sections.tsx`, composants `components/Fiches.tsx`) : navire (en tête avec photo et
+  source, signal, état, suivre ; listes ; identités en frise compacte ; alertes ; comportement ; trajectoire avec
+  rejeu et GPX ; notes ; sections futures déclarées), alerte (motif, preuves, navires concernés, décisions),
+  infrastructure (identité, navires passés à moins de 2 milles sur la plage, alertes liées), zone (surface,
+  réception, mouillages, trafic et alertes de la plage). Un clic sur une infrastructure ou une zone ouvre sa fiche.
+* **Navires suivis** (table `followed_vessels`) : panneau du rail ; visibles et colorés à toutes les échelles ; leurs
+  alertes à traiter en tête du fil.
+* **Mode focus** : tout objet sélectionné est mis en valeur et le reste atténué (navire, alerte, infrastructure avec
+  les navires passés, zone).
 
 * **Temps** (`lib/temps.ts`) : modes direct (la plage glisse, 1 h à 30 jours), plage (période fixe, bornes
   déplaçables ou saisie libre, instant placé d'un clic) et rejeu (l'instant avance à × 1 à × 300). Tout l'écran
@@ -236,6 +254,12 @@ coupure du flux de 40 min retrouvée à la minute près ; trafic à un instant, 
 navire) et 0,13 s ; flux en direct 274 Ko au premier envoi puis 0,1 Ko par seconde (680 Ko par seconde avant, sur
 le serveur) ; infrastructures 2,6 Mo en pleine résolution, simplifiées à 50 m par l'API.
 
+**Contenu de l'interface (07/10/2026)** : lot 2 de la vision (section 7). Constats sur les données réelles :
+EMODnet ne nomme aucun câble électrique et seulement 74 câbles télécoms sur 649 (les fiches se replient sur le type
+et le numéro) ; les tracés communs aux régions Bretagne et Manche, qui se chevauchent, sont stockés deux fois
+(dédoublonnés à l'affichage). Le lot 1 n'avait pas été déployé côté API (transferts SSH en échec) : d'où les 680 Ko
+par seconde encore mesurés sur le serveur, résolus au premier déploiement par le registre.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -245,7 +269,7 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 53 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
+`python -m pytest tests` : 55 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
 archivage, règles en continu, vérification R2 avec un faux client S3, frise). `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
@@ -291,3 +315,8 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   `/api/clock`.
 * Une requête en mode plage a une clé fixe : sans nouvelle tentative, une erreur passagère (redémarrage de l'API) y
   reste affichée. Garder `retry` sur les requêtes de la frise et du trafic.
+* Pour savoir quelle version d'API tourne sur le serveur : `curl -s localhost:8000/openapi.json` (liste des routes) ;
+  un comportement inattendu venait d'une image non déployée, pas du code.
+* `tsconfig.json` impose `noUnusedLocals` : les imports et variables inutilisés sont des erreurs de types.
+* Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
+  vérifier avant une démonstration publique.
