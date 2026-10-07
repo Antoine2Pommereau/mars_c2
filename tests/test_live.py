@@ -3,7 +3,7 @@ import pandas as pd
 
 from mars.ais.live import Thinner, clean_positions, ship_type_label, valid_imo
 from mars.ais.mid import flag_of
-from mars.watchlist import watchlist_rows
+from mars.watchlist import FIELDS, diff, load_gur, load_os, watchlist_rows
 
 T0 = pd.Timestamp("2026-10-06 12:00:00", tz="UTC")
 
@@ -83,6 +83,31 @@ def test_watchlist_rows():
     assert g[:4] == ("gur", "273123456", 9289518, 273123456)
     assert o[2] is None and o[3] is None             # OMI à clé fausse écarté, pas de MMSI
     assert o[8] is True and o[9] is True             # sanctionné, flotte fantôme
+
+
+def test_lists_load_from_memory_without_files():
+    import sqlite3
+    c = sqlite3.connect(":memory:")
+    c.execute("CREATE TABLE vessels (mmsi TEXT, imo TEXT, name TEXT)")
+    c.execute("INSERT INTO vessels VALUES ('273123456', '9289518', NULL)")
+    gur = load_gur(c.serialize())
+    wal = bytearray(c.serialize())
+    wal[18] = wal[19] = 2                                       # Vessels1.db est publié en mode WAL
+    assert load_gur(bytes(wal)).equals(gur)
+    assert gur.to_dict("records") == [{"mmsi": "273123456", "imo": "9289518", "gur_nom": ""}]
+    csv = b"type,caption,imo,risk,countries,flag,mmsi,id,url,datasets,aliases\nVessel,X,9289518,sanction,,,,id1,u,eu,\n"
+    assert load_os(csv).os_id.tolist() == ["id1"]
+
+
+def test_watchlist_diff_added_removed_modified():
+    row = lambda ref, name, risks=(): dict(zip(FIELDS, ("opensanctions", ref, None, None, name, list(risks), [], None,
+                                                         False, False)))
+    old = [row("a", "ALPHA"), row("b", "BRAVO", ["sanction"]), row("c", "CHARLIE")]
+    new = [row("b", "BRAVO", ["sanction", "mare.shadow"]), row("c", "CHARLIE"), row("d", "DELTA")]
+    d = diff(old, new)
+    assert (d["ajoutes"], d["retires"], d["modifies"]) == (1, 1, 1)
+    assert d["exemples"]["modifies"][0]["changements"] == {"risks": [["sanction"], ["sanction", "mare.shadow"]]}
+    assert diff(new, list(reversed(new)))["modifies"] == 0       # l'ordre des lignes ne compte pas
 
 
 def test_zones_coverage_is_union_not_bounding_box():

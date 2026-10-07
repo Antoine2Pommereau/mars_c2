@@ -50,11 +50,23 @@ export const INDICATEURS: Indicateur[] = [
       const listes: any[] = s?.listes ?? [];
       if (!s) return { niveau: "gris", resume: L.commun.nd, detail: [] };
       if (!listes.length) return { niveau: "rouge", resume: E.aucuneListe, detail: [] };
+      // Dernière mise à jour automatique (conteneur taches) : un échec garde la liste précédente, signalé en orange.
+      // La fraîcheur compte depuis la dernière vérification réussie, pas depuis le dernier changement de contenu.
+      const t: any[] = s?.taches ?? [];
       const j = 24 * 60 * MIN;
-      const niveaux = listes.map((l) => palier(age(l.importe_le, now), 30 * j, 90 * j));
-      return { niveau: pire(niveaux), resume: duree(Math.max(...listes.map((l) => age(l.importe_le, now)))),
-        detail: listes.map((l) => [l.source === "gur" ? L.sources.gur : L.sources.opensanctions,
-                                   `${l.navires}, ${E.importeLe} ${date(l.importe_le)}`]) };
+      const lignes = listes.map((l) => {
+        const run = t.find((x) => x.tache === `listes_${l.source}`);
+        const ok = run?.statut === "ok" ? run.debut : null;
+        const vu = ok && age(ok, now) < age(l.importe_le, now) ? ok : l.importe_le;
+        const niveau = pire([palier(age(vu, now), 30 * j, 90 * j), run?.statut === "echec" ? "orange" : "vert"]);
+        const texte = `${l.navires}, ${E.importeLe} ${date(l.importe_le)}`
+          + (ok ? `, ${E.verifieeLe} ${date(ok)}` : "")
+          + (run?.statut === "echec" ? `, ${E.echecListe(date(run.debut))}` : "");
+        return { niveau, vu, detail: [l.source === "gur" ? L.sources.gur : L.sources.opensanctions, texte] as [string, string] };
+      });
+      const detail = lignes.map((x) => x.detail);
+      if (listes.some((l) => l.source === "opensanctions")) detail.push(["", E.attribution]);
+      return { niveau: pire(lignes.map((x) => x.niveau)), resume: duree(Math.max(...lignes.map((x) => age(x.vu, now)))), detail };
     },
   },
   {

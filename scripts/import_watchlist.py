@@ -1,5 +1,6 @@
-"""Charge les listes de surveillance en base (table watchlist) et rafraîchit le rapprochement avec les navires
-(vue vessel_watch). À relancer à chaque mise à jour de data/listes/Vessels1.db ou data/listes/maritime.csv.
+"""Charge les listes de surveillance en base (table watchlist) depuis des fichiers locaux et rafraîchit le
+rapprochement avec les navires (vue vessel_watch). Sur le serveur, la mise à jour est automatique (conteneur
+taches : OpenSanctions chaque jour, GUR chaque semaine) ; ce script sert au premier chargement et au Mac.
 
 Usage : python scripts/import_watchlist.py [--gur chemin] [--opensanctions chemin]
 """
@@ -11,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mars.config import load_env
 from mars.db import connect
-from mars.watchlist import GUR, OS_CSV, load_gur, load_os, watchlist_rows
+from mars.watchlist import GUR, OS_CSV, gur_rows, load_gur, load_os, os_rows, replace_source
 
 LABEL = {"fort": "fort", "sanctionne": "sanctionné", "flotte_fantome": "flotte fantôme",
          "suspect_gur": "suspect GUR", "autre_risque": "autre risque"}
@@ -27,16 +28,12 @@ def main():
     gur, os_ = load_gur(Path(args.gur)), load_os(Path(args.opensanctions))
     if gur.empty and os_.empty:
         raise SystemExit(f"Aucune liste trouvée ({args.gur}, {args.opensanctions})")
-    rows = watchlist_rows(gur, os_)
     with connect() as conn, conn.cursor() as cur:
         # Remplacement source par source : une liste absente ne vide pas l'autre
-        for source, df in (("gur", gur), ("opensanctions", os_)):
-            if not df.empty:
-                cur.execute("DELETE FROM watchlist WHERE source = %s", (source,))
-        with cur.copy("COPY watchlist (source, ref, imo, mmsi, name, risks, datasets, url, sanctioned, shadow) "
-                      "FROM STDIN") as cp:
-            for r in rows:
-                cp.write_row(r)
+        if not gur.empty:
+            replace_source(cur, "gur", gur_rows(gur))
+        if not os_.empty:
+            replace_source(cur, "opensanctions", os_rows(os_))
         cur.execute("REFRESH MATERIALIZED VIEW vessel_watch")
         stats = cur.execute(
             """SELECT source, count(*), count(imo), count(mmsi), count(*) FILTER (WHERE sanctioned),
