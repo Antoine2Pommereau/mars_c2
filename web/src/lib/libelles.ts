@@ -34,8 +34,11 @@ export const L = {
     attribution: "Données OpenSanctions.org, licence CC BY NC 4.0",
     libre: "Libre", mesure: "Mesure du", perimee: "mesure ancienne", archive: "Dernier archivage",
     sauvegarde: "Dernière sauvegarde", regles: "Dernier cycle des règles", echec: "en échec",
-    ilYa: (t: string) => `il y a ${t}`,
+    ilYa: (t: string) => `il y a ${t}`, dans: (t: string) => `dans ${t}`,
+    prochain: (m: string) => `Prochain ${m === "S1" ? "Sentinel 1" : "Sentinel 2"}`, dernierAcquis: "Dernier passage acquis",
+    calendrier: "Calendrier mis à jour le",
   },
+  region: { titre: "Région affichée", france: "Toute la France" },
 
   // Recherche (contenu au lot 2)
   recherche: {
@@ -60,13 +63,14 @@ export const L = {
     vitesse: "Vitesse du rejeu", instant: "Instant affiché", densite: "Navires suivis",
     pistes: { alertes: "Alertes", coupures: "Coupures du flux AIS", passages: "Passages satellites", viirs: "Nuits VIIRS" },
     coupure: (debut: string, fin: string) => `Flux AIS coupé de ${debut} à ${fin}`,
+    passage: (sat: string, t: string, prevu: boolean) => `${sat}, ${t}${prevu ? ", prévu" : ""}`,
     navires: (n: number) => `${n} navires`, limite: "Au delà de 30 jours : archive R2",
   },
 
   // Fil d'alertes
   fil: {
     titre: "Alertes", onglets: { todo: "À traiter", confirmed: "Confirmées", all: "Toutes" },
-    type: "Type", gravite: "Gravité", zone: "Zone", toutesZones: "Toutes les zones",
+    type: "Type", gravite: "Gravité",
     aucune: { todo: "Aucune alerte à traiter sur la plage.", autre: "Aucune alerte sur la plage." },
     surTotal: (n: number, total: number) => `${n} sur ${total}`,
     groupe: (n: number) => `${n} alertes`,
@@ -126,6 +130,7 @@ export const L = {
       risque: "Score de risque", satellite: "Vérification satellite", appris: "Comportement appris",
       prediction: "Trajectoire prédite", mesures: "Mesures", navires: "Navires concernés",
       passes: "Navires passés à moins de 2 milles", liees: "Alertes liées", resume: "Zone", trafic: "Trafic",
+      passage: "Passage", infrastructures: "Infrastructures couvertes", listes_couvertes: "Navires des listes couverts",
     } as Record<string, string>,
     etat: { route: "en route", immobile: "immobile", silencieux: "silencieux" } as Record<string, string>,
     dernierMessageIlYa: (t: string) => `dernier message il y a ${t}`, horsTrafic: "hors du trafic affiché",
@@ -143,6 +148,17 @@ export const L = {
     infra: { type: "Type", operateur: "Opérateur", longueur: "Longueur", zone: "Zone", source: "Source", sansNom: (t: string, id: number) => `${t} n° ${id}`,
       aucunNavire: "Aucun navire à moins de 2 milles sur la plage", aucuneAlerte: "Aucune alerte liée",
       ligne: (m: number, kn: string, d: string) => `${m} m, ${kn} nœuds au plus lent, ${d}` },
+    passage: {
+      titre: (sat: string) => `Passage ${sat.replace(/^S(\d)/, "Sentinel $1")}`,
+      heure: "Heure", a: "à", statut: "État", capteur: "Capteur", orbite: "Orbite", emprise: "Emprise", analyse: "Analyse",
+      statuts: { acquis: "acquis, au catalogue Copernicus", prevu: "prévu, plan d'acquisition de l'ESA" } as Record<string, string>,
+      analyses: { non_analyse: "non analysé", pending: "en attente", running: "en cours", done: "terminée", failed: "en échec" } as Record<string, string>,
+      sens: { ascending: "ascendante", descending: "descendante" } as Record<string, string>,
+      mode: (sat: string, mode: string | null) => `${sat}${mode ? `, mode ${mode}` : ""}`,
+      orbiteDe: (rel: number | null, abs: number | null, sens: string) => `relative ${rel ?? "?"}, absolue ${abs ?? "?"}, ${sens}`,
+      aucuneInfra: "Aucune infrastructure dans l'emprise", aucunNavire: "Aucun navire des listes dans l'emprise au moment du passage",
+      listesApres: "Connus après le passage", toutes: (n: number) => `Afficher les ${n}`,
+    },
     zone: { surface: "Surface", reception: "Réception fiable", mouillages: "Mouillages connus", navires: "Navires à l'instant",
       alertes: "Alertes de la plage", cellules: (n: number, km2: number, c: string) => `${n} cellules, ${km2} km², continuité ${c} %`,
       aucuneReception: "pas encore calculée" },
@@ -165,7 +181,7 @@ export const L = {
 
   // Couches (registre : registres/couches.ts)
   couches: {
-    titre: "Couches et légende", concernees: "Concernées seulement", zone: "Zone", couleurParType: "Couleur par type",
+    titre: "Couches et légende", concernees: "Concernées seulement", couleurParType: "Couleur par type",
     groupes: { trafic: "Trafic", infrastructures: "Infrastructures", zones: "Zones", satellites: "Satellites",
       activite: "Activité", predictions: "Prédictions" } as Record<string, string>,
     noms: {
@@ -178,7 +194,9 @@ export const L = {
     legende: {
       enRoute: "En route", immobile: "Immobile", silencieux: "Silencieux", surListe: "Sur liste de surveillance",
       enAlerte: "Alerte ouverte", avecAis: "Avec AIS", sansAis: "Sans AIS", ecartee: "Écartée",
+      acquis: "Acquis", prevu: "Prévu",
     },
+    passages: (n: number) => `${n} sur la plage`,
     typesNavire: [["#6ea8fe", "Cargo"], ["#f0a35e", "Pétrolier"], ["#5fd38d", "Pêche"], ["#c792ea", "Passagers"],
       ["#f5e663", "Plaisance, voile"], ["#e07a5f", "Service"], ["#9fb3c2", "Autre ou non renseigné"]] as [string, string][],
     traces: (n: number) => `${n} tracés`, aucuneConcernee: "Aucune infrastructure concernée par la sélection",

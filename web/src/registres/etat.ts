@@ -94,7 +94,26 @@ export const INDICATEURS: Indicateur[] = [
         detail: lignes.map(([, lib, r]) => [lib, r ? `${date(r.debut)}${r.statut === "echec" ? `, ${E.echec}` : ""}` : L.commun.nd]) };
     },
   },
-  { id: "satellites", libelle: E.satellites, etape: 3, evaluer: () => ({ niveau: "gris", resume: "", detail: [] }) },
+  {
+    // Calendrier des passages (conteneur taches, chaque jour) : prochain passage prévu sur la région affichée
+    id: "satellites", libelle: E.satellites, etape: null,
+    evaluer: (s, now) => {
+      const sat = s?.satellites;
+      if (!sat) return { niveau: "gris", resume: L.commun.nd, detail: [] };
+      const maj = sat.mise_a_jour;
+      const niveau: Niveau = !maj ? "gris" : maj.statut === "echec" ? "orange" : palier(age(maj.le, now), 36 * 60 * MIN, 72 * 60 * MIN);
+      const prochains: any[] = sat.prochains ?? [];
+      const premier = prochains.reduce((a: any, b: any) => (!a || b.acquired_at < a.acquired_at ? b : a), null);
+      const quand = (iso: string) => `${date(iso)} UTC, ${E.dans(duree(Date.parse(iso) - now))}`;
+      const detail: [string, string][] = (["S1", "S2"] as const).map((m) => {
+        const p = prochains.find((x) => x.mission === m);
+        return [E.prochain(m), p ? `${p.satellite} ${quand(p.acquired_at)}` : L.commun.nd];
+      });
+      detail.push([E.dernierAcquis, sat.dernier ? `${sat.dernier.satellite} ${date(sat.dernier.acquired_at)} UTC` : L.commun.nd]);
+      detail.push([E.calendrier, maj ? `${date(maj.le)}${maj.statut === "echec" ? `, ${E.echec}` : ""}` : L.commun.nd]);
+      return { niveau, resume: premier ? E.dans(duree(Date.parse(premier.acquired_at) - now)) : L.commun.nd, detail };
+    },
+  },
 ];
 
 export const COULEUR_NIVEAU: Record<Niveau, string> = { vert: "#5fd38d", orange: "#f0a84b", rouge: "#ef6461", gris: "#4c5a66" };

@@ -3,7 +3,7 @@ import AlertActions from "../components/AlertActions";
 import Chip from "../components/Chip";
 import { Row, Sources, Tag } from "../components/Elements";
 import { Comportement, EnTeteNavire, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
-  Trajectoire, ZoneResume, ZoneTrafic } from "../components/Fiches";
+  PassageInfras, PassageListes, PassageResume, Trajectoire, ZoneResume, ZoneTrafic } from "../components/Fiches";
 import type { VesselCard } from "../lib/api";
 import { num } from "../lib/format";
 import { L } from "../lib/libelles";
@@ -15,7 +15,7 @@ import { COULEUR_LISTE, naviresAlerte, typeAlerte } from "./alertes";
 // d'affichage et son étape. La fiche les empile dans l'ordre ; une section sans donnée ne s'affiche pas, une
 // section d'une étape future non plus, tant qu'elle n'est pas branchée.
 
-export type Objet = "alerte" | "navire" | "detection" | "infrastructure" | "zone";
+export type Objet = "alerte" | "navire" | "detection" | "infrastructure" | "zone" | "passage";
 
 export interface Contexte {
   objet: Objet;
@@ -25,6 +25,7 @@ export interface Contexte {
   detection?: Props;
   infra?: Props;                // { id, … } de l'infrastructure sélectionnée
   zone?: string;
+  passage?: number;             // identifiant du passage satellite sélectionné
   passTime?: string | null;
   plage: { debut: string; fin: string };
   suivis: Set<number>;
@@ -131,6 +132,14 @@ const SECTIONS: Section[] = [
   { id: "trafic", objet: "zone", ordre: 20, etape: null, titre: true, condition: toujours,
     rendu: (c) => <ZoneTrafic zone={c.zone!} alerts={c.alerts} onPickAlert={c.onPickAlert}
       vessels={[...c.vessels.values()].filter((v) => zoneOfVessel(v) === c.zone)} /> },
+
+  // Passage satellite : base du déclenchement des analyses (lots B et C)
+  { id: "passage", objet: "passage", ordre: 10, etape: null, titre: false, condition: toujours,
+    rendu: (c) => <PassageResume id={c.passage!} /> },
+  { id: "infrastructures", objet: "passage", ordre: 20, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <PassageInfras id={c.passage!} onPickInfra={c.onPickInfra} /> },
+  { id: "listes_couvertes", objet: "passage", ordre: 30, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <PassageListes id={c.passage!} onPickVessel={c.onPickVessel} /> },
 
   // Détection radar
   { id: "mesures", objet: "detection", ordre: 10, etape: null, titre: false, condition: toujours,

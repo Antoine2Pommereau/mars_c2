@@ -2,7 +2,7 @@
 // son état par défaut, les couches MapLibre qu'elle commande et sa légende. Le panneau des couches et la carte s'en
 // déduisent ; une couche nouvelle s'ajoute par une entrée.
 
-export type Legende = "navires" | "trait" | "surface" | "cercles" | null;
+export type Legende = "navires" | "trait" | "surface" | "cercles" | "passages" | null;
 
 export interface Couche {
   id: string;
@@ -15,6 +15,9 @@ export interface Couche {
   /** Type d'infrastructure servi par l'API (/api/infrastructure, propriété « type ») */
   infra?: string;
 }
+
+/** Passages satellites : couleur du signal système, neutre (la couleur vive reste aux alertes) */
+export const COULEUR_PASSAGE = "#9fb3c8";
 
 export const COULEURS_INFRA: Record<string, string> = {
   "Câble télécom": "#4fb6c8", "Câble électrique": "#f0a84b", Pipeline: "#e07a5f", "Parc éolien": "#5fd38d",
@@ -32,7 +35,9 @@ export const COUCHES: Couche[] = [
   { id: "mouillages", groupe: "zones", etape: null, defaut: false, calques: ["zones"], legende: "surface", couleur: "#f0a84b" },
   { id: "reception", groupe: "zones", etape: null, defaut: false, calques: ["reception"], legende: "surface", couleur: "#4fb6c8" },
   { id: "detections", groupe: "satellites", etape: null, defaut: true, calques: ["aoi", "det", "alerts"], legende: "cercles" },
-  { id: "passages", groupe: "satellites", etape: 3, defaut: false, calques: [], legende: "surface" },
+  // Emprises des passages Sentinel 1 et 2 de la plage : trait plein acquis, pointillé prévu (deux couches filtrées)
+  { id: "passages", groupe: "satellites", etape: null, defaut: false, calques: ["passages-fond", "passages", "passages-prevus"],
+    legende: "passages", couleur: COULEUR_PASSAGE },
   { id: "viirs", groupe: "satellites", etape: 3, defaut: false, calques: [], legende: "cercles" },
   { id: "chaleur", groupe: "activite", etape: 3, defaut: false, calques: [], legende: "surface" },
   { id: "predictions", groupe: "predictions", etape: 4, defaut: false, calques: [], legende: "trait" },

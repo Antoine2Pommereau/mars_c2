@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from mars.ais.live import ZONES
 from mars.config import load_rules
+from regions import dans_region, region_ewkt
 
 router = APIRouter()
 DEUX_MILLES_M = 3704
@@ -58,15 +59,17 @@ def _range(start: datetime | None, end: datetime | None) -> tuple[datetime, date
 # Recherche
 
 @router.get("/api/search")
-async def search(request: Request, q: str, limit: int = 8):
+async def search(request: Request, q: str, limit: int = 8, region: str | None = None):
     """Recherche dans les navires (nom actuel ou ancien, MMSI, OMI : un OMI retrouve tous les MMSI successifs),
-    les infrastructures (nom) et les alertes (numéro). Les lieux (ports, zones) sont cherchés par l'interface."""
+    les infrastructures (nom) et les alertes (numéro). Les lieux (ports, zones) sont cherchés par l'interface.
+    `region` : les résultats de la région affichée viennent en premier (propriété `dans_region`)."""
     q = q.strip()
     if len(q) < 2 and not q.isdigit():
         return {"navires": [], "infrastructures": [], "alertes": []}
     digits = q.isdigit()
     like = f"%{q}%"
     async with pool(request).acquire() as c:
+        reg = await region_ewkt(c, region)
         # Navires : par MMSI (exact, ou début si au moins 4 chiffres), OMI exact (vue imo_history), nom actuel, nom ancien
         vessels = await c.fetch(
             """WITH hits AS (
@@ -82,22 +85,27 @@ async def search(request: Request, q: str, limit: int = 8):
                  SELECT i.vessel_id, 'ancien_nom', i.name FROM vessel_identities i JOIN vessels v ON v.id = i.vessel_id
                  WHERE i.name ILIKE $3 AND i.name IS DISTINCT FROM v.name)
                SELECT DISTINCT ON (v.id) v.id AS vessel_id, v.mmsi, v.imo, v.name, v.flag, v.ship_type, h.par, h.ancien,
-                      w.level AS watch, v.last_seen, ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat
+                      w.level AS watch, v.last_seen, ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat,
+                      ($5::text IS NOT NULL AND p.geom IS NOT NULL AND """ + dans_region("p.geom::geometry", 5) + """) AS dans_region
                FROM hits h JOIN vessels v ON v.id = h.id
                LEFT JOIN vessel_watch w ON w.vessel_id = v.id
                LEFT JOIN LATERAL (SELECT geom FROM positions WHERE vessel_id = v.id ORDER BY ts DESC LIMIT 1) p ON true
                ORDER BY v.id, CASE h.par WHEN 'mmsi' THEN 0 WHEN 'omi' THEN 1 WHEN 'nom' THEN 2 ELSE 3 END
-               LIMIT $4::int""", digits, q, like, limit * 3)
-        vessels = sorted(vessels, key=lambda r: (r["lon"] is None, -(r["last_seen"].timestamp() if r["last_seen"] else 0)))[:limit]
+               LIMIT $4::int""", digits, q, like, limit * 3, reg)
+        vessels = sorted(vessels, key=lambda r: (not r["dans_region"], r["lon"] is None,
+                                                 -(r["last_seen"].timestamp() if r["last_seen"] else 0)))[:limit]
         infra = await c.fetch(
             """SELECT i.id, i.name, i.kind, i.attrs->>'type' AS type, i.operator, r.name AS region,
-                      ST_XMin(e) AS x0, ST_YMin(e) AS y0, ST_XMax(e) AS x1, ST_YMax(e) AS y1
+                      ST_XMin(e) AS x0, ST_YMin(e) AS y0, ST_XMax(e) AS x1, ST_YMax(e) AS y1,
+                      ($3::text IS NOT NULL AND lower(r.name) = $3::text) AS dans_region
                FROM infrastructure i JOIN regions r ON r.id = i.region_id,
                     LATERAL (SELECT ST_Envelope(i.geom::geometry) AS e) b
-               WHERE i.name ILIKE $1 ORDER BY i.name LIMIT $2::int""", like, limit)
+               WHERE i.name ILIKE $1 ORDER BY dans_region DESC, i.name LIMIT $2::int""",
+            like, limit, region.lower() if region else None)
         alerts = await c.fetch(
-            """SELECT id, type, severity, status, event_time, ST_X(geom::geometry) AS lon, ST_Y(geom::geometry) AS lat
-               FROM alerts WHERE $1::bool AND id::text = $2""", digits, q)
+            """SELECT id, type, severity, status, event_time, ST_X(geom::geometry) AS lon, ST_Y(geom::geometry) AS lat,
+                      ($3::text IS NOT NULL AND """ + dans_region("geom::geometry", 3) + """) AS dans_region
+               FROM alerts WHERE $1::bool AND id::text = $2""", digits, q, reg)
     infra = _unique([{**_row(r), "bbox": [r["x0"], r["y0"], r["x1"], r["y1"]]} for r in infra],
                     lambda r: (r["name"], r["type"], tuple(round(v, 2) for v in r["bbox"])))
     return {"navires": [_row(r) for r in vessels], "infrastructures": infra,
@@ -248,9 +256,11 @@ class Suivi(BaseModel):
 
 
 @router.get("/api/suivis")
-async def followed(request: Request):
-    """Navires suivis, avec leur dernière position et leur dernière alerte."""
+async def followed(request: Request, region: str | None = None):
+    """Navires suivis, avec leur dernière position et leur dernière alerte ; `region` : ceux dont la dernière
+    position est dans la région affichée."""
     async with pool(request).acquire() as c:
+        reg = await region_ewkt(c, region)
         rows = await c.fetch(
             """SELECT f.vessel_id, f.since, f.author, v.mmsi, v.name, v.flag, v.ship_type, w.level AS watch,
                       p.ts AS derniere_position, ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat,
@@ -262,7 +272,8 @@ async def followed(request: Request):
                                   JOIN alert_evidence e ON e.alert_id = al.id
                                   WHERE e.evidence_type = 'vessel' AND e.evidence_id = f.vessel_id
                                   ORDER BY al.event_time DESC LIMIT 1) a ON true
-               ORDER BY f.since DESC""")
+               WHERE $1::text IS NULL OR (p.geom IS NOT NULL AND """ + dans_region("p.geom::geometry", 1) + """)
+               ORDER BY f.since DESC""", reg)
     return [_row(r) for r in rows]
 
 

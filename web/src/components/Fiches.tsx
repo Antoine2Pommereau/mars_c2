@@ -249,3 +249,74 @@ export function ZoneTrafic({ zone, vessels, alerts, onPickAlert }:
     </>
   );
 }
+
+// Passage satellite (étape 3, lot A) : heure, emprise, ce qu'il couvre, état de l'analyse
+
+export function usePassage(id: number) {
+  return useQuery({ queryKey: ["passage", id], queryFn: () => api.passage(id), staleTime: 60_000, enabled: id > 0 });
+}
+
+export function PassageResume({ id }: { id: number }) {
+  const d = usePassage(id).data;
+  if (!d) return null;
+  const P = F.passage;
+  const regions = (d.regions ?? []).map((r: string) => L.zones[r] ?? r).join(", ");
+  return (
+    <div>
+      <Row label={P.heure}>{utc(d.acquired_at)}{d.ended_at && d.ended_at !== d.acquired_at ? ` ${P.a} ${utc(d.ended_at).slice(11)}` : ""}</Row>
+      <Row label={P.statut}>{P.statuts[d.statut] ?? d.statut}</Row>
+      <Row label={P.capteur}>{P.mode(d.satellite, d.mode)}</Row>
+      <Row label={P.orbite}>{P.orbiteDe(d.relative_orbit, d.absolute_orbit, P.sens[d.orbit_direction] ?? d.orbit_direction ?? L.commun.nd)}</Row>
+      <Row label={P.emprise}>{`${num(d.surface_km2, 0)} km², ${regions}`}</Row>
+      <Row label={P.analyse}>{P.analyses[d.analyse] ?? d.analyse}</Row>
+    </div>
+  );
+}
+
+export function PassageInfras({ id, onPickInfra }: { id: number; onPickInfra: (id: number) => void }) {
+  const d = usePassage(id).data;
+  const [tout, setTout] = useState(false);
+  if (!d) return null;
+  const items: Props[] = d.infrastructures ?? [];
+  if (!items.length) return <p className="text-[12px] text-muted">{F.passage.aucuneInfra}</p>;
+  const parType = Object.entries(items.reduce((a: Record<string, number>, x) => ({ ...a, [x.type]: (a[x.type] ?? 0) + 1 }), {}));
+  // EMODnet nomme « Onbekend » (inconnu, en néerlandais) une partie des câbles : ils passent après les tracés nommés
+  const nomme = (x: Props) => !!x.name && x.name !== "Onbekend";
+  const montres = tout ? items : items.filter(nomme).slice(0, 12);
+  return (
+    <div className="text-[12px]">
+      <div className="mb-1.5 text-muted">{parType.map(([t, n]) => `${n} ${t.toLowerCase()}`).join(", ")}</div>
+      <ul className="space-y-0.5">
+        {montres.map((x) => (
+          <li key={x.id}>
+            <button onClick={() => onPickInfra(x.id)} className="text-left text-ink hover:text-signal">
+              {nomme(x) ? x.name : F.infra.sansNom(x.type, x.id)}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {!tout && items.length > montres.length && (
+        <button onClick={() => setTout(true)} className="mt-1 text-muted hover:text-ink">{F.passage.toutes(items.length)}</button>
+      )}
+    </div>
+  );
+}
+
+export function PassageListes({ id, onPickVessel }: { id: number; onPickVessel: (p: Props) => void }) {
+  const d = usePassage(id).data;
+  if (!d) return null;
+  if (d.statut === "prevu") return <p className="text-[12px] text-muted">{F.passage.listesApres}</p>;
+  if (!d.navires.length) return <p className="text-[12px] text-muted">{F.passage.aucunNavire}</p>;
+  return (
+    <ul className="space-y-1 text-[12px]">
+      {d.navires.map((v: Props) => (
+        <li key={v.vessel_id}>
+          <button onClick={() => onPickVessel(v)} className="flex items-center gap-1.5 text-left hover:text-ink">
+            <span className="text-ink">{v.name ?? `MMSI ${v.mmsi}`}</span>{v.flag && <Tag>{v.flag}</Tag>}
+            {v.watch && <Tag color={COULEUR_LISTE}>{L.signal[v.watch]}</Tag>}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}

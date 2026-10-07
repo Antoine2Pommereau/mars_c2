@@ -10,6 +10,8 @@ Listes de surveillance, après les tâches de la nuit : OpenSanctions chaque jou
 Vessels1.db a changé dans son dépôt) ; téléchargement en mémoire, journal des navires ajoutés, retirés ou modifiés
 dans task_runs, puis nouveau passage des règles des listes. En cas d'échec, la liste précédente reste en place et la
 barre d'état de l'interface le signale.
+Calendrier des passages Sentinel 1 et 2, chaque jour : catalogue public de Copernicus Data Space et plans
+d'acquisition de l'ESA (métadonnées seulement), puis infrastructures et navires des listes couverts (mars/satellites.py).
 Toutes les 10 minutes : espace disque, alerte sous ALERTE_DISQUE_PCT (15 %).
 Toutes les 5 minutes (section continu de config/rules.yaml) : règles comportementales sur le flux en direct
 (rendez vous, coupures AIS, navires des listes, changements d'identité), consignées dans task_runs (tâche regles),
@@ -18,7 +20,7 @@ Une tâche réussie ne rejoue pas le même jour ; une tâche en échec est reten
 
 Usage :
     python scripts/taches.py                          # boucle (service Docker « taches »)
-    python scripts/taches.py archiver | purger | sauvegarder | disque | regles | listes
+    python scripts/taches.py archiver | purger | sauvegarder | disque | regles | listes | passages
     python scripts/taches.py mesures [--jours 14]     # mesures de calibration (scripts/mesures_calibration.py)
     python scripts/taches.py sauvegardes              # liste des sauvegardes sur R2
     python scripts/taches.py telecharger CLE CHEMIN   # récupère un objet de R2 (restauration)
@@ -118,7 +120,13 @@ def tasks(conn):
         "sauvegarde": (lambda: archive.run_backup(r2(), database_url(), KEEP_BACKUPS), 1),
         "listes_opensanctions": (lambda: update_list(conn, "opensanctions"), 1),
         "listes_gur": (lambda: update_list(conn, "gur"), 7),
+        "passages": (lambda: update_passes(conn), 1),
     }
+
+
+def update_passes(conn) -> dict:
+    from mars import satellites
+    return satellites.update(conn)
 
 
 def update_list(conn, source: str) -> dict:
@@ -190,7 +198,7 @@ def loop(conn):
 def main():
     ap = argparse.ArgumentParser(description="Tâches planifiées de MARS C2")
     ap.add_argument("commande", nargs="?", default="boucle",
-                    choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "mesures",
+                    choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "mesures",
                              "sauvegardes", "telecharger", "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
@@ -211,6 +219,9 @@ def main():
     elif a.commande == "listes":                  # les deux listes, sans attendre la nuit
         ok = [run(conn, f"listes_{s}", lambda s=s: update_list(conn, s)) is not None for s in ("opensanctions", "gur")]
         if not all(ok):
+            sys.exit(1)
+    elif a.commande == "passages":
+        if run(conn, "passages", lambda: update_passes(conn)) is None:
             sys.exit(1)
     elif a.commande == "mesures":
         from mesures_calibration import main as mesures

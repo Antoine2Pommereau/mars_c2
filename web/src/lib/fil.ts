@@ -6,13 +6,12 @@ import { zoneOf } from "./zones";
 // Fil d'alertes : filtres, tri par gravité puis date, regroupement des alertes d'un même navire.
 
 export type Vue = "todo" | "confirmed" | "all";
-export interface Filtres { types: string[]; gravites: string[]; vue: Vue; zone: string | null }
+export interface Filtres { types: string[]; gravites: string[]; vue: Vue }
 
 export const FILTRES_DEFAUT: Filtres = {
   types: TYPES_ALERTE.filter((t) => t.actif).map((t) => t.type),
   gravites: ["critique", "elevee", "moyenne", "faible"],
   vue: "todo",
-  zone: null,
 };
 
 export const statutDe = (a: Feature) => a.properties.status ?? "nouvelle";
@@ -30,10 +29,10 @@ export function dansPlage(alerts: Feature[], debut: number, fin: number): Featur
   return alerts.filter((a) => Date.parse(a.properties.event_time) <= fin && finAlerte(a) >= debut);
 }
 
-/** Filtres sans l'onglet de statut (la carte et la frise montrent toutes les alertes filtrées). */
+/** Filtres sans l'onglet de statut (la carte et la frise montrent toutes les alertes filtrées). La région est
+ *  appliquée par l'API (réglage unique de la barre d'état). */
 export function filtrer(alerts: Feature[], f: Filtres, avecVue = true): Feature[] {
   return alerts.filter((a) => f.types.includes(a.properties.type) && f.gravites.includes(a.properties.severity)
-    && (!f.zone || zoneAlerte(a) === f.zone)
     && (!avecVue || f.vue === "all" || (f.vue === "todo" ? statutDe(a) === "nouvelle" : statutDe(a) === "confirmee")));
 }
 

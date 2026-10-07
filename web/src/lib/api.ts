@@ -41,6 +41,10 @@ export interface VesselCard {
 interface AlertActionRow { action: string; note: string | null; motif?: string | null; author: string; at: string }
 
 const enc = encodeURIComponent;
+/** Paramètre de la région affichée, ajouté à une adresse qui a déjà ou non des paramètres */
+const rg = (region: string | null | undefined, sep = "&") => (region ? `${sep}region=${enc(region)}` : "");
+
+export interface Region { key: string; name: string; bbox: [number, number, number, number] }
 
 export interface Timeline {
   debut: string; fin: string;
@@ -63,18 +67,20 @@ export const api = {
   act: (id: number, body: { action: string; note?: string; motif?: string; author?: string }) =>
     post<{ id: number; status: string }>(`/alerts/${id}/actions`, body),
   /** Alertes d'une plage ; l'ancienne API ignore la plage et renvoie tout (filtré ensuite par l'interface) */
-  alertsRange: (start: string, end: string) => get<FC>(`/alerts?start=${enc(start)}&end=${enc(end)}`),
-  timeline: (start: string, end: string, bins: number) =>
-    get<Timeline>(`/timeline?start=${enc(start)}&end=${enc(end)}&bins=${bins}`),
-  traffic: (at: string) => get<any>(`/traffic?at=${enc(at)}`),
-  ingestion: () => get<any>("/ingestion"),
-  search: (q: string) => get<Resultats>(`/search?q=${enc(q)}`),
+  alertsRange: (start: string, end: string, region: string | null) =>
+    get<FC>(`/alerts?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
+  timeline: (start: string, end: string, bins: number, region: string | null) =>
+    get<Timeline>(`/timeline?start=${enc(start)}&end=${enc(end)}&bins=${bins}${rg(region)}`),
+  traffic: (at: string, region: string | null) => get<any>(`/traffic?at=${enc(at)}${rg(region)}`),
+  ingestion: (region: string | null) => get<any>(`/ingestion${rg(region, "?")}`),
+  regions: () => get<Region[]>("/regions"),
+  search: (q: string, region: string | null) => get<Resultats>(`/search?q=${enc(q)}${rg(region)}`),
   alert: (id: number) => get<Feature>(`/alerts/${id}`),
   comportement: (id: number, start: string, end: string) =>
     get<Comportement>(`/vessels/${id}/comportement?start=${enc(start)}&end=${enc(end)}`),
   notes: (id: number) => get<{ id: number; note: string; author: string; at: string }[]>(`/vessels/${id}/notes`),
   addNote: (id: number, note: string, author: string) => post<Props>(`/vessels/${id}/notes`, { note, author }),
-  suivis: () => get<Props[]>("/suivis"),
+  suivis: (region: string | null = null) => get<Props[]>(`/suivis${rg(region, "?")}`),
   suivre: (id: number, author: string) => post<Props>("/suivis", { vessel_id: id, author }),
   nePlusSuivre: async (id: number) => {
     const r = await fetch(`/api/suivis/${id}`, { method: "DELETE" });
@@ -88,11 +94,15 @@ export const api = {
   analyses: () => get<FC>("/analyses"),
   detections: (id: number) => get<FC>(`/analyses/${id}/detections`),
   alerts: (id: number) => get<FC>(`/alerts?analysis_id=${id}`),
-  trails: (at?: string) => get<FC>(`/traffic/trails${at ? `?at=${enc(at)}` : ""}`),
-  zones: () => get<FC>("/masks/stationary"),
-  reception: () => get<FC>("/masks/reception"),
+  trails: (at: string, region: string | null) => get<FC>(`/traffic/trails?at=${enc(at)}${rg(region)}`),
+  zones: (region: string | null) => get<FC>(`/masks/stationary${rg(region, "?")}`),
+  reception: (region: string | null) => get<FC>(`/masks/reception${rg(region, "?")}`),
   /** Tracés simplifiés à environ 50 m : 2,6 Mo en pleine résolution, le détail suffit jusqu'au zoom 12 */
-  infrastructure: () => get<FC>("/infrastructure?tolerance=0.0005"),
+  infrastructure: (region: string | null) => get<FC>(`/infrastructure?tolerance=0.0005${rg(region)}`),
+  /** Passages Sentinel 1 et 2 (acquis et prévus) qui chevauchent la plage, sur la région */
+  passages: (start: string, end: string, region: string | null) =>
+    get<FC>(`/satellites/passes?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
+  passage: (id: number) => get<Props>(`/satellites/passes/${id}`),
   track: (vesselId: number, start: string, end: string, maxPoints = 2000) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${enc(start)}&end=${enc(end)}&max_points=${maxPoints}`),
   vessel: (id: number) => get<VesselCard>(`/vessels/${id}`),

@@ -5,9 +5,9 @@ import { utc } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props, Selection } from "../lib/types";
 import { COULEUR_LISTE, libelleAlerte, typeAlerte } from "../registres/alertes";
-import { COULEURS_INFRA } from "../registres/couches";
+import { COULEUR_PASSAGE, COULEURS_INFRA } from "../registres/couches";
 import { sectionsDe, type Contexte } from "../registres/sections";
-import { useInfraCard } from "./Fiches";
+import { useInfraCard, usePassage } from "./Fiches";
 
 interface PanelProps {
   selection: Selection | null;
@@ -33,6 +33,8 @@ export default function DetailPanel(p: PanelProps) {
   const card = useQuery({ queryKey: ["vessel", vesselId], queryFn: () => api.vessel(vesselId!), enabled: vesselId != null, staleTime: 60_000 });
   const infraId = selection?.kind === "infrastructure" ? Number(selection.properties.id) : -1;
   const infra = useInfraCard(infraId, p.plage.debut, p.plage.fin);
+  const passageId = selection?.kind === "passage" ? Number(selection.properties.id) : -1;
+  const passage = usePassage(passageId);
   if (!selection) return null;
 
   let title = "", color = "#4fb6c8", badge: string | null = null, footer: string | null = null;
@@ -55,6 +57,12 @@ export default function DetailPanel(p: PanelProps) {
     Object.assign(ctx, { objet: "infrastructure", infra: { id: infraId } });
     title = d.name || (d.type ? L.fiche.infra.sansNom(d.type, infraId) : L.carte.infrastructure);
     color = COULEURS_INFRA[d.type] ?? color;
+  } else if (selection.kind === "passage") {
+    Object.assign(ctx, { objet: "passage", passage: passageId });
+    const sat = passage.data?.satellite ?? selection.properties.satellite;
+    title = sat ? L.fiche.passage.titre(sat) : L.fiche.sections.passage;
+    color = COULEUR_PASSAGE;
+    badge = passage.data?.statut === "prevu" ? L.fiche.passage.statuts.prevu.split(",")[0] : null;
   } else if (selection.kind === "zone") {
     Object.assign(ctx, { objet: "zone", zone: selection.properties.zone });
     title = L.zones[selection.properties.zone] ?? selection.properties.zone;

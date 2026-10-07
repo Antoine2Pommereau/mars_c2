@@ -19,6 +19,8 @@ from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from contenu import router as contenu_router
+from regions import dans_region, region_ewkt, regions_list
+from satellites import next_passes, router as satellites_router
 from mars.config import load_rules
 from mars.frise import timeline
 from mars.fusion.pipeline import fuse
@@ -48,6 +50,7 @@ async def lifespan(app):
 
 app = FastAPI(title="MARS C2", lifespan=lifespan)
 app.include_router(contenu_router)      # recherche, fiches, notes, navires suivis, photo (backend/contenu.py)
+app.include_router(satellites_router)   # calendrier des passages Sentinel 1 et 2 (backend/satellites.py)
 
 
 def feature(geometry, properties):
@@ -143,10 +146,11 @@ TRAFFIC_COLS = ["vessel_id", "lon", "lat", "sog_kn", "cog_deg", "t", "mmsi", "na
                 "watch"]
 
 
-async def read_traffic(c, now: datetime) -> dict:
+async def read_traffic(c, now: datetime, region: str | None = None) -> dict:
     """Dernière position de chaque navire vu dans les 30 minutes précédant `now`, en colonnes : sans répéter les
     noms de champs à chaque navire, avec des coordonnées arrondies au mètre, le trafic de plusieurs milliers de
-    navires tient en 5 fois moins d'octets que du GeoJSON. `t` : instant de la position, en secondes."""
+    navires tient en 5 fois moins d'octets que du GeoJSON. `t` : instant de la position, en secondes. `region` :
+    seulement les navires dont la dernière position est dans la région (géométrie EWKT, voir backend/regions.py)."""
     rows = await c.fetch(
         """
         SELECT t.vessel_id, round(t.lon::numeric, 5)::float8 AS lon, round(t.lat::numeric, 5)::float8 AS lat,
@@ -161,7 +165,7 @@ async def read_traffic(c, now: datetime) -> dict:
               ORDER BY p.vessel_id, p.ts DESC) t
         JOIN vessels v ON v.id = t.vessel_id
         LEFT JOIN vessel_watch w ON w.vessel_id = t.vessel_id
-        """, now, TRAFFIC_WINDOW_MIN)
+        WHERE """ + dans_region("ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)", 3), now, TRAFFIC_WINDOW_MIN, region)
     return {"at": now.isoformat(), "cols": TRAFFIC_COLS,
             "rows": [[finite(r[k]) for k in TRAFFIC_COLS] for r in rows]}
 
@@ -174,16 +178,23 @@ async def read_active_analyses(c) -> list:
     return [clean(r) for r in rows]
 
 
+@app.get("/api/regions")
+async def regions():
+    """Régions du sélecteur de la barre d'état : clé, nom, emprise (lon_min, lat_min, lon_max, lat_max)."""
+    async with app.state.pool.acquire() as c:
+        return await regions_list(c)
+
+
 @app.get("/api/traffic")
-async def traffic(at: datetime | None = None):
+async def traffic(at: datetime | None = None, region: str | None = None):
     """Trafic à un instant donné (plage ou rejeu de l'interface, instant porté par l'adresse de la page), sans
     dépendre de l'horloge partagée ; sans `at`, l'heure réelle."""
     async with app.state.pool.acquire() as c:
-        return await read_traffic(c, at or await c.fetchval("SELECT clock_timestamp()"))
+        return await read_traffic(c, at or await c.fetchval("SELECT clock_timestamp()"), await region_ewkt(c, region))
 
 
 @app.get("/api/traffic/trails")
-async def trails(minutes: int = TRAIL_MIN, at: datetime | None = None):
+async def trails(minutes: int = TRAIL_MIN, at: datetime | None = None, region: str | None = None):
     """Traînées des `minutes` précédant `at` (sans `at` : l'horloge partagée, comportement d'origine)."""
     async with app.state.pool.acquire() as c:
         clock = {"now": at} if at else await read_clock(c)
@@ -192,9 +203,10 @@ async def trails(minutes: int = TRAIL_MIN, at: datetime | None = None):
             SELECT p.vessel_id, ST_AsGeoJSON(ST_MakeLine(p.geom::geometry ORDER BY p.ts))::json AS geometry
             FROM positions p
             WHERE p.ts > $1::timestamptz - make_interval(mins => $2::int) AND p.ts <= $1::timestamptz
+              AND """ + dans_region("p.geom::geometry", 3) + """
             GROUP BY p.vessel_id
             HAVING count(*) >= 2
-            """, clock["now"], minutes)
+            """, clock["now"], minutes, await region_ewkt(c, region))
     return collection([feature(r["geometry"], {"vessel_id": r["vessel_id"]}) for r in rows])
 
 
@@ -244,9 +256,11 @@ async def watchlist_seen(hours: int = 24):
 
 
 @app.get("/api/ingestion")
-async def ingestion_status():
-    """État du direct : dernier fichier chargé, fraîcheur et volume de la dernière heure, listes chargées."""
+async def ingestion_status(region: str | None = None):
+    """État du direct : dernier fichier chargé, fraîcheur et volume de la dernière heure, listes chargées, prochain
+    passage satellite prévu sur la région affichée."""
     async with app.state.pool.acquire() as c:
+        satellites = await next_passes(c, region)
         last = await c.fetchrow("SELECT folder, name, ingested_at FROM ingested_files ORDER BY ingested_at DESC LIMIT 1")
         hour = await c.fetchrow(
             "SELECT count(*) AS positions, count(DISTINCT vessel_id) AS navires, max(ts) AS derniere_position, "
@@ -268,7 +282,7 @@ async def ingestion_status():
     return {"dernier_fichier": clean(last) if last else None, "derniere_heure": {**clean(hour), **clean(files)},
             "listes": [clean(r) for r in lists],
             "alerte_disque": any(r["alerte"] for r in disk), "disque": [clean(r) for r in disk],
-            "taches": [clean(r) for r in runs]}
+            "taches": [clean(r) for r in runs], "satellites": satellites}
 
 
 @app.get("/api/vessels/{vessel_id}/track")
@@ -291,12 +305,15 @@ STREAM_TRAFFIC_MAX_S = 30   # trafic renvoyé au plus tard toutes les 30 s, et d
 
 
 @app.get("/api/stream")
-async def stream(request: Request, direct: bool = False):
+async def stream(request: Request, direct: bool = False, region: str | None = None):
     """Flux SSE, une fois par seconde : horloge et progression des analyses ; trafic seulement quand il a changé.
 
     Les positions arrivent par fichiers (une écriture par minute, une ingestion toutes les 15 s) : renvoyer chaque
     seconde 2 000 navires coûtait 680 Ko par client et par seconde pour rien. `direct` : l'horloge est l'heure
     réelle, quel que soit l'état de l'horloge partagée (l'instant des autres modes est tenu par l'interface)."""
+    async with app.state.pool.acquire() as c:
+        reg = await region_ewkt(c, region)
+
     async def events():
         last_ingest, last_sent = None, 0.0
         loop = asyncio.get_running_loop()
@@ -310,7 +327,7 @@ async def stream(request: Request, direct: bool = False):
                 payload = {"clock": clock_json(clock), "analyses": await read_active_analyses(c)}
                 ingest = await c.fetchval("SELECT max(ingested_at) FROM ingested_files")
                 if not direct or ingest != last_ingest or loop.time() - last_sent >= STREAM_TRAFFIC_MAX_S:
-                    payload["navires"] = await read_traffic(c, clock["now"])
+                    payload["navires"] = await read_traffic(c, clock["now"], reg)
                     last_ingest, last_sent = ingest, loop.time()
             yield f"event: traffic\ndata: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1)
@@ -651,9 +668,10 @@ async def rebuild_stationary_zones(jours: int | None = None):
 
 
 @app.get("/api/masks/stationary")
-async def stationary_zones():
+async def stationary_zones(region: str | None = None):
     async with app.state.pool.acquire() as c:
-        rows = await c.fetch("SELECT id, vessels, slow_positions, ST_AsGeoJSON(geom)::json AS geometry FROM stationary_zones")
+        rows = await c.fetch("SELECT id, vessels, slow_positions, ST_AsGeoJSON(geom)::json AS geometry FROM stationary_zones "
+                             "WHERE " + dans_region("geom::geometry", 1), await region_ewkt(c, region))
     return collection([feature(r["geometry"], clean(r)) for r in rows])
 
 
@@ -663,16 +681,20 @@ FRANCE_REGIONS = ("Bretagne", "Manche", "Gascogne", "Mediterranee")
 
 
 @app.get("/api/infrastructure")
-async def infrastructure(region: int | None = None, tolerance: float = 0.0):
+async def infrastructure(region: str | None = None, tolerance: float = 0.0):
     """Câbles, pipelines et parcs éoliens provisionnés depuis EMODnet (table infrastructure), en GeoJSON.
-    `tolerance` (degrés) simplifie les tracés : les 816 tracés de France pèsent 2,6 Mo en pleine résolution."""
+    `tolerance` (degrés) simplifie les tracés : les 816 tracés de France pèsent 2,6 Mo en pleine résolution.
+    `region` : clé d'une région (bretagne…), ou son numéro ; sans région, toute la France."""
     geom = ("ST_SimplifyPreserveTopology(i.geom::geometry, $2::float8)" if tolerance > 0 else "i.geom::geometry")
     sql = ("SELECT i.id, i.kind, i.name, i.operator, i.source, i.attrs->>'type' AS type, "
            f"r.name AS region, ST_AsGeoJSON({geom}, 5)::json AS geometry "
            "FROM infrastructure i JOIN regions r ON r.id = i.region_id")
-    if region is not None:
+    if region is not None and region.isdigit():
         sql += " WHERE i.region_id = $1::int"
-        args: list = [region]
+        args: list = [int(region)]
+    elif region:
+        sql += " WHERE lower(r.name) = $1::text"
+        args = [region.lower()]
     else:
         sql += " WHERE lower(r.name) = ANY($1::text[])"
         args = [[n.lower() for n in FRANCE_REGIONS]]   # régions saisies à la main : casse indifférente
@@ -695,9 +717,10 @@ async def rebuild_reception_cells(jours: int | None = None):
 
 
 @app.get("/api/masks/reception")
-async def reception_cells():
+async def reception_cells(region: str | None = None):
     async with app.state.pool.acquire() as c:
-        rows = await c.fetch("SELECT messages, vessels, hours, coverage, ST_AsGeoJSON(geom)::json AS geometry FROM reception_cells")
+        rows = await c.fetch("SELECT messages, vessels, hours, coverage, ST_AsGeoJSON(geom)::json AS geometry "
+                             "FROM reception_cells WHERE " + dans_region("geom::geometry", 1), await region_ewkt(c, region))
     return collection([feature(r["geometry"], clean(r)) for r in rows])
 
 
@@ -897,14 +920,16 @@ async def alert_actions(alert_id: int):
 # Frise : densité du trafic et coupures du flux AIS sur une plage
 
 @app.get("/api/timeline")
-async def timeline_route(start: datetime, end: datetime, bins: int = 240):
+async def timeline_route(start: datetime, end: datetime, bins: int = 240, region: str | None = None):
     """Histogramme du nombre de navires (moyenne par tranche de 10 minutes) et coupures du flux AIS, lus dans les
     statistiques tenues par le conteneur taches : une plage de 30 jours ne lit que quelques dizaines de milliers de
     lignes, au lieu de millions de positions."""
     if end <= start:
         raise HTTPException(422, "Plage vide")
     async with app.state.pool.acquire() as c:
-        return await timeline(c, start, end, max(10, min(bins, 1000)), load_rules()["continu"]["flux_min_ratio"])
+        await region_ewkt(c, region)                      # 404 pour une région inconnue
+        return await timeline(c, start, end, max(10, min(bins, 1000)), load_rules()["continu"]["flux_min_ratio"],
+                              region.lower() if region else None)
 
 
 # Consultation
@@ -946,7 +971,7 @@ async def detections(analysis_id: int):
 
 @app.get("/api/alerts")
 async def alerts(analysis_id: int | None = None, start: datetime | None = None, end: datetime | None = None,
-                 limit: int = 2000):
+                 limit: int = 2000, region: str | None = None):
     """Alertes d'une analyse radar, ou d'une plage de temps [start, end] : instant de l'alerte dans la plage, ou, pour
     un navire des listes, passage qui chevauche la plage. `vessel_ids` : navires preuves de l'alerte (regroupement
     du fil d'alertes, navires en alerte sur la carte)."""
@@ -962,9 +987,11 @@ async def alerts(analysis_id: int | None = None, start: datetime | None = None, 
       AND ($2::timestamptz IS NULL OR al.event_time <= $3::timestamptz AND (
             al.event_time >= $2::timestamptz
             OR (al.type = 'WATCHLIST' AND (al.details->>'fin')::timestamptz >= $2::timestamptz)))
+      AND """ + dans_region("al.geom::geometry", 5) + """
     ORDER BY al.event_time DESC
     LIMIT $4::int
     """
     async with app.state.pool.acquire() as c:
-        rows = await c.fetch(q, analysis_id, start, end or (start and datetime.now(start.tzinfo)), limit)
+        rows = await c.fetch(q, analysis_id, start, end or (start and datetime.now(start.tzinfo)), limit,
+                             await region_ewkt(c, region))
     return collection([feature(r["geometry"], clean(r)) for r in rows])

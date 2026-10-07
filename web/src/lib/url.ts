@@ -1,13 +1,13 @@
 import { DEFAUT, type Duree, type Mode, type Temps } from "./temps";
 
 // État de l'écran dans l'adresse de la page : un lien rouvre exactement la même vue.
-// ?mode=plage&debut=…&fin=…&instant=…&vitesse=60&sel=alerte:12&couches=navires,eoliens&zone=bretagne
+// ?mode=plage&debut=…&fin=…&instant=…&vitesse=60&sel=alerte:12&couches=navires,eoliens&region=bretagne
 
 interface EtatEcran {
   temps: Temps;
   sel: string | null;          // « alerte:12 », « navire:345 », « detection:7 »
   couches: string[] | null;    // null : couches par défaut
-  zone: string | null;
+  region: string | null;        // région affichée (sélecteur de la barre d'état), null : toute la France
 }
 
 const ms = (v: string | null) => (v ? Date.parse(v) : undefined);
@@ -22,7 +22,8 @@ export function lireAdresse(search = window.location.search): EtatEcran {
     vitesse: Number(q.get("vitesse")) || DEFAUT.vitesse, lecture: false,
   };
   if (temps.mode !== "direct" && (temps.debut == null || temps.fin == null || Number.isNaN(temps.debut))) temps.mode = "direct";
-  return { temps, sel: q.get("sel"), couches: q.has("couches") ? q.get("couches")!.split(",").filter(Boolean) : null, zone: q.get("zone") };
+  return { temps, sel: q.get("sel"), couches: q.has("couches") ? q.get("couches")!.split(",").filter(Boolean) : null,
+    region: q.get("region") ?? q.get("zone") };     // « zone » : liens du lot 1
 }
 
 export function ecrireAdresse(e: EtatEcran) {
@@ -37,7 +38,7 @@ export function ecrireAdresse(e: EtatEcran) {
   }
   if (e.sel) q.set("sel", e.sel);
   if (e.couches) q.set("couches", e.couches.join(","));
-  if (e.zone) q.set("zone", e.zone);
+  if (e.region) q.set("region", e.region);
   const next = `${window.location.pathname}?${q.toString()}`;
   if (next !== `${window.location.pathname}${window.location.search}`) window.history.replaceState(null, "", next);
 }

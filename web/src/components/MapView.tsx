@@ -5,7 +5,7 @@ import { bboxPolygon } from "../lib/geo";
 import { EMPTY, type FC, type Feature, type Selection } from "../lib/types";
 import { zonesGeoJSON } from "../lib/zones";
 import { COULEUR_LISTE, COULEUR_SUIVI, STROKE_ALERTE } from "../registres/alertes";
-import { COUCHES, COULEURS_INFRA } from "../registres/couches";
+import { COUCHES, COULEUR_PASSAGE, COULEURS_INFRA } from "../registres/couches";
 
 const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
@@ -65,7 +65,8 @@ interface Props {
   highlight: FC;
   actives: string[];                     // couches actives (registres/couches.ts)
   byType: boolean;
-  zone: string | null;                   // filtre par zone des infrastructures
+  region: string | null;                 // région affichée : seul son contour reste dans la couche « couverture »
+  passages: FC;                          // emprises des passages Sentinel 1 et 2 de la plage
   concernedInfra: number[] | null;       // mode « concernées seulement » : identifiants à montrer
   focus: { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] } | null;
   onSelect: (s: Selection) => void;
@@ -100,7 +101,7 @@ export default function MapView(p: Props) {
 
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft"].forEach(src);
+      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages"].forEach(src);
       // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
       map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
       map.addSource("couverture", { type: "geojson", data: zonesGeoJSON() as any });
@@ -127,8 +128,17 @@ export default function MapView(p: Props) {
         paint: { "fill-color": "#4fb6c8", "fill-opacity": 0 } });
       map.addLayer({ id: "couverture", type: "line", source: "couverture", layout: { visibility: "none" },
         paint: { "line-color": "#4fb6c8", "line-width": 1, "line-opacity": 0.5, "line-dasharray": [3, 3] } });
-      // Objet sélectionné (infrastructure, zone) : surligné au dessus de son groupe
-      map.addLayer({ id: "focus-surface", type: "fill", source: "focus", filter: ["==", ["geometry-type"], "Polygon"],
+      // Passages satellites : emprise à peine teintée, trait plein acquis, pointillé prévu (pas de pointillé dépendant
+      // des données dans MapLibre : deux couches filtrées)
+      map.addLayer({ id: "passages-fond", type: "fill", source: "passages", layout: { visibility: "none" },
+        paint: { "fill-color": COULEUR_PASSAGE, "fill-opacity": 0.04 } });
+      map.addLayer({ id: "passages", type: "line", source: "passages", layout: { visibility: "none" },
+        filter: ["!=", ["get", "statut"], "prevu"], paint: { "line-color": COULEUR_PASSAGE, "line-width": 1, "line-opacity": 0.6 } });
+      map.addLayer({ id: "passages-prevus", type: "line", source: "passages", layout: { visibility: "none" },
+        filter: ["==", ["get", "statut"], "prevu"],
+        paint: { "line-color": COULEUR_PASSAGE, "line-width": 1, "line-opacity": 0.6, "line-dasharray": [2, 3] } });
+      // Objet sélectionné (infrastructure, zone, passage) : surligné au dessus de son groupe
+      map.addLayer({ id: "focus-surface", type: "fill", source: "focus", filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
         paint: { "fill-color": "#e6ecf0", "fill-opacity": 0.05 } });
       map.addLayer({ id: "focus-ligne", type: "line", source: "focus",
         paint: { "line-color": "#e6ecf0", "line-width": 2.5, "line-opacity": 0.85 } });
@@ -228,6 +238,14 @@ export default function MapView(p: Props) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
       }
+      map.on("click", "passages-fond", (e) => {
+        const dessus = ["traffic", "live", "alerts", "det", "infra-eoliens-fond", ...INFRA_LIGNES.map((c) => c.calques[0])]
+          .filter((l) => map.getLayoutProperty(l, "visibility") !== "none");
+        if (drawing.current || map.queryRenderedFeatures(e.point, { layers: dessus }).length) return;
+        // Plusieurs emprises se recouvrent : la plus récente
+        const fs = e.features!.map((f) => f.properties as any).sort((a, b) => String(b.acquired_at).localeCompare(String(a.acquired_at)));
+        onSelect.current({ kind: "passage", properties: fs[0] });
+      });
       map.on("click", "couverture-fond", (e) => {
         if (drawing.current || map.queryRenderedFeatures(e.point, { layers: ["traffic", "live", "alerts", "det"] }).length) return;
         onSelect.current({ kind: "zone", properties: { zone: (e.features![0].properties as any).zone } });
@@ -257,6 +275,11 @@ export default function MapView(p: Props) {
   useEffect(() => setData("infra", p.infrastructure), [ready, p.infrastructure]);
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
   useEffect(() => setData("focus", p.focusGeom), [ready, p.focusGeom]);
+  useEffect(() => setData("passages", p.passages), [ready, p.passages]);
+  useEffect(() => {
+    const z = zonesGeoJSON();
+    setData("couverture", p.region ? { ...z, features: z.features.filter((f) => f.properties.zone === p.region) } as FC : z as FC);
+  }, [ready, p.region]);
 
 
   useEffect(() => {
@@ -264,7 +287,8 @@ export default function MapView(p: Props) {
     for (const f of [...p.analysisAlerts.features, ...p.liveAlerts.features]) alertIndex.current.set(f.properties.id, f);
   }, [p.analysisAlerts, p.liveAlerts]);
 
-  // Couches actives (registre), couleur par type, filtres des infrastructures (zone, concernées seulement)
+  // Couches actives (registre), couleur par type, filtre des infrastructures (concernées seulement ; la région est
+  // appliquée par l'API)
   const activesKey = p.actives.join(",");
   useEffect(() => {
     if (!ready || !mapRef.current) return;
@@ -283,13 +307,12 @@ export default function MapView(p: Props) {
     if (!ready || !mapRef.current) return;
     const map = mapRef.current;
     const extra: any[] = [];
-    if (p.zone) extra.push(["==", ["downcase", ["coalesce", ["get", "region"], ""]], p.zone]);
     if (p.concernedInfra) extra.push(["in", ["get", "id"], ["literal", p.concernedInfra]]);
     const withExtra = (base: any) => (extra.length ? ["all", base, ...extra] : base);
     for (const c of INFRA_LIGNES) map.setFilter(c.calques[0], withExtra(["==", ["get", "type"], c.infra!]));
     for (const l of ["infra-eoliens-fond", "infra-eoliens"]) map.setFilter(l, withExtra(["==", ["get", "type"], "Parc éolien"]));
     map.setFilter("infra-noms", extra.length ? ["all", ...extra] : null);
-  }, [ready, p.zone, concernedKey]);
+  }, [ready, concernedKey]);
 
   // Cadrage sur la zone analysée quand une nouvelle analyse s'affiche
   const lastAoi = useRef<number | null>(null);

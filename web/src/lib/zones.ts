@@ -8,6 +8,8 @@ const ZONES: Record<string, [number, number, number, number]> = {
 };
 // Ordre d'affichage, du nord ouest au sud est
 export const ZONE_KEYS = ["bretagne", "manche", "gascogne", "mediterranee"];
+/** Emprise de toute la France (les quatre régions) : [lon_min, lat_min, lon_max, lat_max] */
+export const FRANCE: [number, number, number, number] = [-6.8, 41.2, 9.8, 51.2];
 
 /** Emprise d'une zone : [lon_min, lat_min, lon_max, lat_max] */
 export function zoneBbox(k: string): [number, number, number, number] {

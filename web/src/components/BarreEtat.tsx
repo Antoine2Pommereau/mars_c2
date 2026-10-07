@@ -1,16 +1,21 @@
 import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { api, type Region } from "../lib/api";
 import { L } from "../lib/libelles";
+import { ZONE_KEYS } from "../lib/zones";
 import { COULEUR_NIVEAU, INDICATEURS } from "../registres/etat";
 
-interface Props { now: number; connected: boolean; onSearch: () => void }
+interface Props {
+  now: number; connected: boolean; onSearch: () => void;
+  region: string | null; regions: Region[] | null; onRegion: (r: string | null) => void;
+}
 
-/** Barre d'état : la plateforme voit elle bien ? Chaque indicateur est vert, orange ou rouge ; son détail s'ouvre au
- *  clic. Lecture de /api/ingestion toutes les 30 secondes. */
-export default function BarreEtat({ now, connected, onSearch }: Props) {
-  const q = useQuery({ queryKey: ["ingestion"], queryFn: api.ingestion, refetchInterval: 30_000 });
+/** Barre d'état : la région affichée (un seul réglage pour tout l'écran), puis la plateforme voit elle bien ? Chaque
+ *  indicateur est vert, orange ou rouge ; son détail s'ouvre au clic. Lecture de /api/ingestion toutes les 30 s. */
+export default function BarreEtat({ now, connected, onSearch, region, regions, onRegion }: Props) {
+  const q = useQuery({ queryKey: ["ingestion", region], queryFn: () => api.ingestion(region), refetchInterval: 30_000 });
+  const cles = regions?.map((r) => r.key) ?? ZONE_KEYS;
   const [open, setOpen] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -23,6 +28,11 @@ export default function BarreEtat({ now, connected, onSearch }: Props) {
   return (
     <header ref={ref} className="relative z-20 flex h-9 shrink-0 items-center gap-1 border-b border-hair bg-panel px-3 text-[12px]">
       <span className="mr-3 font-cond text-[13px] font-semibold tracking-wide text-ink">{L.app.nom}</span>
+      <select aria-label={L.region.titre} title={L.region.titre} value={region ?? ""} onChange={(e) => onRegion(e.target.value || null)}
+        className={`mr-2 rounded border bg-abyss px-1.5 py-0.5 text-[12px] ${region ? "border-signal/60 text-ink" : "border-hair text-muted"}`}>
+        <option value="">{L.region.france}</option>
+        {cles.map((k) => <option key={k} value={k}>{L.zones[k] ?? k}</option>)}
+      </select>
       {INDICATEURS.map((ind) => {
         const aVenir = ind.etape != null;
         const m = aVenir ? null : ind.evaluer(status, now);

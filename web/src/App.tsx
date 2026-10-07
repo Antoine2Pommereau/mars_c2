@@ -21,7 +21,7 @@ import { avecPlage, iso, resolve, type Temps } from "./lib/temps";
 import { decodeTraffic } from "./lib/trafic";
 import { EMPTY, type FC, type Feature, type Props, type Selection } from "./lib/types";
 import { ecrireAdresse, lireAdresse } from "./lib/url";
-import { zoneBbox, zoneOf, zonesGeoJSON } from "./lib/zones";
+import { FRANCE, zoneBbox, zoneOf, zonesGeoJSON } from "./lib/zones";
 import { useStream } from "./lib/useStream";
 import { COULEUR_LISTE, naviresAlerte, typeAlerte } from "./registres/alertes";
 import { COUCHES_DEFAUT } from "./registres/couches";
@@ -32,7 +32,7 @@ const DEUX_MILLES = 3704;
 const arrondi = (ms: number) => Math.floor(ms / 30_000) * 30_000;
 const selKey = (s: Selection | null) => !s ? null : s.kind === "alert" ? `alerte:${s.feature.properties.id}`
   : s.kind === "vessel" ? `navire:${s.properties.vessel_id}` : s.kind === "infrastructure" ? `infrastructure:${s.properties.id}`
-  : s.kind === "zone" ? `zone:${s.properties.zone}` : null;
+  : s.kind === "zone" ? `zone:${s.properties.zone}` : s.kind === "passage" ? `passage:${s.properties.id}` : null;
 type Focus = { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] };
 
 /** Emprise d'une géométrie GeoJSON */
@@ -52,7 +52,9 @@ export default function App() {
   const [actives, setActives] = useState<string[]>(INITIAL.couches ?? COUCHES_DEFAUT);
   const [byType, setByType] = useState(false);
   const [concernees, setConcernees] = useState(false);
-  const [filtres, setFiltres] = useState<Filtres>({ ...FILTRES_DEFAUT, zone: INITIAL.zone });
+  const [filtres, setFiltres] = useState<Filtres>(FILTRES_DEFAUT);
+  // Région affichée : un seul réglage (barre d'état) pour la carte, le fil, la frise, les suivis et la recherche
+  const [region, setRegion] = useState<string | null>(INITIAL.region);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [pendingSel, setPendingSel] = useState<string | null>(INITIAL.sel);
   const [highlight, setHighlight] = useState<FC>(EMPTY);
@@ -78,19 +80,19 @@ export default function App() {
   const qDebut = iso(direct ? arrondi(debut) : debut), qFin = iso(direct ? arrondi(fin) : fin);
 
   // Trafic : flux temps réel en direct ; instant choisi en plage et en rejeu
-  const { data: stream, traffic: streamTraffic, connected } = useStream(direct);
-  const trafficQ = useQuery({ queryKey: ["traffic", Math.round(instant / 1000)], queryFn: () => api.traffic(iso(instant)),
+  const { data: stream, traffic: streamTraffic, connected } = useStream(direct, region);
+  const trafficQ = useQuery({ queryKey: ["traffic", Math.round(instant / 1000), region], queryFn: () => api.traffic(iso(instant), region),
     enabled: !direct, placeholderData: keepPreviousData, retry: 2 });
   const rawTraffic = useMemo(() => decodeTraffic(direct ? streamTraffic : trafficQ.data, instant) ?? EMPTY,
     // eslint ne surveille pas ce fichier ; l'âge des positions n'a besoin que du trafic et de la minute courante
     [direct, streamTraffic, trafficQ.data, Math.floor(instant / 60_000)]);
-  const trailsQ = useQuery({ queryKey: ["trails", Math.round(instant / 10_000)], queryFn: () => api.trails(iso(instant)),
+  const trailsQ = useQuery({ queryKey: ["trails", Math.round(instant / 10_000), region], queryFn: () => api.trails(iso(instant), region),
     refetchInterval: direct ? 30_000 : false, placeholderData: keepPreviousData });
 
   // Alertes et frise de la plage
-  const alertsQ = useQuery({ queryKey: ["alertsRange", qDebut, qFin], queryFn: () => api.alertsRange(qDebut, qFin),
+  const alertsQ = useQuery({ queryKey: ["alertsRange", qDebut, qFin, region], queryFn: () => api.alertsRange(qDebut, qFin, region),
     refetchInterval: direct ? 30_000 : false, placeholderData: keepPreviousData });
-  const timelineQ = useQuery({ queryKey: ["timeline", qDebut, qFin], queryFn: () => api.timeline(qDebut, qFin, 240),
+  const timelineQ = useQuery({ queryKey: ["timeline", qDebut, qFin, region], queryFn: () => api.timeline(qDebut, qFin, 240, region),
     // Deux nouvelles tentatives : en plage, la clé ne change plus et une erreur passagère resterait affichée
     refetchInterval: direct ? 60_000 : false, placeholderData: keepPreviousData, retry: 2 });
   const rangeAlerts = useMemo(() => dansPlage(alertsQ.data?.features ?? [], debut, fin),
@@ -99,7 +101,10 @@ export default function App() {
   const alertColors = useMemo(() => naviresEnAlerte(filtered), [filtered]);
 
   // Navires suivis : visibles et colorés à toutes les échelles, nouvelles alertes en tête du fil
-  const suivisQ = useQuery({ queryKey: ["suivis"], queryFn: api.suivis, refetchInterval: 60_000 });
+  const suivisQ = useQuery({ queryKey: ["suivis"], queryFn: () => api.suivis(), refetchInterval: 60_000 });
+  // Panneau des suivis : ceux de la région affichée (la couleur sur la carte vaut pour tous)
+  const suivisRegionQ = useQuery({ queryKey: ["suivis", region], queryFn: () => api.suivis(region),
+    enabled: panel === "suivis" && region != null, refetchInterval: 60_000 });
   const suivis = useMemo(() => new Set<number>((suivisQ.data ?? []).map((v) => Number(v.vessel_id))), [suivisQ.data]);
   const suivre = useMutation({
     mutationFn: ({ id, on }: { id: number; on: boolean }) => (on ? api.suivre(id, auteurMemorise()) : api.nePlusSuivre(id)),
@@ -130,19 +135,29 @@ export default function App() {
   }, [stream, analysisId, qc]);
 
   // Couches de fond, chargées à la première activation
-  const zonesQ = useQuery({ queryKey: ["zones"], queryFn: api.zones, enabled: actives.includes("mouillages"), staleTime: Infinity });
-  const receptionQ = useQuery({ queryKey: ["reception"], queryFn: api.reception, enabled: actives.includes("reception"), staleTime: Infinity });
+  const zonesQ = useQuery({ queryKey: ["zones", region], queryFn: () => api.zones(region), enabled: actives.includes("mouillages"), staleTime: Infinity });
+  const receptionQ = useQuery({ queryKey: ["reception", region], queryFn: () => api.reception(region), enabled: actives.includes("reception"), staleTime: Infinity });
   const wantInfra = ["electriques", "eoliens", "telecoms", "pipelines"].some((c) => actives.includes(c));
-  const infraQ = useQuery({ queryKey: ["infrastructure"], queryFn: api.infrastructure,
-    enabled: wantInfra || selection?.kind === "infrastructure" || (pendingSel ?? "").startsWith("infrastructure"), staleTime: Infinity });
+  const infraQ = useQuery({ queryKey: ["infrastructure", region], queryFn: () => api.infrastructure(region),
+    enabled: wantInfra || selection?.kind === "infrastructure" || (pendingSel ?? "").startsWith("infrastructure"),
+    staleTime: Infinity, placeholderData: keepPreviousData });
   const infraCounts = useMemo(() => {
     const out: Record<string, number> = {};
-    for (const f of infraQ.data?.features ?? []) {
-      if (filtres.zone && (f.properties.region ?? "").toLowerCase() !== filtres.zone) continue;
-      out[f.properties.type] = (out[f.properties.type] ?? 0) + 1;
-    }
+    for (const f of infraQ.data?.features ?? []) out[f.properties.type] = (out[f.properties.type] ?? 0) + 1;
     return out;
-  }, [infraQ.data, filtres.zone]);
+  }, [infraQ.data]);
+
+  // Passages Sentinel 1 et 2 de la plage et de la région : couche de la carte et piste de la frise
+  const passagesQ = useQuery({ queryKey: ["passages", qDebut, qFin, region], queryFn: () => api.passages(qDebut, qFin, region),
+    refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData, retry: 2 });
+
+  // Changer de région recentre la carte sur son emprise
+  const regionsQ = useQuery({ queryKey: ["regions"], queryFn: api.regions, staleTime: Infinity });
+  const choisirRegion = useCallback((r: string | null) => {
+    setRegion(r);
+    const b = regionsQ.data?.find((x) => x.key === r)?.bbox ?? (r ? zoneBbox(r) : FRANCE);
+    setFocus({ bounds: b });
+  }, [regionsQ.data]);
 
   // Sélection : adresse de la page à l'ouverture, puis carte, fil, frise, fiche
   useEffect(() => {
@@ -164,13 +179,16 @@ export default function App() {
     } else if (kind === "zone") {
       setSelection({ kind: "zone", properties: { zone: id } });
       setPendingSel(null);
+    } else if (kind === "passage") {
+      setSelection({ kind: "passage", properties: { id: Number(id) } });
+      setPendingSel(null);
     } else setPendingSel(null);
   }, [pendingSel, rangeAlerts, alertsQ.isFetched, vessels]);
 
   // État de l'écran dans l'adresse de la page
   useEffect(() => {
-    ecrireAdresse({ temps, sel: selKey(selection) ?? pendingSel, couches: actives, zone: filtres.zone });
-  }, [temps, selection, pendingSel, actives, filtres.zone]);
+    ecrireAdresse({ temps, sel: selKey(selection) ?? pendingSel, couches: actives, region });
+  }, [temps, selection, pendingSel, actives, region]);
 
   const pickAlert = useCallback((f: Feature) => {
     setSelection({ kind: "alert", feature: f });
@@ -188,6 +206,11 @@ export default function App() {
     const b = bbox ?? bboxOf(infraQ.data?.features.find((f) => f.properties.id === id)?.geometry);
     if (b) setFocus({ bounds: b });
   }, [infraQ.data]);
+  const pickPassage = useCallback((f: Feature) => {
+    setSelection({ kind: "passage", properties: f.properties });
+    const b = bboxOf(f.geometry);
+    if (b) setFocus({ bounds: b });
+  }, []);
   const pickZone = useCallback((zone: string) => {
     setSelection({ kind: "zone", properties: { zone } });
     setFocus({ bounds: zoneBbox(zone) });
@@ -248,6 +271,7 @@ export default function App() {
     if (selection.kind === "infrastructure") return { alertId: null, infraId: Number(selection.properties.id),
       vesselIds: (infraCardQ.data?.navires ?? []).map((v: Props) => Number(v.vessel_id)) };
     if (selection.kind === "zone") return { alertId: null, vesselIds: [], zone: selection.properties.zone as string };
+    if (selection.kind === "passage") return null;
     return { alertId: selection.feature.properties.id as number, vesselIds: naviresAlerte(selection.feature).map((v) => v.vessel_id) };
   }, [selection, infraCardQ.data]);
   const focusGeom = useMemo<FC>(() => {
@@ -258,8 +282,12 @@ export default function App() {
     if (selection?.kind === "zone") {
       return { type: "FeatureCollection", features: zonesGeoJSON().features.filter((f) => f.properties.zone === selection.properties.zone) } as FC;
     }
+    if (selection?.kind === "passage") {
+      const f = passagesQ.data?.features.find((x) => x.properties.id === Number(selection.properties.id));
+      return f ? { type: "FeatureCollection", features: [f] } : EMPTY;
+    }
     return EMPTY;
-  }, [selection, infraQ.data]);
+  }, [selection, infraQ.data, passagesQ.data]);
 
   // Infrastructures concernées : liées à une alerte ouverte, ou à moins de 2 milles de la sélection
   const concernedInfra = useMemo(() => {
@@ -306,7 +334,8 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <BarreEtat now={now} connected={!direct || connected} onSearch={() => setSearching(true)} />
+      <BarreEtat now={now} connected={!direct || connected} onSearch={() => setSearching(true)}
+        region={region} regions={regionsQ.data ?? null} onRegion={choisirRegion} />
       <div className="flex min-h-0 flex-1">
         <Rail active={panel} onSelect={setPanel} onSearch={() => setSearching(true)} alertCount={todo}
           running={jobs.some((a) => a.status === "pending" || a.status === "running")} />
@@ -314,15 +343,15 @@ export default function App() {
           <aside className="h-full w-[350px] shrink-0 border-r border-hair bg-panel">
             {panel === "alertes" && <AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels}
               suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />}
-            {panel === "suivis" && <SuivisPanel suivis={suivisQ.data ?? []} onPick={pickVessel} />}
+            {panel === "suivis" && <SuivisPanel suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
             {panel === "analyses" && (
               <AnalysesPanel jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0} history={done.slice(0, 8)}
                 onPick={pickAnalysis} launcher={<NewAnalysis drawing={drawing} draft={draft} onStartDraw={startDraw}
                   onCancel={cancelDraw} onLaunched={onLaunched} />} />
             )}
-            {panel === "couches" && <LayersPanel actives={actives} onActives={setActives} zone={filtres.zone}
-              onZone={(z) => setFiltres((f) => ({ ...f, zone: z }))} concernees={concernees} onConcernees={setConcernees}
-              byType={byType} onByType={setByType} infraCounts={infraCounts} vesselCount={traffic.features.length} />}
+            {panel === "couches" && <LayersPanel actives={actives} onActives={setActives} concernees={concernees}
+              onConcernees={setConcernees} byType={byType} onByType={setByType} infraCounts={infraCounts}
+              vesselCount={traffic.features.length} passageCount={passagesQ.data?.features.length ?? 0} />}
           </aside>
         )}
         <main className="relative flex-1">
@@ -330,7 +359,7 @@ export default function App() {
           <MapView traffic={traffic} trails={trailsQ.data ?? EMPTY} aoi={showDet ? analysis : null} detections={detQ.data ?? EMPTY}
             analysisAlerts={analysisAlertsQ.data ?? EMPTY} liveAlerts={mapAlerts} zones={zonesQ.data ?? null}
             reception={receptionQ.data ?? null} infrastructure={infraQ.data ?? null} highlight={highlight} actives={actives}
-            byType={byType} zone={filtres.zone} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
+            byType={byType} region={region} passages={passagesQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
             drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom} />
           </Garde>
           <button onClick={drawing || draft ? cancelDraw : startDraw}
@@ -343,10 +372,11 @@ export default function App() {
             onPickAlert={pickAlert} onPickVessel={pickVessel} onPickInfra={(id) => pickInfra(id)}
             onSuivre={(id, on) => suivre.mutate({ id, on })} onRejeu={onRejeu} />
           <Frise temps={temps} now={now} onChange={setTemps} alerts={{ type: "FeatureCollection", features: filtered }}
-            timeline={timelineQ.isError ? null : timelineQ.data ?? null} onPickAlert={pickAlert} />
+            timeline={timelineQ.isError ? null : timelineQ.data ?? null} onPickAlert={pickAlert}
+            passages={passagesQ.data ?? EMPTY} onPickPassage={pickPassage} />
         </main>
       </div>
-      {searching && <Recherche onClose={() => setSearching(false)} onPick={onResult} />}
+      {searching && <Recherche region={region} onClose={() => setSearching(false)} onPick={onResult} />}
     </div>
   );
 }

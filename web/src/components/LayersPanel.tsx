@@ -1,20 +1,18 @@
 import type { ReactNode } from "react";
 import { L } from "../lib/libelles";
-import { ZONE_KEYS } from "../lib/zones";
 import { COULEUR_LISTE } from "../registres/alertes";
-import { COUCHES, GROUPES, disponible, type Couche } from "../registres/couches";
+import { COUCHES, COULEUR_PASSAGE, GROUPES, disponible, type Couche } from "../registres/couches";
 
 interface Props {
   actives: string[];
   onActives: (ids: string[]) => void;
-  zone: string | null;
-  onZone: (z: string | null) => void;
   concernees: boolean;
   onConcernees: (v: boolean) => void;
   byType: boolean;
   onByType: (v: boolean) => void;
   infraCounts: Record<string, number>;     // tracés par type d'infrastructure
   vesselCount: number;
+  passageCount: number;                    // passages Sentinel 1 et 2 sur la plage et la région
 }
 
 const C = L.couches;
@@ -56,6 +54,14 @@ function Legende({ c, byType }: { c: Couche; byType: boolean }) {
       </div>
     );
   }
+  if (c.id === "passages") {
+    return (
+      <div className="px-4 pb-2 pl-8">
+        <Key swatch={<span className="h-0.5 w-4" style={{ background: COULEUR_PASSAGE }} />}>{C.legende.acquis}</Key>
+        <Key swatch={<span className="h-0 w-4 border-t border-dashed" style={{ borderColor: COULEUR_PASSAGE }} />}>{C.legende.prevu}</Key>
+      </div>
+    );
+  }
   if (c.id === "detections") {
     return (
       <div className="px-4 pb-2 pl-8">
@@ -90,7 +96,7 @@ export default function LayersPanel(p: Props) {
             const on = p.actives.includes(c.id) && disponible(c);
             const etat = !disponible(c) ? `${L.commun.aVenir}, ${L.commun.etape(c.etape!)}`
               : c.infra ? C.traces(p.infraCounts[c.infra] ?? 0)
-              : c.id === "navires" ? C.navires(p.vesselCount) : "";
+              : c.id === "navires" ? C.navires(p.vesselCount) : c.id === "passages" ? C.passages(p.passageCount) : "";
             return (
               <div key={c.id}>
                 <Switch on={on} disabled={!disponible(c)} onChange={(v) => set(c.id, v)} label={C.noms[c.id]}
@@ -105,14 +111,6 @@ export default function LayersPanel(p: Props) {
           {g === "infrastructures" && (
             <div className="border-t border-hair/70">
               <Switch on={p.concernees} onChange={p.onConcernees} label={C.concernees} />
-              <label className="flex items-center justify-between px-4 pb-2.5 pt-1 text-ink">
-                {C.zone}
-                <select value={p.zone ?? ""} onChange={(e) => p.onZone(e.target.value || null)}
-                  className="rounded-md border border-hair bg-abyss px-1.5 py-1 text-[12px] text-ink">
-                  <option value="">{L.fil.toutesZones}</option>
-                  {ZONE_KEYS.map((z) => <option key={z} value={z}>{L.zones[z]}</option>)}
-                </select>
-              </label>
             </div>
           )}
         </section>

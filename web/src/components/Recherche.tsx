@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import { chercherLieux, type Lieu } from "../lib/lieux";
+import { zoneOf } from "../lib/zones";
 import type { Props } from "../lib/types";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
 import { Tag } from "./Elements";
@@ -18,8 +19,10 @@ export type Resultat =
 const R = L.recherche;
 
 /** Recherche globale (Cmd + K) : navires par nom actuel ou ancien, MMSI ou OMI ; infrastructures par nom ; alertes par
- *  numéro ; lieux. Résultats groupés ; flèches et Entrée au clavier ; un résultat ouvre sa fiche et centre la carte. */
-export default function Recherche({ onClose, onPick }: { onClose: () => void; onPick: (r: Resultat) => void }) {
+ *  numéro ; lieux. Résultats groupés, ceux de la région affichée en premier (ordre de l'API, lieux de la région en
+ *  tête) ; flèches et Entrée au clavier ; un résultat ouvre sa fiche et centre la carte. */
+export default function Recherche({ region, onClose, onPick }:
+  { region: string | null; onClose: () => void; onPick: (r: Resultat) => void }) {
   const input = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -27,7 +30,7 @@ export default function Recherche({ onClose, onPick }: { onClose: () => void; on
   useEffect(() => input.current?.focus(), []);
   useEffect(() => { const id = setTimeout(() => setDebounced(q.trim()), 200); return () => clearTimeout(id); }, [q]);
   const ok = debounced.length >= 2 || /^\d+$/.test(debounced);
-  const res = useQuery({ queryKey: ["search", debounced], queryFn: () => api.search(debounced), enabled: ok, staleTime: 30_000 });
+  const res = useQuery({ queryKey: ["search", debounced, region], queryFn: () => api.search(debounced, region), enabled: ok, staleTime: 30_000 });
 
   const groupes = useMemo(() => {
     const d = res.data;
@@ -35,10 +38,12 @@ export default function Recherche({ onClose, onPick }: { onClose: () => void; on
       ["navires", (d?.navires ?? []).map((p) => ({ kind: "navire" as const, p }))],
       ["infrastructures", (d?.infrastructures ?? []).map((p) => ({ kind: "infrastructure" as const, p }))],
       ["alertes", (d?.alertes ?? []).map((p) => ({ kind: "alerte" as const, p }))],
-      ["lieux", chercherLieux(debounced, (z) => L.zones[z] ?? z).map((p) => ({ kind: "lieu" as const, p }))],
+      ["lieux", chercherLieux(debounced, (z) => L.zones[z] ?? z)
+        .sort((a, b) => Number(region != null && zoneOf(b.lon, b.lat) === region) - Number(region != null && zoneOf(a.lon, a.lat) === region))
+        .map((p) => ({ kind: "lieu" as const, p }))],
     ];
     return g.filter(([, r]) => r.length);
-  }, [res.data, debounced]);
+  }, [res.data, debounced, region]);
   const flat = groupes.flatMap(([, r]) => r);
   useEffect(() => setCursor(0), [debounced]);
 

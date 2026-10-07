@@ -7,6 +7,7 @@ import { PRESETS, VITESSES, avecDuree, avecInstant, avecPlage, iso, lecture, res
   type Temps } from "../lib/temps";
 import type { FC, Feature } from "../lib/types";
 import { couleurAlerte, libelleAlerte } from "../registres/alertes";
+import { COULEUR_PASSAGE } from "../registres/couches";
 import { pistesActives } from "../registres/frise";
 
 interface Props {
@@ -16,6 +17,8 @@ interface Props {
   alerts: FC;
   timeline: Timeline | null;
   onPickAlert: (f: Feature) => void;
+  passages: FC;                         // passages Sentinel 1 et 2 de la plage et de la région
+  onPickPassage: (f: Feature) => void;
 }
 
 const F = L.frise;
@@ -25,7 +28,7 @@ const depuisChamp = (v: string) => Date.parse(`${v}:00Z`);
 
 /** Frise : direct, plage ou rejeu. La plage (période étudiée) gouverne tout l'écran ; l'instant place les navires.
  *  Pistes du registre (alertes, coupures du flux AIS hachurées) et histogramme du nombre de navires. */
-export default function Frise({ temps, now, onChange, alerts, timeline, onPickAlert }: Props) {
+export default function Frise({ temps, now, onChange, alerts, timeline, onPickAlert, passages, onPickPassage }: Props) {
   const { debut, fin, instant } = resolve(temps, now);
   const span = fin - debut;
   const track = useRef<HTMLDivElement>(null);
@@ -115,8 +118,8 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
         </div>
       )}
 
-      {/* Pistes : alertes, coupures du flux, puis histogramme ; un clic place l'instant, les bords réduisent la plage */}
-      <div ref={track} className="relative mt-2 h-[58px] cursor-crosshair select-none"
+      {/* Pistes : alertes, coupures du flux, histogramme, puis passages satellites (plein : acquis, pointillé : prévu) ; un clic place l'instant, les bords réduisent la plage */}
+      <div ref={track} className="relative mt-2 h-[68px] cursor-crosshair select-none"
         onPointerDown={(e) => startDrag("instant", e)} onPointerMove={moveDrag} onPointerUp={endDrag}>
         {pistes.some((p) => p.id === "alertes") && marques.map((a) => (
           <span key={a.properties.id} title={`${libelleAlerte(a.properties.type)}, ${utc(a.properties.event_time)}`}
@@ -125,6 +128,17 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
             style={{ left: `${pct(Date.parse(a.properties.event_time))}%`, background: couleurAlerte(a.properties.type),
                      opacity: a.properties.status === "classee" || a.properties.severity === "faible" ? 0.45 : 1 }} />
         ))}
+        {pistes.some((p) => p.id === "passages") && passages.features.map((f) => {
+          const t = Date.parse(f.properties.acquired_at);
+          if (t < debut || t > fin) return null;
+          const prevu = f.properties.statut === "prevu";
+          return (
+            <span key={f.properties.id} title={F.passage(f.properties.satellite, utc(f.properties.acquired_at), prevu)}
+              onPointerDown={(e) => { e.stopPropagation(); onPickPassage(f); }}
+              className={`absolute bottom-0 h-2.5 w-[5px] -translate-x-1/2 cursor-pointer rounded-sm border ${prevu ? "border-dashed" : ""}`}
+              style={{ left: `${pct(t)}%`, borderColor: COULEUR_PASSAGE, background: prevu ? "transparent" : COULEUR_PASSAGE }} />
+          );
+        })}
         {pistes.some((p) => p.id === "coupures") && (timeline?.coupures ?? []).map((c, i) => {
           const a = Math.max(debut, Date.parse(c.debut)), b = Math.min(fin, Date.parse(c.fin));
           if (b <= a) return null;

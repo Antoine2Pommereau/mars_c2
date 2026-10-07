@@ -5,7 +5,6 @@ import { FILTRES_DEFAUT, filtrer, grouper, statutDe, suivisEnTete, trier, zoneAl
 import { hm, jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
-import { ZONE_KEYS } from "../lib/zones";
 import { naviresAlerte, TYPES_ALERTE, typeAlerte } from "../registres/alertes";
 import { Tag } from "./Elements";
 
@@ -54,8 +53,8 @@ function Ligne({ a, vessels, now, selected, onPick, indent }:
   );
 }
 
-/** Fil d'alertes de la plage : filtres par type, gravité, statut et zone ; tri par gravité puis date ; alertes d'un
- *  même navire regroupées. */
+/** Fil d'alertes de la plage et de la région affichée (réglage de la barre d'état) : filtres par type, gravité et
+ *  statut ; tri par gravité puis date ; alertes d'un même navire regroupées. */
 export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivis, now, selectedId, onPick }: PanelProps) {
   const [ouverts, setOuverts] = useState<Set<string>>(new Set());
   const sansVue = useMemo(() => filtrer(alerts, filtres, false), [alerts, filtres]);
@@ -92,11 +91,6 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivi
                 className={`rounded px-1 py-0.5 ${filtres.gravites.includes(g) ? "bg-raised text-ink" : "text-faint hover:text-muted"}`}>{L.gravite[g]}</button>
             ))}
           </div>
-          <select aria-label={L.fil.zone} value={filtres.zone ?? ""} onChange={(e) => set({ zone: e.target.value || null })}
-            className="min-w-0 flex-1 rounded-md border border-hair bg-abyss px-1 py-1 text-ink">
-            <option value="">{L.fil.toutesZones}</option>
-            {ZONE_KEYS.map((z) => <option key={z} value={z}>{L.zones[z]}</option>)}
-          </select>
         </div>
         <div className="mt-2 flex rounded-md border border-hair p-0.5 text-[12px]" role="tablist">
           {(["todo", "confirmed", "all"] as Vue[]).map((k) => (

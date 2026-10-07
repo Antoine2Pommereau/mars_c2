@@ -63,6 +63,22 @@ WHERE ts >= $1::timestamptz AND ts < $2::timestamptz GROUP BY 1
 ON CONFLICT (tranche) DO UPDATE SET navires = EXCLUDED.navires, positions = EXCLUDED.positions
 """
 
+# Même histogramme par région (sélecteur de la barre d'état) : une position compte dans chaque région qui la contient
+REFRESH_10MIN_REGION = """
+INSERT INTO stats_10min_region (region, tranche, navires, positions)
+SELECT lower(r.name), to_timestamp(floor(extract(epoch FROM p.ts) / 600) * 600), count(DISTINCT p.vessel_id), count(*)
+FROM positions p JOIN regions r ON lower(r.name) = ANY($3::text[]) AND ST_Intersects(r.geom::geometry, p.geom::geometry)
+WHERE p.ts >= $1::timestamptz AND p.ts < $2::timestamptz GROUP BY 1, 2
+ON CONFLICT (region, tranche) DO UPDATE SET navires = EXCLUDED.navires, positions = EXCLUDED.positions
+"""
+FRANCE = ["bretagne", "manche", "gascogne", "mediterranee"]
+
+
+async def _start(c, table: str, first: datetime, now: datetime, hours: int) -> datetime:
+    if not await c.fetchval(f"SELECT EXISTS (SELECT 1 FROM {table})"):
+        return first.replace(hour=0, minute=0, second=0, microsecond=0)
+    return (now - timedelta(hours=hours)).replace(minute=0, second=0, microsecond=0)
+
 
 async def refresh_stats(c, now: datetime, hours: int = 3) -> dict:
     """Recalcule les statistiques des `hours` dernières heures (les fichiers arrivés en retard y sont comptés). Au
@@ -70,27 +86,33 @@ async def refresh_stats(c, now: datetime, hours: int = 3) -> dict:
     first = await c.fetchval("SELECT min(ts) FROM positions")
     if first is None:
         return {"minutes": 0}
-    if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM stats_10min)"):
-        start = first.replace(hour=0, minute=0, second=0, microsecond=0)
-    else:
-        start = (now - timedelta(hours=hours)).replace(minute=0, second=0, microsecond=0)
-    day = start
-    while day < now:
-        nxt = min(day + timedelta(days=1), now)
-        await c.execute(REFRESH_MINUTE, day, nxt)
-        await c.execute(REFRESH_10MIN, day, nxt)
-        day = nxt
+    out = {}
+    for table, queries in (("stats_10min", (REFRESH_MINUTE, REFRESH_10MIN)), ("stats_10min_region", (REFRESH_10MIN_REGION,))):
+        start = day = await _start(c, table, first, now, hours)
+        while day < now:
+            nxt = min(day + timedelta(days=1), now)
+            for q in queries:
+                await (c.execute(q, day, nxt, FRANCE) if q is REFRESH_10MIN_REGION else c.execute(q, day, nxt))
+            day = nxt
+        out[table] = start.isoformat()
     # Au delà de la conservation des positions (30 jours), les statistiques ne servent plus à la frise
-    await c.execute("DELETE FROM stats_minute WHERE minute < $1::timestamptz - interval '35 days'", now)
-    await c.execute("DELETE FROM stats_10min WHERE tranche < $1::timestamptz - interval '35 days'", now)
-    return {"depuis": start.isoformat()}
+    for table, col in (("stats_minute", "minute"), ("stats_10min", "tranche"), ("stats_10min_region", "tranche")):
+        await c.execute(f"DELETE FROM {table} WHERE {col} < $1::timestamptz - interval '35 days'", now)
+    return out
 
 
-async def timeline(c, start: datetime, end: datetime, bins: int, ratio: float) -> dict:
+async def timeline(c, start: datetime, end: datetime, bins: int, ratio: float, region: str | None = None) -> dict:
+    """Histogramme (de toute la France, ou d'une région) et coupures du flux (toujours globales : le flux est commun
+    aux régions)."""
     # Pas plus d'intervalles que de tranches de 10 minutes : sinon des intervalles vides entre deux tranches
     bins = max(1, min(bins, int((end - start) / timedelta(minutes=10))))
-    rows = await c.fetch("SELECT tranche, navires FROM stats_10min WHERE tranche >= $1::timestamptz "
-                         "AND tranche < $2::timestamptz ORDER BY tranche", start, end)
+    if region:
+        rows = await c.fetch("SELECT tranche, navires FROM stats_10min_region WHERE region = $3::text "
+                             "AND tranche >= $1::timestamptz AND tranche < $2::timestamptz ORDER BY tranche",
+                             start, end, region)
+    else:
+        rows = await c.fetch("SELECT tranche, navires FROM stats_10min WHERE tranche >= $1::timestamptz "
+                             "AND tranche < $2::timestamptz ORDER BY tranche", start, end)
     minutes = await c.fetch("SELECT minute, positions FROM stats_minute WHERE minute >= $1::timestamptz "
                             "AND minute < $2::timestamptz", start, end)
     counts = {r["minute"]: r["positions"] for r in minutes}
