@@ -20,7 +20,9 @@ services:
     logging: *journaux
 
   web:
-    ports: !override ["127.0.0.1:8080:80"]
+    # 8090 : retour des travailleurs, sur l'adresse du réseau privé Scaleway seulement (127.0.0.2 tant qu'il n'est
+    # pas configuré) ; nginx n'y relaie que les routes /api/travailleurs/<id>/etat et /resultats
+    ports: !override ["127.0.0.1:8080:80", "${MARS_IP_PRIVEE:-127.0.0.2}:8090:8090"]
     restart: unless-stopped
     logging: *journaux
 
@@ -43,6 +45,7 @@ services:
       DATABASE_URL: postgresql://mars:mars@db:5432/mars
       MARS_API: http://backend:8000/api   # scripts/build_masks.py lancé ponctuellement dans ce conteneur
       TACHES_HEURE: "02:30"          # UTC
+      VIIRS_HEURE: "06:30"           # UTC, après la publication des données de la nuit (dernier passage vers 3 h 30)
       CONSERVATION_JOURS: "30"
       SAUVEGARDES_GARDEES: "7"
       ALERTE_DISQUE_PCT: "15"

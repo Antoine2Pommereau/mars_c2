@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.18"
+version: "2026.10.19"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -149,3 +149,47 @@ identite:
     # Préfixes sans ambiguïté avec un nom civil (LE, LÉ, HS ou SAS en sont exclus)
     prefixes_nom: [HMS, HMCS, HMAS, HMNZS, FS, USS, USNS, HNLMS, ZRMS, FGS, HDMS, KNM, HSWMS, ITS, ESPS, NRP, BNS,
                    ORP, TCG, ROKS, INS]
+
+# Détections nocturnes VIIRS (étape 3, lot B ; mars/viirs.py). Valeurs de départ, à calibrer sur les premières nuits.
+viirs:
+  produits:                # bande Day/Night et géolocalisation, temps quasi réel puis produits standard (rattrapage)
+    SNPP: [VNP02DNB, VNP03DNB]
+    NOAA20: [VJ102DNB, VJ103DNB]
+    NOAA21: [VJ202DNB, VJ203DNB]
+  nuit_debut_h: 18         # une nuit va de 18 h à 6 h UTC (passages sur nos régions vers 0 h à 3 h 30) ;
+  nuit_fin_h: 6            # elle porte la date de son début
+  rattrapage_nuits: 3      # nuits relues à chaque passage : une nuit manquée est rattrapée
+  # Appariement à l'AIS : pixel de 750 m, géolocalisation à environ un pixel près ; position AIS interpolée (ou
+  # estimée sur 20 minutes au plus) à l'instant de la détection, plus une marge pour l'incertitude de l'estime
+  tolerance_m: 1500
+  estime_max_min: 20
+  estime_marge_ratio: 0.5  # marge de plus : la moitié du chemin parcouru pendant l'estime
+  cote_km: 5               # détection à moins de 5 km de la terre : écartée (ports, côtes éclairées)
+  persistance_m: 1000      # lumière revue à moins de 1 km au moins 3 nuits distinctes sur 30 jours : lumière fixe
+  persistance_nuits: 3
+  persistance_jours: 30
+  corridor_m: 3704         # à moins de 2 milles d'une infrastructure : gravité élevée
+  liste_rayon_km: 10       # navire des listes à moins de 10 km (30 min près) : gravité élevée ; les deux : critique
+
+# Travailleurs éphémères (mars/travailleurs.py) : instances Scaleway créées à la demande, détruites par le serveur.
+# Garde fous : durée de vie, plafonds quotidiens, destruction des orphelins à chaque minute et au redémarrage.
+travailleurs:
+  zone: fr-par-1
+  duree_max_min: 45        # au delà, destruction forcée par le serveur
+  max_par_jour: 4
+  max_minutes_par_jour: 180
+  facturation_min_min: 60  # instances CPU facturées à l'heure, une heure au moins
+  types:
+    viirs:
+      commercial_type: DEV1-M        # 3 vCPU, 4 Go : 1,45 Go mesurés au plus pour le modèle
+      image_label: docker            # image Scaleway avec Docker
+      disque_go: 20
+      prix_heure: 0.0202             # euros hors taxes, API Scaleway du 07/10/2026
+      image: ghcr.io/allenai/vessel-detection-viirs@sha256:eb5ae0e165add2997d57e786d4efd8f1d969bb27ccd02d0c60ce3ac38bb91198
+      script: travailleurs/viirs.py
+    sentinel:                        # lot C : GPU, image et script à venir
+      commercial_type: L4-1-24G
+      image_label: ubuntu_noble_gpu_os_13_nvidia
+      disque_go: 60
+      prix_heure: 0.7875
+      facturation_min_min: 1         # instances GPU facturées à la minute

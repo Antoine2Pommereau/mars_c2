@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from contenu import router as contenu_router
 from regions import dans_region, region_ewkt, regions_list
 from satellites import next_passes, router as satellites_router
+from travailleurs import router as travailleurs_router, viirs_status
 from mars.config import load_rules
 from mars.frise import timeline
 from mars.fusion.pipeline import fuse
@@ -51,6 +52,7 @@ async def lifespan(app):
 app = FastAPI(title="MARS C2", lifespan=lifespan)
 app.include_router(contenu_router)      # recherche, fiches, notes, navires suivis, photo (backend/contenu.py)
 app.include_router(satellites_router)   # calendrier des passages Sentinel 1 et 2 (backend/satellites.py)
+app.include_router(travailleurs_router) # travailleurs, détections VIIRS, mesures (backend/travailleurs.py)
 
 
 def feature(geometry, properties):
@@ -261,6 +263,7 @@ async def ingestion_status(region: str | None = None):
     passage satellite prévu sur la région affichée."""
     async with app.state.pool.acquire() as c:
         satellites = await next_passes(c, region)
+        satellites["viirs"] = await viirs_status(c)
         last = await c.fetchrow("SELECT folder, name, ingested_at FROM ingested_files ORDER BY ingested_at DESC LIMIT 1")
         hour = await c.fetchrow(
             "SELECT count(*) AS positions, count(DISTINCT vessel_id) AS navires, max(ts) AS derniere_position, "

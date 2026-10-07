@@ -12,6 +12,10 @@ dans task_runs, puis nouveau passage des règles des listes. En cas d'échec, la
 barre d'état de l'interface le signale.
 Calendrier des passages Sentinel 1 et 2, chaque jour : catalogue public de Copernicus Data Space et plans
 d'acquisition de l'ESA (métadonnées seulement), puis infrastructures et navires des listes couverts (mars/satellites.py).
+Détections nocturnes VIIRS, chaque jour à VIIRS_HEURE (UTC, 06:30 par défaut, après la publication des données de
+la nuit) : granules des dernières nuits pas encore traitées (rattrapage automatique), analysées par un travailleur
+éphémère Scaleway (mars/travailleurs.py, mars/viirs.py). Chaque minute : surveillance des travailleurs (résultats
+traités, instances finies ou trop vieilles détruites, orphelins détruits, exécutions journalisées dans task_runs).
 Toutes les 10 minutes : espace disque, alerte sous ALERTE_DISQUE_PCT (15 %).
 Toutes les 5 minutes (section continu de config/rules.yaml) : règles comportementales sur le flux en direct
 (rendez vous, coupures AIS, navires des listes, changements d'identité), consignées dans task_runs (tâche regles),
@@ -20,7 +24,9 @@ Une tâche réussie ne rejoue pas le même jour ; une tâche en échec est reten
 
 Usage :
     python scripts/taches.py                          # boucle (service Docker « taches »)
-    python scripts/taches.py archiver | purger | sauvegarder | disque | regles | listes | passages
+    python scripts/taches.py archiver | purger | sauvegarder | disque | regles | listes | passages | viirs
+    python scripts/taches.py travailleurs             # état des travailleurs, une surveillance tout de suite
+    python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
     python scripts/taches.py mesures [--jours 14]     # mesures de calibration (scripts/mesures_calibration.py)
     python scripts/taches.py sauvegardes              # liste des sauvegardes sur R2
     python scripts/taches.py telecharger CLE CHEMIN   # récupère un objet de R2 (restauration)
@@ -44,6 +50,7 @@ from mars.config import ROOT, database_url, load_env, load_rules
 
 LIVE = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
 HOUR = os.environ.get("TACHES_HEURE", "02:30")
+VIIRS_HOUR = os.environ.get("VIIRS_HEURE", "06:30")
 KEEP_DAYS = int(os.environ.get("CONSERVATION_JOURS", 30))
 KEEP_BACKUPS = int(os.environ.get("SAUVEGARDES_GARDEES", 7))
 DISK_PCT = float(os.environ.get("ALERTE_DISQUE_PCT", 15))
@@ -100,10 +107,10 @@ def _changed(details) -> bool:
     return False
 
 
-def due(conn, task: str, now: datetime, every_days: int = 1) -> bool:
+def due(conn, task: str, now: datetime, every_days: int = 1, hour: str = HOUR) -> bool:
     """Tâche nocturne à lancer : heure passée, pas de réussite depuis `every_days` jours (aujourd'hui compris), pas
     d'échec depuis moins d'une heure."""
-    h, m = (int(x) for x in HOUR.split(":"))
+    h, m = (int(x) for x in hour.split(":"))
     if now < now.replace(hour=h, minute=m, second=0, microsecond=0):
         return False
     r = conn.execute("SELECT bool_or(status = 'ok') FILTER (WHERE run_day > %s), "
@@ -113,15 +120,52 @@ def due(conn, task: str, now: datetime, every_days: int = 1) -> bool:
 
 
 def tasks(conn):
-    """Tâches de la nuit, dans l'ordre, avec leur période en jours."""
+    """Tâches quotidiennes, dans l'ordre : fonction, période en jours, heure de déclenchement (UTC)."""
     return {
-        "archivage": (lambda: archive.run_archive(conn, r2(), LIVE, log=log), 1),
-        "purge": (lambda: archive.run_purge(conn, LIVE, KEEP_DAYS), 1),
-        "sauvegarde": (lambda: archive.run_backup(r2(), database_url(), KEEP_BACKUPS), 1),
-        "listes_opensanctions": (lambda: update_list(conn, "opensanctions"), 1),
-        "listes_gur": (lambda: update_list(conn, "gur"), 7),
-        "passages": (lambda: update_passes(conn), 1),
+        "archivage": (lambda: archive.run_archive(conn, r2(), LIVE, log=log), 1, HOUR),
+        "purge": (lambda: archive.run_purge(conn, LIVE, KEEP_DAYS), 1, HOUR),
+        "sauvegarde": (lambda: archive.run_backup(r2(), database_url(), KEEP_BACKUPS), 1, HOUR),
+        "listes_opensanctions": (lambda: update_list(conn, "opensanctions"), 1, HOUR),
+        "listes_gur": (lambda: update_list(conn, "gur"), 7, HOUR),
+        "passages": (lambda: update_passes(conn), 1, HOUR),
+        "viirs": (lambda: launch_viirs(conn), 1, VIIRS_HOUR),
     }
+
+
+def launch_viirs(conn) -> dict:
+    """Granules des dernières nuits pas encore traitées, confiées à un travailleur éphémère (un seul à la fois)."""
+    import requests
+    from mars import travailleurs, viirs
+    rules = load_rules()
+    scw, token = travailleurs.Scaleway.from_env(), os.environ.get("EARTHDATA_TOKEN")
+    if scw is None or not token:
+        raise RuntimeError("clés absentes du .env : SCW_SECRET_KEY, SCW_PROJECT_ID, EARTHDATA_TOKEN")
+    busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'viirs' AND detruit_le IS NULL").fetchone()
+    if busy:
+        return {"en_cours": busy[0]}
+    p = viirs.plan(conn, requests.Session(), rules, datetime.now(timezone.utc))
+    if not p["granules"]:
+        return {"nuits": p["nuits"], "granules": 0}
+    r = travailleurs.launch(conn, scw, rules, "viirs", {"granules": p["granules"], "regions": viirs.regions_boxes()},
+                            {"EARTHDATA_TOKEN": token})
+    if "refus" in r:
+        raise RuntimeError(r["refus"])
+    return {**r, "nuits": p["nuits"], "granules": len(p["granules"])}
+
+
+def supervise_workers(conn, quiet: bool = True) -> dict | None:
+    """Une minute de surveillance des travailleurs ; une erreur (API Scaleway injoignable) n'arrête pas la boucle."""
+    from mars import travailleurs, viirs
+    rules = load_rules()
+    try:
+        out = travailleurs.supervise(conn, travailleurs.Scaleway.from_env(), rules,
+                                     {"viirs": lambda c, w: viirs.ingest(c, w, rules)}, log=log)
+    except Exception as e:
+        log(f"surveillance des travailleurs : ÉCHEC, {e}")
+        return None
+    if not quiet or any(out.values()):
+        log(f"travailleurs : {json.dumps(out, ensure_ascii=False)}")
+    return out
 
 
 def update_passes(conn) -> dict:
@@ -183,14 +227,15 @@ def loop(conn):
         f"{KEEP_BACKUPS} gardées) ; disque toutes les {DISK_EVERY_S // 60} min, alerte sous {DISK_PCT:.0f} %")
     last_disk = last_rules = 0.0
     while True:
+        supervise_workers(conn)                     # chaque minute, et dès le démarrage : aucun orphelin
         if time.time() - last_disk >= DISK_EVERY_S:
             archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log)
             last_disk = time.time()
         if time.time() - last_rules >= 60 * load_rules()["continu"]["intervalle_min"]:
             last_rules = time.time()
             run(conn, "regles", rules_cycle, quiet=True)
-        for task, (fn, every) in tasks(conn).items():
-            if due(conn, task, datetime.now(timezone.utc), every):
+        for task, (fn, every, hour) in tasks(conn).items():
+            if due(conn, task, datetime.now(timezone.utc), every, hour):
                 run(conn, task, fn)
         time.sleep(60)
 
@@ -198,7 +243,8 @@ def loop(conn):
 def main():
     ap = argparse.ArgumentParser(description="Tâches planifiées de MARS C2")
     ap.add_argument("commande", nargs="?", default="boucle",
-                    choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "mesures",
+                    choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "viirs",
+                             "travailleurs", "detruire-travailleurs", "mesures",
                              "sauvegardes", "telecharger", "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
@@ -220,6 +266,23 @@ def main():
         ok = [run(conn, f"listes_{s}", lambda s=s: update_list(conn, s)) is not None for s in ("opensanctions", "gur")]
         if not all(ok):
             sys.exit(1)
+    elif a.commande == "viirs":
+        if run(conn, "viirs", lambda: launch_viirs(conn)) is None:
+            sys.exit(1)
+    elif a.commande == "travailleurs":
+        supervise_workers(conn, quiet=False)
+        for r in conn.execute("SELECT id, tache, etat, commercial_type, cree_le, detruit_le, erreur FROM travailleurs "
+                              "ORDER BY id DESC LIMIT 10").fetchall():
+            print(*r)
+    elif a.commande == "detruire-travailleurs":
+        from mars import travailleurs
+        scw = travailleurs.Scaleway.from_env()
+        if scw is None:
+            raise SystemExit("clés Scaleway absentes")
+        for s in scw.tagged(load_rules()["travailleurs"]["zone"]):
+            print(s["id"], s["name"], "détruite" if scw.destroy(s["zone"], s["id"]) else "destruction en cours")
+        conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = coalesce(fini_le, now()), "
+                     "erreur = coalesce(erreur, 'arrêt d''urgence') WHERE detruit_le IS NULL AND etat NOT IN ('termine', 'echec')")
     elif a.commande == "passages":
         if run(conn, "passages", lambda: update_passes(conn)) is None:
             sys.exit(1)
