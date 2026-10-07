@@ -35,8 +35,9 @@ GeoTrackNet, routes de Brest, DMA) servent **uniquement à entraîner** les mod�
 TrAISformer ensuite ; **CircleNet** (xView3) gardé en repli et en comparaison.
 
 **Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu (**faites**, alertes WATCHLIST et
-IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (VIIRS chaque nuit, Sentinel 1 au passage sur les corridors, cartes de chaleur, couches par
-source) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
+IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (lot A, calendrier des
+passages Sentinel 1 et 2, **fait** ; lot B, analyse d'un passage ; lot C, déclenchement automatique sur les corridors ;
+VIIRS chaque nuit, cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
 
 **Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
 plutôt qu'affirmer (une règle silencieuse est prouvée par un test par injection) ; respecter la physique du
@@ -99,7 +100,7 @@ que sur le serveur.
 | `web` | Docker (nginx) ; Vite en développement | Interface React |
 | `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) |
 | `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` |
-| `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine) ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
+| `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine), calendrier des passages satellites ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
 | Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
 
 **Chaîne du direct** : AISStream, Parquet local, ingestion toutes les 15 s (un point par minute en route, un toutes
@@ -117,15 +118,17 @@ la fusion (`mars/fusion/pipeline.py`) et la persistance des échos fixes, écrit
 mars_c2/
   CLAUDE.md, start.sh, pyproject.toml, docker-compose.yml, docker-compose.serveur.yml
   config/rules.yaml       seuils versionnés
-  db/init/01 à 18         schéma et migrations (idempotentes à partir de 02)
+  db/init/01 à 19         schéma et migrations (idempotentes à partir de 02)
   mars/
     ais/live.py, ingest.py, mid.py   zones, nettoyage, allègement, ingestion, pavillon
     watchlist.py, archive.py, r2.py  listes, archivage et sauvegarde, client R2
+    satellites.py                    calendrier des passages Sentinel 1 et 2 (catalogue, plans de l'ESA, couverture)
     fusion/                          positions à l'instant du passage, tolérance Doppler, appariement, persistance
     sar/                             passages, extraction Sentinel Hub, CircleNet
     regions/provision.py             infrastructures EMODnet
   mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
-  backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo
+  backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo ;
+                                     backend/regions.py : région affichée ; backend/satellites.py : passages
   inference/app.py                   service d'inférence
   scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar,
                                      mesures de calibration (mesures_calibration.py)
@@ -137,7 +140,7 @@ mars_c2/
 ## 6. Base et API
 
 Tables principales : `positions` (30 jours), `vessels`, `vessel_identities` (vue `imo_history`), `watchlist` (vue
-`vessel_watch`), `alerts`, `alert_evidence`, `alert_actions`, `sar_passes`, `analyses`, `detections`,
+`vessel_watch`), `alerts`, `alert_evidence`, `alert_actions`, `sar_passes` (passages des analyses radar et calendrier Sentinel 1 et 2, colonne `mission`), `stats_10min_region`, `analyses`, `detections`,
 `fixed_echoes`, `land`, `stationary_zones`, `reception_cells`, `regions`, `infrastructure`, `ais_days`,
 `ingested_files`, `archives`, `task_runs`, `disk_status`, `sim_clock` (direct par défaut). `ais_days.coverage`
 (union des zones collectées) situe le bord des données pour la coupure AIS ; les régions `Bretagne`, `Manche`,
@@ -158,7 +161,12 @@ navires par nom actuel ou ancien, MMSI, OMI via `imo_history` ; infrastructures 
 numéro (`/api/alerts/{id}`), comportement d'un navire sur la plage (`/api/vessels/{id}/comportement` : silences,
 arrêts au large, passages à moins de 2 milles d'une infrastructure), trajectoire GPX, notes, photo (relayée depuis
 VesselFinder, sans écriture disque, `PHOTOS=aucune` la coupe), navires suivis (`/api/suivis`), fiches infrastructure
-(`/api/infrastructure/{id}` : navires passés, alertes liées) et zone (`/api/zones/{clé}`). L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
+(`/api/infrastructure/{id}` : navires passés, alertes liées) et zone (`/api/zones/{clé}`). **Région affichée** :
+`/api/regions`, et `?region=bretagne` (ou `manche`, `gascogne`, `mediterranee`) sur le trafic, le flux, les
+traînées, les alertes, la frise, les infrastructures, les masques, les suivis, la recherche (région en premier) et
+l'état du direct ; le filtre est dans la requête SQL (`dans_region`, géométrie de la table `regions`). **Passages
+satellites** : `/api/satellites/passes?start&end&region` (emprises en GeoJSON), `/api/satellites/passes/{id}`
+(fiche : infrastructures et navires des listes couverts, analyses), prochain passage dans `/api/ingestion`. L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
 par l'interface : l'instant est tenu par chaque navigateur et inscrit dans l'adresse de la page.
 
 ## 7. Interface
@@ -170,8 +178,8 @@ secondaire `#7c8b97`, signal système `#4fb6c8` ; navire sombre `#e85bc7`, rende
 `#5fd3a5`. IBM Plex Sans et Sans Condensed, chiffres
 tabulaires.
 
-Disposition (vision, lots 1 et 2 faits) : **barre d'état** en haut (flux AIS, ingestion, listes, disque, archivage,
-chacun vert, orange ou rouge avec son détail au clic ; **recherche** par Cmd + K dans les navires, infrastructures,
+Disposition (vision, lots 1 et 2 faits) : **barre d'état** en haut (**sélecteur de région**, puis flux AIS,
+ingestion, listes, disque, archivage, satellites, chacun vert, orange ou rouge avec son détail au clic ; **recherche** par Cmd + K dans les navires, infrastructures,
 alertes et lieux, résultats groupés, clavier), **rail** (alertes, couches, analyses, navires suivis), panneau
 contextuel, carte, **fiche** à droite, **frise** en bas.
 
@@ -179,7 +187,12 @@ contextuel, carte, **fiche** à droite, **frise** en bas.
   source, signal, état, suivre ; listes ; identités en frise compacte ; alertes ; comportement ; trajectoire avec
   rejeu et GPX ; notes ; sections futures déclarées), alerte (motif, preuves, navires concernés, décisions),
   infrastructure (identité, navires passés à moins de 2 milles sur la plage, alertes liées), zone (surface,
-  réception, mouillages, trafic et alertes de la plage). Un clic sur une infrastructure ou une zone ouvre sa fiche.
+  réception, mouillages, trafic et alertes de la plage), passage satellite (heure, état acquis ou prévu, capteur,
+  orbite, emprise, « non analysé », infrastructures et navires des listes couverts). Un clic sur une infrastructure,
+  une zone ou une emprise de passage ouvre sa fiche.
+* **Région affichée** (barre d'état) : Toute la France ou une région ; **un seul réglage** pour la carte et son
+  compteur, les infrastructures, le fil, les suivis, la recherche, la frise (histogramme par région, coupures du flux
+  toujours globales), les passages et le contour de la couche « couverture ». Changer de région recentre la carte.
 * **Navires suivis** (table `followed_vessels`) : panneau du rail ; visibles et colorés à toutes les échelles ; leurs
   alertes à traiter en tête du fil.
 * **Mode focus** : tout objet sélectionné est mis en valeur et le reste atténué (navire, alerte, infrastructure avec
@@ -188,7 +201,8 @@ contextuel, carte, **fiche** à droite, **frise** en bas.
 * **Temps** (`lib/temps.ts`) : modes direct (la plage glisse, 1 h à 30 jours), plage (période fixe, bornes
   déplaçables ou saisie libre, instant placé d'un clic) et rejeu (l'instant avance à × 1 à × 300). Tout l'écran
   s'aligne sur la plage : fil, frise, trajectoires ; les navires sont placés à l'instant.
-* **Adresse de la page** (`lib/url.ts`) : mode, plage, instant, vitesse, objet sélectionné, couches, zone. Un lien
+* **Adresse de la page** (`lib/url.ts`) : mode, plage, instant, vitesse, objet sélectionné, couches, région (l'ancien
+  paramètre `zone` est encore lu). Un lien
   rouvre la même vue.
 * **Libellés** : tous dans `web/src/lib/libelles.ts` (français, prêt pour une traduction) ; aucun texte visible en
   dur dans les composants.
@@ -196,9 +210,10 @@ contextuel, carte, **fiche** à droite, **frise** en bas.
   ou à venir : libellé, icône, couleur, navires, titre, signe distinctif, rendu des preuves), `couches.ts` (groupe,
   étape, défaut, calques MapLibre, légende ; les couches futures grisées « à venir »), `sections.tsx` (sections de
   fiche par objet, ordre, condition, étape), `frise.ts` (pistes de marqueurs) ; plus `etat.ts` pour la barre d'état.
-* **Fil** (`lib/fil.ts`) : filtres par type, gravité, statut et zone ; tri par gravité puis date ; alertes d'un même
+* **Fil** (`lib/fil.ts`) : filtres par type, gravité et statut (la région vient de la barre d'état) ; tri par gravité
+  puis date ; alertes d'un même
   navire regroupées ; le pavillon en tête de ligne, le signe distinctif du type ensuite.
-* **Carte** : infrastructures par type (par défaut câbles électriques et parcs éoliens), filtre par zone, tracés
+* **Carte** : infrastructures par type (par défaut câbles électriques et parcs éoliens), tracés
   simplifiés et estompés aux échelles larges, noms à partir du zoom 9, mode « concernées seulement » (alertes
   ouvertes, ou à moins de 2 milles de la sélection) ; navires ordinaires estompés aux échelles larges, ceux des
   listes et en alerte nets et colorés.
@@ -283,6 +298,18 @@ calibration changé) :
   intervalle, épisodes et alertes par jour, puis une proposition par seuil. Le rapport versionné vient de la base
   de test : à régénérer sur le serveur après une à deux semaines de collecte.
 
+**Région affichée et calendrier des passages (07/10/2026)** (migration 19) : sélecteur de région dans la barre d'état
+(les filtres par zone du fil et des couches sont retirés) ; réponses allégées par l'API, sur la base de test : trafic
+179 Ko pour la France, 14 Ko pour la Bretagne ; infrastructures 701 Ko contre 195 Ko ; alertes 26 Ko contre 6 Ko.
+Étape 3, lot A : calendrier des passages Sentinel 1 et 2 (`docs/passages_satellites.md`) : catalogue STAC public de
+Copernicus Data Space pour les passages acquis, plans d'acquisition de l'ESA pour les passages prévus, réunis par
+satellite et orbite absolue ; 30 jours lus en 32 s et 137 Mo de mémoire (98 passages Sentinel 1, 80 Sentinel 2,
+81 prévus) ; plans confrontés au catalogue du 20/09 au 07/10 : 90 passages retrouvés sur 91 ; heure prévue
+Sentinel 1 interpolée sur nos régions, 0,2 min d'écart médian ; 3,5 Ko par passage en base. Pour chaque passage :
+infrastructures et navires des listes dans l'emprise (base du déclenchement au lot C). Couche « Passages Sentinel 1
+et 2 » (plein acquis, pointillé prévu), piste de la frise, fiche passage, indicateur « Satellites » (prochain passage
+sur la région affichée).
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -292,7 +319,7 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 60 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
+`python -m pytest tests` : 66 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
 archivage, règles en continu, vérification R2 avec un faux client S3, frise). `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
@@ -345,5 +372,10 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   (« unable to open database file ») ; `load_gur` les remet à 1 en mémoire.
 * Les règles en continu font sur le serveur l'essentiel de leur coût dans les ports : tout filtre qui retire des
   positions avant un appariement deux à deux doit garder une marge sous le seuil final (cas du préfiltre côtier).
+* **Catalogue STAC de Copernicus** : un multipolygone dont les parties se chevauchent (Bretagne et Manche) est
+  invalide et renvoie une erreur 500 (« TopologyException ») ; chercher région par région et dédoublonner.
+* **Identifiant de prise de vue Sentinel 1** : réattribué à l'exécution (le plan et le catalogue diffèrent de
+  quelques unités) ; rapprocher plan et catalogue par satellite et orbite absolue.
+* Sous zsh, une variable de boucle nommée `path` écrase le `PATH` (plus aucune commande trouvée).
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.

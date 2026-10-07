@@ -111,7 +111,7 @@ La carte affiche tout ce qui a une position, filtré par la plage de temps et pa
 | Infrastructures | Parcs éoliens | Emprises EMODnet | Date d'import | En place, à séparer |
 | Infrastructures | Corridors de surveillance | Bande autour des infrastructures affichées |  | 2 |
 | Zones | Couverture, mouillages, réception fiable | Contours et cellules | Date de calcul | 2 |
-| Satellites | Passages Sentinel 1 et 2 | Emprises des acquisitions | Dernier passage | 3 |
+| Satellites | Passages Sentinel 1 et 2 | Emprises des acquisitions de la plage : trait plein acquis, pointillé prévu | Prochain passage (barre d'état) | **Fait (lot A)** |
 | Satellites | Détections radar et optiques | Cercles : avec AIS, sans AIS, écartée |  | 3 |
 | Satellites | Détections nocturnes VIIRS | Points lumineux de la nuit | Dernière nuit traitée | 3 |
 | Activité | Cartes de chaleur | Densité, arrêts dans les corridors, détections sans AIS, coupures, sur la plage ; comparaison à la normale EMODnet |  | 3 |
@@ -122,7 +122,8 @@ La carte affiche tout ce qui a une position, filtré par la plage de temps et pa
 Afficher les 816 tracés d'un coup charge la carte et la rend illisible. La couche est donc décomposée, et allégée selon le contexte :
 
 1. **Une sous couche par type** (câbles télécoms, câbles électriques, pipelines, parcs éoliens), chacune avec son interrupteur. Par défaut, seuls les câbles électriques et les parcs éoliens sont affichés : moins nombreux, et les plus sensibles.
-2. **Un filtre par zone** (bretagne, manche, gascogne, mediterranee), synchronisé avec le filtre du fil d'alertes.
+2. **La région affichée** (barre d'état) : les tracés sont demandés à l'API pour la seule région choisie. Elle remplace
+   les filtres par zone du fil et des couches du lot 1 : un seul réglage pour tout l'écran.
 3. **Le détail selon l'échelle** : aux échelles larges, des tracés simplifiés et estompés ; le détail et les noms reviennent en zoomant.
 4. **Le mode « concernées seulement »** : un interrupteur qui ne montre que les infrastructures liées à une alerte ouverte ou proches du navire sélectionné. C'est le mode de travail naturel d'un opérateur.
 5. **La fiche d'infrastructure** au clic sur un tracé : nom, type, opérateur, longueur, navires passés à proximité sur la plage, et alertes liées.
@@ -141,9 +142,9 @@ La frise gouverne le temps de tout l'écran. Elle distingue deux notions : la **
 - **Plage** : on choisit une période passée, par raccourci (1 h, 6 h, 24 h, 7 jours, 30 jours) ou librement en faisant glisser les bornes. Rien ne bouge tant qu'on ne relance pas.
 - **Rejeu** : à l'intérieur de la plage, l'instant avance à vitesse choisie (× 1 à × 300) pour revoir une scène, par exemple un rendez vous ou un passage au dessus d'un câble.
 
-**Marqueurs sur la frise.** Les événements y sont repérés dans le temps, sur des pistes distinctes : les alertes (couleur de leur type), les passages satellites Sentinel 1 et 2 et les nuits VIIRS (étape 3), et les **coupures du flux AIS** (zones hachurées), pour ne jamais confondre un navire silencieux avec une panne de notre réception.
+**Marqueurs sur la frise.** Les événements y sont repérés dans le temps, sur des pistes distinctes : les alertes (couleur de leur type), les passages satellites Sentinel 1 et 2 (fait : plein acquis, pointillé prévu, un clic ouvre la fiche du passage) et les nuits VIIRS (étape 3), et les **coupures du flux AIS** (zones hachurées), pour ne jamais confondre un navire silencieux avec une panne de notre réception.
 
-**Densité.** Sous la piste des alertes, un fin histogramme montre le nombre de navires suivis dans le temps : un creux signale immédiatement une coupure de la collecte.
+**Densité.** Sous la piste des alertes, un fin histogramme montre le nombre de navires suivis dans le temps, dans la région affichée : un creux signale immédiatement une coupure de la collecte (les coupures du flux, elles, restent celles de tout le flux).
 
 **Limite.** La plage ne remonte pas au delà de la conservation en base (30 jours). Au delà, les données sont dans l'archive R2 et se rechargent à la demande.
 
@@ -162,7 +163,12 @@ Choisir un résultat ouvre sa fiche et centre la carte dessus.
 
 ### Barre d'état
 
-Elle dit en permanence si la plateforme voit bien, car une absence d'alerte n'a de valeur que si les capteurs fonctionnent. Chaque indicateur est vert, orange ou rouge, et ouvre son détail au clic :
+Elle porte d'abord le **sélecteur de région** (Toute la France, Bretagne, Manche, Gascogne, Méditerranée) : un seul
+réglage qui filtre la carte et son compteur de navires, les infrastructures, le fil d'alertes, les navires suivis, la
+recherche (résultats de la région en premier), la frise et la couverture ; le changer recentre la carte, et il est
+gardé dans l'adresse de la page. Le filtrage se fait dans l'API, pour alléger les réponses.
+
+Elle dit ensuite en permanence si la plateforme voit bien, car une absence d'alerte n'a de valeur que si les capteurs fonctionnent. Chaque indicateur est vert, orange ou rouge, et ouvre son détail au clic :
 
 | Indicateur | Ce qu'il mesure | Étape |
 | --- | --- | --- |
@@ -171,7 +177,7 @@ Elle dit en permanence si la plateforme voit bien, car une absence d'alerte n'a 
 | Listes | Date du dernier import GUR et OpenSanctions | 2 |
 | Disque | Place libre sur le serveur | 2 |
 | Archivage | Dernière archive et dernière sauvegarde sur R2 | 2 |
-| Satellites | Dernier passage Sentinel 1 analysé, dernière nuit VIIRS | 3 |
+| Satellites | Prochain passage Sentinel 1 et Sentinel 2 sur la région affichée, dernier passage acquis, date du calendrier (fait, lot A) ; dernier passage analysé et dernière nuit VIIRS ensuite | 3 |
 
 ### Panneau des analyses satellites
 
@@ -187,13 +193,13 @@ L'étape 2 construit toute la charpente de l'écran et la remplit avec ce qui ex
 
 | Élément | Construit à l'étape 2 | Ajouté plus tard |
 | --- | --- | --- |
-| Barre d'état | Flux AIS, ingestion, listes, disque, archivage | Satellites (3) |
+| Barre d'état | Région affichée ; flux AIS, ingestion, listes, disque, archivage | Satellites : prochain passage (fait, lot A), analyses (3) |
 | Recherche | Navires, infrastructures, alertes, lieux | Détections et passages satellites (3) |
 | Fil d'alertes | Tous les types déclarés ; WATCHLIST, IDENTITY\_CHANGE, RENDEZVOUS actifs ; filtres, regroupement, cycle de vie, commentaires, suivi | AIS\_GAP et INFRA\_THREAT après recalibration ; types satellites (3) ; TRAJECTOIRE\_ANORMALE (pilote) ; PASSAGE\_PREVU (4) ; Tip & Cue et export du dossier (3) |
 | Fiche navire | En tête, listes, identités, alertes, comportement, trajectoire, notes | Score de risque, vérification satellite (3), comportement appris (pilote), trajectoire prédite (4) |
-| Autres fiches | Alerte, infrastructure, zone | Détection et passage satellites (3) |
+| Autres fiches | Alerte, infrastructure, zone | Passage satellite (fait, lot A : heure, emprise, infrastructures et navires des listes couverts, « non analysé ») ; détection (3) |
 | Carte | Navires, trajectoires, infrastructures, corridors, zones ; couches futures affichées « à venir » | Satellites et cartes de chaleur (3), prédictions (4) |
-| Frise | Direct, plage, rejeu, alertes, coupures du flux, histogramme de densité | Passages satellites et nuits VIIRS (3) |
+| Frise | Direct, plage, rejeu, alertes, coupures du flux, histogramme de densité par région | Passages satellites (fait, lot A) ; nuits VIIRS (3) |
 | Panneaux | Fil d'alertes, couches, analyses (existant), navires suivis | File des analyses automatiques (3) |
 
 ### Les points d'extension
@@ -220,3 +226,8 @@ Cinq choix restent ouverts avant le développement : les voici tranchés.
 | Langue | Français, avec tous les libellés centralisés pour permettre l'anglais plus tard |
 
 Prochaine étape : la consigne de développement pour Claude Code, découpée en deux lots. D'abord la charpente et les registres (barre d'état, frise à plage, fil filtrable, couches décomposées, registres) ; puis le contenu (recherche, fiches navire, alerte, infrastructure et zone, navires suivis).
+
+Avancement (07/10/2026) : lots 1 et 2 faits ; région affichée unique dans la barre d'état ; étape 3, lot A (calendrier
+des passages Sentinel 1 et 2, `docs/passages_satellites.md`) fait. Suite : lot B, analyse d'un passage (fiche passage,
+état « non analysé » à remplacer par l'analyse) ; lot C, déclenchement automatique quand un passage couvre un corridor
+ou un navire des listes.

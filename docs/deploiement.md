@@ -126,6 +126,13 @@ Chaque nuit à 02:30 UTC (`TACHES_HEURE`), dans cet ordre, chacune consignée da
    retentée une heure plus tard, et l'indicateur « Listes » de la barre d'état passe à l'orange avec la mention
    « mise à jour en échec, liste précédente conservée ».
 
+5. **Calendrier des passages Sentinel 1 et 2**, chaque jour (tâche `passages`) : passages acquis des trois derniers
+   jours (trente au premier passage) depuis le catalogue public de Copernicus Data Space, passages prévus depuis les
+   plans d'acquisition de l'ESA (cinq fichiers KML d'environ 2 Mo, lus en mémoire), puis infrastructures et navires
+   des listes couverts par chaque emprise. Métadonnées seulement, aucune image. Sources, fiabilité et limites :
+   `docs/passages_satellites.md`. Une source en échec n'empêche pas les autres (détail dans `task_runs`) ; la barre
+   d'état indique le prochain passage sur la région affichée et la date de la dernière mise à jour.
+
 **Confirmation des envois.** L'ETag d'un objet envoyé en une seule requête est son MD5 : il est comparé au MD5
 calculé avant l'envoi, avec la taille. L'ETag d'un objet envoyé en plusieurs morceaux (au delà de 16 Mo, cas des
 sauvegardes en flux) n'est pas le MD5 du fichier : il se termine par « tiret, nombre de morceaux ». L'objet est
@@ -144,9 +151,12 @@ de 24 heures bornée par la dernière position reçue :
 | Changement d'identité | `IDENTITY_CHANGE` : nouveau nom confirmé 6 h, ou même OMI sous un autre MMSI | aucun |
 
 Après les règles, chaque cycle tient aussi les statistiques de la frise de l'interface (`stats_minute`,
-`stats_10min` : positions par minute, navires par tranche de 10 minutes). Au premier cycle, elles sont calculées
-pour toutes les positions en base ; l'histogramme et les coupures du flux apparaissent donc dans la frise dans les
-5 minutes qui suivent le déploiement.
+`stats_10min` : positions par minute, navires par tranche de 10 minutes ; `stats_10min_region` : la même chose par
+région, pour le sélecteur de la barre d'état). Au premier cycle après la migration 19, les statistiques par région
+sont rattrapées sur toutes les positions en base : environ 9 s par journée (mesuré en émulation sur 288 000
+positions, 3,2 s), soit 4 à 5 minutes une seule fois pour 30 jours, pendant lesquelles ce cycle des règles est
+retardé. Sur une base neuve, toutes les statistiques sont calculées au premier cycle ; l'histogramme et les coupures
+du flux apparaissent donc dans la frise dans les 5 minutes qui suivent le déploiement.
 
 Une règle dont le prérequis manque est sautée (le motif apparaît dans `task_runs`) : lancer d'abord la construction
 des masques. Les alertes sont mises à jour en place (clé `rule_key`) : statut et décisions des opérateurs sont
@@ -164,6 +174,7 @@ heure plus tard. Au premier démarrage dans la journée, après 02:30, les tâch
 ```bash
 docker compose exec taches python scripts/taches.py archiver      # ou purger, sauvegarder, disque, regles
 docker compose exec taches python scripts/taches.py listes        # les deux listes, sans attendre la nuit
+docker compose exec taches python scripts/taches.py passages      # calendrier des passages, sans attendre la nuit
 docker compose exec taches python scripts/taches.py sauvegardes   # liste des sauvegardes sur R2
 docker compose exec taches python scripts/import_watchlist.py --gur data/listes/Vessels1.db   # fichier local
 ```
@@ -389,7 +400,9 @@ messages statiques, proportions de la collecte du 05/10), et 34 000 positions co
 * 282 octets par position index compris, mesurés sur 2 millions de positions : table 101, index spatial 66, index
   navire et instant 54, index sur l'instant 39, clé primaire 22 ;
 * soit 6,9 Go, environ **7,5 Go** avec l'espace libéré par la purge quotidienne et les autres tables (navires,
-  identités, registre d'ingestion, listes).
+  identités, registre d'ingestion, listes) ;
+* négligeables : calendrier des passages, 3,5 Ko par passage index compris, une dizaine par jour, soit 35 Ko par jour
+  (13 Mo par an, gardés) ; statistiques de la frise par région, 576 lignes par jour, environ 2 Mo à 35 jours.
 
 **Disque du serveur** : base 7,5 Go, images Docker et système environ 6 Go, Parquet local de moins de deux jours
 environ 0,3 Go, journaux bornés à 0,2 Go : environ 14 Go sur 40, 65 % libres. **Tant que le disque fait 8 Go, il
