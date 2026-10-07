@@ -1,0 +1,34 @@
+# Nettoyage du registre GitHub : ne garde que les trois dernières versions étiquetées de chaque image (paquets
+# privés, 500 Mo gratuits). Chaque semaine, et à la demande (onglet Actions, « Run workflow »).
+# Prérequis, une fois par paquet : Package settings, Manage Actions access, ajouter le dépôt mars_c2 avec le rôle
+# Admin (les images portent l'étiquette org.opencontainers.image.source qui les relie au dépôt).
+name: Nettoyage du registre
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"      # lundi, 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  nettoyage:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [mars_c2-backend, mars_c2-web, mars_c2-scripts]
+    steps:
+      - name: Versions sans étiquette (une étiquette reprise par une nouvelle publication)
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ matrix.image }}
+          package-type: container
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: "true"
+      - name: Trois dernières versions étiquetées gardées
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ matrix.image }}
+          package-type: container
+          min-versions-to-keep: 3
