@@ -183,7 +183,8 @@ travailleurs:
   types:
     viirs:
       commercial_type: DEV1-M        # 3 vCPU, 4 Go : 1,45 Go mesurés au plus pour le modèle
-      image_label: docker            # image Scaleway avec Docker
+      image_label: ubuntu_noble      # Ubuntu 24.04 officielle, disque local ; Docker installé au démarrage
+      arch: x86_64
       disque_go: 20
       prix_heure: 0.0202             # euros hors taxes, API Scaleway du 07/10/2026
       image: ghcr.io/allenai/vessel-detection-viirs@sha256:eb5ae0e165add2997d57e786d4efd8f1d969bb27ccd02d0c60ce3ac38bb91198

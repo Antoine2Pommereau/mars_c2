@@ -20,7 +20,8 @@ conteneur taches (serveur)                          instance Scaleway éphémèr
 * **Le serveur ne télécharge jamais d'image satellite** : il lit des métadonnées (catalogue CMR de la NASA) et reçoit
   des détections (quelques kilooctets).
 * **Travailleur** (`mars/travailleurs.py`) : instance créée par l'API Scaleway (clé limitée au projet) sur l'image
-  Scaleway « docker », avec une adresse IPv4 dynamique (téléchargements) et une carte sur le réseau privé (retour). Le
+  officielle Ubuntu 24.04 (résolue dans le catalogue, volume de démarrage vérifié après la création ; Docker installé
+  par le script de démarrage), avec une adresse IPv4 dynamique (téléchargements) et une carte sur le réseau privé (retour). Le
   script (`travailleurs/viirs.py`) et la tâche passent par cloud-init ; le travailleur tire l'image d'analyse, travaille,
   renvoie son résultat, puis s'éteint. Le serveur le détruit dès réception.
 * **Retour par le réseau privé** : le serveur n'ouvre toujours aucun port sur Internet. nginx publie le port 8090 sur

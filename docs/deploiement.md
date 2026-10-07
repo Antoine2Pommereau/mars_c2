@@ -246,7 +246,13 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
    `docker compose up -d --no-build web taches` (nginx publie le port 8090 sur l'adresse privée).
 5. **Vérifier** sans attendre 06:30 : procédure d'essai ci dessous.
 
-**Comment un travailleur démarre.** Le lancement suit un ordre vérifié à chaque étape : instance créée éteinte,
+**Comment un travailleur démarre.** L'image de démarrage est résolue à chaque lancement dans le catalogue Scaleway :
+Ubuntu 24.04 officielle (`ubuntu_noble`), zone fr-par-1, type DEV1-M, architecture x86_64, sur disque local ; sa fiche
+donne son volume racine (type `l_ssd`, 10 Go). Le volume de démarrage est créé à partir de cette image, agrandi à
+20 Go (`disque_go`). Après la création, l'instance est relue : image attendue, démarrage sur disque local, volume
+racine présent, local, au moins aussi grand que celui de l'image ; sinon échec clair et destruction immédiate. Docker
+est installé par le script de démarrage (paquet `docker.io` d'Ubuntu, environ une minute). Ensuite, ordre vérifié :
+instance créée éteinte,
 rattachée au réseau privé (attendu jusqu'à l'état « available » de la carte), cloud-init écrit avec l'adresse MAC de la
 carte privée, démarrage (attendu jusqu'à « running »). Une étape en échec : le lancement est journalisé « echec » dans
 `task_runs` avec son motif, l'indicateur Satellites passe à l'orange, et l'instance est détruite aussitôt (par le
@@ -256,6 +262,20 @@ envoie son journal ; il le renvoie après le téléchargement de l'image puis à
 signe de vie 10 minutes après sa création (`travailleurs.delai_demarrage_min`) est détruit, motif enregistré. Un seul
 travailleur VIIRS actif à la fois : le verrou est un index unique en base, valable entre la boucle (rattrapage au
 démarrage du conteneur) et la commande manuelle.
+
+**Vérifier l'image et le volume d'un travailleur dans la console Scaleway** (Instances, zone fr-par-1, l'instance
+`mars-travailleur-<n>`) :
+* onglet **Overview** : champ **Image** « Ubuntu 24.04 Noble Numbat » (pas vide, pas une autre image) ; type DEV1-M ;
+* onglet **Storage** (ou Volumes) : un seul volume, **Local Storage**, de 20 Go, marqué volume de démarrage ;
+* la **console série** (bouton Console) : en quelques dizaines de secondes, le chargeur GRUB puis les messages de
+  démarrage d'Ubuntu et de cloud-init, puis les lignes « MARS » du script de démarrage.
+
+**L'écran « UEFI Interactive Shell v2.2 »**, suivi d'une table de correspondance (`BLK0: PciRoot(0x0)/Pci(...)`) et
+de l'invite `Shell>`, est l'interpréteur du micrologiciel : il s'affiche quand aucun système amorçable n'est trouvé
+sur le volume de démarrage (volume vide, ou image non amorçable). C'était la cause réelle des premiers essais : aucun
+système ne démarrait, d'où aucun contact, ni SSH ni ping. Le lancement le refuse désormais (vérification de l'image et
+du volume) ; si l'écran réapparaît malgré tout, noter l'image et le volume affichés par la console, puis
+`taches.py detruire-travailleurs`.
 
 **Diagnostic d'un travailleur muet**, sans ouvrir de port :
 * s'il a joint le serveur au moins une fois, son journal est en base :
@@ -274,9 +294,10 @@ démarrage du conteneur) et la commande manuelle.
 |---|---|---|
 | 0. Rien d'actif | `docker compose exec taches python scripts/taches.py travailleurs` | aucun travailleur d'état `demande`, `cree` ou `demarre` sans date de destruction ; console : aucune instance `mars-travailleur-*` |
 | 1. Suivre | terminal 2 : `docker compose logs -f taches \| grep -iE "travailleur\|viirs"` | rien encore |
-| 2. Lancer | terminal 1 : `docker compose exec taches python scripts/taches.py viirs` | une ligne `viirs : {"travailleur": N, "instance": "...", "type": "DEV1-M", "mac_privee": "02:00:...", ...}` en moins de 2 minutes ; sinon `viirs : ÉCHEC` et son motif (rattachement, démarrage), instance déjà détruite |
+| 2. Lancer | terminal 1 : `docker compose exec taches python scripts/taches.py viirs` | une ligne `viirs : {"travailleur": N, "instance": "...", "type": "DEV1-M", "mac_privee": "02:00:...", ...}` en moins de 2 minutes ; sinon `viirs : ÉCHEC` et son motif (image, volume de démarrage, rattachement, démarrage), instance déjà détruite |
+| 2 bis. Image | console Scaleway, l'instance : Overview, puis Console | image « Ubuntu 24.04 Noble Numbat », volume local de 20 Go ; à la console, GRUB et Ubuntu, jamais `Shell>` |
 | 3. Doublon | relancer aussitôt la même commande | `viirs : {"en_cours": N}`, aucune seconde instance |
-| 4. Réseau | dans les 2 à 3 minutes : `taches.py journal-travailleur` | lignes « interface privée ens… : 172.16.8.x/22 » puis « serveur joint sur le réseau privé » ; depuis le serveur, `ping -c 2 172.16.8.x` répond ; si rien au bout de 5 minutes : console série (ci dessus) |
+| 4. Réseau | dans les 2 à 3 minutes : `taches.py journal-travailleur` | lignes « interface privée ens… : 172.16.8.x/22 », « serveur joint sur le réseau privé », « système : Ubuntu 24.04 », « installation de Docker » ; depuis le serveur, `ping -c 2 172.16.8.x` répond ; si rien au bout de 5 minutes : console série (ci dessus) |
 | 5. Image et analyse | `taches.py journal-travailleur`, quelques minutes plus tard | « téléchargement de l'image », puis les lignes du script VIIRS (une par granule, avec `rss_max_mo`) |
 | 6. Résultat | terminal 2 | `travailleurs : {"traites": 1, ...}` puis `{"detruits": 1, ...}` ; console : l'instance disparaît |
 | 7. Bilan | `curl -s localhost:8000/api/ingestion \| python3 -m json.tool \| grep -A12 '"viirs"'` et `curl -s localhost:8000/api/metrics \| grep travailleurs` | dernière nuit traitée, travailleur `termine`, `cout_eur` 0,0202 ; dans l'interface, indicateur Satellites vert, couche VIIRS et piste des nuits remplies |

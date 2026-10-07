@@ -62,7 +62,16 @@ done
 log "serveur joint sur le réseau privé"
 envoyer_journal
 
-# 3. Analyse
+# 3. Analyse : Docker installé s'il manque (image Ubuntu officielle), puis image d'analyse
+log "système : $(. /etc/os-release && echo "$PRETTY_NAME"), disque $(df -h / | awk 'NR==2 {print $2 " dont " $4 " libres"}')"
+if ! command -v docker > /dev/null; then
+  log "installation de Docker"
+  export DEBIAN_FRONTEND=noninteractive
+  detail apt-get -qq update && detail apt-get -qq install -y docker.io > /dev/null \
+    || { envoyer_journal; echec "installation de Docker impossible"; }
+  systemctl start docker
+fi
+envoyer_journal
 log "téléchargement de l'image $IMAGE"
 detail docker pull -q "$IMAGE" || { envoyer_journal; echec "image $IMAGE introuvable"; }
 envoyer_journal

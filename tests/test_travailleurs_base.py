@@ -26,14 +26,16 @@ class FakeScw(T.Scaleway):
         self.project, self.protected, self.servers, self.destroyed = "p", set(), {}, []
         self.nic_ok, self.delay, self.n = nic_ok, delay, 0
 
-    def image_id(self, *_args):
-        return "img"
+    def resolve_image(self, *_args):
+        return {"id": "img", "name": "Ubuntu 24.04", "arch": "x86_64", "root_type": "l_ssd", "root_size": 10_000_000_000}
 
     def create(self, _zone, name, _ct, _image, _disque, tags):
         time.sleep(self.delay)
         self.n += 1
         sid = f"srv-{name}"
-        self.servers[sid] = {"id": sid, "name": name, "tags": tags, "project": "p", "state": "stopped"}
+        self.servers[sid] = {"id": sid, "name": name, "tags": tags, "project": "p", "state": "stopped",
+                             "image": {"id": "img"}, "boot_type": "local",
+                             "volumes": {"0": {"volume_type": "l_ssd", "size": 20_000_000_000}}}
         return dict(self.servers[sid])
 
     def attach_private_network(self, *_args, **_kw):

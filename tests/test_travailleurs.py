@@ -236,21 +236,40 @@ def test_protected_ids_from_env_and_instance_metadata(monkeypatch):
 
 # Ordre de création : instance éteinte, réseau privé rattaché et prêt, cloud-init avec la MAC, démarrage vérifié
 
-class ProvisionApi(FakeApi):
-    """Faux Scaleway qui suit l'état d'une instance créée : carte privée « syncing » puis « available », démarrage."""
+UBUNTU = "dbfcc66a-ubuntu-noble"
+CATALOGUE = [  # catalogue de Scaleway : seule la première convient (x86_64, disque local, compatible DEV1-M)
+    {"id": "arm", "arch": "arm64", "type": "instance_local", "compatible_commercial_types": ["DEV1-M"]},
+    {"id": "sbs", "arch": "x86_64", "type": "instance_sbs", "compatible_commercial_types": ["DEV1-M"]},
+    {"id": "gpu", "arch": "x86_64", "type": "instance_local", "compatible_commercial_types": ["L4-1-24G"]},
+    {"id": UBUNTU, "arch": "x86_64", "type": "instance_local", "compatible_commercial_types": ["DEV1-S", "DEV1-M"]},
+]
 
-    def __init__(self, nic_states=("syncing", "syncing", "available")):
+
+class ProvisionApi(FakeApi):
+    """Faux Scaleway qui suit l'état d'une instance créée : catalogue et fiche de l'image, volume de démarrage copié de
+    l'image (ou vide si `boot_image` vaut None), carte privée « syncing » puis « available », démarrage."""
+
+    def __init__(self, nic_states=("syncing", "syncing", "available"), catalogue=CATALOGUE, boot_image=UBUNTU):
         super().__init__()
         self.nic_states, self.state, self.order = list(nic_states), "stopped", []
+        self.catalogue, self.boot_image, self.created = catalogue, boot_image, None
 
     def request(self, method, url, **kw):
         path = url.replace("https://api.scaleway.com", "")
         if "/marketplace/" in path:
-            return FakeResponse(200, {"local_images": [{"id": "img", "compatible_commercial_types": ["DEV1-M"]}]})
+            assert "image_label=ubuntu_noble" in path and "zone=fr-par-1" in path and "type=instance_local" in path
+            return FakeResponse(200, {"local_images": self.catalogue})
+        if method == "GET" and "/images/" in path:
+            iid = path.rsplit("/", 1)[1]
+            self.order.append(f"fiche {iid}")
+            return FakeResponse(200, {"image": {"id": iid, "name": "Ubuntu 24.04 Noble Numbat", "arch": "x86_64",
+                                                "root_volume": {"id": "snap", "volume_type": "l_ssd", "size": 10_000_000_000}}})
         if method == "POST" and path.endswith("/servers"):
             self.order.append("creation")
-            body = kw["json"]
+            body = self.created = kw["json"]
             assert "dynamic_ip_required" in body and body["name"] == "mars-travailleur-3"
+            assert body["image"] == UBUNTU and body["boot_type"] == "local"
+            assert body["volumes"] == {"0": {"size": 20_000_000_000, "volume_type": "l_ssd"}}   # ni nom, ni volume vide
             return FakeResponse(201, {"server": {"id": "neuf", "state": "stopped", "name": body["name"]}})
         if method == "POST" and path.endswith("/private_nics"):
             assert self.state == "stopped", "réseau privé rattaché après le démarrage"
@@ -273,11 +292,13 @@ class ProvisionApi(FakeApi):
             return FakeResponse(202, {"task": {}})
         if method == "GET" and path.endswith("/servers/neuf"):
             self.order.append(f"etat {self.state}")
-            return FakeResponse(200, {"server": {"id": "neuf", "state": self.state}})
+            image = {"id": self.boot_image, "name": "Ubuntu 24.04"} if self.boot_image else None
+            return FakeResponse(200, {"server": {"id": "neuf", "state": self.state, "image": image, "boot_type": "local",
+                                                 "volumes": {"0": {"id": "v0", "volume_type": "l_ssd", "size": 20_000_000_000}}}})
         raise AssertionError(f"appel inattendu {method} {path}")
 
 
-T_VIIRS = {"commercial_type": "DEV1-M", "image_label": "docker", "disque_go": 20}
+T_VIIRS = {"commercial_type": "DEV1-M", "image_label": "ubuntu_noble", "arch": "x86_64", "disque_go": 20}
 
 
 def test_provision_order_create_attach_verify_cloud_init_start():
@@ -287,8 +308,8 @@ def test_provision_order_create_attach_verify_cloud_init_start():
     created = []
     r = provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda mac: f"#cloud-config {mac}",
                   sleep=lambda _s: None, on_created=created.append)
-    assert api.order == ["creation", "rattachement", "verification", "verification", "cloud-init", "demarrage",
-                         "etat running"]
+    assert api.order == [f"fiche {UBUNTU}", "creation", "etat stopped", "rattachement", "verification", "verification",
+                         "cloud-init", "demarrage", "etat running"]
     assert created == ["neuf"] and r["mac"] == "02:00:00:AA:BB:CC" and "02:00:00:AA:BB:CC" in api.cloud
 
 
@@ -300,3 +321,55 @@ def test_provision_stops_before_start_when_private_network_fails():
         provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda _mac: "x",
                   sleep=lambda _s: None)
     assert "demarrage" not in api.order and "cloud-init" not in api.order
+
+
+
+# Image et volume de démarrage (cause du premier essai réel : « UEFI Interactive Shell », aucun système amorçable)
+
+def test_image_is_resolved_from_the_catalogue_for_zone_type_and_architecture():
+    scw = Scaleway("cle", PROJET, session=ProvisionApi(), protected=set())
+    img = scw.resolve_image("fr-par-1", "ubuntu_noble", "DEV1-M", "x86_64")
+    assert img == {"id": UBUNTU, "name": "Ubuntu 24.04 Noble Numbat", "arch": "x86_64", "root_type": "l_ssd",
+                   "root_size": 10_000_000_000}
+
+
+def test_no_suitable_image_means_no_creation():
+    from mars.travailleurs import ScalewayError, provision
+    api = ProvisionApi(catalogue=CATALOGUE[:3])                 # ni x86_64 local compatible DEV1-M
+    scw = Scaleway("cle", PROJET, session=api, protected=set())
+    with pytest.raises(ScalewayError, match="aucune image"):
+        provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda _mac: "x", sleep=lambda _s: None)
+    assert "creation" not in api.order
+
+
+@pytest.mark.parametrize("image", [None, {}, {"id": UBUNTU}, {"id": UBUNTU, "root_type": "sbs_volume", "root_size": 1}])
+def test_creation_without_resolved_image_is_refused(image):
+    from mars.travailleurs import ScalewayError
+    api = ProvisionApi()
+    with pytest.raises(ScalewayError, match="sans image|aucune image"):
+        Scaleway("cle", PROJET, session=api, protected=set()).create("fr-par-1", "mars-travailleur-3", "DEV1-M", image, 20, [])
+    assert api.calls == []
+
+
+def test_instance_without_its_image_is_refused_before_anything_else():
+    """L'API rend une instance sans l'image attendue : échec avant le réseau privé et le démarrage ; l'instance est
+    signalée tout de suite (on_created) pour être détruite."""
+    from mars.travailleurs import ScalewayError, provision
+    api = ProvisionApi(boot_image=None)
+    scw = Scaleway("cle", PROJET, session=api, protected=set())
+    created = []
+    with pytest.raises(ScalewayError, match="volume de démarrage incorrect"):
+        provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda _mac: "x",
+                  sleep=lambda _s: None, on_created=created.append)
+    assert created == ["neuf"] and "rattachement" not in api.order and "demarrage" not in api.order
+
+
+def test_boot_problems_are_named():
+    from mars.travailleurs import boot_problem
+    img = {"id": UBUNTU, "name": "Ubuntu", "root_type": "l_ssd", "root_size": 10_000_000_000}
+    ok = {"image": {"id": UBUNTU}, "boot_type": "local", "volumes": {"0": {"volume_type": "l_ssd", "size": 20_000_000_000}}}
+    assert boot_problem(ok, img) is None
+    assert "image" in boot_problem({**ok, "image": {"id": "autre"}}, img)
+    assert "rescue" in boot_problem({**ok, "boot_type": "rescue"}, img)
+    assert "aucun volume" in boot_problem({**ok, "volumes": {}}, img)
+    assert "plus petit" in boot_problem({**ok, "volumes": {"0": {"volume_type": "l_ssd", "size": 1_000_000}}}, img)

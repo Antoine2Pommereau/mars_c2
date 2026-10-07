@@ -355,12 +355,12 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 93 réussis, 6 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 5 sans
+`python -m pytest tests` : 101 réussis, 6 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 5 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois). Avec la base de test des migrations
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 98 réussis, 1 ignoré. Couvrent aussi fusion,
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 106 réussis, 1 ignoré. Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
-création d'un travailleur. `npx knip` et `npm run typecheck` pour
+création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
 ## 11. Pièges connus
@@ -436,6 +436,12 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   avaient créé deux travailleurs : verrou par index unique en base. Les travailleurs n'ont pas de SSH : journal envoyé
   au serveur (`taches.py journal-travailleur`), sinon console série Scaleway.
 * `SCW_PRIVATE_NETWORK_ID` est l'identifiant du réseau privé (onglet Overview du réseau), pas celui du VPC.
+* **Cause réelle des premiers essais (08/10/2026)** : la console série des travailleurs affichait « UEFI Interactive
+  Shell » puis `Shell>` : aucun système amorçable sur le volume de démarrage. La création imposait un volume racine
+  décrit avec un nom, sans lien vérifié avec l'image (image « docker » du catalogue, ni architecture ni volume racine
+  contrôlés). Désormais : image Ubuntu 24.04 résolue (zone, type, x86_64, disque local, fiche de l'image), volume
+  racine décrit par sa seule taille et son type, instance relue après création (image, démarrage local, volume),
+  Docker installé au démarrage.
 * Travailleurs : le serveur n'expose aucun port sur Internet ; le retour passe par le réseau privé Scaleway (nginx,
   port 8090 sur `MARS_IP_PRIVEE`). Les instances CPU sont facturées à l'heure entamée, les GPU à la minute.
 * Image d'un travailleur : une image publique (allenai) n'entame pas le quota de 500 Mo des paquets privés ; le

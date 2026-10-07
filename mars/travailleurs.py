@@ -107,17 +107,36 @@ class Scaleway:
             raise ScalewayError(f"{method} {path} : {r.status_code} {r.text[:300]}")
         return r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else None
 
-    def image_id(self, zone: str, label: str, commercial_type: str) -> str:
+    def resolve_image(self, zone: str, label: str, commercial_type: str, arch: str = "x86_64") -> dict:
+        """Image de démarrage : catalogue Scaleway (libellé, zone, type d'instance, architecture, disque local), puis
+        fiche de l'image dans l'API Instance pour son volume racine. Retourne {"id", "name", "arch", "root_type",
+        "root_size"} ; ScalewayError si rien ne convient ou si l'image n'a pas de volume racine local."""
         d = self._req("GET", f"/marketplace/v2/local-images?image_label={label}&zone={zone}&type=instance_local")
-        for i in d.get("local_images", []):
-            if commercial_type in i.get("compatible_commercial_types", []):
-                return i["id"]
-        raise ScalewayError(f"aucune image « {label} » pour {commercial_type} en {zone}")
+        found = [i for i in (d.get("local_images", []) if d is not GONE else [])
+                 if commercial_type in i.get("compatible_commercial_types", []) and i.get("arch") == arch
+                 and i.get("type", "instance_local") == "instance_local"]
+        if not found:
+            raise ScalewayError(f"aucune image « {label} » {arch} sur disque local pour {commercial_type} en {zone}")
+        img = self._req("GET", f"/instance/v1/zones/{zone}/images/{found[0]['id']}")
+        img = None if img is GONE else img.get("image")
+        root = (img or {}).get("root_volume") or {}
+        if not img or img.get("arch") != arch or not root.get("id") or not root.get("size"):
+            raise ScalewayError(f"image {found[0]['id']} ({label}) introuvable ou sans volume racine")
+        if root.get("volume_type") != "l_ssd":
+            raise ScalewayError(f"image {img['id']} : volume racine {root.get('volume_type')}, disque local attendu")
+        return {"id": img["id"], "name": img.get("name"), "arch": img["arch"], "root_type": root["volume_type"],
+                "root_size": int(root["size"])}
 
-    def create(self, zone: str, name: str, commercial_type: str, image: str, disque_go: int, tags: list) -> dict:
-        body = {"name": name, "project": self.project, "commercial_type": commercial_type, "image": image,
-                "dynamic_ip_required": True, "tags": tags,
-                "volumes": {"0": {"name": name, "size": int(disque_go * 1e9), "volume_type": "l_ssd"}}}
+    def create(self, zone: str, name: str, commercial_type: str, image: dict, disque_go: int, tags: list) -> dict:
+        """Crée l'instance éteinte à partir de l'image : le volume racine (index 0) n'est décrit que par sa taille et son
+        type, ceux de l'image (comme le fait la ligne de commande Scaleway) ; il est ainsi copié de l'image, agrandi à
+        `disque_go` au besoin. Refuse toute création sans image résolue."""
+        if not image or not image.get("id") or image.get("root_type") != "l_ssd" or not image.get("root_size"):
+            raise ScalewayError("création refusée : aucune image de démarrage résolue")
+        size = max(int(disque_go * 1e9), image["root_size"])
+        body = {"name": name, "project": self.project, "commercial_type": commercial_type, "image": image["id"],
+                "dynamic_ip_required": True, "tags": tags, "boot_type": "local",
+                "volumes": {"0": {"size": size, "volume_type": image["root_type"]}}}
         return self._req("POST", f"/instance/v1/zones/{zone}/servers", json=body)["server"]
 
     def set_cloud_init(self, zone: str, server_id: str, text: str):
@@ -261,17 +280,41 @@ def cloud_init(script: str, tache: dict, env: dict, image: str, mac: str, gpu: b
             + "runcmd:\n  - [bash, /mars/demarrage.sh]\n")
 
 
+def boot_problem(server: dict | None, image: dict) -> str | None:
+    """Motif si l'instance relue ne démarrera pas sur l'image attendue, sinon None : image de l'instance, démarrage
+    sur disque local, volume racine présent, du type de l'image, au moins aussi grand que son volume racine."""
+    if not server:
+        return "instance introuvable après sa création"
+    if (server.get("image") or {}).get("id") != image["id"]:
+        return f"image de l'instance {(server.get('image') or {}).get('id')}, attendue {image['id']} ({image.get('name')})"
+    if server.get("boot_type", "local") != "local":
+        return f"démarrage « {server.get('boot_type')} » au lieu du disque local"
+    root = (server.get("volumes") or {}).get("0")
+    if not root:
+        return "aucun volume de démarrage"
+    if root.get("volume_type") != image["root_type"]:
+        return f"volume de démarrage {root.get('volume_type')}, attendu {image['root_type']}"
+    if int(root.get("size") or 0) < image["root_size"]:
+        return f"volume de démarrage de {int(root.get('size') or 0) / 1e9:.0f} Go, plus petit que l'image ({image['root_size'] / 1e9:.0f} Go)"
+    return None
+
+
 def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, private_network_id: str,
               user_data, sleep=time.sleep, on_created=None) -> dict:
     """Crée un travailleur dans l'ordre sûr, chaque étape vérifiée : instance éteinte, réseau privé rattaché et prêt,
     cloud-init (qui reçoit l'adresse MAC de la carte privée), démarrage jusqu'à « running ». `user_data(mac)` produit
     le cloud-init ; `on_created(server_id)` est appelé dès la création (pour pouvoir détruire en cas d'échec)."""
-    image = scw.image_id(zone, t["image_label"], t["commercial_type"])
+    image = scw.resolve_image(zone, t["image_label"], t["commercial_type"], t.get("arch", "x86_64"))
     s = scw.create(zone, name, t["commercial_type"], image, t["disque_go"], tags)
     if on_created:
         on_created(s["id"])
     if s.get("state") not in (None, "stopped"):
         raise ScalewayError(f"instance créée dans l'état « {s.get('state')} » au lieu de « stopped »")
+    # Relecture : l'instance doit démarrer sur le disque local copié de l'image attendue (sinon « UEFI Interactive
+    # Shell » à la console : aucun système amorçable, constaté au premier essai réel)
+    motif = boot_problem(scw.server(zone, s["id"]), image)
+    if motif:
+        raise ScalewayError(f"volume de démarrage incorrect : {motif}")
     nic = scw.attach_private_network(zone, s["id"], private_network_id, sleep=sleep)
     scw.set_cloud_init(zone, s["id"], user_data(nic["mac_address"]))
     scw.start(zone, s["id"], sleep=sleep)
