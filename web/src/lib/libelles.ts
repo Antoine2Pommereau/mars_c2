@@ -36,7 +36,12 @@ export const L = {
     sauvegarde: "Dernière sauvegarde", regles: "Dernier cycle des règles", echec: "en échec",
     ilYa: (t: string) => `il y a ${t}`, dans: (t: string) => `dans ${t}`,
     prochain: (m: string) => `Prochain ${m === "S1" ? "Sentinel 1" : "Sentinel 2"}`, dernierAcquis: "Dernier passage acquis",
-    calendrier: "Calendrier mis à jour le",
+    calendrier: "Calendrier mis à jour le", nuitViirs: "Dernière nuit VIIRS", travailleur: "Dernier travailleur",
+    nuitDe: (d: string, g: number, n: number, e: number) => `${d}, ${g} granules${e ? ` dont ${e} en échec` : ""}, ${n} détections`,
+    etatsTravailleur: { demande: "demandé", cree: "créé", demarre: "en cours", resultats: "résultats reçus",
+      termine: "terminé", echec: "en échec" } as Record<string, string>,
+    travailleurDe: (etat: string, type: string, le: string, s: number | null, eur: number | null) =>
+      `${etat}, ${type}, ${le}${s != null ? `, ${Math.round(s / 60)} min d'analyse` : ""}${eur != null ? `, ${eur.toFixed(3).replace(".", ",")} €` : ""}`,
   },
   region: { titre: "Région affichée", france: "Toute la France" },
 
@@ -64,13 +69,15 @@ export const L = {
     pistes: { alertes: "Alertes", coupures: "Coupures du flux AIS", passages: "Passages satellites", viirs: "Nuits VIIRS" },
     coupure: (debut: string, fin: string) => `Flux AIS coupé de ${debut} à ${fin}`,
     passage: (sat: string, t: string, prevu: boolean) => `${sat}, ${t}${prevu ? ", prévu" : ""}`,
+    nuit: (d: string, g: number, n: number, sans: number, lune: number | null) =>
+      `Nuit VIIRS du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} : ${g} granules, ${n} détections dont ${sans} sans AIS${lune != null ? `, lune ${lune} %` : ""}`,
     navires: (n: number) => `${n} navires`, limite: "Au delà de 30 jours : archive R2",
   },
 
   // Fil d'alertes
   fil: {
     titre: "Alertes", onglets: { todo: "À traiter", confirmed: "Confirmées", all: "Toutes" },
-    type: "Type", gravite: "Gravité",
+    type: "Type", gravite: "Gravité", vignettes: "Vignettes des navires",
     aucune: { todo: "Aucune alerte à traiter sur la plage.", autre: "Aucune alerte sur la plage." },
     surTotal: (n: number, total: number) => `${n} sur ${total}`,
     groupe: (n: number) => `${n} alertes`,
@@ -119,6 +126,9 @@ export const L = {
     toleranceDe: (le: number, tr: number) => `${le} m le long de la trace, ${tr} m en travers`,
     seuil: (v: string) => `seuil ${v}`, ecartee: (r: string) => `Écartée (${r})`, appariee: (n: string) => `Appariée à ${n}`,
     sansAis: "Sans AIS", detection: "Détection radar", statut: "Statut",
+    lumiere: "Lumière en mer sans AIS", viirsDe: (nw: string) => `VIIRS, ${nw} nW`, capteur: "Capteur",
+    intensite: "Intensité", lune: "Éclairement lunaire", infrastructure: "Infrastructure proche",
+    navireListe: "Navire des listes proche",
   },
 
   // Fiche (registre : registres/sections.tsx)
@@ -131,6 +141,7 @@ export const L = {
       prediction: "Trajectoire prédite", mesures: "Mesures", navires: "Navires concernés",
       passes: "Navires passés à moins de 2 milles", liees: "Alertes liées", resume: "Zone", trafic: "Trafic",
       passage: "Passage", infrastructures: "Infrastructures couvertes", listes_couvertes: "Navires des listes couverts",
+      viirs: "Détection", apparie: "Navire AIS apparié",
     } as Record<string, string>,
     etat: { route: "en route", immobile: "immobile", silencieux: "silencieux" } as Record<string, string>,
     dernierMessageIlYa: (t: string) => `dernier message il y a ${t}`, horsTrafic: "hors du trafic affiché",
@@ -148,9 +159,18 @@ export const L = {
     infra: { type: "Type", operateur: "Opérateur", longueur: "Longueur", zone: "Zone", source: "Source", sansNom: (t: string, id: number) => `${t} n° ${id}`,
       aucunNavire: "Aucun navire à moins de 2 milles sur la plage", aucuneAlerte: "Aucune alerte liée",
       ligne: (m: number, kn: string, d: string) => `${m} m, ${kn} nœuds au plus lent, ${d}` },
+    viirs: {
+      titre: "Détection nocturne VIIRS", heure: "Heure", capteur: "Capteur", intensite: "Intensité",
+      lune: "Éclairement lunaire", statut: "Statut", cote: "Distance à la côte",
+      satellites: { SNPP: "Suomi NPP", NOAA20: "NOAA 20", NOAA21: "NOAA 21" } as Record<string, string>,
+      statuts: { avec_ais: "appariée à l'AIS", sans_ais: "sans AIS", ecartee: "écartée" } as Record<string, string>,
+      motifs: { cote: "près de la côte", lumiere_fixe: "lumière fixe" } as Record<string, string>,
+      aucunNavire: "Aucun navire AIS compatible à l'heure du passage", ecart: (m: string) => `${m} m`,
+    },
     passage: {
       titre: (sat: string) => `Passage ${sat.replace(/^S(\d)/, "Sentinel $1")}`,
       heure: "Heure", a: "à", statut: "État", capteur: "Capteur", orbite: "Orbite", emprise: "Emprise", analyse: "Analyse",
+      nuages: "Nuages annoncés",
       statuts: { acquis: "acquis, au catalogue Copernicus", prevu: "prévu, plan d'acquisition de l'ESA" } as Record<string, string>,
       analyses: { non_analyse: "non analysé", pending: "en attente", running: "en cours", done: "terminée", failed: "en échec" } as Record<string, string>,
       sens: { ascending: "ascendante", descending: "descendante" } as Record<string, string>,

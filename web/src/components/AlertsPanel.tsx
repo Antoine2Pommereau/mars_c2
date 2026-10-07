@@ -1,12 +1,21 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Eye, Image } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Eye } from "lucide-react";
 import { FILTRES_DEFAUT, filtrer, grouper, statutDe, suivisEnTete, trier, zoneAlerte, type Filtres, type Vue } from "../lib/fil";
 import { hm, jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
 import { naviresAlerte, TYPES_ALERTE, typeAlerte } from "../registres/alertes";
 import { Tag } from "./Elements";
+import { Vignette } from "./Fiches";
+
+// Vignette du navire dans chaque ligne du fil : réglage de l'opérateur, gardé dans ce navigateur
+const CLE_VIGNETTES = "mars.fil.vignettes";
+function lireVignettes(): boolean {
+  try { return localStorage.getItem(CLE_VIGNETTES) === "1"; } catch { return false; }
+}
+function garderVignettes(v: boolean) {
+  try { localStorage.setItem(CLE_VIGNETTES, v ? "1" : "0"); } catch { /* stockage indisponible */ }
+}
 
 interface PanelProps {
   alerts: Feature[];            // alertes de la plage
@@ -22,8 +31,9 @@ interface PanelProps {
 const GRAVITES = FILTRES_DEFAUT.gravites;
 const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
-function Ligne({ a, vessels, now, selected, onPick, indent }:
-  { a: Feature; vessels: Map<number, Props>; now: number; selected: boolean; onPick: (f: Feature) => void; indent?: boolean }) {
+function Ligne({ a, vessels, now, selected, onPick, indent, vignette }:
+  { a: Feature; vessels: Map<number, Props>; now: number; selected: boolean; onPick: (f: Feature) => void; indent?: boolean;
+    vignette?: boolean }) {
   const t = typeAlerte(a.properties.type);
   const d = a.properties.details ?? {};
   const n = naviresAlerte(a)[0];
@@ -38,6 +48,7 @@ function Ligne({ a, vessels, now, selected, onPick, indent }:
       <t.Icone size={14} strokeWidth={1.8} className="mt-0.5" style={{ color: t.couleur }} />
       <span className="min-w-0">
         <span className="flex items-center gap-1.5">
+          {vignette && !indent && n?.vessel_id != null && <Vignette vesselId={n.vessel_id} taille="petite" />}
           <span className="truncate font-medium text-ink">{indent ? L.alertes[a.properties.type] : t.titre(d)}</span>
           {!indent && flag && <Tag>{flag}</Tag>}
         </span>
@@ -57,6 +68,7 @@ function Ligne({ a, vessels, now, selected, onPick, indent }:
  *  statut ; tri par gravité puis date ; alertes d'un même navire regroupées. */
 export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivis, now, selectedId, onPick }: PanelProps) {
   const [ouverts, setOuverts] = useState<Set<string>>(new Set());
+  const [vignettes, setVignettes] = useState(lireVignettes);
   const sansVue = useMemo(() => filtrer(alerts, filtres, false), [alerts, filtres]);
   const shown = useMemo(() => trier(filtrer(alerts, filtres)), [alerts, filtres]);
   const groupes = useMemo(() => suivisEnTete(grouper(shown), suivis), [shown, suivis]);
@@ -68,7 +80,13 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivi
     <div className="flex h-full flex-col">
       <header className="border-b border-hair px-4 pb-3 pt-4">
         <h2 className="flex items-baseline justify-between text-[15px] font-semibold">
-          {L.fil.titre} <span className="text-[12px] font-normal text-muted">{L.fil.surTotal(shown.length, alerts.length)}</span>
+          {L.fil.titre}
+          <span className="flex items-center gap-2 text-[12px] font-normal text-muted">
+            {L.fil.surTotal(shown.length, alerts.length)}
+            <button onClick={() => { garderVignettes(!vignettes); setVignettes(!vignettes); }} aria-pressed={vignettes}
+              title={L.fil.vignettes} aria-label={L.fil.vignettes}
+              className={`rounded p-0.5 ${vignettes ? "text-ink" : "text-faint hover:text-muted"}`}><Image size={13} /></button>
+          </span>
         </h2>
         <div className="mt-3 flex flex-wrap gap-1.5" role="group" aria-label={L.fil.type}>
           {TYPES_ALERTE.map((t) => {
@@ -113,7 +131,7 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivi
             return (
               <li key={g.cle} className="relative">
                 {suivi && <Eye size={11} className="absolute left-1 top-3.5 text-signal" aria-label={L.couches.suivi} />}
-                <Ligne a={a} vessels={vessels} now={now} selected={a.properties.id === selectedId} onPick={onPick} />
+                <Ligne a={a} vessels={vessels} now={now} selected={a.properties.id === selectedId} onPick={onPick} vignette={vignettes} />
               </li>
             );
           }
@@ -129,6 +147,7 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivi
                 className="grid w-full grid-cols-[16px_1fr_auto] items-center gap-x-2.5 border-b border-hair/70 px-4 py-2.5 text-left hover:bg-raised/60">
                 {open ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
                 <span className="flex min-w-0 items-center gap-1.5">
+                  {vignettes && g.vesselId != null && <Vignette vesselId={g.vesselId} taille="petite" />}
                   <span className="truncate font-medium text-ink">{n?.name ?? v?.name ?? t.titre(first.properties.details ?? {})}</span>
                   {flag && <Tag>{flag}</Tag>}
                   {suivi && <Eye size={11} className="text-signal" aria-label={L.couches.suivi} />}

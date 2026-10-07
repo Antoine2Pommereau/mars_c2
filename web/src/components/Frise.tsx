@@ -5,7 +5,7 @@ import { hm, jourHeure, utc } from "../lib/format";
 import { L } from "../lib/libelles";
 import { PRESETS, VITESSES, avecDuree, avecInstant, avecPlage, iso, lecture, resolve, ticks, versDirect,
   type Temps } from "../lib/temps";
-import type { FC, Feature } from "../lib/types";
+import type { FC, Feature, Props as Objet } from "../lib/types";
 import { couleurAlerte, libelleAlerte } from "../registres/alertes";
 import { COULEUR_PASSAGE } from "../registres/couches";
 import { pistesActives } from "../registres/frise";
@@ -19,6 +19,7 @@ interface Props {
   onPickAlert: (f: Feature) => void;
   passages: FC;                         // passages Sentinel 1 et 2 de la plage et de la région
   onPickPassage: (f: Feature) => void;
+  nuits: Objet[];                       // nuits VIIRS traitées (heures des granules, détections)
 }
 
 const F = L.frise;
@@ -28,7 +29,7 @@ const depuisChamp = (v: string) => Date.parse(`${v}:00Z`);
 
 /** Frise : direct, plage ou rejeu. La plage (période étudiée) gouverne tout l'écran ; l'instant place les navires.
  *  Pistes du registre (alertes, coupures du flux AIS hachurées) et histogramme du nombre de navires. */
-export default function Frise({ temps, now, onChange, alerts, timeline, onPickAlert, passages, onPickPassage }: Props) {
+export default function Frise({ temps, now, onChange, alerts, timeline, onPickAlert, passages, onPickPassage, nuits }: Props) {
   const { debut, fin, instant } = resolve(temps, now);
   const span = fin - debut;
   const track = useRef<HTMLDivElement>(null);
@@ -119,7 +120,7 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
       )}
 
       {/* Pistes : alertes, coupures du flux, histogramme, puis passages satellites (plein : acquis, pointillé : prévu) ; un clic place l'instant, les bords réduisent la plage */}
-      <div ref={track} className="relative mt-2 h-[68px] cursor-crosshair select-none"
+      <div ref={track} className="relative mt-2 h-[76px] cursor-crosshair select-none"
         onPointerDown={(e) => startDrag("instant", e)} onPointerMove={moveDrag} onPointerUp={endDrag}>
         {pistes.some((p) => p.id === "alertes") && marques.map((a) => (
           <span key={a.properties.id} title={`${libelleAlerte(a.properties.type)}, ${utc(a.properties.event_time)}`}
@@ -128,6 +129,13 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
             style={{ left: `${pct(Date.parse(a.properties.event_time))}%`, background: couleurAlerte(a.properties.type),
                      opacity: a.properties.status === "classee" || a.properties.severity === "faible" ? 0.45 : 1 }} />
         ))}
+        {pistes.some((p) => p.id === "viirs") && nuits.map((n) => {
+          const a = Math.max(debut, Date.parse(n.debut)), b = Math.min(fin, Date.parse(n.fin));
+          if (b < a) return null;
+          return <span key={n.nuit} title={F.nuit(n.nuit, n.granules, n.detections, n.sans_ais, n.lune)}
+            className="absolute top-[57px] h-[5px] rounded-sm bg-[#8a93c9]/70"
+            style={{ left: `${pct(a)}%`, width: `max(4px, ${pct(b) - pct(a)}%)` }} />;
+        })}
         {pistes.some((p) => p.id === "passages") && passages.features.map((f) => {
           const t = Date.parse(f.properties.acquired_at);
           if (t < debut || t > fin) return null;

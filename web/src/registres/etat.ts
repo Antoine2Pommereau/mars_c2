@@ -101,7 +101,13 @@ export const INDICATEURS: Indicateur[] = [
       const sat = s?.satellites;
       if (!sat) return { niveau: "gris", resume: L.commun.nd, detail: [] };
       const maj = sat.mise_a_jour;
-      const niveau: Niveau = !maj ? "gris" : maj.statut === "echec" ? "orange" : palier(age(maj.le, now), 36 * 60 * MIN, 72 * 60 * MIN);
+      // Nuits VIIRS (lot B) : dernière nuit traitée et dernier travailleur éphémère (état, durée, coût estimé)
+      const nuit = sat.viirs?.derniere_nuit, w = sat.viirs?.travailleur;
+      const niveaux: Niveau[] = [!maj ? "gris" : maj.statut === "echec" ? "orange" : palier(age(maj.le, now), 36 * 60 * MIN, 72 * 60 * MIN)];
+      if (nuit) niveaux.push(palier(age(nuit.traite_le, now), 30 * 60 * MIN, 54 * 60 * MIN));
+      if (w?.etat === "echec") niveaux.push("orange");
+      if (w && !w.detruit_le && age(w.cree_le, now) > 60 * MIN) niveaux.push("rouge");    // instance non détruite
+      const niveau = pire(niveaux);
       const prochains: any[] = sat.prochains ?? [];
       const premier = prochains.reduce((a: any, b: any) => (!a || b.acquired_at < a.acquired_at ? b : a), null);
       const quand = (iso: string) => `${date(iso)} UTC, ${E.dans(duree(Date.parse(iso) - now))}`;
@@ -111,6 +117,10 @@ export const INDICATEURS: Indicateur[] = [
       });
       detail.push([E.dernierAcquis, sat.dernier ? `${sat.dernier.satellite} ${date(sat.dernier.acquired_at)} UTC` : L.commun.nd]);
       detail.push([E.calendrier, maj ? `${date(maj.le)}${maj.statut === "echec" ? `, ${E.echec}` : ""}` : L.commun.nd]);
+      const jour = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
+      detail.push([E.nuitViirs, nuit ? E.nuitDe(jour(nuit.nuit), nuit.granules, nuit.detections ?? 0, nuit.en_echec) : L.commun.nd]);
+      detail.push([E.travailleur, w ? E.travailleurDe(E.etatsTravailleur[w.etat] ?? w.etat, w.commercial_type, date(w.cree_le),
+        w.duree_s, w.cout_eur) : L.commun.nd]);
       return { niveau, resume: premier ? E.dans(duree(Date.parse(premier.acquired_at) - now)) : L.commun.nd, detail };
     },
   },

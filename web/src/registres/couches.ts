@@ -2,7 +2,7 @@
 // son état par défaut, les couches MapLibre qu'elle commande et sa légende. Le panneau des couches et la carte s'en
 // déduisent ; une couche nouvelle s'ajoute par une entrée.
 
-export type Legende = "navires" | "trait" | "surface" | "cercles" | "passages" | null;
+export type Legende = "navires" | "trait" | "surface" | "cercles" | "passages" | "viirs" | null;
 
 export interface Couche {
   id: string;
@@ -38,7 +38,8 @@ export const COUCHES: Couche[] = [
   // Emprises des passages Sentinel 1 et 2 de la plage : trait plein acquis, pointillé prévu (deux couches filtrées)
   { id: "passages", groupe: "satellites", etape: null, defaut: false, calques: ["passages-fond", "passages", "passages-prevus"],
     legende: "passages", couleur: COULEUR_PASSAGE },
-  { id: "viirs", groupe: "satellites", etape: 3, defaut: false, calques: [], legende: "cercles" },
+  // Lumières détectées la nuit par VIIRS (lot B) : avec AIS (neutre), sans AIS (couleur du navire sombre), écartées
+  { id: "viirs", groupe: "satellites", etape: null, defaut: true, calques: ["viirs"], legende: "viirs" },
   { id: "chaleur", groupe: "activite", etape: 3, defaut: false, calques: [], legende: "surface" },
   { id: "predictions", groupe: "predictions", etape: 4, defaut: false, calques: [], legende: "trait" },
 ];

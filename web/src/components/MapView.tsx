@@ -67,6 +67,7 @@ interface Props {
   byType: boolean;
   region: string | null;                 // région affichée : seul son contour reste dans la couche « couverture »
   passages: FC;                          // emprises des passages Sentinel 1 et 2 de la plage
+  viirs: FC;                             // détections nocturnes VIIRS de la plage
   concernedInfra: number[] | null;       // mode « concernées seulement » : identifiants à montrer
   focus: { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] } | null;
   onSelect: (s: Selection) => void;
@@ -101,7 +102,7 @@ export default function MapView(p: Props) {
 
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages"].forEach(src);
+      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages", "viirs"].forEach(src);
       // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
       map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
       map.addSource("couverture", { type: "geojson", data: zonesGeoJSON() as any });
@@ -178,6 +179,15 @@ export default function MapView(p: Props) {
             ["!=", ["get", "matched_mmsi"], null], "#e6ecf0",
             "#e85bc7"],
         } as any });
+      // Détections nocturnes VIIRS : point lumineux, neutre avec AIS, couleur du navire sombre sans AIS, discret écartée
+      map.addLayer({ id: "viirs", type: "circle", source: "viirs", layout: { visibility: "none" },
+        paint: {
+          "circle-radius": ["match", ["get", "statut"], "ecartee", 2, "sans_ais", 5.5, 4],
+          "circle-color": ["match", ["get", "statut"], "ecartee", "#4c5a66", "sans_ais", "#e85bc7", "#e6ecf0"],
+          "circle-opacity": ["match", ["get", "statut"], "avec_ais", 0.55, 0.9],
+          "circle-stroke-width": ["match", ["get", "statut"], "sans_ais", 4, 0],
+          "circle-stroke-color": "#e85bc7", "circle-stroke-opacity": 0.25,
+        } as any });
       // Trajectoires surlignées (traits pleins) et trajet présumé d'une coupure AIS (pointillés)
       map.addLayer({ id: "highlight", type: "line", source: "highlight", filter: ["!=", ["get", "dashed"], true],
         paint: { "line-color": ["coalesce", ["get", "color"], "#f0a84b"], "line-width": 2.5 } });
@@ -250,7 +260,13 @@ export default function MapView(p: Props) {
         if (drawing.current || map.queryRenderedFeatures(e.point, { layers: ["traffic", "live", "alerts", "det"] }).length) return;
         onSelect.current({ kind: "zone", properties: { zone: (e.features![0].properties as any).zone } });
       });
-      for (const id of ["traffic", "det", "alerts", "live"]) {
+      map.on("click", "viirs", (e) => {
+        if (drawing.current) return;
+        const f = e.features![0];
+        const [lon, lat] = (f.geometry as any).coordinates;
+        onSelect.current({ kind: "detection", properties: { ...(f.properties as any), source: "viirs", lon, lat } });
+      });
+      for (const id of ["traffic", "det", "alerts", "live", "viirs"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
       }
@@ -276,6 +292,7 @@ export default function MapView(p: Props) {
   useEffect(() => setData("highlight", p.highlight), [ready, p.highlight]);
   useEffect(() => setData("focus", p.focusGeom), [ready, p.focusGeom]);
   useEffect(() => setData("passages", p.passages), [ready, p.passages]);
+  useEffect(() => setData("viirs", p.viirs), [ready, p.viirs]);
   useEffect(() => {
     const z = zonesGeoJSON();
     setData("couverture", p.region ? { ...z, features: z.features.filter((f) => f.properties.zone === p.region) } as FC : z as FC);

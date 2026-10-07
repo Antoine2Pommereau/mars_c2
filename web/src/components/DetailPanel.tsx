@@ -68,7 +68,9 @@ export default function DetailPanel(p: PanelProps) {
     title = L.zones[selection.properties.zone] ?? selection.properties.zone;
   } else {
     Object.assign(ctx, { detection: selection.properties });
-    title = L.preuves.detection;
+    const viirs = selection.properties.source === "viirs";
+    title = viirs ? L.fiche.viirs.titre : L.preuves.detection;
+    if (viirs) color = selection.properties.statut === "sans_ais" ? typeAlerte("DARK_SHIP").couleur : "#8a93c9";
   }
 
   return (

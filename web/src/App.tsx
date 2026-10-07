@@ -32,7 +32,8 @@ const DEUX_MILLES = 3704;
 const arrondi = (ms: number) => Math.floor(ms / 30_000) * 30_000;
 const selKey = (s: Selection | null) => !s ? null : s.kind === "alert" ? `alerte:${s.feature.properties.id}`
   : s.kind === "vessel" ? `navire:${s.properties.vessel_id}` : s.kind === "infrastructure" ? `infrastructure:${s.properties.id}`
-  : s.kind === "zone" ? `zone:${s.properties.zone}` : s.kind === "passage" ? `passage:${s.properties.id}` : null;
+  : s.kind === "zone" ? `zone:${s.properties.zone}` : s.kind === "passage" ? `passage:${s.properties.id}`
+  : s.kind === "detection" && s.properties.source === "viirs" ? `viirs:${s.properties.id}` : null;
 type Focus = { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] };
 
 /** Emprise d'une géométrie GeoJSON */
@@ -151,6 +152,12 @@ export default function App() {
   const passagesQ = useQuery({ queryKey: ["passages", qDebut, qFin, region], queryFn: () => api.passages(qDebut, qFin, region),
     refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData, retry: 2 });
 
+  // Détections nocturnes VIIRS (couche) et nuits traitées (piste de la frise)
+  const viirsQ = useQuery({ queryKey: ["viirs", qDebut, qFin, region], queryFn: () => api.viirs(qDebut, qFin, region),
+    enabled: actives.includes("viirs"), refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData });
+  const nuitsQ = useQuery({ queryKey: ["nuits", qDebut, qFin], queryFn: () => api.viirsNuits(qDebut, qFin),
+    refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData, retry: 2 });
+
   // Changer de région recentre la carte sur son emprise
   const regionsQ = useQuery({ queryKey: ["regions"], queryFn: api.regions, staleTime: Infinity });
   const choisirRegion = useCallback((r: string | null) => {
@@ -181,6 +188,9 @@ export default function App() {
       setPendingSel(null);
     } else if (kind === "passage") {
       setSelection({ kind: "passage", properties: { id: Number(id) } });
+      setPendingSel(null);
+    } else if (kind === "viirs") {
+      setSelection({ kind: "detection", properties: { id: Number(id), source: "viirs" } });
       setPendingSel(null);
     } else setPendingSel(null);
   }, [pendingSel, rangeAlerts, alertsQ.isFetched, vessels]);
@@ -351,7 +361,8 @@ export default function App() {
             )}
             {panel === "couches" && <LayersPanel actives={actives} onActives={setActives} concernees={concernees}
               onConcernees={setConcernees} byType={byType} onByType={setByType} infraCounts={infraCounts}
-              vesselCount={traffic.features.length} passageCount={passagesQ.data?.features.length ?? 0} />}
+              vesselCount={traffic.features.length} passageCount={passagesQ.data?.features.length ?? 0}
+              viirsCount={viirsQ.data?.features.length ?? 0} />}
           </aside>
         )}
         <main className="relative flex-1">
@@ -359,7 +370,7 @@ export default function App() {
           <MapView traffic={traffic} trails={trailsQ.data ?? EMPTY} aoi={showDet ? analysis : null} detections={detQ.data ?? EMPTY}
             analysisAlerts={analysisAlertsQ.data ?? EMPTY} liveAlerts={mapAlerts} zones={zonesQ.data ?? null}
             reception={receptionQ.data ?? null} infrastructure={infraQ.data ?? null} highlight={highlight} actives={actives}
-            byType={byType} region={region} passages={passagesQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
+            byType={byType} region={region} passages={passagesQ.data ?? EMPTY} viirs={viirsQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
             drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom} />
           </Garde>
           <button onClick={drawing || draft ? cancelDraw : startDraw}
@@ -373,7 +384,7 @@ export default function App() {
             onSuivre={(id, on) => suivre.mutate({ id, on })} onRejeu={onRejeu} />
           <Frise temps={temps} now={now} onChange={setTemps} alerts={{ type: "FeatureCollection", features: filtered }}
             timeline={timelineQ.isError ? null : timelineQ.data ?? null} onPickAlert={pickAlert}
-            passages={passagesQ.data ?? EMPTY} onPickPassage={pickPassage} />
+            passages={passagesQ.data ?? EMPTY} onPickPassage={pickPassage} nuits={nuitsQ.isError ? [] : nuitsQ.data ?? []} />
         </main>
       </div>
       {searching && <Recherche region={region} onClose={() => setSearching(false)} onPick={onResult} />}

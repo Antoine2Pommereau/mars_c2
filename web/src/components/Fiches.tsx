@@ -268,6 +268,7 @@ export function PassageResume({ id }: { id: number }) {
       <Row label={P.capteur}>{P.mode(d.satellite, d.mode)}</Row>
       <Row label={P.orbite}>{P.orbiteDe(d.relative_orbit, d.absolute_orbit, P.sens[d.orbit_direction] ?? d.orbit_direction ?? L.commun.nd)}</Row>
       <Row label={P.emprise}>{`${num(d.surface_km2, 0)} km², ${regions}`}</Row>
+      {d.nuages != null && <Row label={P.nuages}>{`${num(d.nuages, 0)} %`}</Row>}
       <Row label={P.analyse}>{P.analyses[d.analyse] ?? d.analyse}</Row>
     </div>
   );
@@ -318,5 +319,81 @@ export function PassageListes({ id, onPickVessel }: { id: number; onPickVessel: 
         </li>
       ))}
     </ul>
+  );
+}
+
+// Détection nocturne VIIRS (étape 3, lot B) : heure, intensité, navire AIS apparié ou absence d'appariement, alertes
+
+function useViirs(id: number) {
+  return useQuery({ queryKey: ["viirsDetection", id], queryFn: () => api.viirsDetection(id), staleTime: 60_000, enabled: id > 0 });
+}
+
+export function ViirsMesures({ id }: { id: number }) {
+  const d = useViirs(id).data;
+  if (!d) return null;
+  const V = F.viirs;
+  return (
+    <div>
+      <Row label={V.heure}>{utc(d.ts)}</Row>
+      <Row label={V.capteur}>{V.satellites[d.satellite] ?? d.satellite}</Row>
+      <Row label={V.intensite}>{`${num(d.nanowatts, 1)} nW/cm²/sr`}</Row>
+      <Row label={V.lune}>{d.lune != null ? `${num(d.lune, 0)} %` : L.commun.nd}</Row>
+      <Row label={V.statut}>{V.statuts[d.statut] ?? d.statut}{d.mask_reason ? ` (${V.motifs[d.mask_reason] ?? d.mask_reason})` : ""}</Row>
+      <Row label={V.cote}>{d.distance_cote_m != null ? `${num(d.distance_cote_m / 1000, 1)} km` : L.commun.nd}</Row>
+    </div>
+  );
+}
+
+export function ViirsNavire({ id, onPickVessel }: { id: number; onPickVessel: (p: Props) => void }) {
+  const d = useViirs(id).data;
+  if (!d) return null;
+  if (!d.vessel_id) return <p className="text-[12px] text-muted">{F.viirs.aucunNavire}</p>;
+  return (
+    <button onClick={() => onPickVessel({ vessel_id: d.vessel_id, name: d.name, mmsi: d.mmsi, flag: d.flag })}
+      className="flex w-full items-center gap-2 text-left text-[12px] hover:text-ink">
+      <Vignette vesselId={d.vessel_id} />
+      <span className="text-ink">{d.name ?? `MMSI ${d.mmsi}`}</span>{d.flag && <Tag>{d.flag}</Tag>}
+      {d.watch && <Tag color={COULEUR_LISTE}>{L.signal[d.watch]}</Tag>}
+      <span className="ml-auto text-muted">{F.viirs.ecart(num(d.match_distance_m, 0))}</span>
+    </button>
+  );
+}
+
+export function ViirsAlertes({ id, onPickAlert }: { id: number; onPickAlert: (f: Feature) => void }) {
+  const d = useViirs(id).data;
+  if (!d) return null;
+  if (!d.alertes.length) return <p className="text-[12px] text-muted">{F.infra.aucuneAlerte}</p>;
+  return (
+    <ul className="space-y-1 text-[12px]">
+      {d.alertes.map((a: Props) => (
+        <li key={a.id}>
+          <button onClick={() => api.alert(a.id).then(onPickAlert).catch(() => undefined)}
+            className="flex w-full items-center gap-1.5 text-left hover:text-ink">
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: couleurAlerte(a.type) }} />
+            <span className="text-ink">{libelleAlerte(a.type)}</span>
+            <span className="ml-auto text-muted">{L.gravite[a.severity]}, {L.statut[a.status]}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Vignette d'un navire (photo de la source, emplacement neutre sinon) ; `taille` : « petite » dans le fil. */
+export function Vignette({ vesselId, taille = "moyenne", source = false }:
+  { vesselId: number; taille?: "petite" | "moyenne"; source?: boolean }) {
+  const [etat, setEtat] = useState<"chargement" | "ok" | "absente">("chargement");
+  const box = taille === "petite" ? "h-[18px] w-[28px]" : "h-[30px] w-[48px]";
+  return (
+    <span className="flex shrink-0 flex-col items-end">
+      <span className={`relative ${box} overflow-hidden rounded-sm border border-hair bg-abyss`}>
+        {etat !== "absente" && (
+          <img src={photoUrl(vesselId)} alt="" loading="lazy" onLoad={() => setEtat("ok")} onError={() => setEtat("absente")}
+            className="h-full w-full object-cover" style={{ opacity: etat === "ok" ? 1 : 0 }} />
+        )}
+        {etat !== "ok" && <span className="absolute inset-0 flex items-center justify-center text-faint"><Ship size={taille === "petite" ? 10 : 13} strokeWidth={1.3} /></span>}
+      </span>
+      {source && etat === "ok" && <span className="text-[9.5px] leading-tight text-faint">VesselFinder</span>}
+    </span>
   );
 }

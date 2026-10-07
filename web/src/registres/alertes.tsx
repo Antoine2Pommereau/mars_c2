@@ -142,11 +142,34 @@ export const TYPES_ALERTE: TypeAlerte[] = [
   },
   {
     type: "DARK_SHIP", Icone: EyeOff, couleur: "#e85bc7", piste: "deux", etape: "3", actif: true, vignette: true,
-    navires: (d) => d.candidats_ais ?? [],
-    titre: (d) => P.echo(num(d.length_m, 0)),
-    signe: (d) => <Tag>{P.contrasteDe(num(d.contrast_vv_db, 0))}</Tag>,
+    // Deux sources : écho radar sans AIS (Sentinel 1) ou lumière nocturne sans AIS (VIIRS, details.source)
+    navires: (d) => [...(d.navire_liste ? [d.navire_liste] : []), ...(d.candidats_ais ?? [])],
+    titre: (d) => d.source === "viirs" ? P.lumiere : P.echo(num(d.length_m, 0)),
+    signe: (d) => d.source === "viirs" ? <Tag>{P.viirsDe(num(d.nanowatts, 0))}</Tag> : <Tag>{P.contrasteDe(num(d.contrast_vv_db, 0))}</Tag>,
     preuves: (p) => {
       const d = p.details ?? {};
+      if (d.source === "viirs") return (
+        <>
+          <Row label={P.capteur}>{L.fiche.viirs.satellites[d.satellite] ?? d.satellite}</Row>
+          <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
+          <Row label={P.intensite}>{num(d.nanowatts, 1)} nW/cm²/sr</Row>
+          <Row label={P.lune}>{d.lune != null ? `${num(d.lune, 0)} %` : L.commun.nd}</Row>
+          <Row label={P.distanceCote}>{d.distance_cote_km != null ? `${num(d.distance_cote_km)} km` : L.commun.nd}</Row>
+          {d.infrastructure && <Row label={P.infrastructure}>{d.infrastructure.name ?? d.infrastructure.type}, {d.infrastructure.distance_m} m</Row>}
+          {d.navire_liste && <Row label={P.navireListe}>{d.navire_liste.name ?? d.navire_liste.mmsi}, {num(d.navire_liste.distance_km)} km</Row>}
+          <Context items={d.contexte} />
+          <div className="mt-3 font-semibold">{P.naviresExamines}</div>
+          {(d.candidats_ais ?? []).length ? (
+            <table className="mt-1 w-full text-left">
+              <thead className="text-muted"><tr><th>{P.navire}</th><th>{P.distance}</th><th>{P.tolerance}</th></tr></thead>
+              <tbody>{d.candidats_ais.map((c: Props) => (
+                <tr key={c.vessel_id} className="border-t border-hair/70">
+                  <td>{c.name ?? c.mmsi}</td><td>{c.distance_m} m</td><td>{c.rayon_tolere_m} m</td>
+                </tr>))}</tbody>
+            </table>
+          ) : <p className="text-muted">{P.aucunNavireProche}</p>}
+        </>
+      );
       return (
         <>
           <Row label={P.longueurEstimee}>{num(d.length_m, 0)} m</Row>

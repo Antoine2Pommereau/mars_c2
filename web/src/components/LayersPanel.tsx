@@ -13,6 +13,7 @@ interface Props {
   infraCounts: Record<string, number>;     // tracés par type d'infrastructure
   vesselCount: number;
   passageCount: number;                    // passages Sentinel 1 et 2 sur la plage et la région
+  viirsCount: number;                      // détections nocturnes VIIRS sur la plage et la région
 }
 
 const C = L.couches;
@@ -62,6 +63,15 @@ function Legende({ c, byType }: { c: Couche; byType: boolean }) {
       </div>
     );
   }
+  if (c.id === "viirs") {
+    return (
+      <div className="px-4 pb-2 pl-8">
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#e6ecf0] opacity-60" />}>{C.legende.avecAis}</Key>
+        <Key swatch={<span className="h-2.5 w-2.5 rounded-full bg-dark ring-2 ring-dark/30" />}>{C.legende.sansAis}</Key>
+        <Key swatch={<span className="h-1.5 w-1.5 rounded-full bg-faint" />}>{C.legende.ecartee}</Key>
+      </div>
+    );
+  }
   if (c.id === "detections") {
     return (
       <div className="px-4 pb-2 pl-8">
@@ -96,7 +106,8 @@ export default function LayersPanel(p: Props) {
             const on = p.actives.includes(c.id) && disponible(c);
             const etat = !disponible(c) ? `${L.commun.aVenir}, ${L.commun.etape(c.etape!)}`
               : c.infra ? C.traces(p.infraCounts[c.infra] ?? 0)
-              : c.id === "navires" ? C.navires(p.vesselCount) : c.id === "passages" ? C.passages(p.passageCount) : "";
+              : c.id === "navires" ? C.navires(p.vesselCount) : c.id === "passages" ? C.passages(p.passageCount)
+              : c.id === "viirs" ? C.passages(p.viirsCount) : "";
             return (
               <div key={c.id}>
                 <Switch on={on} disabled={!disponible(c)} onChange={(v) => set(c.id, v)} label={C.noms[c.id]}

@@ -3,7 +3,8 @@ import AlertActions from "../components/AlertActions";
 import Chip from "../components/Chip";
 import { Row, Sources, Tag } from "../components/Elements";
 import { Comportement, EnTeteNavire, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
-  PassageInfras, PassageListes, PassageResume, Trajectoire, ZoneResume, ZoneTrafic } from "../components/Fiches";
+  PassageInfras, PassageListes, PassageResume, Trajectoire, ViirsAlertes, ViirsMesures, ViirsNavire, Vignette, ZoneResume,
+  ZoneTrafic } from "../components/Fiches";
 import type { VesselCard } from "../lib/api";
 import { num } from "../lib/format";
 import { L } from "../lib/libelles";
@@ -59,7 +60,8 @@ const SECTIONS: Section[] = [
     condition: (c) => !!c.alerte?.properties.details?.motif,
     rendu: (c) => <p className="text-ink/90">{c.alerte!.properties.details.motif}</p> },
   { id: "vignette", objet: "alerte", ordre: 20, etape: null, titre: false,
-    condition: (c) => !!typeAlerte(c.alerte!.properties.type).vignette && !!c.alerte!.properties.event_time,
+    condition: (c) => !!typeAlerte(c.alerte!.properties.type).vignette && !!c.alerte!.properties.event_time
+      && c.alerte!.properties.details?.source !== "viirs",
     rendu: (c) => {
       const [lon, lat] = c.alerte!.geometry.coordinates as [number, number];
       return <Chip lon={lon} lat={lat} time={c.alerte!.properties.event_time} />;
@@ -72,7 +74,8 @@ const SECTIONS: Section[] = [
       <ul className="space-y-1 text-[12px]">
         {naviresAlerte(c.alerte!).map((n) => (
           <li key={n.vessel_id}>
-            <button onClick={() => c.onPickVessel(c.vessels.get(n.vessel_id) ?? { ...n })} className="flex items-center gap-1.5 text-left hover:text-signal">
+            <button onClick={() => c.onPickVessel(c.vessels.get(n.vessel_id) ?? { ...n })} className="flex w-full items-center gap-2 text-left hover:text-signal">
+              <Vignette vesselId={n.vessel_id} source />
               <span className="text-ink">{n.name ?? c.vessels.get(n.vessel_id)?.name ?? `MMSI ${n.mmsi ?? ""}`}</span>
               {(n.flag ?? c.vessels.get(n.vessel_id)?.flag) && <Tag>{n.flag ?? c.vessels.get(n.vessel_id)?.flag}</Tag>}
               <span className="text-muted">{L.fiche.ouvrir}</span>
@@ -141,8 +144,16 @@ const SECTIONS: Section[] = [
   { id: "listes_couvertes", objet: "passage", ordre: 30, etape: null, titre: true, condition: toujours,
     rendu: (c) => <PassageListes id={c.passage!} onPickVessel={c.onPickVessel} /> },
 
+  // Détection nocturne VIIRS
+  { id: "viirs", objet: "detection", ordre: 10, etape: null, titre: false, condition: (c) => c.detection?.source === "viirs",
+    rendu: (c) => <ViirsMesures id={Number(c.detection!.id)} /> },
+  { id: "apparie", objet: "detection", ordre: 20, etape: null, titre: true, condition: (c) => c.detection?.source === "viirs",
+    rendu: (c) => <ViirsNavire id={Number(c.detection!.id)} onPickVessel={c.onPickVessel} /> },
+  { id: "liees", objet: "detection", ordre: 30, etape: null, titre: true, condition: (c) => c.detection?.source === "viirs",
+    rendu: (c) => <ViirsAlertes id={Number(c.detection!.id)} onPickAlert={c.onPickAlert} /> },
+
   // Détection radar
-  { id: "mesures", objet: "detection", ordre: 10, etape: null, titre: false, condition: toujours,
+  { id: "mesures", objet: "detection", ordre: 10, etape: null, titre: false, condition: (c) => c.detection?.source !== "viirs",
     rendu: (c) => {
       const p = c.detection!, P = L.preuves;
       const statut = p.mask_reason && p.mask_reason !== "null" ? P.ecartee(p.mask_reason)
@@ -158,7 +169,7 @@ const SECTIONS: Section[] = [
       );
     } },
   { id: "vignette", objet: "detection", ordre: 20, etape: null, titre: false,
-    condition: (c) => !!c.passTime && c.detection?.lon != null,
+    condition: (c) => !!c.passTime && c.detection?.lon != null && c.detection?.source !== "viirs",
     rendu: (c) => <Chip lon={c.detection!.lon} lat={c.detection!.lat} time={c.passTime!} /> },
 ];
 

@@ -30,7 +30,8 @@ SITE = "https://sentinels.copernicus.eu"
 HEADERS = {"User-Agent": "mars-c2 (surveillance maritime, projet personnel)"}
 FIELDS = ["id", "geometry", "properties.datetime", "properties.start_datetime", "properties.end_datetime",
           "properties.platform", "properties.sat:relative_orbit", "properties.sat:absolute_orbit",
-          "properties.sat:orbit_state", "properties.sar:instrument_mode", "properties.eopf:datatake_id"]
+          "properties.sat:orbit_state", "properties.sar:instrument_mode", "properties.eopf:datatake_id",
+          "properties.eo:cloud_cover"]
 FRANCE = ("bretagne", "manche", "gascogne", "mediterranee")
 SIMPLIFY_DEG = 0.01          # emprise simplifiée à environ 1 km : une emprise de passage n'a pas besoin de plus
 WATCH_MARGIN_MIN = 30        # navire des listes vu dans l'emprise à 30 minutes près de l'acquisition
@@ -90,9 +91,13 @@ def group_catalogue(features: list[dict], mission: str) -> list[dict]:
             "mode": p.get("sar:instrument_mode") or ("MSI" if mission == "S2" else None),
             "orbit_direction": p.get("sat:orbit_state"), "relative_orbit": p.get("sat:relative_orbit"),
             "absolute_orbit": absolute, "datatake": str(datatake) if datatake is not None else None,
-            "start": t0, "end": t1, "geoms": [], "produits": 0, "statut": "acquis", "source": "catalogue"})
+            "start": t0, "end": t1, "geoms": [], "produits": 0, "statut": "acquis", "source": "catalogue",
+            "nuages": None, "_nuages": []})
         g["start"], g["end"] = min(g["start"], t0), max(g["end"], t1)
         g["produits"] += 1
+        if p.get("eo:cloud_cover") is not None:                 # Sentinel 2 : couverture nuageuse de chaque tuile
+            g["_nuages"].append(float(p["eo:cloud_cover"]))
+            g["nuages"] = round(sum(g["_nuages"]) / len(g["_nuages"]), 1)
         if f.get("geometry"):
             g["geoms"].append(f["geometry"])
     return list(out.values())
@@ -205,18 +210,18 @@ WITH fp AS (
                (SELECT ST_Union(geom::geometry) FROM regions WHERE lower(name) = ANY(%(france)s))), %(tol)s)), 3)) AS g
 )
 INSERT INTO sar_passes (product_name, platform, acquired_at, ended_at, orbit_direction, footprint, mission, satellite,
-                        mode, relative_orbit, absolute_orbit, datatake, statut, source, produits, regions, mis_a_jour_le)
+                        mode, relative_orbit, absolute_orbit, datatake, statut, source, produits, regions, mis_a_jour_le, nuages)
 SELECT %(key)s, %(platform)s, %(start)s, %(end)s, %(orbit_direction)s, fp.g::geography, %(mission)s, %(satellite)s,
        %(mode)s, %(relative_orbit)s, %(absolute_orbit)s, %(datatake)s, %(statut)s, %(source)s, %(produits)s,
        ARRAY(SELECT lower(r.name) FROM regions r WHERE lower(r.name) = ANY(%(france)s)
-             AND ST_Intersects(r.geom::geometry, fp.g) ORDER BY 1), now()
+             AND ST_Intersects(r.geom::geometry, fp.g) ORDER BY 1), now(), %(nuages)s
 FROM fp WHERE NOT ST_IsEmpty(fp.g)
 ON CONFLICT (product_name) DO UPDATE SET
     platform = EXCLUDED.platform, acquired_at = EXCLUDED.acquired_at, ended_at = EXCLUDED.ended_at,
     orbit_direction = EXCLUDED.orbit_direction, footprint = EXCLUDED.footprint, mode = EXCLUDED.mode,
     relative_orbit = EXCLUDED.relative_orbit, absolute_orbit = EXCLUDED.absolute_orbit,
     datatake = EXCLUDED.datatake, statut = EXCLUDED.statut, source = EXCLUDED.source, produits = EXCLUDED.produits,
-    regions = EXCLUDED.regions, mis_a_jour_le = now()
+    regions = EXCLUDED.regions, mis_a_jour_le = now(), nuages = EXCLUDED.nuages
 WHERE sar_passes.statut IS DISTINCT FROM 'acquis' OR EXCLUDED.statut = 'acquis'
 RETURNING (xmax = 0) AS nouveau
 """
@@ -268,7 +273,7 @@ def upsert(conn, passes: list[dict]) -> dict:
     for p in passes:
         row = conn.execute(UPSERT, {**{k: p.get(k) for k in (
             "key", "platform", "start", "end", "orbit_direction", "mission", "satellite", "mode", "relative_orbit",
-            "absolute_orbit", "datatake", "statut", "source", "produits")},
+            "absolute_orbit", "datatake", "statut", "source", "produits", "nuages")},
             "geoms": json.dumps({"type": "GeometryCollection", "geometries": p["geoms"]}),
             "france": list(FRANCE), "tol": SIMPLIFY_DEG}).fetchone()
         if row is not None:
@@ -284,7 +289,10 @@ def update(conn, days: int | None = None, now: datetime | None = None, session=N
     session = session or requests.Session()
     now = now or datetime.now(timezone.utc)
     first = not conn.execute("SELECT EXISTS (SELECT 1 FROM sar_passes WHERE mission IS NOT NULL)").fetchone()[0]
-    days = days or (30 if first else 3)
+    # Couverture nuageuse ajoutée par la migration 20 : les passages Sentinel 2 déjà en base sont relus une fois
+    no_clouds = conn.execute("SELECT EXISTS (SELECT 1 FROM sar_passes WHERE mission = 'S2' AND statut = 'acquis' "
+                             "AND nuages IS NULL AND acquired_at > %s)", (now - timedelta(days=30),)).fetchone()[0]
+    days = days or (30 if first or no_clouds else 3)
     out: dict = {"jours": days}
     errors = {}
     for mission in ("S1", "S2"):

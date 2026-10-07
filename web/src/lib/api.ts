@@ -103,6 +103,11 @@ export const api = {
   passages: (start: string, end: string, region: string | null) =>
     get<FC>(`/satellites/passes?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
   passage: (id: number) => get<Props>(`/satellites/passes/${id}`),
+  /** Détections nocturnes VIIRS de la plage et de la région (avec AIS, sans AIS, écartées) */
+  viirs: (start: string, end: string, region: string | null) =>
+    get<FC>(`/viirs/detections?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
+  viirsDetection: (id: number) => get<Props>(`/viirs/detections/${id}`),
+  viirsNuits: (start: string, end: string) => get<Props[]>(`/viirs/nuits?start=${enc(start)}&end=${enc(end)}`),
   track: (vesselId: number, start: string, end: string, maxPoints = 2000) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${enc(start)}&end=${enc(end)}&max_points=${maxPoints}`),
   vessel: (id: number) => get<VesselCard>(`/vessels/${id}`),
