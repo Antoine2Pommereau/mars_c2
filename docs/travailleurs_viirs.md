@@ -41,6 +41,7 @@ conteneur taches (serveur)                          instance Scaleway éphémèr
 | Journal | chaque exécution dans `task_runs` (tâche `travailleur_viirs`) : durée, mémoire, volume téléchargé, coût estimé, résultat ; la table `travailleurs` garde l'état et les mesures |
 | Arrêt d'urgence | `docker compose exec taches python scripts/taches.py detruire-travailleurs` |
 | Traitement tout ou rien | un résultat est écrit en une transaction : rien à moitié en base |
+| **Jamais une autre instance** | toute destruction passe par `Scaleway.destroy`, qui relit l'instance chez Scaleway et refuse si : identifiant du serveur principal (`SCW_SERVEUR_PRINCIPAL`, et identifiant lu dans les métadonnées de l'instance qui exécute le code), protection contre la suppression active, autre projet, nom autre que `mars-travailleur-<n>`, étiquettes `mars-c2-travailleur` et `run-<n>` absentes ou discordantes. Le filtre d'étiquette de l'API est revérifié ; les actions destructrices ne passent par aucun autre chemin. Une destruction refusée est journalisée et la ligne close, sans aucun appel chez Scaleway |
 
 Éprouvé avec un faux client Scaleway : lancement (image, création, cloud-init, réseau privé, démarrage), instance
 orpheline détruite à la première minute, destruction forcée après la durée de vie, plafond quotidien refusé.

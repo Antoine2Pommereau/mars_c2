@@ -32,9 +32,10 @@ def test_cost_is_billed_by_started_hour_on_cpu_and_by_minute_on_gpu():
 
 
 def test_orphans_unknown_or_too_old_instances_are_destroyed():
-    s = lambda sid, age_min, tags=(TAG,): {"id": sid, "tags": list(tags),
-                                           "creation_date": (T0 - age_min * M).isoformat().replace("+00:00", "Z")}
-    servers = [s("actif", 10), s("inconnu", 3), s("vieux", 80), s("autre", 5, tags=("prod",))]
+    s = lambda sid, n, age_min, tags=None: {"id": sid, "name": f"mars-travailleur-{n}",
+                                            "tags": list(tags or (TAG, f"run-{n}")),
+                                            "creation_date": (T0 - age_min * M).isoformat().replace("+00:00", "Z")}
+    servers = [s("actif", 1, 10), s("inconnu", 2, 3), s("vieux", 3, 80), s("autre", 4, 5, tags=("prod",))]
     active = {"actif": T0 - 10 * M, "vieux": T0 - 80 * M}
     assert orphans(servers, active, T0, RULES["travailleurs"]["duree_max_min"]) == ["inconnu", "vieux"]
 
@@ -90,3 +91,132 @@ def test_matching_uses_interpolated_ais_and_sensor_tolerance():
 def test_dark_ship_severity():
     assert severity(False, False) == "moyenne" and severity(True, False) == "elevee"
     assert severity(False, True) == "elevee" and severity(True, True) == "critique"
+
+
+# Garde de destruction : jamais une instance qui n'est pas un travailleur, jamais le serveur principal
+
+import pytest  # noqa: E402
+
+from mars.travailleurs import RefusDestruction, Scaleway, protected_ids, refus  # noqa: E402
+
+PROJET = "projet-mars"
+PRINCIPAL = "11111111-serveur-principal"
+
+
+def instance(sid, name, tags, project=PROJET, protected=False, state="running"):
+    return {"id": sid, "name": name, "tags": tags, "project": project, "protected": protected, "state": state,
+            "zone": "fr-par-1", "volumes": {"0": {"id": f"vol-{sid}"}},
+            "creation_date": (T0 - 10 * M).isoformat().replace("+00:00", "Z")}
+
+
+PARC = {s["id"]: s for s in [
+    instance(PRINCIPAL, "mars-c2", [TAG, "run-1"]),                       # serveur principal, même mal étiqueté
+    instance("deguise", "mars-travailleur-1", [TAG, "run-1"]),            # nom et étiquettes de travailleur, mais id protégé
+    instance("sans-etiquette", "mars-travailleur-7", ["run-7"]),
+    instance("etiquette-discordante", "mars-travailleur-8", [TAG, "run-9"]),
+    instance("autre-nom", "mars-c2-travailleur", [TAG, "run-3"]),
+    instance("nom-suffixe", "mars-travailleur-4-bis", [TAG, "run-4"]),
+    instance("protegee", "mars-travailleur-5", [TAG, "run-5"], protected=True),
+    instance("autre-projet", "mars-travailleur-6", [TAG, "run-6"], project="autre"),
+    instance("vrai", "mars-travailleur-42", [TAG, "run-42", "tache-viirs"]),
+]}
+
+
+class FakeResponse:
+    def __init__(self, status, body=None):
+        self.status_code, self.body = status, body
+        self.content = b"x" if body is not None else b""
+        self.headers = {"content-type": "application/json"}
+        self.text = ""
+
+    def json(self):
+        return self.body
+
+
+class FakeApi:
+    """Faux service Scaleway : enregistre chaque requête. `ignore_tags` simule une API qui ne filtre pas."""
+
+    def __init__(self, ignore_tags=True):
+        self.headers, self.calls, self.bodies, self.ignore_tags = {}, [], [], ignore_tags
+
+    def request(self, method, url, **kw):
+        self.calls.append((method, url))
+        self.bodies.append(kw.get("json"))
+        m = re.search(r"/servers/([^/?]+)(/action)?$", url)
+        if method == "GET" and "/servers?" in url:
+            servers = list(PARC.values()) if self.ignore_tags else [s for s in PARC.values() if TAG in s["tags"]]
+            return FakeResponse(200, {"servers": servers})
+        if method == "GET" and m:
+            return FakeResponse(200, {"server": PARC[m.group(1)]}) if m.group(1) in PARC else FakeResponse(404)
+        return FakeResponse(200, {})
+
+    def destructive(self):
+        return [c for c in self.calls if c[0] in ("DELETE", "PATCH") or (c[0] == "POST" and c[1].endswith("/action"))]
+
+
+def client(api):
+    return Scaleway("cle", PROJET, session=api, protected={PRINCIPAL, "deguise"})
+
+
+def test_only_true_workers_pass_the_guard():
+    assert refus(PARC["vrai"], PROJET, {PRINCIPAL}) is None
+    for sid, s in PARC.items():
+        if sid != "vrai":
+            assert refus(s, PROJET, {PRINCIPAL, "deguise"}) is not None, sid
+
+
+@pytest.mark.parametrize("sid", [s for s in PARC if s != "vrai"])
+def test_destroy_refuses_every_non_worker_without_any_destructive_call(sid):
+    api = FakeApi()
+    with pytest.raises(RefusDestruction):
+        client(api).destroy("fr-par-1", sid)
+    assert api.destructive() == []
+
+
+def test_main_server_is_refused_before_even_reading_it():
+    api = FakeApi()
+    with pytest.raises(RefusDestruction):
+        client(api).destroy("fr-par-1", PRINCIPAL)
+    assert api.calls == []
+
+
+def test_true_worker_is_terminated():
+    api = FakeApi()
+    assert client(api).destroy("fr-par-1", "vrai") is False                 # destruction en cours
+    assert api.destructive() == [("POST", "https://api.scaleway.com/instance/v1/zones/fr-par-1/servers/vrai/action")]
+    assert {"action": "terminate"} in api.bodies
+
+
+def test_listing_and_orphans_keep_only_workers_even_if_the_api_ignores_the_tag_filter():
+    api = FakeApi(ignore_tags=True)
+    scw = client(api)
+    assert [s["id"] for s in scw.tagged("fr-par-1")] == ["vrai"]
+    assert orphans(list(PARC.values()), {}, T0, 45, PROJET, {PRINCIPAL, "deguise"}) == ["vrai"]
+
+
+def test_emergency_stop_destroys_only_workers():
+    """Même boucle que « taches.py detruire-travailleurs »."""
+    api = FakeApi(ignore_tags=True)
+    scw = client(api)
+    for s in scw.tagged("fr-par-1"):
+        scw.destroy(s["zone"], s["id"])
+    assert {c[1].split("/servers/")[1] for c in api.destructive()} == {"vrai/action"}
+
+
+def test_destructive_actions_cannot_bypass_destroy():
+    api = FakeApi()
+    for action in ("terminate", "poweroff", "stop_in_place", "reboot"):
+        with pytest.raises(RefusDestruction):
+            client(api).action("fr-par-1", "vrai", action)
+    assert api.calls == []
+
+
+def test_protected_ids_from_env_and_instance_metadata(monkeypatch):
+    class Meta:
+        def get(self, url, timeout):
+            assert url.startswith("http://169.254.42.42/") and timeout <= 5      # jamais bloquant au démarrage
+            r = FakeResponse(200, {"id": "depuis-metadonnees"})
+            r.ok = True
+            return r
+    monkeypatch.setenv("SCW_SERVEUR_PRINCIPAL", "a, b")
+    assert protected_ids(Meta()) == {"a", "b", "depuis-metadonnees"}

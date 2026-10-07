@@ -279,8 +279,11 @@ def main():
         scw = travailleurs.Scaleway.from_env()
         if scw is None:
             raise SystemExit("clés Scaleway absentes")
-        for s in scw.tagged(load_rules()["travailleurs"]["zone"]):
-            print(s["id"], s["name"], "détruite" if scw.destroy(s["zone"], s["id"]) else "destruction en cours")
+        for s in scw.tagged(load_rules()["travailleurs"]["zone"]):    # travailleurs seulement (garde complète)
+            try:
+                print(s["id"], s["name"], "détruite" if scw.destroy(s["zone"], s["id"]) else "destruction en cours")
+            except travailleurs.RefusDestruction as e:
+                print(s["id"], s.get("name"), f"REFUSÉE : {e}")
         conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = coalesce(fini_le, now()), "
                      "erreur = coalesce(erreur, 'arrêt d''urgence') WHERE detruit_le IS NULL AND etat NOT IN ('termine', 'echec')")
     elif a.commande == "passages":

@@ -11,13 +11,21 @@ exécution dans task_runs (durée, coût estimé, résultat), et à chaque minut
 instance étiquetée « mars-c2-travailleur » qui ne correspond pas à un travailleur actif est détruite (aucun orphelin,
 même après un redémarrage du serveur ou une base restaurée).
 
-Les fonctions de décision (plafonds, coût, cloud-init, orphelins) sont pures et couvertes par tests/test_travailleurs.py.
+Garde de destruction : aucune instance n'est détruite sans passer par Scaleway.destroy, qui relit l'instance chez
+Scaleway et refuse (RefusDestruction) tout ce qui n'est pas un travailleur : serveur principal (identifiant de
+SCW_SERVEUR_PRINCIPAL, ou lu dans les métadonnées de l'instance qui exécute ce code), instance protégée contre la
+suppression, autre projet, nom autre que « mars-travailleur-<n> », étiquettes « mars-c2-travailleur » et « run-<n> »
+absentes ou discordantes. Le filtre d'étiquette de l'API n'est jamais pris pour acquis.
+
+Les fonctions de décision (plafonds, coût, cloud-init, orphelins, garde) sont pures et couvertes par
+tests/test_travailleurs.py.
 """
 import base64
 import hashlib
 import json
 import math
 import os
+import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +34,8 @@ from mars.config import ROOT
 
 API = "https://api.scaleway.com"
 TAG = "mars-c2-travailleur"
+NAME = re.compile(r"^mars-travailleur-(\d+)$")
+METADATA = "http://169.254.42.42/conf?format=json"     # métadonnées de l'instance courante (Scaleway, sans jeton)
 GONE = object()
 
 
@@ -33,14 +43,51 @@ class ScalewayError(RuntimeError):
     pass
 
 
+class RefusDestruction(ScalewayError):
+    """Destruction refusée : l'instance n'est pas un travailleur."""
+
+
+def refus(server: dict, project: str | None, protected: set[str]) -> str | None:
+    """Motif de refus de détruire `server` (réponse de l'API Scaleway), ou None si c'est bien un travailleur. Toutes
+    les conditions sont requises ; une seule suffit à refuser."""
+    sid, name, tags = server.get("id"), server.get("name") or "", server.get("tags") or []
+    if not sid or sid in protected:
+        return f"instance {sid} protégée : serveur principal"
+    if server.get("protected"):
+        return f"instance {sid} ({name}) protégée contre la suppression chez Scaleway"
+    if project and server.get("project") not in (None, project):
+        return f"instance {sid} ({name}) d'un autre projet"
+    m = NAME.match(name)
+    if not m:
+        return f"instance {sid} : le nom « {name} » n'est pas celui d'un travailleur"
+    if TAG not in tags or f"run-{m.group(1)}" not in tags:
+        return f"instance {sid} ({name}) : étiquettes {tags} sans « {TAG} » et « run-{m.group(1)} »"
+    return None
+
+
+def protected_ids(session=None) -> set[str]:
+    """Identifiants à ne jamais détruire : SCW_SERVEUR_PRINCIPAL (liste séparée par des virgules), plus l'instance qui
+    exécute ce code si ses métadonnées sont lisibles (le serveur principal lui même)."""
+    ids = {x.strip() for x in os.environ.get("SCW_SERVEUR_PRINCIPAL", "").split(",") if x.strip()}
+    try:
+        import requests
+        r = (session or requests).get(METADATA, timeout=2)
+        if r.ok and r.json().get("id"):
+            ids.add(r.json()["id"])
+    except Exception:
+        pass                                            # hors Scaleway, ou métadonnées injoignables depuis le conteneur
+    return ids
+
+
 class Scaleway:
     """Client minimal de l'API Instance (et du catalogue d'images) de Scaleway."""
 
-    def __init__(self, secret_key: str, project_id: str, session=None):
+    def __init__(self, secret_key: str, project_id: str, session=None, protected: set[str] | None = None):
         import requests
         self.project = project_id
         self.s = session or requests.Session()
         self.s.headers.update({"X-Auth-Token": secret_key, "Content-Type": "application/json"})
+        self.protected = protected if protected is not None else protected_ids()
 
     @classmethod
     def from_env(cls):
@@ -77,6 +124,9 @@ class Scaleway:
                   json={"private_network_id": private_network_id})
 
     def action(self, zone: str, server_id: str, action: str):
+        """Seul le démarrage passe par ici ; toute action destructrice passe par destroy (et sa garde)."""
+        if action != "poweron":
+            raise RefusDestruction(f"action « {action} » réservée à destroy")
         return self._req("POST", f"/instance/v1/zones/{zone}/servers/{server_id}/action", json={"action": action})
 
     def server(self, zone: str, server_id: str):
@@ -84,18 +134,27 @@ class Scaleway:
         return None if d is GONE else d["server"]
 
     def tagged(self, zone: str) -> list[dict]:
+        """Travailleurs de la zone : filtre d'étiquette demandé à l'API, puis revérifié ici (garde complète)."""
         d = self._req("GET", f"/instance/v1/zones/{zone}/servers?tags={TAG}&per_page=100&project={self.project}")
-        return [] if d is GONE else d.get("servers", [])
+        servers = [] if d is GONE else d.get("servers", [])
+        return [s for s in servers if refus(s, self.project, self.protected) is None]
 
     def destroy(self, zone: str, server_id: str) -> bool:
-        """Détruit l'instance et ses volumes. Vrai quand plus rien n'existe ; faux si la destruction est en cours (un
-        nouvel appel, à la minute suivante, la termine)."""
+        """Détruit l'instance et ses volumes, après avoir vérifié chez Scaleway que c'est un travailleur (sinon
+        RefusDestruction, sans aucun appel destructeur). Vrai quand plus rien n'existe ; faux si la destruction est en
+        cours (un nouvel appel, à la minute suivante, la termine)."""
+        if not server_id or server_id in self.protected:
+            raise RefusDestruction(f"instance {server_id} protégée : serveur principal")
         s = self.server(zone, server_id)
         if s is None:
             return True
+        motif = refus(s, self.project, self.protected)
+        if motif:
+            raise RefusDestruction(motif)
         state = s.get("state")
         if state == "running":
-            self.action(zone, server_id, "terminate")         # serveur, volumes locaux et adresse dynamique
+            # serveur, volumes locaux et adresse dynamique
+            self._req("POST", f"/instance/v1/zones/{zone}/servers/{server_id}/action", json={"action": "terminate"})
             return False
         if state in ("stopped", "stopped in place"):
             vols = [v["id"] for v in (s.get("volumes") or {}).values() if v]
@@ -133,11 +192,13 @@ def cost(minutes: float, prix_heure: float, granularite_min: int) -> float:
     return round(units * granularite_min / 60 * prix_heure, 4)
 
 
-def orphans(servers: list[dict], active: dict[str, datetime], now: datetime, max_min: int) -> list[str]:
-    """Instances étiquetées à détruire : inconnues de la base (orphelines), ou plus vieilles que la durée de vie."""
+def orphans(servers: list[dict], active: dict[str, datetime], now: datetime, max_min: int,
+            project: str | None = None, protected: set[str] | frozenset = frozenset()) -> list[str]:
+    """Travailleurs à détruire : inconnus de la base (orphelins), ou plus vieux que la durée de vie. Toute instance
+    qui n'est pas un travailleur (garde complète, voir refus) est ignorée, quelle que soit la réponse de l'API."""
     out = []
     for s in servers:
-        if TAG not in (s.get("tags") or []):
+        if refus(s, project, set(protected)) is not None:
             continue
         created = s.get("creation_date")
         age = (now - datetime.fromisoformat(created.replace("Z", "+00:00"))).total_seconds() / 60 if created else 0
@@ -259,7 +320,14 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
             elif scw is None:                                   # clés absentes : rien n'est marqué détruit
                 gone = False
             else:
-                gone = scw.destroy(w["zone"], w["scw_server_id"])
+                try:
+                    gone = scw.destroy(w["zone"], w["scw_server_id"])
+                except RefusDestruction as e:
+                    # Jamais détruite : la ligne est close, sans rien toucher chez Scaleway
+                    log(f"travailleur {w['id']} : DESTRUCTION REFUSÉE, {e}")
+                    conn.execute("UPDATE travailleurs SET erreur = coalesce(erreur || ' ; ', '') || %s, detruit_le = now() "
+                                 "WHERE id = %s", (f"destruction refusée : {e}"[:500], w["id"]))
+                    continue
             if gone:
                 conn.execute("UPDATE travailleurs SET detruit_le = now() WHERE id = %s", (w["id"],))
                 w["detruit_le"] = now
@@ -268,8 +336,12 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
     if scw is not None:
         active = {w["scw_server_id"]: w["cree_le"] for w in rows if w["scw_server_id"] and w["etat"] not in ("termine", "echec")}
         for zone in sorted({p["zone"], *(w["zone"] for w in rows)}):
-            for sid in orphans(scw.tagged(zone), active, now, p["duree_max_min"]):
-                scw.destroy(zone, sid)
+            for sid in orphans(scw.tagged(zone), active, now, p["duree_max_min"], scw.project, scw.protected):
+                try:
+                    scw.destroy(zone, sid)
+                except RefusDestruction as e:
+                    log(f"instance {sid} ({zone}) : DESTRUCTION REFUSÉE, {e}")
+                    continue
                 out["orphelins"] += 1
                 log(f"instance orpheline {sid} ({zone}) : destruction")
     return out

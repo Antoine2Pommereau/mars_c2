@@ -227,10 +227,17 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
    SCW_SECRET_KEY=...
    SCW_PROJECT_ID=...
    SCW_PRIVATE_NETWORK_ID=...
+   SCW_SERVEUR_PRINCIPAL=...             # identifiant du serveur mars-c2 : jamais détruit
    MARS_IP_PRIVEE=172.16.x.x
    EARTHDATA_TOKEN=...
    ```
-   La zone et le type d'instance sont dans `config/rules.yaml` (`travailleurs`). Puis
+   L'identifiant du serveur se lit sur le serveur lui même :
+   `curl -s "http://169.254.42.42/conf?format=json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['id'], d['name'], d['location']['zone_id'])"`.
+   Protection supplémentaire, à poser une fois : la protection contre la suppression de Scaleway, qui bloque toute
+   destruction du serveur (API et console) tant qu'elle n'est pas levée, et que MARS C2 vérifie aussi :
+   `curl -s -X PATCH -H "X-Auth-Token: $SCW_SECRET_KEY" -H "Content-Type: application/json" -d '{"protected": true}' https://api.scaleway.com/instance/v1/zones/fr-par-1/servers/$SCW_SERVEUR_PRINCIPAL`
+   (zone du serveur à adapter ; la réponse doit contenir `"protected": true`).
+   La zone et le type d'instance des travailleurs sont dans `config/rules.yaml` (`travailleurs`). Puis
    `docker compose up -d --no-build web taches` (nginx publie le port 8090 sur l'adresse privée).
 5. **Vérifier** sans attendre 06:30 : `docker compose exec taches python scripts/taches.py viirs`, puis
    `docker compose logs -f taches | grep -i travailleur` : création, résultats traités environ 10 minutes plus tard,
