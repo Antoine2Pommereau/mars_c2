@@ -1,8 +1,11 @@
 """Règles en continu : décisions pures des alertes WATCHLIST et IDENTITY_CHANGE, coupures du flux, clés stables."""
 from datetime import datetime, timedelta, timezone
 
-from mars.rules import (imo_changes, name_changes, normalize_name, outage_minutes, outage_overlap_min, passages,
-                        placeholder_mmsi, stamp, watch_severity, zone_names)
+import yaml
+
+from mars.config import ROOT
+from mars.rules import (imo_changes, imo_severity, military, name_changes, normalize_name, outage_minutes,
+                        outage_overlap_min, passages, placeholder_mmsi, stamp, watch_severity, zone_names)
 
 T0 = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
 H = timedelta(hours=1)
@@ -72,6 +75,32 @@ def test_same_imo_simultaneous_use_and_navy_placeholder_ignored():
             {"vessel_id": 3, "mmsi": 227000000, "imo": 9074729, "first_seen": T0 - 9 * H, "last_seen": T0}]
     (ch,) = imo_changes(rows, T0, CONF)                         # le MMSI générique 227000000 est écarté
     assert ch["nouveau"]["vessel_id"] == 2 and ch["simultane"] and not ch["pavillon_change"]
+
+
+MIL = yaml.safe_load((ROOT / "config" / "rules.yaml").read_text())["identite"]["militaire"]
+
+
+def test_military_hints_from_name_type_and_hull_number():
+    assert military(["101", "HMS CATTISTOCK"], None, None, 232000001, MIL) == "préfixe HMS"
+    assert military(["101"], None, None, 232000001, MIL) == "numéro de coque"
+    assert military(["FS MUTIN"], None, None, 227000001, MIL) == "préfixe FS"
+    assert military(["MARINE"], "Military", None, 227000001, MIL) == "type militaire déclaré"
+    assert military(["X"], None, None, 232002833, MIL) == "MMSI de la Marine"
+
+
+def test_civilian_names_are_not_military():
+    for name in ["F/V L'HORIZON 1", "LE MARIN", "HG35 VENDELBO", "FS", "MSC ANNA", "1001 NIGHTS"]:
+        assert military([name], "Fishing", 30, 227806500, MIL) is None, name
+
+
+def test_imo_change_severity():
+    same, flag = {"pavillon_change": False, "simultane": False}, {"pavillon_change": True, "simultane": False}
+    assert imo_severity(same, False, None) == "faible"                      # cas de L'HORIZON 1, OMI 8542248
+    assert imo_severity({**same, "simultane": True}, False, None) == "moyenne"
+    assert imo_severity(flag, False, None) == "elevee"
+    assert imo_severity(flag, False, "préfixe HMS") == "faible"
+    assert imo_severity(same, True, None) == "elevee"                       # navire des listes : inchangé
+    assert imo_severity(flag, True, "préfixe HMS") == "elevee"
 
 
 # Coupures du flux et clés

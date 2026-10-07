@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.17"
+version: "2026.10.18"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -58,6 +58,9 @@ rendezvous:
   slot_min: 10           # positions regroupées par tranches de 10 minutes
   max_gap_min: 20        # deux tranches séparées de 20 minutes au plus restent dans le même épisode
   min_coast_km: 3        # en dessous : abords de côte et de port, exclus
+  # Optimisation, pas un seuil : positions à moins de 1 km de la terre écartées avant l'appariement. Marge de 2 km
+  # sous min_coast_km pour qu'un épisode retenu (milieu à plus de 3 km) ne perde aucune de ses tranches.
+  coast_prefilter_m: 1000
   stationary_zone_buffer_m: 1000   # dans une zone de mouillage : alerte conservée, sévérité faible
   high_duration_min: 240 # sévérité élevée au delà de 4 heures, de 20 km des côtes, ou bord à bord
   high_coast_km: 20
@@ -139,3 +142,10 @@ identite:
   confirmation_min: 360
   # MMSI écartés en plus des MMSI génériques (code pays suivi de six zéros, comme 227000000, Marine nationale)
   mmsi_ignores: []
+  # Bâtiments militaires : gravité minimale et étiquette « militaire » (un navire des listes garde sa gravité).
+  # Indices : type AIS 35, MMSI ci dessous, premier mot du nom parmi ces préfixes, ou nom réduit à un numéro de coque.
+  militaire:
+    mmsi: [232002833]    # HMS CATTISTOCK (émettait « 101 »)
+    # Préfixes sans ambiguïté avec un nom civil (LE, LÉ, HS ou SAS en sont exclus)
+    prefixes_nom: [HMS, HMCS, HMAS, HMNZS, FS, USS, USNS, HNLMS, ZRMS, FGS, HDMS, KNM, HSWMS, ITS, ESPS, NRP, BNS,
+                   ORP, TCG, ROKS, INS]

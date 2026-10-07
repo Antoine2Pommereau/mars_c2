@@ -66,7 +66,8 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     type: "IDENTITY_CHANGE", Icone: Fingerprint, couleur: "#5fd3a5", piste: "flotte", etape: "en place", actif: true,
     navires: (d) => [d.navire],
     titre: (d) => d.changement === "nom" ? `${d.ancien_nom} ${P.devenu} ${d.nouveau_nom}` : P.omiDe(d.omi),
-    signe: (d) => d.changement === "nom" ? <Tag>{P.mmsiDe(d.navire?.mmsi)}</Tag>
+    signe: (d) => d.militaire ? <Tag>{P.militaire}</Tag>
+      : d.changement === "nom" ? <Tag>{P.mmsiDe(d.navire?.mmsi)}</Tag>
       : <Tag>{d.pavillon_change ? P.pavillonChange : P.sousAutreMmsi}</Tag>,
     preuves: (p) => {
       const d = p.details ?? {};
@@ -77,6 +78,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
             ? <Row label={P.nom}>{d.ancien_nom} {P.puis} {d.nouveau_nom}</Row>
             : <Row label={P.omi}>{d.omi}, {P.sousAutreMmsi}</Row>}
           <Row label={P.depuis}>{utc(d.debut)}</Row>
+          {d.militaire && <Row label={P.militaireRow}>{d.militaire}</Row>}
           <Context items={d.contexte} />
           <div className="mt-3 font-semibold">{P.identites}</div>
           <Identities rows={d.identites} />

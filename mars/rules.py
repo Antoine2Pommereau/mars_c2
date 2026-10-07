@@ -74,9 +74,12 @@ WITH slots AS (
     ORDER BY p.vessel_id, slot, p.ts DESC
 ),
 slow AS (
-    -- Navires lents, hors tranches où le navire se déclare amarré
-    SELECT * FROM slots
+    -- Navires lents, hors statuts exclus et hors abords immédiats de la côte : un navire à quai ou dans un bassin
+    -- ne peut appartenir qu'à un épisode écarté plus bas comme côtier ; l'écarter ici évite l'appariement deux à
+    -- deux des ports, qui faisait l'essentiel du coût (plusieurs milliers d'épisodes calculés puis rejetés).
+    SELECT * FROM slots s
     WHERE sog_kn IS NOT NULL AND sog_kn < $4::float8 AND NOT (coalesce(nav_status, -1) = ANY($10::int[]))
+      AND NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, s.geom, $12::float8))
 ),
 pairs AS (
     SELECT a.slot, a.vessel_id AS v1, b.vessel_id AS v2,
@@ -126,7 +129,8 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
     r = rules["rendezvous"]
     rows = await c.fetch(RENDEZVOUS_SQL, day_start, day_end, r["slot_min"], r["max_speed_kn"], r["max_distance_m"],
                          r["max_gap_min"], r["stationary_zone_buffer_m"], r["excluded_ship_types"],
-                         r["min_duration_min"], r["excluded_nav_status"], r["min_coast_km"] * 1000.0)
+                         r["min_duration_min"], r["excluded_nav_status"], r["min_coast_km"] * 1000.0,
+                         float(r.get("coast_prefilter_m", 0)))
     names = {}
     if rows:
         ids = list({x["v1"] for x in rows} | {x["v2"] for x in rows})
@@ -591,6 +595,25 @@ def placeholder_mmsi(mmsi: int) -> bool:
     return mmsi % 1_000_000 == 0
 
 
+def military(names, ship_type: str | None, ship_type_code: int | None, mmsi: int, p: dict) -> str | None:
+    """Raison de tenir le navire pour un bâtiment militaire, ou None. Indices : type AIS déclaré (35, Military),
+    MMSI de la liste `mmsi`, nom commençant par un préfixe de marine (HMS, FS, USS…), ou nom réduit à un numéro de
+    coque (« 101 », émis avant le nom de baptême, comme 101 puis HMS CATTISTOCK)."""
+    if ship_type_code == 35 or ship_type == "Military":
+        return "type militaire déclaré"
+    if mmsi in set(p.get("mmsi", [])):
+        return "MMSI de la Marine"
+    prefixes = set(p.get("prefixes_nom", []))
+    for n in names:
+        words = (normalize_name(n) or "").split()
+        if words and words[0] in prefixes and len(words) > 1:
+            return f"préfixe {words[0]}"
+    for n in names:
+        if re.fullmatch(r"\d{1,4}", normalize_name(n) or ""):
+            return "numéro de coque"
+    return None
+
+
 def name_changes(rows: list[dict], now: datetime, confirmation: timedelta) -> list[dict]:
     """Nouveaux noms d'un navire (lignes de vessel_identities d'un même MMSI, triées par première vue).
 
@@ -640,6 +663,19 @@ def imo_changes(rows: list[dict], now: datetime, confirmation: timedelta) -> lis
     return out
 
 
+def imo_severity(ch: dict, listed: bool, mil: str | None) -> str:
+    """Gravité d'un même OMI sous un autre MMSI. Un navire des listes en cause garde la gravité élevée ; un bâtiment
+    militaire reçoit la gravité minimale ; même pays des deux côtés : faible (moyenne en cas d'usage simultané) ;
+    changement de pavillon : élevée."""
+    if listed:
+        return "elevee"
+    if mil:
+        return "faible"
+    if not ch["pavillon_change"]:
+        return "moyenne" if ch["simultane"] else "faible"
+    return "elevee"
+
+
 async def run_identity(c, start, end, rules: dict) -> dict:
     """Nouveau nom, ou même OMI sous un autre MMSI (avec ou sans changement de pavillon), d'après vessel_identities.
     Seules les identités apparues depuis `start` sont examinées ; les MMSI génériques et ceux de la liste
@@ -648,7 +684,7 @@ async def run_identity(c, start, end, rules: dict) -> dict:
     conf = timedelta(minutes=p["confirmation_min"])
     ignored = set(p["mmsi_ignores"])
     rows = await c.fetch(
-        """SELECT i.id, i.vessel_id, v.mmsi, v.ais_class, i.name, i.imo, i.callsign, i.flag, i.first_seen, i.last_seen,
+        """SELECT i.id, i.vessel_id, v.mmsi, v.ais_class, v.ship_type, v.ship_type_code, i.name, i.imo, i.callsign, i.flag, i.first_seen, i.last_seen,
                   i.messages
            FROM vessel_identities i JOIN vessels v ON v.id = i.vessel_id
            WHERE i.vessel_id IN (SELECT vessel_id FROM vessel_identities WHERE first_seen >= $1 AND first_seen < $2)
@@ -658,7 +694,8 @@ async def run_identity(c, start, end, rules: dict) -> dict:
         if not placeholder_mmsi(r["mmsi"]) and r["mmsi"] not in ignored:
             by_vessel.setdefault(r["vessel_id"], []).append(dict(r))
     imo_rows = await c.fetch(
-        """SELECT i.vessel_id, v.mmsi, i.imo, i.first_seen, i.last_seen FROM vessel_identities i
+        """SELECT i.vessel_id, v.mmsi, v.ship_type, v.ship_type_code, i.name, i.imo, i.first_seen, i.last_seen
+           FROM vessel_identities i
            JOIN vessels v ON v.id = i.vessel_id
            WHERE i.imo IN (SELECT imo FROM vessel_identities WHERE imo IS NOT NULL AND first_seen >= $1 AND first_seen < $2)""",
         start, end)
@@ -682,11 +719,15 @@ async def run_identity(c, start, end, rules: dict) -> dict:
                 skipped += 1
                 continue
             b, a = ch["nouveau"], ch["ancien"]
-            severity = "elevee" if vid in watched else "faible" if b["ais_class"] == "B" else "moyenne"
+            mil = military([x["name"] for x in ids], b["ship_type"], b["ship_type_code"], b["mmsi"], p["militaire"])
+            severity = ("elevee" if vid in watched else "faible" if mil or b["ais_class"] == "B" else "moyenne")
+            context = ["Navire d'une liste de surveillance"] if vid in watched else []
+            if mil and vid not in watched:
+                context.append(f"Bâtiment militaire probable ({mil}) : gravité minimale")
             details = {"changement": "nom", "navire": {"vessel_id": vid, "mmsi": b["mmsi"], "name": b["name"]},
                        "ancien_nom": a["name"], "nouveau_nom": b["name"], "debut": b["first_seen"].isoformat(),
                        "identites": [ident(x) for x in ids],
-                       "contexte": ["Navire d'une liste de surveillance"] if vid in watched else [],
+                       "militaire": mil, "contexte": context,
                        "motif": "Le navire émet sous un nouveau nom, confirmé dans la durée"}
             items.append({"key": f"nom:{vid}:{b['id']}", "severity": severity, "event_time": b["first_seen"],
                           "lon": pos["lon"], "lat": pos["lat"], "details": details, "vessels": [vid]})
@@ -705,16 +746,26 @@ async def run_identity(c, start, end, rules: dict) -> dict:
                 + f" puis {flag_of(new['mmsi']) or '?'} (MMSI {new['mmsi']})")
         if ch["simultane"]:
             context.append("L'ancien MMSI émet encore après l'apparition du nouveau : usage simultané d'un même OMI")
-        severity = "elevee" if ch["pavillon_change"] or ch["simultane"] or new["vessel_id"] in watched else "moyenne"
+        involved = [r["vessel_id"] for r in ch["anciens"]] + [new["vessel_id"]]
+        listed = any(v in watched for v in involved)
+        names = [r["name"] for r in imo_rows if r["imo"] == ch["imo"]]
+        mil = military(names, new["ship_type"], new["ship_type_code"], new["mmsi"], p["militaire"])
+        severity = imo_severity(ch, listed, mil)
+        if listed:
+            context.append("Navire d'une liste de surveillance")
+        elif mil:
+            context.append(f"Bâtiment militaire probable ({mil}) : gravité minimale")
+        elif not ch["pavillon_change"]:
+            context.append("Ancien et nouveau MMSI du même pays : réimmatriculation administrative probable")
         details = {"changement": "omi_autre_mmsi", "omi": ch["imo"],
                    "navire": {"vessel_id": new["vessel_id"], "mmsi": new["mmsi"]},
                    "debut": new["first_seen"].isoformat(), "pavillon_change": ch["pavillon_change"],
-                   "usage_simultane": ch["simultane"],
+                   "usage_simultane": ch["simultane"], "militaire": mil,
                    "identites": [ident(r) for r in ch["anciens"] + [new]], "contexte": context,
                    "motif": "Le même numéro OMI apparaît sous un autre MMSI"}
         items.append({"key": f"omi:{ch['imo']}:{new['vessel_id']}", "severity": severity,
                       "event_time": new["first_seen"], "lon": pos["lon"], "lat": pos["lat"], "details": details,
-                      "vessels": [r["vessel_id"] for r in ch["anciens"]] + [new["vessel_id"]]})
+                      "vessels": involved})
     saved = await save_alerts(c, "IDENTITY_CHANGE", items, rule_version=rules["version"])
     return {"changements": len(items), "sans_position": skipped, **saved}
 
