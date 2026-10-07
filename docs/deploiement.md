@@ -182,6 +182,7 @@ docker compose exec taches python scripts/taches.py listes        # les deux lis
 docker compose exec taches python scripts/taches.py passages      # calendrier des passages, sans attendre la nuit
 docker compose exec taches python scripts/taches.py viirs         # nuits VIIRS à traiter, sans attendre 06:30
 docker compose exec taches python scripts/taches.py travailleurs  # état des travailleurs (dix derniers)
+docker compose exec taches python scripts/taches.py journal-travailleur [ID]   # journal envoyé par un travailleur
 docker compose exec taches python scripts/taches.py detruire-travailleurs   # arrêt d'urgence de toute instance
 docker compose exec taches python scripts/taches.py sauvegardes   # liste des sauvegardes sur R2
 docker compose exec taches python scripts/import_watchlist.py --gur data/listes/Vessels1.db   # fichier local
@@ -212,25 +213,29 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
    ```bash
    ip -4 -br addr        # l'interface du réseau privé et son adresse : MARS_IP_PRIVEE
    ```
-   Copier aussi l'identifiant du réseau privé (page du réseau) : `SCW_PRIVATE_NETWORK_ID`.
+   Copier aussi l'identifiant **du réseau privé** : page du réseau `mars-c2-travailleurs`, onglet **Overview**, champ
+   ID. C'est `SCW_PRIVATE_NETWORK_ID`. Ce n'est **pas** l'identifiant du VPC qui le contient (page du VPC) : avec
+   celui du VPC, le rattachement échoue.
 2. **Clé d'API limitée au projet** : console, Identity and Access Management (IAM), Applications, Create application
    `mars-c2-travailleurs` (une application, pas un utilisateur) ; Policies, Create policy rattachée à cette application,
-   une règle avec la portée **Project** (le projet de MARS C2 seulement) et les ensembles de droits
-   **InstancesFullAccess** (créer, démarrer, détruire les instances, cloud-init, cartes réseau) et
-   **PrivateNetworksReadOnly** (rattacher une carte au réseau privé ; si le rattachement est refusé, remplacer par
-   PrivateNetworksFullAccess). Puis, sur l'application, API keys, Generate : garder la clé d'accès et la clé secrète,
-   et l'identifiant du projet (Project settings).
+   une règle avec la portée **Project** (le projet de MARS C2 seulement, jamais l'organisation) et exactement deux
+   ensembles de droits : **InstancesFullAccess** (créer, démarrer, détruire les instances, cloud-init, cartes réseau)
+   et **PrivateNetworksFullAccess** (rattacher une carte au réseau privé ; PrivateNetworksReadOnly ne suffit pas, le
+   rattachement est refusé, constaté au premier essai). Puis, sur l'application, API keys, Generate : garder la clé
+   d'accès et la clé secrète, et l'identifiant du projet (Project settings).
 3. **Jeton Earthdata** : https://urs.earthdata.nasa.gov (compte gratuit), Generate Token. Valable 60 jours.
 4. **Variables à ajouter au `.env` du serveur** (sans commentaire en fin de ligne) :
    ```
-   SCW_ACCESS_KEY=SCW...                 # pour la ligne de commande Scaleway, non lue par MARS C2
+   SCW_ACCESS_KEY=SCW...
    SCW_SECRET_KEY=...
    SCW_PROJECT_ID=...
    SCW_PRIVATE_NETWORK_ID=...
-   SCW_SERVEUR_PRINCIPAL=...             # identifiant du serveur mars-c2 : jamais détruit
+   SCW_SERVEUR_PRINCIPAL=...
    MARS_IP_PRIVEE=172.16.x.x
    EARTHDATA_TOKEN=...
    ```
+   `SCW_ACCESS_KEY` sert à la ligne de commande Scaleway, MARS C2 ne la lit pas ; `SCW_SERVEUR_PRINCIPAL` est
+   l'identifiant du serveur mars-c2, jamais détruit. Pas de commentaire en fin de ligne dans ce fichier.
    L'identifiant du serveur se lit sur le serveur lui même :
    `curl -s "http://169.254.42.42/conf?format=json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['id'], d['name'], d['location']['zone_id'])"`.
    Protection supplémentaire, à poser une fois : la protection contre la suppression de Scaleway, qui bloque toute
@@ -239,9 +244,45 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
    (zone du serveur à adapter ; la réponse doit contenir `"protected": true`).
    La zone et le type d'instance des travailleurs sont dans `config/rules.yaml` (`travailleurs`). Puis
    `docker compose up -d --no-build web taches` (nginx publie le port 8090 sur l'adresse privée).
-5. **Vérifier** sans attendre 06:30 : `docker compose exec taches python scripts/taches.py viirs`, puis
-   `docker compose logs -f taches | grep -i travailleur` : création, résultats traités environ 10 minutes plus tard,
-   destruction ; dans la console Scaleway, plus aucune instance `mars-travailleur-*` ensuite.
+5. **Vérifier** sans attendre 06:30 : procédure d'essai ci dessous.
+
+**Comment un travailleur démarre.** Le lancement suit un ordre vérifié à chaque étape : instance créée éteinte,
+rattachée au réseau privé (attendu jusqu'à l'état « available » de la carte), cloud-init écrit avec l'adresse MAC de la
+carte privée, démarrage (attendu jusqu'à « running »). Une étape en échec : le lancement est journalisé « echec » dans
+`task_runs` avec son motif, l'indicateur Satellites passe à l'orange, et l'instance est détruite aussitôt (par le
+garde). Au démarrage, `travailleurs/demarrage.sh` trouve l'interface privée par sa MAC, la configure en DHCP si le
+système ne l'a pas fait, puis signale au serveur qu'il le joint (état « reseau », qui compte comme signe de vie) et
+envoie son journal ; il le renvoie après le téléchargement de l'image puis à la fin de l'analyse. Un travailleur sans
+signe de vie 10 minutes après sa création (`travailleurs.delai_demarrage_min`) est détruit, motif enregistré. Un seul
+travailleur VIIRS actif à la fois : le verrou est un index unique en base, valable entre la boucle (rattrapage au
+démarrage du conteneur) et la commande manuelle.
+
+**Diagnostic d'un travailleur muet**, sans ouvrir de port :
+* s'il a joint le serveur au moins une fois, son journal est en base :
+  `docker compose exec taches python scripts/taches.py journal-travailleur` (le dernier) ou `... journal-travailleur 3` ;
+* sinon, lire sa **console série** : console Scaleway, Instances, l'instance `mars-travailleur-<n>` (zone fr-par-1),
+  bouton **Console** en haut à droite ; sans se connecter, on y lit les lignes « MARS » du script de démarrage (interface
+  trouvée ou non, adresse DHCP obtenue ou non, serveur joint ou non, avec `ip -br addr` et `ip route` en cas d'échec).
+  La fenêtre est de 10 minutes après la création, avant la destruction par le serveur. Pour diagnostiquer plus
+  longtemps, porter temporairement `delai_demarrage_min` à 30 dans `config/rules.yaml` du serveur (relu sans
+  redémarrage), puis le remettre à 10 ;
+* état des derniers travailleurs et de leurs motifs : `docker compose exec taches python scripts/taches.py travailleurs`.
+
+**Procédure d'essai d'un travailleur** (deux terminaux sur le serveur, plus la console Scaleway) :
+
+| Étape | Commande ou lieu | Ce qu'on doit lire |
+|---|---|---|
+| 0. Rien d'actif | `docker compose exec taches python scripts/taches.py travailleurs` | aucun travailleur d'état `demande`, `cree` ou `demarre` sans date de destruction ; console : aucune instance `mars-travailleur-*` |
+| 1. Suivre | terminal 2 : `docker compose logs -f taches \| grep -iE "travailleur\|viirs"` | rien encore |
+| 2. Lancer | terminal 1 : `docker compose exec taches python scripts/taches.py viirs` | une ligne `viirs : {"travailleur": N, "instance": "...", "type": "DEV1-M", "mac_privee": "02:00:...", ...}` en moins de 2 minutes ; sinon `viirs : ÉCHEC` et son motif (rattachement, démarrage), instance déjà détruite |
+| 3. Doublon | relancer aussitôt la même commande | `viirs : {"en_cours": N}`, aucune seconde instance |
+| 4. Réseau | dans les 2 à 3 minutes : `taches.py journal-travailleur` | lignes « interface privée ens… : 172.16.8.x/22 » puis « serveur joint sur le réseau privé » ; depuis le serveur, `ping -c 2 172.16.8.x` répond ; si rien au bout de 5 minutes : console série (ci dessus) |
+| 5. Image et analyse | `taches.py journal-travailleur`, quelques minutes plus tard | « téléchargement de l'image », puis les lignes du script VIIRS (une par granule, avec `rss_max_mo`) |
+| 6. Résultat | terminal 2 | `travailleurs : {"traites": 1, ...}` puis `{"detruits": 1, ...}` ; console : l'instance disparaît |
+| 7. Bilan | `curl -s localhost:8000/api/ingestion \| python3 -m json.tool \| grep -A12 '"viirs"'` et `curl -s localhost:8000/api/metrics \| grep travailleurs` | dernière nuit traitée, travailleur `termine`, `cout_eur` 0,0202 ; dans l'interface, indicateur Satellites vert, couche VIIRS et piste des nuits remplies |
+
+En cas d'échec à n'importe quelle étape : l'instance est détruite par le serveur (aussitôt, ou au plus tard 10 minutes
+après la création) ; le motif est dans `taches.py travailleurs`, l'indicateur Satellites passe à l'orange.
 
 **Registre GitHub** : `.github/workflows/nettoyage_registre.yml` ne garde que les trois dernières versions de chaque
 image (chaque lundi, et à la demande dans l'onglet Actions). Une fois par paquet (`mars_c2-backend`, `mars_c2-web`,

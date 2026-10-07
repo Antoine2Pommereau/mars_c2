@@ -26,6 +26,7 @@ Usage :
     python scripts/taches.py                          # boucle (service Docker « taches »)
     python scripts/taches.py archiver | purger | sauvegarder | disque | regles | listes | passages | viirs
     python scripts/taches.py travailleurs             # état des travailleurs, une surveillance tout de suite
+    python scripts/taches.py journal-travailleur [ID] # journal de démarrage envoyé par un travailleur
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
     python scripts/taches.py mesures [--jours 14]     # mesures de calibration (scripts/mesures_calibration.py)
     python scripts/taches.py sauvegardes              # liste des sauvegardes sur R2
@@ -141,13 +142,15 @@ def launch_viirs(conn) -> dict:
     if scw is None or not token:
         raise RuntimeError("clés absentes du .env : SCW_SECRET_KEY, SCW_PROJECT_ID, EARTHDATA_TOKEN")
     busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'viirs' AND detruit_le IS NULL").fetchone()
-    if busy:
+    if busy:                     # travailleur actif : ses nuits sont couvertes, rien à lancer (le verrou en base le garantit)
         return {"en_cours": busy[0]}
     p = viirs.plan(conn, requests.Session(), rules, datetime.now(timezone.utc))
     if not p["granules"]:
         return {"nuits": p["nuits"], "granules": 0}
     r = travailleurs.launch(conn, scw, rules, "viirs", {"granules": p["granules"], "regions": viirs.regions_boxes()},
-                            {"EARTHDATA_TOKEN": token})
+                            {"EARTHDATA_TOKEN": token}, log=log)
+    if "occupe" in r:            # un autre processus vient de lancer (verrou) : pas un échec
+        return {"en_cours": r["occupe"]}
     if "refus" in r:
         raise RuntimeError(r["refus"])
     return {**r, "nuits": p["nuits"], "granules": len(p["granules"])}
@@ -244,7 +247,7 @@ def main():
     ap = argparse.ArgumentParser(description="Tâches planifiées de MARS C2")
     ap.add_argument("commande", nargs="?", default="boucle",
                     choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "viirs",
-                             "travailleurs", "detruire-travailleurs", "mesures",
+                             "travailleurs", "journal-travailleur", "detruire-travailleurs", "mesures",
                              "sauvegardes", "telecharger", "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
@@ -274,6 +277,13 @@ def main():
         for r in conn.execute("SELECT id, tache, etat, commercial_type, cree_le, detruit_le, erreur FROM travailleurs "
                               "ORDER BY id DESC LIMIT 10").fetchall():
             print(*r)
+    elif a.commande == "journal-travailleur":           # journal envoyé par un travailleur (le dernier par défaut)
+        row = conn.execute("SELECT id, etat, erreur, journal_le, journal FROM travailleurs WHERE (%s::bigint IS NULL OR id = %s) "
+                           "ORDER BY id DESC LIMIT 1", (a.args[0] if a.args else None,) * 2).fetchone()
+        if row is None:
+            raise SystemExit("aucun travailleur")
+        print(f"travailleur {row[0]}, état {row[1]}, journal reçu le {row[3] or 'jamais'}\n{row[2] or ''}")
+        print(row[4] or "(aucun journal : le travailleur n'a jamais joint le serveur ; lire la console série Scaleway)")
     elif a.commande == "detruire-travailleurs":
         from mars import travailleurs
         scw = travailleurs.Scaleway.from_env()

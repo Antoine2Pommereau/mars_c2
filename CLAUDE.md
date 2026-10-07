@@ -339,6 +339,13 @@ instance** (clés absentes) : la première nuit réelle donnera durée, mémoire
 nuages annoncés des passages Sentinel 2 (lot C), vignettes des navires dans les alertes, nettoyage du registre GitHub,
 `/api/metrics`.
 
+**Fiabilité des travailleurs après le premier essai réel (08/10/2026)** (migration 21) : création dans l'ordre
+vérifié (éteinte, réseau privé attendu « available », cloud-init avec la MAC, démarrage attendu « running ») ; script
+de démarrage qui configure l'interface privée en DHCP, contacte le serveur et lui envoie son journal ; échec de
+lancement journalisé « echec » avec destruction immédiate ; destruction après 10 minutes sans signe de vie ; verrou en
+base (un seul travailleur VIIRS actif) ; une même détection jamais écrite deux fois (index unique, traitement d'un
+résultat verrouillé). Script de démarrage éprouvé dans un conteneur Ubuntu contre l'API locale.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -348,8 +355,12 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 90 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
-archivage, règles en continu, vérification R2 avec un faux client S3, frise). `npx knip` et `npm run typecheck` pour
+`python -m pytest tests` : 93 réussis, 6 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 5 sans
+`MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
+lancement, délai de démarrage, résultats reçus deux fois). Avec la base de test des migrations
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 98 réussis, 1 ignoré. Couvrent aussi fusion,
+direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
+création d'un travailleur. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
 ## 11. Pièges connus
@@ -417,6 +428,14 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   l'instance et refuse le serveur principal (`SCW_SERVEUR_PRINCIPAL`, métadonnées), une instance protégée, un autre
   projet, un nom autre que `mars-travailleur-<n>` ou des étiquettes discordantes ; ne jamais ajouter de chemin
   destructeur qui l'évite (`action` n'accepte que le démarrage). Couvert par tests/test_travailleurs.py.
+* **Premier essai réel des travailleurs (07 et 08/10/2026)** : PrivateNetworksReadOnly ne permet pas de rattacher
+  une carte au réseau privé (il faut PrivateNetworksFullAccess) ; le rattachement est asynchrone, et l'image Scaleway
+  « docker » ne configure pas d'elle même l'interface privée (travailleur rattaché en 172.16.8.3, injoignable) :
+  attendre la carte « available » avant de démarrer, et configurer l'interface en DHCP dans le script de démarrage
+  (`travailleurs/demarrage.sh`). Deux lancements simultanés (rattrapage au démarrage du conteneur et commande manuelle)
+  avaient créé deux travailleurs : verrou par index unique en base. Les travailleurs n'ont pas de SSH : journal envoyé
+  au serveur (`taches.py journal-travailleur`), sinon console série Scaleway.
+* `SCW_PRIVATE_NETWORK_ID` est l'identifiant du réseau privé (onglet Overview du réseau), pas celui du VPC.
 * Travailleurs : le serveur n'expose aucun port sur Internet ; le retour passe par le réseau privé Scaleway (nginx,
   port 8090 sur `MARS_IP_PRIVEE`). Les instances CPU sont facturées à l'heure entamée, les GPU à la minute.
 * Image d'un travailleur : une image publique (allenai) n'entame pas le quota de 500 Mo des paquets privés ; le

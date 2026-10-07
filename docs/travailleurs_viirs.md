@@ -39,6 +39,11 @@ conteneur taches (serveur)                          instance Scaleway éphémèr
 | Un seul travailleur VIIRS à la fois | une nuit n'est pas lancée deux fois |
 | Orphelins | chaque minute, et au démarrage du conteneur : toute instance étiquetée `mars-c2-travailleur` inconnue de la base, ou plus vieille que la durée de vie, est détruite (même après une base restaurée) |
 | Journal | chaque exécution dans `task_runs` (tâche `travailleur_viirs`) : durée, mémoire, volume téléchargé, coût estimé, résultat ; la table `travailleurs` garde l'état et les mesures |
+| Ordre de création vérifié | instance éteinte, réseau privé rattaché et attendu « available », cloud-init avec la MAC de la carte privée, démarrage attendu « running » ; une étape en échec : lancement « echec » dans `task_runs`, instance détruite aussitôt |
+| Délai de démarrage | 10 min sans signe de vie (le script de démarrage n'a pas joint le serveur) : destruction, motif enregistré |
+| Verrou | un seul travailleur VIIRS actif (index unique en base) : le rattrapage automatique et la commande manuelle ne lancent jamais deux fois les mêmes nuits |
+| Pas de doublon | un résultat est traité une seule fois (ligne verrouillée), une même détection ne peut exister deux fois (index unique) |
+| Journal | le script de démarrage envoie son journal au serveur dès que le réseau privé fonctionne (`taches.py journal-travailleur`) ; sinon, console série Scaleway (docs/deploiement.md) |
 | Arrêt d'urgence | `docker compose exec taches python scripts/taches.py detruire-travailleurs` |
 | Traitement tout ou rien | un résultat est écrit en une transaction : rien à moitié en base |
 | **Jamais une autre instance** | toute destruction passe par `Scaleway.destroy`, qui relit l'instance chez Scaleway et refuse si : identifiant du serveur principal (`SCW_SERVEUR_PRINCIPAL`, et identifiant lu dans les métadonnées de l'instance qui exécute le code), protection contre la suppression active, autre projet, nom autre que `mars-travailleur-<n>`, étiquettes `mars-c2-travailleur` et `run-<n>` absentes ou discordantes. Le filtre d'étiquette de l'API est revérifié ; les actions destructrices ne passent par aucun autre chemin. Une destruction refusée est journalisée et la ligne close, sans aucun appel chez Scaleway |

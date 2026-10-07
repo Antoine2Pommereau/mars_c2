@@ -175,6 +175,7 @@ viirs:
 # Garde fous : durée de vie, plafonds quotidiens, destruction des orphelins à chaque minute et au redémarrage.
 travailleurs:
   zone: fr-par-1
+  delai_demarrage_min: 10  # aucun signe de vie (réseau privé joint) au bout de 10 min : destruction
   duree_max_min: 45        # au delà, destruction forcée par le serveur
   max_par_jour: 4
   max_minutes_par_jour: 180

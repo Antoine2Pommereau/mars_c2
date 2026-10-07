@@ -37,6 +37,7 @@ export const L = {
     ilYa: (t: string) => `il y a ${t}`, dans: (t: string) => `dans ${t}`,
     prochain: (m: string) => `Prochain ${m === "S1" ? "Sentinel 1" : "Sentinel 2"}`, dernierAcquis: "Dernier passage acquis",
     calendrier: "Calendrier mis à jour le", nuitViirs: "Dernière nuit VIIRS", travailleur: "Dernier travailleur",
+    motif: "Motif", lancement: "Dernier lancement VIIRS",
     nuitDe: (d: string, g: number, n: number, e: number) => `${d}, ${g} granules${e ? ` dont ${e} en échec` : ""}, ${n} détections`,
     etatsTravailleur: { demande: "demandé", cree: "créé", demarre: "en cours", resultats: "résultats reçus",
       termine: "terminé", echec: "en échec" } as Record<string, string>,

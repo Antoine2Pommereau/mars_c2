@@ -40,14 +40,25 @@ def test_orphans_unknown_or_too_old_instances_are_destroyed():
     assert orphans(servers, active, T0, RULES["travailleurs"]["duree_max_min"]) == ["inconnu", "vieux"]
 
 
-def test_cloud_init_carries_script_task_and_secrets():
-    text = cloud_init("print('ok')", {"script": "travailleurs/viirs.py", "jeton": "abc"}, {"EARTHDATA_TOKEN": "s3cret"},
-                      "ghcr.io/allenai/vessel-detection-viirs@sha256:00")
+def test_cloud_init_carries_boot_script_task_and_secrets():
+    text = cloud_init("print('ok')", {"script": "travailleurs/viirs.py", "jeton": "abc", "retour": "http://172.16.8.2:8090/api/travailleurs/3"},
+                      {"EARTHDATA_TOKEN": "s3cret"}, "ghcr.io/allenai/vessel-detection-viirs@sha256:00", "02:00:00:AA:BB:CC")
     assert text.startswith("#cloud-config") and "s3cret" not in text            # secrets encodés, jamais en clair
     files = dict(re.findall(r"path: (\S+)\n    encoding: b64\n    permissions: '\d+'\n    content: (\S+)", text))
     assert base64.b64decode(files["/mars/env"]).decode() == "EARTHDATA_TOKEN=s3cret\n"
     assert '"jeton": "abc"' in base64.b64decode(files["/mars/tache.json"]).decode()
-    assert "/mars/viirs.py" in files and "shutdown -h now" in text and "--gpus" not in text
+    boot = base64.b64decode(files["/mars/demarrage.env"]).decode()
+    assert 'MAC="02:00:00:aa:bb:cc"' in boot and 'RETOUR="http://172.16.8.2:8090/api/travailleurs/3"' in boot
+    assert 'GPU=""' in boot and 'SCRIPT="viirs.py"' in boot
+    script = base64.b64decode(files["/mars/demarrage.sh"]).decode()
+    assert "netplan" in script and "signal reseau" in script and "/journal" in script
+    assert "/mars/viirs.py" in files and "runcmd:\n  - [bash, /mars/demarrage.sh]" in text
+
+
+def test_boot_script_is_valid_bash():
+    import subprocess
+    r = subprocess.run(["bash", "-n", str(ROOT / "travailleurs" / "demarrage.sh")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
 
 
 # VIIRS
@@ -220,3 +231,72 @@ def test_protected_ids_from_env_and_instance_metadata(monkeypatch):
             return r
     monkeypatch.setenv("SCW_SERVEUR_PRINCIPAL", "a, b")
     assert protected_ids(Meta()) == {"a", "b", "depuis-metadonnees"}
+
+
+
+# Ordre de création : instance éteinte, réseau privé rattaché et prêt, cloud-init avec la MAC, démarrage vérifié
+
+class ProvisionApi(FakeApi):
+    """Faux Scaleway qui suit l'état d'une instance créée : carte privée « syncing » puis « available », démarrage."""
+
+    def __init__(self, nic_states=("syncing", "syncing", "available")):
+        super().__init__()
+        self.nic_states, self.state, self.order = list(nic_states), "stopped", []
+
+    def request(self, method, url, **kw):
+        path = url.replace("https://api.scaleway.com", "")
+        if "/marketplace/" in path:
+            return FakeResponse(200, {"local_images": [{"id": "img", "compatible_commercial_types": ["DEV1-M"]}]})
+        if method == "POST" and path.endswith("/servers"):
+            self.order.append("creation")
+            body = kw["json"]
+            assert "dynamic_ip_required" in body and body["name"] == "mars-travailleur-3"
+            return FakeResponse(201, {"server": {"id": "neuf", "state": "stopped", "name": body["name"]}})
+        if method == "POST" and path.endswith("/private_nics"):
+            assert self.state == "stopped", "réseau privé rattaché après le démarrage"
+            self.order.append("rattachement")
+            return FakeResponse(201, {"private_nic": {"id": "nic", "state": self.nic_states.pop(0),
+                                                      "mac_address": "02:00:00:AA:BB:CC", "private_network_id": "pn"}})
+        if method == "GET" and "/private_nics/" in path:
+            self.order.append("verification")
+            return FakeResponse(200, {"private_nic": {"id": "nic", "state": self.nic_states.pop(0),
+                                                      "mac_address": "02:00:00:AA:BB:CC", "private_network_id": "pn"}})
+        if method == "PATCH" and "/user_data/cloud-init" in path:
+            assert self.state == "stopped" and "rattachement" in self.order
+            self.order.append("cloud-init")
+            self.cloud = kw["data"].decode()
+            return FakeResponse(204)
+        if method == "POST" and path.endswith("/action"):
+            assert kw["json"] == {"action": "poweron"} and self.order[-1] == "cloud-init"
+            self.order.append("demarrage")
+            self.state = "running"
+            return FakeResponse(202, {"task": {}})
+        if method == "GET" and path.endswith("/servers/neuf"):
+            self.order.append(f"etat {self.state}")
+            return FakeResponse(200, {"server": {"id": "neuf", "state": self.state}})
+        raise AssertionError(f"appel inattendu {method} {path}")
+
+
+T_VIIRS = {"commercial_type": "DEV1-M", "image_label": "docker", "disque_go": 20}
+
+
+def test_provision_order_create_attach_verify_cloud_init_start():
+    from mars.travailleurs import provision
+    api = ProvisionApi()
+    scw = Scaleway("cle", PROJET, session=api, protected=set())
+    created = []
+    r = provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda mac: f"#cloud-config {mac}",
+                  sleep=lambda _s: None, on_created=created.append)
+    assert api.order == ["creation", "rattachement", "verification", "verification", "cloud-init", "demarrage",
+                         "etat running"]
+    assert created == ["neuf"] and r["mac"] == "02:00:00:AA:BB:CC" and "02:00:00:AA:BB:CC" in api.cloud
+
+
+def test_provision_stops_before_start_when_private_network_fails():
+    from mars.travailleurs import ScalewayError, provision
+    api = ProvisionApi(nic_states=("syncing", "syncing_error"))
+    scw = Scaleway("cle", PROJET, session=api, protected=set())
+    with pytest.raises(ScalewayError, match="réseau privé"):
+        provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda _mac: "x",
+                  sleep=lambda _s: None)
+    assert "demarrage" not in api.order and "cloud-init" not in api.order

@@ -237,11 +237,14 @@ def ingest(conn, w: dict, rules: dict) -> dict:
             did = conn.execute(
                 """INSERT INTO viirs_detections (granule_id, ts, geom, nanowatts, orientation, lune, ciel_clair,
                        matched_vessel_id, match_distance_m)
-                   VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                   VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT DO NOTHING RETURNING id""",
                 (gid, d["ts"], d["lon"], d["lat"], d.get("nanowatts"), d.get("orientation"), d.get("lune"),
-                 d.get("ciel_clair"), vid, dist)).fetchone()[0]
-            new_ids.append(did)
-        conn.execute("UPDATE viirs_granules SET detections = %s WHERE id = %s", (len(dets), gid))
+                 d.get("ciel_clair"), vid, dist)).fetchone()
+            if did:                                   # index unique : une même détection n'est jamais écrite deux fois
+                new_ids.append(did[0])
+        conn.execute("UPDATE viirs_granules SET detections = (SELECT count(*) FROM viirs_detections WHERE granule_id = %s) "
+                     "WHERE id = %s", (gid, gid))
         out["detections"] += len(dets)
         out["appariees"] += len(matched)
     if new_ids:

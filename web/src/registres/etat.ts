@@ -102,10 +102,10 @@ export const INDICATEURS: Indicateur[] = [
       if (!sat) return { niveau: "gris", resume: L.commun.nd, detail: [] };
       const maj = sat.mise_a_jour;
       // Nuits VIIRS (lot B) : dernière nuit traitée et dernier travailleur éphémère (état, durée, coût estimé)
-      const nuit = sat.viirs?.derniere_nuit, w = sat.viirs?.travailleur;
+      const nuit = sat.viirs?.derniere_nuit, w = sat.viirs?.travailleur, lance = sat.viirs?.lancement;
       const niveaux: Niveau[] = [!maj ? "gris" : maj.statut === "echec" ? "orange" : palier(age(maj.le, now), 36 * 60 * MIN, 72 * 60 * MIN)];
       if (nuit) niveaux.push(palier(age(nuit.traite_le, now), 30 * 60 * MIN, 54 * 60 * MIN));
-      if (w?.etat === "echec") niveaux.push("orange");
+      if (w?.etat === "echec" || lance?.statut === "echec") niveaux.push("orange");
       if (w && !w.detruit_le && age(w.cree_le, now) > 60 * MIN) niveaux.push("rouge");    // instance non détruite
       const niveau = pire(niveaux);
       const prochains: any[] = sat.prochains ?? [];
@@ -121,6 +121,8 @@ export const INDICATEURS: Indicateur[] = [
       detail.push([E.nuitViirs, nuit ? E.nuitDe(jour(nuit.nuit), nuit.granules, nuit.detections ?? 0, nuit.en_echec) : L.commun.nd]);
       detail.push([E.travailleur, w ? E.travailleurDe(E.etatsTravailleur[w.etat] ?? w.etat, w.commercial_type, date(w.cree_le),
         w.duree_s, w.cout_eur) : L.commun.nd]);
+      if (w?.erreur) detail.push([E.motif, w.erreur]);
+      if (lance?.statut === "echec") detail.push([E.lancement, `${date(lance.le)}, ${E.echec}${lance.erreur ? ` : ${lance.erreur}` : ""}`]);
       return { niveau, resume: premier ? E.dans(duree(Date.parse(premier.acquired_at) - now)) : L.commun.nd, detail };
     },
   },

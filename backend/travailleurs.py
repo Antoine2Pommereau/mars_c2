@@ -30,21 +30,36 @@ def _range(start, end):
     return start or end - timedelta(hours=24), end
 
 
-async def _check(c, wid: int, authorization: str | None):
+async def _check(c, wid: int, authorization: str | None, states=("cree", "demarre")):
     w = await c.fetchrow("SELECT id, etat, jeton_hash, detruit_le FROM travailleurs WHERE id = $1", wid)
     token = (authorization or "").removeprefix("Bearer ").strip()
     if w is None or not token or not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), w["jeton_hash"]):
         raise HTTPException(403, "Jeton refusé")
-    if w["detruit_le"] is not None or w["etat"] not in ("cree", "demarre"):
+    if w["detruit_le"] is not None or w["etat"] not in states:
         raise HTTPException(409, f"Travailleur dans l'état {w['etat']}")
     return w
 
 
 @router.post("/api/travailleurs/{wid}/etat")
 async def worker_state(request: Request, wid: int, authorization: str | None = Header(None)):
+    """Signe de vie : « reseau » (le script de démarrage a joint le serveur sur le réseau privé), puis « demarre »
+    (le script d'analyse commence). Le premier fixe demarre_le : le délai de démarrage est tenu."""
     async with request.app.state.pool.acquire() as c:
         await _check(c, wid, authorization)
-        await c.execute("UPDATE travailleurs SET etat = 'demarre', demarre_le = now() WHERE id = $1", wid)
+        await c.execute("UPDATE travailleurs SET etat = 'demarre', demarre_le = coalesce(demarre_le, now()) WHERE id = $1", wid)
+    return {"ok": True}
+
+
+JOURNAL_MAX = 200_000
+
+
+@router.post("/api/travailleurs/{wid}/journal")
+async def worker_log(request: Request, wid: int, authorization: str | None = Header(None)):
+    """Journal de démarrage du travailleur (texte complet à chaque envoi ; les 200 000 derniers caractères gardés)."""
+    text = (await request.body()).decode("utf-8", "replace")[-JOURNAL_MAX:]
+    async with request.app.state.pool.acquire() as c:
+        await _check(c, wid, authorization, ("cree", "demarre", "resultats", "termine", "echec"))
+        await c.execute("UPDATE travailleurs SET journal = $2, journal_le = now() WHERE id = $1", wid, text)
     return {"ok": True}
 
 
@@ -125,11 +140,15 @@ async def viirs_status(c) -> dict:
         """SELECT g.nuit, max(g.traite_le) AS traite_le, count(*) AS granules,
                   count(*) FILTER (WHERE g.erreur IS NOT NULL) AS en_echec, sum(g.detections) AS detections
            FROM viirs_granules g GROUP BY g.nuit ORDER BY g.nuit DESC LIMIT 1""")
+    launch = await c.fetchrow(
+        """SELECT status AS statut, started_at AS le, details->>'erreur' AS erreur FROM task_runs WHERE task = 'viirs'
+           ORDER BY started_at DESC LIMIT 1""")
     w = await c.fetchrow(
-        """SELECT id, tache, etat, commercial_type, cree_le, fini_le, detruit_le, erreur,
+        """SELECT id, tache, etat, commercial_type, cree_le, demarre_le, fini_le, detruit_le, erreur, journal_le,
                   (mesures->>'cout_estime_eur')::float8 AS cout_eur, (mesures->>'duree_s')::float8 AS duree_s
            FROM travailleurs ORDER BY id DESC LIMIT 1""")
-    return {"derniere_nuit": _row(night) if night else None, "travailleur": _row(w) if w else None}
+    return {"derniere_nuit": _row(night) if night else None, "travailleur": _row(w) if w else None,
+            "lancement": _row(launch) if launch else None}
 
 
 # Mesures (Prometheus, format texte)
