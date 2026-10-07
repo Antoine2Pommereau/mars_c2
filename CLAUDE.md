@@ -36,8 +36,8 @@ TrAISformer ensuite ; **CircleNet** (xView3) gardé en repli et en comparaison.
 
 **Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu (**faites**, alertes WATCHLIST et
 IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (lot A, calendrier des
-passages Sentinel 1 et 2, **fait** ; lot B, analyse d'un passage ; lot C, déclenchement automatique sur les corridors ;
-VIIRS chaque nuit, cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
+passages Sentinel 1 et 2, **fait** ; lot B, VIIRS chaque nuit par travailleurs éphémères, **fait** ; lot C, analyse
+Sentinel déclenchée sur les corridors, par la même architecture sur GPU ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
 
 **Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
 plutôt qu'affirmer (une règle silencieuse est prouvée par un test par injection) ; respecter la physique du
@@ -100,7 +100,8 @@ que sur le serveur.
 | `web` | Docker (nginx) ; Vite en développement | Interface React |
 | `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) |
 | `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` |
-| `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine), calendrier des passages satellites ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
+| `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine), calendrier des passages satellites ; 06:30 : nuits VIIRS confiées à un travailleur éphémère ; chaque minute : surveillance des travailleurs ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
+| Travailleurs | Instances Scaleway éphémères (API Scaleway, `mars/travailleurs.py`) | Analyse satellite hors du serveur : créées à la demande, script et tâche par cloud-init, résultat renvoyé par le réseau privé (nginx, port 8090, jeton), détruites par le serveur ; DEV1-M pour VIIRS, GPU au lot C |
 | Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
 
 **Chaîne du direct** : AISStream, Parquet local, ingestion toutes les 15 s (un point par minute en route, un toutes
@@ -123,12 +124,16 @@ mars_c2/
     ais/live.py, ingest.py, mid.py   zones, nettoyage, allègement, ingestion, pavillon
     watchlist.py, archive.py, r2.py  listes, archivage et sauvegarde, client R2
     satellites.py                    calendrier des passages Sentinel 1 et 2 (catalogue, plans de l'ESA, couverture)
+    travailleurs.py, viirs.py        orchestrateur des travailleurs éphémères ; granules VIIRS, appariement, alertes
+  travailleurs/viirs.py              script du travailleur VIIRS (exécuté dans l'image publique d'allenai)
+  .github/workflows/                 nettoyage du registre GitHub (trois dernières versions par image)
     fusion/                          positions à l'instant du passage, tolérance Doppler, appariement, persistance
     sar/                             passages, extraction Sentinel Hub, CircleNet
     regions/provision.py             infrastructures EMODnet
   mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
   backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo ;
-                                     backend/regions.py : région affichée ; backend/satellites.py : passages
+                                     backend/regions.py : région affichée ; backend/satellites.py : passages ;
+                                     backend/travailleurs.py : retour des travailleurs, VIIRS, /api/metrics
   inference/app.py                   service d'inférence
   scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar,
                                      mesures de calibration (mesures_calibration.py)
@@ -166,7 +171,12 @@ VesselFinder, sans écriture disque, `PHOTOS=aucune` la coupe), navires suivis (
 traînées, les alertes, la frise, les infrastructures, les masques, les suivis, la recherche (région en premier) et
 l'état du direct ; le filtre est dans la requête SQL (`dans_region`, géométrie de la table `regions`). **Passages
 satellites** : `/api/satellites/passes?start&end&region` (emprises en GeoJSON), `/api/satellites/passes/{id}`
-(fiche : infrastructures et navires des listes couverts, analyses), prochain passage dans `/api/ingestion`. L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
+(fiche : infrastructures et navires des listes couverts, analyses, nuages annoncés pour Sentinel 2), prochain
+passage dans `/api/ingestion`. **VIIRS** : `/api/viirs/detections?start&end&region`, `/api/viirs/detections/{id}`,
+`/api/viirs/nuits`, état dans `/api/ingestion` (`satellites.viirs`) ; retour des travailleurs
+`POST /api/travailleurs/{id}/etat|resultats` (jeton, réseau privé seulement). **Mesures** : `/api/metrics` (texte
+Prometheus, pour Grafana plus tard). Tables du lot B : `travailleurs`, `viirs_granules`, `viirs_detections`,
+`viirs_lumieres_fixes` (migration 20). L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
 par l'interface : l'instant est tenu par chaque navigateur et inscrit dans l'adresse de la page.
 
 ## 7. Interface
@@ -190,6 +200,13 @@ contextuel, carte, **fiche** à droite, **frise** en bas.
   réception, mouillages, trafic et alertes de la plage), passage satellite (heure, état acquis ou prévu, capteur,
   orbite, emprise, « non analysé », infrastructures et navires des listes couverts). Un clic sur une infrastructure,
   une zone ou une emprise de passage ouvre sa fiche.
+* **Détections nocturnes VIIRS** : couche (avec AIS neutre, sans AIS couleur du navire sombre, écartée discrète),
+  piste des nuits dans la frise, fiche « détection nocturne » (heure, intensité, lune, navire AIS apparié ou absence,
+  alertes liées), alertes DARK_SHIP de source VIIRS dans le fil avec leurs preuves ; l'indicateur « Satellites » donne
+  aussi la dernière nuit traitée et l'état du dernier travailleur.
+* **Photos dans les alertes** : vignette (source VesselFinder indiquée, emplacement neutre sinon) devant chaque navire
+  de « Navires concernés » ; dans le fil, très petite vignette facultative (bouton image de l'en tête du fil, réglage
+  gardé dans le navigateur, désactivée par défaut).
 * **Région affichée** (barre d'état) : Toute la France ou une région ; **un seul réglage** pour la carte et son
   compteur, les infrastructures, le fil, les suivis, la recherche, la frise (histogramme par région, coupures du flux
   toujours globales), les passages et le contour de la couche « couverture ». Changer de région recentre la carte.
@@ -310,6 +327,18 @@ infrastructures et navires des listes dans l'emprise (base du déclenchement au 
 et 2 » (plein acquis, pointillé prévu), piste de la frise, fiche passage, indicateur « Satellites » (prochain passage
 sur la région affichée).
 
+**Étape 3, lot B (07/10/2026)** (migration 20, règles 2026.10.19, `docs/travailleurs_viirs.md`) : architecture
+« orchestrateur et travailleurs éphémères » commune aux lots B et C (instances Scaleway créées par l'API, retour par
+réseau privé et jeton, durée de vie de 45 min, plafonds de 4 travailleurs et 180 minutes par jour, orphelins détruits
+chaque minute, journal dans `task_runs`). VIIRS : 12 granules par nuit sur nos régions (catalogue CMR, temps quasi
+réel), modèle allenai dans son image publique (886 Mo), 1,45 Go de mémoire et 12,5 s par granule mesurés en émulation,
+DEV1-M ; appariement AIS (1 500 m plus l'estime), côtes à 5 km, lumières fixes (3 nuits en 30 jours, alertes
+antérieures classées), DARK_SHIP de gravité élevée près d'une infrastructure ou d'un navire des listes. Coût estimé :
+**environ 0,76 € HT par mois**. Éprouvé sur la base de test et avec un faux client Scaleway ; **pas encore sur une vraie
+instance** (clés absentes) : la première nuit réelle donnera durée, mémoire et coût dans `task_runs`. Aussi :
+nuages annoncés des passages Sentinel 2 (lot C), vignettes des navires dans les alertes, nettoyage du registre GitHub,
+`/api/metrics`.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -319,7 +348,7 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 66 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
+`python -m pytest tests` : 75 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
 archivage, règles en continu, vérification R2 avec un faux client S3, frise). `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
@@ -377,5 +406,16 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * **Identifiant de prise de vue Sentinel 1** : réattribué à l'exécution (le plan et le catalogue diffèrent de
   quelques unités) ; rapprocher plan et catalogue par satellite et orbite absolue.
 * Sous zsh, une variable de boucle nommée `path` écrase le `PATH` (plus aucune commande trouvée).
+* Depuis le 07/10/2026, l'application qui exécute Claude Code n'a plus accès au dossier Documents (protection de
+  macOS, « Operation not permitted », même hors bac à sable) : ni le `.venv` du dépôt, ni `data/`, ni Git (le
+  worktree pointe vers `.git` du dépôt principal). Contournement : environnement Python et clone du dépôt dans le
+  dossier temporaire, `npm ci` dans le worktree. Rétablir : Réglages Système, Confidentialité et sécurité, Fichiers
+  et dossiers (ou Accès complet au disque) pour l'application du terminal.
+* Node 26 ne lit plus un `node_modules` relié par lien symbolique dans Documents : installer avec `npm ci` dans le
+  worktree.
+* Travailleurs : le serveur n'expose aucun port sur Internet ; le retour passe par le réseau privé Scaleway (nginx,
+  port 8090 sur `MARS_IP_PRIVEE`). Les instances CPU sont facturées à l'heure entamée, les GPU à la minute.
+* Image d'un travailleur : une image publique (allenai) n'entame pas le quota de 500 Mo des paquets privés ; le
+  script passe par cloud-init plutôt que par une image privée de près d'un Go.
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.

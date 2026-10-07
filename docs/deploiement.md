@@ -132,6 +132,11 @@ Chaque nuit à 02:30 UTC (`TACHES_HEURE`), dans cet ordre, chacune consignée da
    des listes couverts par chaque emprise. Métadonnées seulement, aucune image. Sources, fiabilité et limites :
    `docs/passages_satellites.md`. Une source en échec n'empêche pas les autres (détail dans `task_runs`) ; la barre
    d'état indique le prochain passage sur la région affichée et la date de la dernière mise à jour.
+6. **Détections nocturnes VIIRS**, chaque jour à 06:30 UTC (`VIIRS_HEURE`, tâche `viirs`), après la publication des
+   données de la nuit : un travailleur éphémère Scaleway analyse les granules des trois dernières nuits pas encore
+   traitées (rattrapage automatique). Chaque minute, le conteneur surveille les travailleurs : résultats traités,
+   instances finies ou trop vieilles détruites, orphelins détruits, chaque exécution journalisée dans `task_runs`
+   (tâche `travailleur_viirs` : durée, coût estimé, résultat). Détail : `docs/travailleurs_viirs.md`.
 
 **Confirmation des envois.** L'ETag d'un objet envoyé en une seule requête est son MD5 : il est comparé au MD5
 calculé avant l'envoi, avec la taille. L'ETag d'un objet envoyé en plusieurs morceaux (au delà de 16 Mo, cas des
@@ -175,6 +180,9 @@ heure plus tard. Au premier démarrage dans la journée, après 02:30, les tâch
 docker compose exec taches python scripts/taches.py archiver      # ou purger, sauvegarder, disque, regles
 docker compose exec taches python scripts/taches.py listes        # les deux listes, sans attendre la nuit
 docker compose exec taches python scripts/taches.py passages      # calendrier des passages, sans attendre la nuit
+docker compose exec taches python scripts/taches.py viirs         # nuits VIIRS à traiter, sans attendre 06:30
+docker compose exec taches python scripts/taches.py travailleurs  # état des travailleurs (dix derniers)
+docker compose exec taches python scripts/taches.py detruire-travailleurs   # arrêt d'urgence de toute instance
 docker compose exec taches python scripts/taches.py sauvegardes   # liste des sauvegardes sur R2
 docker compose exec taches python scripts/import_watchlist.py --gur data/listes/Vessels1.db   # fichier local
 ```
@@ -193,6 +201,50 @@ cd /opt/mars_c2 && docker compose exec -T taches python scripts/taches.py mesure
 # Sur le Mac (petit fichier : scp convient)
 scp root@IP_DU_SERVEUR:/tmp/mesures_calibration.md ~/Documents/"Projet Perso"/MarsC2/mars_c2/mars_c2/docs/
 ```
+
+## Travailleurs éphémères Scaleway (étape 3)
+
+Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_viirs.md`) :
+
+1. **Réseau privé** : console Scaleway, Network, VPC, région Paris, Private Networks, Create : `mars-c2-travailleurs`
+   (dans le VPC par défaut). Puis Instances, le serveur, onglet Private Networks, Attach. Sur le serveur, l'adresse
+   attribuée (nouvelle interface, en 172.16.x.x en général) :
+   ```bash
+   ip -4 -br addr        # l'interface du réseau privé et son adresse : MARS_IP_PRIVEE
+   ```
+   Copier aussi l'identifiant du réseau privé (page du réseau) : `SCW_PRIVATE_NETWORK_ID`.
+2. **Clé d'API limitée au projet** : console, Identity and Access Management (IAM), Applications, Create application
+   `mars-c2-travailleurs` (une application, pas un utilisateur) ; Policies, Create policy rattachée à cette application,
+   une règle avec la portée **Project** (le projet de MARS C2 seulement) et les ensembles de droits
+   **InstancesFullAccess** (créer, démarrer, détruire les instances, cloud-init, cartes réseau) et
+   **PrivateNetworksReadOnly** (rattacher une carte au réseau privé ; si le rattachement est refusé, remplacer par
+   PrivateNetworksFullAccess). Puis, sur l'application, API keys, Generate : garder la clé d'accès et la clé secrète,
+   et l'identifiant du projet (Project settings).
+3. **Jeton Earthdata** : https://urs.earthdata.nasa.gov (compte gratuit), Generate Token. Valable 60 jours.
+4. **Variables à ajouter au `.env` du serveur** (sans commentaire en fin de ligne) :
+   ```
+   SCW_ACCESS_KEY=SCW...                 # pour la ligne de commande Scaleway, non lue par MARS C2
+   SCW_SECRET_KEY=...
+   SCW_PROJECT_ID=...
+   SCW_PRIVATE_NETWORK_ID=...
+   MARS_IP_PRIVEE=172.16.x.x
+   EARTHDATA_TOKEN=...
+   ```
+   La zone et le type d'instance sont dans `config/rules.yaml` (`travailleurs`). Puis
+   `docker compose up -d --no-build web taches` (nginx publie le port 8090 sur l'adresse privée).
+5. **Vérifier** sans attendre 06:30 : `docker compose exec taches python scripts/taches.py viirs`, puis
+   `docker compose logs -f taches | grep -i travailleur` : création, résultats traités environ 10 minutes plus tard,
+   destruction ; dans la console Scaleway, plus aucune instance `mars-travailleur-*` ensuite.
+
+**Registre GitHub** : `.github/workflows/nettoyage_registre.yml` ne garde que les trois dernières versions de chaque
+image (chaque lundi, et à la demande dans l'onglet Actions). Une fois par paquet (`mars_c2-backend`, `mars_c2-web`,
+`mars_c2-scripts`) : github.com, Packages, le paquet, Package settings, Manage Actions access, Add repository
+`mars_c2`, rôle **Admin**. Les images portent l'étiquette `org.opencontainers.image.source`, qui relie le paquet au
+dépôt à la publication suivante.
+
+**Mesures pour Grafana** : `curl -s localhost:8000/api/metrics` (format texte de Prometheus : exécutions et durée de
+chaque tâche, travailleurs, minutes et coût, détections VIIRS, passages, alertes). Aucun outil installé ; un agent
+Grafana pourra lire cette adresse plus tard.
 
 ## Masques France (trait de côte, mouillages, réception)
 
@@ -403,6 +455,8 @@ messages statiques, proportions de la collecte du 05/10), et 34 000 positions co
   identités, registre d'ingestion, listes) ;
 * négligeables : calendrier des passages, 3,5 Ko par passage index compris, une dizaine par jour, soit 35 Ko par jour
   (13 Mo par an, gardés) ; statistiques de la frise par région, 576 lignes par jour, environ 2 Mo à 35 jours.
+* VIIRS : 12 granules par nuit (environ 1 Ko chacune) et quelques dizaines de détections (environ 300 octets chacune
+  index compris), soit moins de 30 Ko par nuit ; aucune image n'est gardée, ni sur le serveur ni sur le travailleur.
 
 **Disque du serveur** : base 7,5 Go, images Docker et système environ 6 Go, Parquet local de moins de deux jours
 environ 0,3 Go, journaux bornés à 0,2 Go : environ 14 Go sur 40, 65 % libres. **Tant que le disque fait 8 Go, il

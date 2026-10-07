@@ -113,7 +113,7 @@ La carte affiche tout ce qui a une position, filtré par la plage de temps et pa
 | Zones | Couverture, mouillages, réception fiable | Contours et cellules | Date de calcul | 2 |
 | Satellites | Passages Sentinel 1 et 2 | Emprises des acquisitions de la plage : trait plein acquis, pointillé prévu | Prochain passage (barre d'état) | **Fait (lot A)** |
 | Satellites | Détections radar et optiques | Cercles : avec AIS, sans AIS, écartée |  | 3 |
-| Satellites | Détections nocturnes VIIRS | Points lumineux de la nuit | Dernière nuit traitée | 3 |
+| Satellites | Détections nocturnes VIIRS | Points lumineux de la nuit : neutre avec AIS, couleur du navire sombre sans AIS, discret écarté (côte, lumière fixe) ; un clic ouvre la fiche « détection nocturne » | Dernière nuit traitée, dernier travailleur (barre d'état) | **Fait (lot B)** |
 | Activité | Cartes de chaleur | Densité, arrêts dans les corridors, détections sans AIS, coupures, sur la plage ; comparaison à la normale EMODnet |  | 3 |
 | Prédictions | Trajectoires prédites | Route anticipée et cône d'incertitude |  | 4 |
 
@@ -142,7 +142,7 @@ La frise gouverne le temps de tout l'écran. Elle distingue deux notions : la **
 - **Plage** : on choisit une période passée, par raccourci (1 h, 6 h, 24 h, 7 jours, 30 jours) ou librement en faisant glisser les bornes. Rien ne bouge tant qu'on ne relance pas.
 - **Rejeu** : à l'intérieur de la plage, l'instant avance à vitesse choisie (× 1 à × 300) pour revoir une scène, par exemple un rendez vous ou un passage au dessus d'un câble.
 
-**Marqueurs sur la frise.** Les événements y sont repérés dans le temps, sur des pistes distinctes : les alertes (couleur de leur type), les passages satellites Sentinel 1 et 2 (fait : plein acquis, pointillé prévu, un clic ouvre la fiche du passage) et les nuits VIIRS (étape 3), et les **coupures du flux AIS** (zones hachurées), pour ne jamais confondre un navire silencieux avec une panne de notre réception.
+**Marqueurs sur la frise.** Les événements y sont repérés dans le temps, sur des pistes distinctes : les alertes (couleur de leur type), les passages satellites Sentinel 1 et 2 (fait : plein acquis, pointillé prévu, un clic ouvre la fiche du passage) et les nuits VIIRS (fait, lot B : heures des granules, détections et lune en infobulle), et les **coupures du flux AIS** (zones hachurées), pour ne jamais confondre un navire silencieux avec une panne de notre réception.
 
 **Densité.** Sous la piste des alertes, un fin histogramme montre le nombre de navires suivis dans le temps, dans la région affichée : un creux signale immédiatement une coupure de la collecte (les coupures du flux, elles, restent celles de tout le flux).
 
@@ -177,7 +177,7 @@ Elle dit ensuite en permanence si la plateforme voit bien, car une absence d'ale
 | Listes | Date du dernier import GUR et OpenSanctions | 2 |
 | Disque | Place libre sur le serveur | 2 |
 | Archivage | Dernière archive et dernière sauvegarde sur R2 | 2 |
-| Satellites | Prochain passage Sentinel 1 et Sentinel 2 sur la région affichée, dernier passage acquis, date du calendrier (fait, lot A) ; dernier passage analysé et dernière nuit VIIRS ensuite | 3 |
+| Satellites | Prochain passage Sentinel 1 et Sentinel 2 sur la région affichée, dernier passage acquis, date du calendrier (fait, lot A) ; dernière nuit VIIRS traitée et état du dernier travailleur éphémère (fait, lot B) ; dernier passage Sentinel analysé (lot C) | 3 |
 
 ### Panneau des analyses satellites
 
@@ -199,7 +199,7 @@ L'étape 2 construit toute la charpente de l'écran et la remplit avec ce qui ex
 | Fiche navire | En tête, listes, identités, alertes, comportement, trajectoire, notes | Score de risque, vérification satellite (3), comportement appris (pilote), trajectoire prédite (4) |
 | Autres fiches | Alerte, infrastructure, zone | Passage satellite (fait, lot A : heure, emprise, infrastructures et navires des listes couverts, « non analysé ») ; détection (3) |
 | Carte | Navires, trajectoires, infrastructures, corridors, zones ; couches futures affichées « à venir » | Satellites et cartes de chaleur (3), prédictions (4) |
-| Frise | Direct, plage, rejeu, alertes, coupures du flux, histogramme de densité par région | Passages satellites (fait, lot A) ; nuits VIIRS (3) |
+| Frise | Direct, plage, rejeu, alertes, coupures du flux, histogramme de densité par région | Passages satellites (fait, lot A) ; nuits VIIRS (fait, lot B) |
 | Panneaux | Fil d'alertes, couches, analyses (existant), navires suivis | File des analyses automatiques (3) |
 
 ### Les points d'extension
@@ -219,7 +219,7 @@ Cinq choix restent ouverts avant le développement : les voici tranchés.
 
 | Question | Décision |
 | --- | --- |
-| Photo des navires | Oui, dans l'en tête de la fiche, avec la source indiquée sous l'image, et un emplacement neutre quand il n'y a pas de photo. Les conditions d'utilisation de la source restent à vérifier avant une démonstration publique |
+| Photo des navires | Oui, dans l'en tête de la fiche, avec la source indiquée sous l'image, et un emplacement neutre quand il n'y a pas de photo ; aussi en vignette devant chaque navire de « Navires concernés » d'une alerte ; dans le fil, très petite vignette proposée, désactivée par défaut (bouton image de l'en tête du fil), à juger. Les conditions d'utilisation de la source restent à vérifier avant une démonstration publique |
 | Couches « à venir » | Affichées en gris dès maintenant, avec la mention de leur étape |
 | Plusieurs opérateurs | Un seul opérateur pour l'instant ; décisions et commentaires horodatés, avec un champ « auteur » déjà prévu |
 | Score de risque | Reporté : il attendra les alertes de comportement (coupures, INFRA\_THREAT) |
@@ -228,6 +228,10 @@ Cinq choix restent ouverts avant le développement : les voici tranchés.
 Prochaine étape : la consigne de développement pour Claude Code, découpée en deux lots. D'abord la charpente et les registres (barre d'état, frise à plage, fil filtrable, couches décomposées, registres) ; puis le contenu (recherche, fiches navire, alerte, infrastructure et zone, navires suivis).
 
 Avancement (07/10/2026) : lots 1 et 2 faits ; région affichée unique dans la barre d'état ; étape 3, lot A (calendrier
-des passages Sentinel 1 et 2, `docs/passages_satellites.md`) fait. Suite : lot B, analyse d'un passage (fiche passage,
-état « non analysé » à remplacer par l'analyse) ; lot C, déclenchement automatique quand un passage couvre un corridor
-ou un navire des listes.
+des passages Sentinel 1 et 2, `docs/passages_satellites.md`) fait.
+
+Lot B (07/10/2026) : détections nocturnes VIIRS chaque nuit, par des travailleurs éphémères (`docs/travailleurs_viirs.md`) :
+couche, piste des nuits, fiche « détection nocturne », alertes DARK_SHIP de source VIIRS dans le fil, indicateur
+« Satellites » complété. Suite : lot C, analyse Sentinel d'un passage par un
+travailleur GPU, déclenchée quand il couvre un corridor ou un navire des listes (l'état « non analysé » de la fiche
+passage sera remplacé par l'analyse ; les nuages annoncés écartent les images Sentinel 2 couvertes).
