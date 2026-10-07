@@ -56,15 +56,12 @@ docker login ghcr.io -u antoine2pommereau --password-stdin < /root/.ghcr_lecture
 ```
 
 Premier démarrage : publier les images depuis le Mac (section « Construire sur le Mac et déployer », étapes 1 et 2),
-copier les listes de surveillance, télécharger les images, démarrer, importer les listes, puis construire les
-masques France :
+télécharger les images, démarrer, charger les listes de surveillance (téléchargées par le conteneur taches, rien à
+copier), puis construire les masques France :
 
 ```bash
-# Sur le Mac (petits fichiers : scp convient)
-scp data/listes/Vessels1.db data/listes/maritime.csv root@IP_DU_SERVEUR:/opt/mars_c2/data/listes/
-# Sur le serveur
 cd /opt/mars_c2 && docker compose pull && docker compose up -d --no-build
-docker compose run --rm ingest python scripts/import_watchlist.py
+docker compose exec taches python scripts/taches.py listes
 docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
 ```
 
@@ -114,6 +111,21 @@ Chaque nuit à 02:30 UTC (`TACHES_HEURE`), dans cet ordre, chacune consignée da
    la taille et le MD5 de l'objet stocké (relecture) ; une sauvegarde invalide est supprimée. Les 7 dernières sont gardées (`SAUVEGARDES_GARDEES`), les plus
    anciennes supprimées seulement après la vérification de la nouvelle.
 
+4. **Listes de surveillance**, consignées comme les autres tâches (`listes_opensanctions`, `listes_gur`) :
+   * **OpenSanctions, chaque jour** : jeu maritime en téléchargement direct
+     (`https://data.opensanctions.org/datasets/latest/maritime/maritime.csv`, environ 5 Mo), licence CC BY NC 4.0,
+     attribution « Données OpenSanctions.org » affichée dans le détail des listes de la barre d'état ;
+   * **GUR, chaque semaine** : empreinte de `Vessels1.db` lue par l'API GitHub dans le dépôt
+     `FormerLab/shadow-fleet-tracker-light` (licence MIT) ; téléchargement et import seulement si elle a changé.
+
+   Le fichier est lu en mémoire (aucun fichier écrit sur le disque), comparé à la liste en base, et la source n'est
+   remplacée que s'il y a du changement, en une transaction avec le rafraîchissement de `vessel_watch`. Le journal
+   (`task_runs.details`) donne le nombre de navires ajoutés, retirés et modifiés, avec au plus 20 exemples de
+   chaque ; les règles des listes (alertes WATCHLIST, gravité des changements d'identité) sont relancées aussitôt.
+   En cas d'échec (site injoignable, fichier vide ou illisible), la liste précédente reste en place, la tâche est
+   retentée une heure plus tard, et l'indicateur « Listes » de la barre d'état passe à l'orange avec la mention
+   « mise à jour en échec, liste précédente conservée ».
+
 **Confirmation des envois.** L'ETag d'un objet envoyé en une seule requête est son MD5 : il est comparé au MD5
 calculé avant l'envoi, avec la taille. L'ETag d'un objet envoyé en plusieurs morceaux (au delà de 16 Mo, cas des
 sauvegardes en flux) n'est pas le MD5 du fichier : il se termine par « tiret, nombre de morceaux ». L'objet est
@@ -146,12 +158,29 @@ des alertes ; chaque cycle est consigné dans `task_runs` (tâche `regles`, deux
 Toutes les 10 minutes : espace libre du disque. Sous 15 % (`ALERTE_DISQUE_PCT`), une ligne `ALERTE DISQUE` dans
 le journal du service, et `"alerte_disque": true` dans `/api/ingestion`.
 
-Une tâche réussie ne rejoue pas le même jour ; une tâche en échec est retentée une heure plus tard. Au premier
-démarrage dans la journée, après 02:30, les trois tâches s'exécutent tout de suite. Commandes manuelles :
+Une tâche réussie ne rejoue pas avant sa période (un jour, sept pour le GUR) ; une tâche en échec est retentée une
+heure plus tard. Au premier démarrage dans la journée, après 02:30, les tâches dues s'exécutent tout de suite. Commandes manuelles :
 
 ```bash
 docker compose exec taches python scripts/taches.py archiver      # ou purger, sauvegarder, disque, regles
+docker compose exec taches python scripts/taches.py listes        # les deux listes, sans attendre la nuit
 docker compose exec taches python scripts/taches.py sauvegardes   # liste des sauvegardes sur R2
+docker compose exec taches python scripts/import_watchlist.py --gur data/listes/Vessels1.db   # fichier local
+```
+
+**Mesures pour la recalibration** (`scripts/mesures_calibration.py`, lecture seule, aucun seuil modifié) :
+intervalles entre messages par type de navire, par navire et par zone ; paires d'intervalles par cellule et surface
+de la zone de réception fiable pour plusieurs valeurs de `reception.min_pairs`, `min_coverage` et `max_interval_s` ;
+épisodes et alertes par règle et par jour ; puis, pour chaque seuil de `config/rules.yaml`, sa valeur, la mesure et
+une proposition argumentée. Calcul journée par journée : 140 Mo de mémoire mesurés pour le processus (limite du
+conteneur : 768 Mo) et quelques dizaines de Mo de
+fichiers temporaires PostgreSQL par journée. Le rapport sort sur la sortie standard, à rapatrier sur le Mac :
+
+```bash
+# Sur le serveur
+cd /opt/mars_c2 && docker compose exec -T taches python scripts/taches.py mesures --jours 14 > /tmp/mesures_calibration.md
+# Sur le Mac (petit fichier : scp convient)
+scp root@IP_DU_SERVEUR:/tmp/mesures_calibration.md ~/Documents/"Projet Perso"/MarsC2/mars_c2/mars_c2/docs/
 ```
 
 ## Masques France (trait de côte, mouillages, réception)
@@ -376,9 +405,10 @@ deux semaines. Agrandir le disque avant.
 **Règles en continu** : un cycle sur 867 000 positions (24 heures au débit actuel), mesuré sur le Mac en émulation
 linux/amd64, donc une borne haute : 1,4 s pour les coupures AIS, presque rien pour les listes et les identités, et
 33 s pour les rendez vous dans un cas volontairement extrême (600 navires immobiles serrés, 5 700 épisodes) ;
-181 Mo de mémoire au plus pour le processus, environ 100 Mo de fichiers temporaires PostgreSQL. Si les rendez vous
-devenaient trop lents en vrai, la piste est d'écarter les positions proches des côtes avant de former les paires
-(changement de sémantique léger, à décider avec la recalibration).
+181 Mo de mémoire au plus pour le processus, environ 100 Mo de fichiers temporaires PostgreSQL. Sur le serveur, les
+rendez vous montaient à 132 s quand la fenêtre de 24 heures se remplissait (4 485 épisodes dont 4 483 côtiers) :
+depuis la version 2026.10.18, les positions à moins de 1 km de la terre (`rendezvous.coast_prefilter_m`) sont
+écartées avant de former les paires (mesures dans CLAUDE.md, section 9).
 
 **Compression TimescaleDB** : pas utile à cette échelle. Avec 30 jours en base, 7,5 Go tiennent largement sur
 40 Go ; la compression (de l'ordre de 10 fois) demanderait de changer l'image de la base, de refaire la clé de

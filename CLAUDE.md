@@ -99,7 +99,7 @@ que sur le serveur.
 | `web` | Docker (nginx) ; Vite en développement | Interface React |
 | `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) |
 | `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` |
-| `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde ; disque toutes les 10 min ; masques à la demande (`build_masks.py`) |
+| `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine) ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
 | Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
 
 **Chaîne du direct** : AISStream, Parquet local, ingestion toutes les 15 s (un point par minute en route, un toutes
@@ -127,7 +127,8 @@ mars_c2/
   mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
   backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo
   inference/app.py                   service d'inférence
-  scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar
+  scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar,
+                                     mesures de calibration (mesures_calibration.py)
   tests/                             contrat du modèle, fusion, direct, archivage
   web/                               interface React
   docs/                              déploiement, audit, historique danois
@@ -235,7 +236,7 @@ France.
 
 **Règles en continu (06/10/2026)** : dans le conteneur `taches`, toutes les 5 minutes, sur une fenêtre glissante de
 24 heures bornée par la dernière position reçue (`mars/rules.py`, `run_continuous` ; section `continu` de
-`config/rules.yaml`, version 2026.10.17, seuils de calibration inchangés) :
+`config/rules.yaml`, seuils de calibration inchangés) :
 * rendez vous et coupures AIS, comme avant, mais enregistrés par clé stable ; les minutes de flux AIS coupé (moins
   de 20 % de la médiane par minute) ne comptent pas dans un silence ;
 * **WATCHLIST** : une alerte par passage dans nos eaux d'un navire des listes (fort, sanctionné, flotte fantôme,
@@ -260,6 +261,28 @@ et le numéro) ; les tracés communs aux régions Bretagne et Manche, qui se che
 (dédoublonnés à l'affichage). Le lot 1 n'avait pas été déployé côté API (transferts SSH en échec) : d'où les 680 Ko
 par seconde encore mesurés sur le serveur, résolus au premier déploiement par le registre.
 
+**Recalibration préparée et listes automatiques (07/10/2026)** (version des règles 2026.10.18, aucun seuil de
+calibration changé) :
+* **Rendez vous** : les positions à moins de 1 km de la terre (`rendezvous.coast_prefilter_m`, paramètre
+  d'optimisation, 2 km sous `min_coast_km`) sont écartées avant de former les paires. Sur le serveur, 4 483 épisodes
+  sur 4 485 étaient calculés puis écartés comme côtiers, et un cycle montait à 132 s. Mesure sur la base de test
+  avec ports densifiés (165 000 positions, 7 000 navires sur 24 h, émulation amd64) : 419 s avant, 10,5 s après
+  (40 fois moins) ; fichiers temporaires PostgreSQL 15,8 Go avant, 107 Mo après ; plus gros nœud en mémoire 665 Mo
+  avant, 8 Mo après ; 18 044 épisodes dont 18 040 côtiers avant, 10 dont 6 côtiers après ; **mêmes 4 épisodes
+  retenus, donc mêmes 4 alertes**, y compris une paire qui dérive vers la rade de Brest.
+* **Changements d'identité** : bâtiment militaire (type AIS 35, MMSI de la liste `identite.militaire.mmsi`,
+  préfixe HMS, FS, USS…, nom réduit à un numéro de coque comme « 101 ») en gravité faible, étiqueté « militaire »
+  dans le fil et la fiche ; même OMI sous un MMSI du même pays, sans navire des listes en cause : faible (moyenne en
+  cas d'usage simultané), cas de L'HORIZON 1 (OMI 8542248) ; tout navire des listes en cause garde la gravité élevée.
+* **Listes** : OpenSanctions chaque jour, GUR chaque semaine si l'empreinte Git de `Vessels1.db` a changé ;
+  lecture en mémoire, journal ajoutés, retirés, modifiés dans `task_runs`, règles des listes relancées aussitôt ;
+  un échec garde la liste précédente et met l'indicateur « Listes » à l'orange. Essai : 20 725 navires
+  OpenSanctions et 1 206 GUR importés en 2 s, second passage « inchangée », échec simulé sans perte.
+* **Mesures de calibration** : `scripts/mesures_calibration.py` (ou `taches.py mesures`) écrit
+  `docs/mesures_calibration.md` : intervalles par type, navire et zone, réception selon `min_pairs`, continuité et
+  intervalle, épisodes et alertes par jour, puis une proposition par seuil. Le rapport versionné vient de la base
+  de test : à régénérer sur le serveur après une à deux semaines de collecte.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -269,7 +292,7 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 55 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
+`python -m pytest tests` : 60 réussis, 1 ignoré sans `MARS_TEST_MODEL=1` (contrat du modèle, fusion, direct,
 archivage, règles en continu, vérification R2 avec un faux client S3, frise). `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
@@ -318,5 +341,9 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * Pour savoir quelle version d'API tourne sur le serveur : `curl -s localhost:8000/openapi.json` (liste des routes) ;
   un comportement inattendu venait d'une image non déployée, pas du code.
 * `tsconfig.json` impose `noUnusedLocals` : les imports et variables inutilisés sont des erreurs de types.
+* `Vessels1.db` est publié en mode WAL (octets 18 et 19 de l'en tête à 2) : `sqlite3.deserialize` le refuse
+  (« unable to open database file ») ; `load_gur` les remet à 1 en mémoire.
+* Les règles en continu font sur le serveur l'essentiel de leur coût dans les ports : tout filtre qui retire des
+  positions avant un appariement deux à deux doit garder une marge sous le seuil final (cas du préfiltre côtier).
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.
