@@ -373,3 +373,158 @@ def test_boot_problems_are_named():
     assert "rescue" in boot_problem({**ok, "boot_type": "rescue"}, img)
     assert "aucun volume" in boot_problem({**ok, "volumes": {}}, img)
     assert "plus petit" in boot_problem({**ok, "volumes": {"0": {"volume_type": "l_ssd", "size": 1_000_000}}}, img)
+
+
+# Destruction : séquence de Scaleway selon l'état (essai réel du 08/10 : suppression refusée sur une instance éteinte
+# depuis son système, « stopped in place »)
+
+class LifecycleApi(FakeApi):
+    """Une instance de travailleur et la règle de Scaleway : suppression refusée (400) tant qu'elle n'est pas
+    « stopped » ; terminate la supprime, volumes compris ; poweroff la fait passer par stopping jusqu'à stopped."""
+
+    def __init__(self, state):
+        super().__init__()
+        self.state, self.volumes = state, {"vol-0"}
+        self.server = dict(PARC["vrai"], state=state, volumes={"0": {"id": "vol-0"}})
+
+    def request(self, method, url, **kw):
+        self.calls.append((method, url))
+        self.bodies.append(kw.get("json"))
+        path = url.replace("https://api.scaleway.com/instance/v1/zones/fr-par-1", "")
+        if method == "GET" and path == "/servers/vrai":
+            if self.state is None:
+                return FakeResponse(404)
+            return FakeResponse(200, {"server": {**self.server, "state": self.state}})
+        if method == "POST" and path == "/servers/vrai/action":
+            action = kw["json"]["action"]
+            if action == "terminate":
+                assert self.state == "running", f"terminate dans l'état {self.state}"
+                self.state, self.volumes = None, set()
+            elif action == "poweroff":
+                assert self.state in ("stopped in place", "running", "stopped")
+                self.state = "stopping"
+            return FakeResponse(202, {"task": {}})
+        if method == "DELETE" and path == "/servers/vrai":
+            if self.state != "stopped":
+                r = FakeResponse(400, {"type": "precondition_failed", "resource": "resource_still_in_use",
+                                       "message": "instance should be powered off"})
+                r.text = "precondition_failed resource_still_in_use instance should be powered off"
+                return r
+            self.state = None
+            return FakeResponse(204)
+        if method == "DELETE" and path.startswith("/volumes/"):
+            self.volumes.discard(path.rsplit("/", 1)[1])
+            return FakeResponse(204)
+        raise AssertionError(f"appel inattendu {method} {path}")
+
+
+def _until_gone(api, scw, steps=6, between=None):
+    for k in range(steps):
+        if scw.destroy("fr-par-1", "vrai"):
+            return k + 1
+        if between:
+            between(api)
+    raise AssertionError("instance jamais détruite")
+
+
+def test_running_worker_is_terminated_with_its_volumes():
+    api = LifecycleApi("running")
+    scw = Scaleway("cle", PROJET, session=api, protected={PRINCIPAL})
+    assert _until_gone(api, scw) == 2                          # terminate, puis constat de disparition
+    assert not api.volumes and ("DELETE", "https://api.scaleway.com/instance/v1/zones/fr-par-1/servers/vrai") not in api.calls
+
+
+def test_worker_stopped_from_its_system_is_powered_off_then_deleted_with_its_volumes():
+    api = LifecycleApi("stopped in place")
+    scw = Scaleway("cle", PROJET, session=api, protected={PRINCIPAL})
+
+    def scaleway_progress(a):                                  # stopping devient stopped entre deux minutes
+        if a.state == "stopping":
+            a.state = "stopped"
+    assert _until_gone(api, scw, between=scaleway_progress) == 2
+    actions = [c for c in api.calls if c[0] in ("POST", "DELETE")]
+    assert actions == [("POST", "https://api.scaleway.com/instance/v1/zones/fr-par-1/servers/vrai/action"),
+                       ("DELETE", "https://api.scaleway.com/instance/v1/zones/fr-par-1/servers/vrai"),
+                       ("DELETE", "https://api.scaleway.com/instance/v1/zones/fr-par-1/volumes/vol-0")]
+    assert {"action": "poweroff"} in api.bodies and not api.volumes
+
+
+def test_stopping_worker_is_left_alone_until_stopped():
+    api = LifecycleApi("stopping")
+    scw = Scaleway("cle", PROJET, session=api, protected={PRINCIPAL})
+    assert scw.destroy("fr-par-1", "vrai") is False and [c for c in api.calls if c[0] != "GET"] == []
+
+
+def test_still_in_use_answer_leads_to_poweroff_not_to_an_error():
+    """L'API dit « stopped » mais refuse encore la suppression : poweroff, et nouvel essai à la minute suivante."""
+    api = LifecycleApi("stopped")
+    real = api.request
+
+    def flaky(method, url, **kw):
+        if method == "DELETE" and url.endswith("/servers/vrai") and not getattr(api, "refused", False):
+            api.refused = True
+            api.calls.append((method, url))
+            r = FakeResponse(400, {})
+            r.text = "precondition_failed resource_still_in_use instance should be powered off"
+            return r
+        return real(method, url, **kw)
+    api.request = flaky
+    scw = Scaleway("cle", PROJET, session=api, protected={PRINCIPAL})
+    assert scw.destroy("fr-par-1", "vrai") is False and {"action": "poweroff"} in api.bodies
+    api.state = "stopped"
+    assert scw.destroy("fr-par-1", "vrai") is True and not api.volumes
+
+
+# Téléchargement des données VIIRS dans le travailleur (essai réel du 08/10 : page HTML de licence au lieu du fichier)
+
+def _worker():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("travailleur_viirs", ROOT / "travailleurs" / "viirs.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_downloads_are_checked_and_explained():
+    w = _worker()
+    hdf5 = b"\x89HDF\r\n\x1a\n" + b"\0" * 50
+    w.check_download(200, "application/x-netcdf", ["https://nrt3.modaps.eosdis.nasa.gov/x.nc"], hdf5, 42_600_000)
+    with pytest.raises(w.DonneesInaccessibles, match="licence LANCE non acceptée"):
+        w.check_download(200, "text/html", ["https://urs.earthdata.nasa.gov/profiles/licenses/123"], b"<!DOCTYPE html>")
+    with pytest.raises(w.DonneesInaccessibles, match="jeton EARTHDATA_TOKEN"):
+        w.check_download(401, "text/html", [], b"<html>")
+    # Chaîne relevée sur la NASA le 08/10 avec un jeton invalide : licence, puis connexion. C'est le jeton qui manque.
+    with pytest.raises(w.DonneesInaccessibles, match="jeton EARTHDATA_TOKEN"):
+        w.check_download(200, "text/html; charset=utf-8", [
+            "/profiles/licenses/api/v2/content/archives/allData/5201/VJ102DNB_NRT/2026/281/x.nc",
+            "/oauth/login?redirect=%2Fapi%2Fv2", "https://urs.earthdata.nasa.gov/oauth/authorize?response_type=code"],
+            b"<!DOCTYPE html>")
+    with pytest.raises(w.FichierInvalide, match=r"HTTP 200, type text/html; charset=utf-8, premiers octets b'<html"):
+        w.check_download(200, "text/html; charset=utf-8", [], b"<html><body>Earthdata Login")
+    with pytest.raises(w.FichierInvalide, match="HTTP 404"):
+        w.check_download(404, "text/plain", [], b"not found")
+    with pytest.raises(w.FichierInvalide, match="tronqué"):
+        w.check_download(200, "", [], hdf5, 10_240)
+
+
+def test_worker_stops_at_the_first_failing_granule(monkeypatch):
+    import sys
+    import types
+    w = _worker()
+    monkeypatch.setitem(sys.modules, "pipeline", types.SimpleNamespace(VIIRSVesselDetection=lambda: None))
+    calls = []
+
+    def html(url, _dest, _token):
+        calls.append(url)
+        raise w.FichierInvalide("réponse inattendue : HTTP 200, type text/html, premiers octets b'<html>'")
+    monkeypatch.setattr(w, "download", html)
+    task = {"regions": [], "granules": [{"dnb": f"g{k}", "dnb_url": f"u{k}", "geo_url": f"v{k}"} for k in range(39)]}
+    r = w.run(task)
+    assert len(calls) == 1 and len(r["granules"]) == 1 and "text/html" in r["erreur"]
+
+    def licence(url, _dest, _token):
+        calls.append(url)
+        raise w.DonneesInaccessibles("licence LANCE non acceptée sur le compte Earthdata")
+    monkeypatch.setattr(w, "download", licence)
+    calls.clear()
+    assert w.run(task)["erreur"].startswith("licence LANCE") and len(calls) == 1

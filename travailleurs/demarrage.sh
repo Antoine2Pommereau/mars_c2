@@ -81,4 +81,6 @@ docker run --rm $GPU --env-file /mars/env -e MARS_TACHE=/mars/tache.json -v /mar
   --entrypoint python3 "$IMAGE" "/mars/$SCRIPT" 2>&1 | tee -a "$LOG"
 log "analyse terminée (code ${PIPESTATUS[0]})"
 envoyer_journal
-shutdown -h now
+# Le serveur détruit l'instance dès réception du résultat, tant qu'elle tourne encore (action terminate) ; l'arrêt
+# différé n'est qu'un filet si la destruction tardait
+shutdown -h +10

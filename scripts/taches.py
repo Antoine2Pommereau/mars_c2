@@ -97,7 +97,8 @@ def run(conn, task: str, fn, quiet: bool = False) -> dict | None:
         conn.execute("UPDATE task_runs SET status = 'echec', finished_at = now(), details = %s WHERE id = %s",
                      (json.dumps({"erreur": str(e)[:1000]}), rid))
         log(f"{task} : ÉCHEC, {e}")
-        traceback.print_exc()
+        if not getattr(e, "motif_seul", False):   # refus attendu (plafond, clés absentes) : le motif suffit
+            traceback.print_exc()
         return None
 
 
@@ -140,7 +141,7 @@ def launch_viirs(conn) -> dict:
     rules = load_rules()
     scw, token = travailleurs.Scaleway.from_env(), os.environ.get("EARTHDATA_TOKEN")
     if scw is None or not token:
-        raise RuntimeError("clés absentes du .env : SCW_SECRET_KEY, SCW_PROJECT_ID, EARTHDATA_TOKEN")
+        raise travailleurs.RefusLancement("clés absentes du .env : SCW_SECRET_KEY, SCW_PROJECT_ID, EARTHDATA_TOKEN")
     busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'viirs' AND detruit_le IS NULL").fetchone()
     if busy:                     # travailleur actif : ses nuits sont couvertes, rien à lancer (le verrou en base le garantit)
         return {"en_cours": busy[0]}
@@ -152,7 +153,7 @@ def launch_viirs(conn) -> dict:
     if "occupe" in r:            # un autre processus vient de lancer (verrou) : pas un échec
         return {"en_cours": r["occupe"]}
     if "refus" in r:
-        raise RuntimeError(r["refus"])
+        raise travailleurs.RefusLancement(r["refus"])
     return {**r, "nuits": p["nuits"], "granules": len(p["granules"])}
 
 

@@ -196,8 +196,8 @@ def ingest(conn, w: dict, rules: dict) -> dict:
     by_dnb = {g["dnb"]: g for g in (w["parametres"] or {}).get("granules", [])}
     out = {"granules": 0, "granules_en_echec": 0, "detections": 0, "appariees": 0, "cote": 0, "lumiere_fixe": 0,
            "alertes": 0, "reclassees": 0}
-    if res.get("erreur"):
-        raise RuntimeError(f"travailleur : {res['erreur']}")
+    # res["erreur"] : arrêt du travailleur (données inaccessibles…) ; les granules reçues sont tout de même écrites,
+    # le motif est porté par l'exécution (mars/travailleurs.py)
     new_ids: list[int] = []
     for g in res.get("granules", []):
         p = by_dnb.get(g.get("dnb"))

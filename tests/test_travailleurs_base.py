@@ -148,3 +148,38 @@ def test_same_granule_received_twice_never_duplicates_detections(conn):
     assert conn.execute("SELECT detections FROM viirs_granules").fetchone()[0] == 3
     with pytest.raises(psycopg.errors.UniqueViolation):          # l'index unique le garantit en base
         conn.execute("INSERT INTO viirs_detections (granule_id, ts, geom) SELECT granule_id, ts, geom FROM viirs_detections LIMIT 1")
+
+
+def test_worker_stopped_by_inaccessible_data_is_a_failure_with_its_reason(conn):
+    """Essai réel du 08/10 : licence LANCE non acceptée. Le travailleur s'arrête au premier granule ; l'exécution est
+    en échec avec ce motif (travailleurs, task_runs, barre d'état), la granule est consignée en échec."""
+    start = datetime(2026, 10, 7, 0, 58, tzinfo=timezone.utc)
+    g = {"nom": "NOAA20.A2026280.0058", "satellite": "NOAA20", "dnb": "VJ102DNB_NRT.A2026280.0058.nc",
+         "debut": start.isoformat(), "nuit": "2026-10-06"}
+    motif = "licence LANCE non acceptée sur le compte Earthdata (redirection vers /profiles/licenses)"
+    res = {"granules": [{"dnb": g["dnb"], "erreur": motif}], "erreur": motif, "mesures": {"duree_s": 4.0}}
+    wid = conn.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, etat, resultat) "
+                       "VALUES ('viirs', 'DEV1-M', 'fr-par-1', 'x', %s, 'resultats', %s) RETURNING id",
+                       (json.dumps({"granules": [g]}), json.dumps(res))).fetchone()[0]
+    T.supervise(conn, None, RULES, {"viirs": lambda c, w: ingest(c, w, RULES)}, log=lambda _m: None)
+    etat, erreur, detruit = conn.execute("SELECT etat, erreur, detruit_le IS NOT NULL FROM travailleurs WHERE id = %s",
+                                         (wid,)).fetchone()
+    assert etat == "echec" and erreur == f"travailleur : {motif}" and detruit
+    status, details = conn.execute("SELECT status, details FROM task_runs WHERE task = 'travailleur_viirs'").fetchone()
+    assert status == "echec" and "licence LANCE" in details["erreur"]
+    assert conn.execute("SELECT erreur FROM viirs_granules").fetchone()[0] == motif
+
+
+def test_quota_refusal_shows_only_its_reason(conn, capfd):
+    import sys
+    sys.path.insert(0, "scripts")
+    import taches
+
+    def refused():
+        raise T.RefusLancement("plafond de 4 travailleurs par jour atteint")
+    assert taches.run(conn, "viirs_essai", refused) is None
+    out, err = capfd.readouterr()
+    assert "ÉCHEC, plafond de 4 travailleurs par jour atteint" in out and "Traceback" not in out + err
+    status, details = conn.execute("SELECT status, details FROM task_runs WHERE task = 'viirs_essai'").fetchone()
+    assert status == "echec" and details == {"erreur": "plafond de 4 travailleurs par jour atteint"}
+    conn.execute("DELETE FROM task_runs WHERE task = 'viirs_essai'")

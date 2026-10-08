@@ -355,10 +355,10 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 101 réussis, 6 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 5 sans
+`python -m pytest tests` : 107 réussis, 8 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 7 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
-lancement, délai de démarrage, résultats reçus deux fois). Avec la base de test des migrations
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 106 réussis, 1 ignoré. Couvrent aussi fusion,
+lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans trace). Avec la base de test des migrations
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 114 réussis, 1 ignoré. Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -436,6 +436,13 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   avaient créé deux travailleurs : verrou par index unique en base. Les travailleurs n'ont pas de SSH : journal envoyé
   au serveur (`taches.py journal-travailleur`), sinon console série Scaleway.
 * `SCW_PRIVATE_NETWORK_ID` est l'identifiant du réseau privé (onglet Overview du réseau), pas celui du VPC.
+* **Essai du 08/10 à 06:30 (travailleur 5)** : Ubuntu, réseau privé, Docker et image d'AI2 fonctionnent. Les 39
+  granules ont échoué (« NetCDF: Unknown file format ») : licence LANCE NRT non acceptée sur le compte Earthdata, la
+  NASA renvoyait une page HTML de 10 Ko. Chaque fichier est désormais vérifié (taille, signature HDF5) et la cause
+  nommée ; sans jeton valide, la redirection vers /profiles/licenses se poursuit vers /oauth/login : c'est alors le
+  jeton qui manque, pas la licence. La destruction échouait : une instance éteinte depuis son système est « stopped in
+  place » et Scaleway refuse sa suppression (« should be powered off ») : poweroff, attendre « stopped », supprimer
+  instance et volumes ; une instance en marche : terminate.
 * **Cause réelle des premiers essais (08/10/2026)** : la console série des travailleurs affichait « UEFI Interactive
   Shell » puis `Shell>` : aucun système amorçable sur le volume de démarrage. La création imposait un volume racine
   décrit avec un nom, sans lien vérifié avec l'image (image « docker » du catalogue, ni architecture ni volume racine

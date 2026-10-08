@@ -52,6 +52,12 @@ class RefusDestruction(ScalewayError):
     """Destruction refusée : l'instance n'est pas un travailleur."""
 
 
+class RefusLancement(Exception):
+    """Lancement refusé pour un motif attendu (plafond quotidien, clés ou réseau privé absents) : la tâche est en échec
+    avec ce motif, sans trace d'erreur Python."""
+    motif_seul = True
+
+
 def refus(server: dict, project: str | None, protected: set[str]) -> str | None:
     """Motif de refus de détruire `server` (réponse de l'API Scaleway), ou None si c'est bien un travailleur. Toutes
     les conditions sont requises ; une seule suffit à refuser."""
@@ -207,18 +213,34 @@ class Scaleway:
         motif = refus(s, self.project, self.protected)
         if motif:
             raise RefusDestruction(motif)
+        # Séquence de Scaleway, une étape par appel (la surveillance rappelle chaque minute jusqu'à la fin) :
+        #   running          : action terminate (instance, volumes locaux et adresse dynamique supprimés d'un coup) ;
+        #   stopped in place : éteinte depuis le système mais encore allouée (fin du script du travailleur) : la
+        #                      suppression y est refusée (« resource_still_in_use, instance should be powered off ») ;
+        #                      action poweroff, puis l'état passe par stopping jusqu'à stopped ;
+        #   stopped          : suppression de l'instance, puis de ses volumes ;
+        #   starting, stopping, locked… : attendre.
         state = s.get("state")
+        action = f"/instance/v1/zones/{zone}/servers/{server_id}/action"
         if state == "running":
-            # serveur, volumes locaux et adresse dynamique
-            self._req("POST", f"/instance/v1/zones/{zone}/servers/{server_id}/action", json={"action": "terminate"})
+            self._req("POST", action, json={"action": "terminate"})
             return False
-        if state in ("stopped", "stopped in place"):
-            vols = [v["id"] for v in (s.get("volumes") or {}).values() if v]
-            self._req("DELETE", f"/instance/v1/zones/{zone}/servers/{server_id}")
-            for v in vols:
+        if state == "stopped in place":
+            self._req("POST", action, json={"action": "poweroff"})
+            return False
+        if state == "stopped":
+            vols = [v["id"] for v in (s.get("volumes") or {}).values() if v and v.get("id")]
+            try:
+                self._req("DELETE", f"/instance/v1/zones/{zone}/servers/{server_id}")
+            except ScalewayError as e:
+                if "still_in_use" not in str(e) and "powered off" not in str(e):
+                    raise
+                self._req("POST", action, json={"action": "poweroff"})     # pas encore libérée : on recommence
+                return False
+            for v in vols:                                       # 404 : déjà supprimé avec l'instance
                 self._req("DELETE", f"/instance/v1/zones/{zone}/volumes/{v}")
             return True
-        return False                                            # starting, stopping, locked : à la minute suivante
+        return False
 
 
 # Décisions pures
@@ -424,9 +446,15 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
                                     "FOR UPDATE SKIP LOCKED", (w["id"],)).fetchone() is None:
                         continue
                     summary = handlers[w["tache"]](conn, w)
-                    conn.execute("UPDATE travailleurs SET etat = 'termine', fini_le = now(), resultat = NULL, "
-                                 "mesures = mesures || %s WHERE id = %s", (json.dumps(summary, default=str), w["id"]))
-                w["etat"] = "termine"
+                    # Le travailleur peut s'être arrêté de lui même (données inaccessibles, licence…) : ce qu'il a
+                    # traité est gardé, l'exécution est en échec avec son motif
+                    motif = (w["resultat"] or {}).get("erreur")
+                    conn.execute("UPDATE travailleurs SET etat = %s, erreur = %s, fini_le = now(), resultat = NULL, "
+                                 "mesures = mesures || %s WHERE id = %s",
+                                 ("echec" if motif else "termine", motif and f"travailleur : {motif}"[:1000],
+                                  json.dumps(summary, default=str), w["id"]))
+                w["etat"] = "echec" if motif else "termine"
+                w["erreur"] = motif and f"travailleur : {motif}"
                 w["mesures"] = {**(w["mesures"] or {}), **summary}
             except Exception as e:
                 conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s WHERE id = %s",
@@ -460,6 +488,10 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
                     conn.execute("UPDATE travailleurs SET erreur = coalesce(erreur || ' ; ', '') || %s, detruit_le = now() "
                                  "WHERE id = %s", (f"destruction refusée : {e}"[:500], w["id"]))
                     continue
+                except ScalewayError as e:
+                    # API indisponible ou étape refusée : reprise à la minute suivante, sans bloquer les autres
+                    log(f"travailleur {w['id']} : destruction à reprendre, {e}")
+                    continue
             if gone:
                 conn.execute("UPDATE travailleurs SET detruit_le = now() WHERE id = %s", (w["id"],))
                 w["detruit_le"] = now
@@ -473,6 +505,9 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
                     scw.destroy(zone, sid)
                 except RefusDestruction as e:
                     log(f"instance {sid} ({zone}) : DESTRUCTION REFUSÉE, {e}")
+                    continue
+                except ScalewayError as e:
+                    log(f"instance orpheline {sid} ({zone}) : destruction à reprendre, {e}")
                     continue
                 out["orphelins"] += 1
                 log(f"instance orpheline {sid} ({zone}) : destruction")

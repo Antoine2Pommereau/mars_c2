@@ -224,6 +224,10 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
    rattachement est refusé, constaté au premier essai). Puis, sur l'application, API keys, Generate : garder la clé
    d'accès et la clé secrète, et l'identifiant du projet (Project settings).
 3. **Jeton Earthdata** : https://urs.earthdata.nasa.gov (compte gratuit), Generate Token. Valable 60 jours.
+   **Accepter aussi la licence des données LANCE NRT** sur ce compte (sinon la NASA renvoie une page HTML au lieu du
+   fichier). Vérifier depuis le serveur, avec une granule récente (adresse donnée par le catalogue CMR) :
+   `curl -sL -H "Authorization: Bearer $EARTHDATA_TOKEN" -o /tmp/essai.nc "<adresse>" && ls -l /tmp/essai.nc && head -c 8 /tmp/essai.nc | od -c && rm /tmp/essai.nc`
+   : environ 40 Mo commençant par `211   H   D   F` (signature HDF5).
 4. **Variables à ajouter au `.env` du serveur** (sans commentaire en fin de ligne) :
    ```
    SCW_ACCESS_KEY=SCW...
@@ -277,6 +281,21 @@ système ne démarrait, d'où aucun contact, ni SSH ni ping. Le lancement le ref
 du volume) ; si l'écran réapparaît malgré tout, noter l'image et le volume affichés par la console, puis
 `taches.py detruire-travailleurs`.
 
+**Données inaccessibles.** Le travailleur vérifie chaque fichier (taille d'au moins 1 Mo, signature HDF5) et nomme la
+cause : « licence LANCE non acceptée sur le compte Earthdata » (redirection vers /profiles/licenses), « jeton
+EARTHDATA_TOKEN absent, invalide ou expiré » (redirection vers la connexion Earthdata, ou HTTP 401 et 403), sinon le
+code HTTP, le type de contenu et les premiers octets reçus. Données inaccessibles, ou premier granule en échec : il
+s'arrête aussitôt sans télécharger les autres ; l'exécution est en échec avec ce motif (`taches.py travailleurs`,
+`task_runs`, indicateur Satellites orange avec son motif).
+
+**Destruction d'un travailleur**, toujours par le garde, une étape par minute selon l'état chez Scaleway : en marche,
+action `terminate` (instance, volume local et adresse supprimés ensemble) ; « stopped in place » (éteint depuis son
+système, encore alloué : la suppression y est refusée, « resource_still_in_use, instance should be powered off »),
+action `poweroff`, puis, une fois « stopped », suppression de l'instance et de ses volumes ; en transition (starting,
+stopping), attente. Le script de démarrage ne s'éteint plus qu'au bout de 10 minutes après son résultat : le serveur
+le détruit en marche, par `terminate`. Une étape refusée par l'API est reprise à la minute suivante sans bloquer la
+surveillance des autres travailleurs.
+
 **Diagnostic d'un travailleur muet**, sans ouvrir de port :
 * s'il a joint le serveur au moins une fois, son journal est en base :
   `docker compose exec taches python scripts/taches.py journal-travailleur` (le dernier) ou `... journal-travailleur 3` ;
@@ -298,7 +317,7 @@ du volume) ; si l'écran réapparaît malgré tout, noter l'image et le volume a
 | 2 bis. Image | console Scaleway, l'instance : Overview, puis Console | image « Ubuntu 24.04 Noble Numbat », volume local de 20 Go ; à la console, GRUB et Ubuntu, jamais `Shell>` |
 | 3. Doublon | relancer aussitôt la même commande | `viirs : {"en_cours": N}`, aucune seconde instance |
 | 4. Réseau | dans les 2 à 3 minutes : `taches.py journal-travailleur` | lignes « interface privée ens… : 172.16.8.x/22 », « serveur joint sur le réseau privé », « système : Ubuntu 24.04 », « installation de Docker » ; depuis le serveur, `ping -c 2 172.16.8.x` répond ; si rien au bout de 5 minutes : console série (ci dessus) |
-| 5. Image et analyse | `taches.py journal-travailleur`, quelques minutes plus tard | « téléchargement de l'image », puis les lignes du script VIIRS (une par granule, avec `rss_max_mo`) |
+| 5. Image et analyse | `taches.py journal-travailleur`, quelques minutes plus tard | « téléchargement de l'image », puis les lignes du script VIIRS (une par granule, avec `telecharge_s`, `detection_s`, `rss_max_mo` et `n` détections) ; en cas de données inaccessibles, une seule ligne de granule, le motif, puis « arrêt du travailleur » |
 | 6. Résultat | terminal 2 | `travailleurs : {"traites": 1, ...}` puis `{"detruits": 1, ...}` ; console : l'instance disparaît |
 | 7. Bilan | `curl -s localhost:8000/api/ingestion \| python3 -m json.tool \| grep -A12 '"viirs"'` et `curl -s localhost:8000/api/metrics \| grep travailleurs` | dernière nuit traitée, travailleur `termine`, `cout_eur` 0,0202 ; dans l'interface, indicateur Satellites vert, couche VIIRS et piste des nuits remplies |
 
