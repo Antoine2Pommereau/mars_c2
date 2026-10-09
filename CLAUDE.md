@@ -352,6 +352,12 @@ faible « à confirmer » sauf corridor, navire des listes ou au delà de 12 mil
 (par nuit et par région, luminosité, distances, tolérances) ; état Scaleway d'un travailleur muet relevé avant sa
 destruction. Détail et chiffres : `docs/travailleurs_viirs.md`.
 
+**Preuves images (09/10/2026)** (migration 23) : vignette PNG de 30 km par détection VIIRS, tirée par le travailleur
+de l'image en mémoire, rangée sur R2 par taches, registre `preuves_images` générique (Sentinel 1 et 2 au lot C),
+relue par l'API sans boto3 (`mars/r2_signature.py`, signature vérifiée sur l'exemple d'AWS et contre boto3) ;
+superposition des positions AIS à 5 km dans la fiche détection et les preuves des alertes DARK_SHIP, agrandissable ;
+4,7 Ko par vignette, environ 0,25 Mo par nuit ; conservation sans limite avec alerte, 30 jours sinon.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -361,10 +367,10 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 110 réussis, 10 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 9 sans
+`python -m pytest tests` : 112 réussis, 13 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 12 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans trace). Avec la base de test des migrations
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 119 réussis, 1 ignoré. Couvrent aussi fusion,
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 124 réussis, 1 ignoré. Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -464,5 +470,7 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   port 8090 sur `MARS_IP_PRIVEE`). Les instances CPU sont facturées à l'heure entamée, les GPU à la minute.
 * Image d'un travailleur : une image publique (allenai) n'entame pas le quota de 500 Mo des paquets privés ; le
   script passe par cloud-init plutôt que par une image privée de près d'un Go.
+* Un élément `fixed` placé dans un panneau à `backdrop-blur` est contenu par ce panneau (le flou crée un bloc
+  conteneur) : une vue agrandie passe par un portail (`createPortal` vers `document.body`).
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.

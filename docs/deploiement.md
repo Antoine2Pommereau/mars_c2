@@ -297,6 +297,11 @@ stopping), attente. Le script de démarrage ne s'éteint plus qu'au bout de 10 m
 le détruit en marche, par `terminate`. Une étape refusée par l'API est reprise à la minute suivante sans bloquer la
 surveillance des autres travailleurs.
 
+**Preuves images** (vignettes des détections VIIRS) : rangées sur R2 par le conteneur taches, relues par l'API avec
+les mêmes identifiants R2 du `.env` (le service backend lit déjà ce fichier). Purge chaque nuit (tâche `preuves`) :
+30 jours sans alerte liée, sans limite sinon. Vérifier : `curl -s -o /tmp/v.png -w "%{http_code} %{size_download}\n"
+localhost:8000/api/preuves/<id>.png` (200, environ 5 Ko ; identifiants dans `/api/viirs/detections/<id>`).
+
 **Diagnostic d'un travailleur muet**, sans ouvrir de port :
 * avant de détruire un travailleur sans signe de vie (ou dont la durée de vie est dépassée), le serveur relève son
   état chez Scaleway (état, image, mode de démarrage, volume de démarrage, cartes du réseau privé et leur adresse

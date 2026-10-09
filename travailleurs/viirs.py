@@ -7,14 +7,20 @@ cloud-init (mars/travailleurs.py) ; ce script n'utilise que la bibliothèque sta
 Pour chaque granule (fichier DNB et fichier de géolocalisation) : téléchargement avec le jeton Earthdata, fichier
 vérifié (taille et signature HDF5, sinon motif explicite : licence LANCE non acceptée, jeton refusé, ou code HTTP,
 type de contenu et premiers octets), détection, détections réduites à nos régions, fichiers effacés aussitôt. Données
-inaccessibles (licence, jeton) ou premier granule en échec : arrêt aussitôt, motif renvoyé au serveur. Puis envoi au serveur, par son réseau privé, des
+inaccessibles (licence, jeton) ou premier granule en échec : arrêt aussitôt, motif renvoyé au serveur. Pour chaque
+détection, une vignette PNG d'environ 30 km de côté, tirée de l'image déjà en mémoire (marqueur, échelle, nord, date,
+satellite, lune, ciel clair), avec sa transformation longitude, latitude vers pixels pour superposer l'AIS ; elle part
+avec les résultats, le serveur la range sur R2. Puis envoi au serveur, par son réseau privé, des
 détections, de l'emprise de chaque granule et des mesures (durées, mémoire, volume téléchargé). Une granule en échec
 n'arrête pas les autres. Le serveur détruit l'instance dès réception (ou à l'échéance de sa durée de vie).
 
 Variables : MARS_TACHE (fichier JSON de la tâche), EARTHDATA_TOKEN. Essai local sur des fichiers déjà présents :
     python3 viirs.py --local tache.json   (granules avec « dnb_path » et « geo_path », résultat sur la sortie standard)
 """
+import base64
+import io
 import json
+import math
 import os
 import resource
 import sys
@@ -78,6 +84,77 @@ def download(url: str, dest: str, token: str) -> int:
     return n
 
 
+VIGNETTE_PX = 40           # 40 pixels DNB de 750 m : 30 km de côté
+VIGNETTE_ZOOM = 6          # 240 pixels à l'écran
+SATELLITES = {"Suomi-NPP": "Suomi NPP", "NPP": "Suomi NPP", "JPSS-1": "NOAA 20", "NOAA-20": "NOAA 20",
+              "JPSS-2": "NOAA 21", "NOAA-21": "NOAA 21"}
+
+
+def _hav_m(lon1, lat1, lon2, lat2) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 2 * 6371000 * math.asin(math.sqrt(h))
+
+
+def vignette(radiance, lats, lons, row: int, col: int, ascending: bool, legend: dict) -> tuple[bytes, dict]:
+    """Vignette PNG centrée sur la détection (ligne, colonne de la granule) et sa géoréférence : coefficients
+    x = a·lon + b·lat + c et y = d·lon + e·lat + f en pixels de la vignette (moindres carrés sur la géolocalisation
+    du découpage), mètres par pixel. Orientée à peu près nord en haut (rotation d'un demi tour en orbite
+    ascendante, comme le fait allenai). `legend` : satellite, date, lune, ciel clair."""
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    h = VIGNETTE_PX // 2
+    r0, c0 = max(0, row - h), max(0, col - h)
+    r1, c1 = min(radiance.shape[0], row + h), min(radiance.shape[1], col + h)
+    img = np.array(radiance[r0:r1, c0:c1], dtype="float64")
+    la, lo = np.array(lats[r0:r1, c0:c1], dtype="float64"), np.array(lons[r0:r1, c0:c1], dtype="float64")
+    cy, cx = row - r0, col - c0
+    if ascending:
+        img, la, lo = img[::-1, ::-1], la[::-1, ::-1], lo[::-1, ::-1]
+        cy, cx = img.shape[0] - 1 - cy, img.shape[1] - 1 - cx
+    z = VIGNETTE_ZOOM
+    # Étirement logarithmique de 0 à 100 nW/cm²/sr : les lumières ressortent sans écraser le fond
+    v = np.nan_to_num(np.log1p(np.clip(img, 0, 100)) / math.log1p(100) * 255).astype("uint8")
+    pic = Image.fromarray(v).resize((v.shape[1] * z, v.shape[0] * z), Image.NEAREST).convert("RGB")
+    W, H = pic.size
+    # Géoréférence : pixels de la vignette (centres des pixels DNB agrandis) en fonction de lon, lat
+    ii, jj = np.mgrid[0:img.shape[0], 0:img.shape[1]]
+    ok = np.isfinite(la) & np.isfinite(lo)
+    A = np.c_[lo[ok], la[ok], np.ones(ok.sum())]
+    cxy = np.linalg.lstsq(A, (jj[ok] + 0.5) * z, rcond=None)[0]
+    cyy = np.linalg.lstsq(A, (ii[ok] + 0.5) * z, rcond=None)[0]
+    mid = img.shape[0] // 2
+    mpp = _hav_m(lo[mid, 0], la[mid, 0], lo[mid, -1], la[mid, -1]) / max(1, (img.shape[1] - 1) * z)
+    d = ImageDraw.Draw(pic)
+    font = ImageFont.load_default()
+    px, py = (cx + 0.5) * z, (cy + 0.5) * z
+    d.ellipse([px - 11, py - 11, px + 11, py + 11], outline=(232, 91, 199), width=2)      # marqueur, sans masquer le point
+    bar = 10_000 / mpp if mpp > 0 else 0                                                 # échelle de 10 km
+    if 0 < bar < W - 20:
+        d.rectangle([8, H - 22, 8 + bar, H - 19], fill=(230, 236, 240))
+        d.text((8, H - 16), "10 km", fill=(230, 236, 240), font=font)
+    d.rectangle([0, 0, W, 13], fill=(14, 20, 25))
+    # Nord : direction de la latitude croissante dans la vignette, flèche sous le bandeau
+    nx, ny = cxy[1], cyy[1]
+    n = math.hypot(nx, ny) or 1
+    ax, ay = W - 16, 40
+    d.line([ax, ay, ax + 14 * nx / n, ay + 14 * ny / n], fill=(230, 236, 240), width=2)
+    d.text((ax + 20 * nx / n - 3, ay + 20 * ny / n - 5), "N", fill=(230, 236, 240), font=font)
+    d.text((3, 1), f"{legend.get('satellite', '')}  {legend.get('date', '')}", fill=(230, 236, 240), font=font)
+    lune, ciel = legend.get("lune"), legend.get("ciel_clair")
+    txt = f"Lune {lune:.0f} %" if lune is not None else ""
+    if ciel is not None:
+        txt += f"  Ciel clair {ciel:.2f}".replace(".", ",")
+    tw = d.textlength(txt, font=font)
+    d.rectangle([W - tw - 6, H - 14, W, H], fill=(14, 20, 25))
+    d.text((W - tw - 3, H - 13), txt, fill=(230, 236, 240), font=font)
+    buf = io.BytesIO()
+    pic.save(buf, "PNG", optimize=True)
+    geo = {"x": [round(float(c), 6) for c in cxy], "y": [round(float(c), 6) for c in cyy], "largeur": W, "hauteur": H,
+           "m_par_px": round(mpp, 2)}
+    return buf.getvalue(), geo
+
+
 def in_regions(lon: float, lat: float, boxes: list) -> bool:
     return any(x0 <= lon <= x1 and y0 <= lat <= y1 for x0, y0, x1, y1 in boxes)
 
@@ -95,14 +172,24 @@ def detect(vvd, dnb_path: str, geo_path: str, tmp: str, boxes: list) -> dict:
     all_det, image, ds, status = vvd.run_pipeline(dnb_path, geo_path, tmp)
     chips = utils.get_chips(image, all_det["vessel_detections"], ds)
     start, end = utils.get_acquisition_time(ds)
+    sat = utils.get_provider_name(ds)
+    ascending = ds["dnb"]["metadata"].get("startDirection") == "Ascending"
     dets = []
     for c in chips.values():
         lon, lat = finite(c["longitude"]), finite(c["latitude"])
         if lon is None or lat is None or not in_regions(lon, lat, boxes):
             continue
-        dets.append({"lon": round(lon, 5), "lat": round(lat, 5), "nanowatts": finite(c["max_nanowatts"]),
-                     "orientation": finite(c["orientation"]), "lune": finite(c["moonlight_illumination"]),
-                     "ciel_clair": finite(c["clear_sky_confidence"])})
+        det = {"lon": round(lon, 5), "lat": round(lat, 5), "nanowatts": finite(c["max_nanowatts"]),
+               "orientation": finite(c["orientation"]), "lune": finite(c["moonlight_illumination"]),
+               "ciel_clair": finite(c["clear_sky_confidence"])}
+        try:                                         # une vignette en échec n'empêche pas la détection
+            png, geo = vignette(image, ds["latitude"], ds["longitude"], int(c["coords_pix"][0]), int(c["coords_pix"][1]),
+                                ascending, {"satellite": SATELLITES.get(sat, sat), "date": f"{str(start)[8:10]}/{str(start)[5:7]}/{str(start)[:4]} {str(start)[11:16]} UTC",
+                                            "lune": det["lune"], "ciel_clair": det["ciel_clair"]})
+            det["vignette"], det["vignette_geo"] = base64.b64encode(png).decode(), geo
+        except Exception as e:
+            det["vignette_erreur"] = f"{type(e).__name__}: {e}"[:200]
+        dets.append(det)
     return {"statut": status, "debut": str(start), "fin": str(end), "plateforme": utils.get_provider_name(ds),
             "lune_moyenne": finite(utils.get_average_moonlight(ds)),
             "emprise": [[finite(x), finite(y)] for x, y in utils.get_frame_extents(ds)],

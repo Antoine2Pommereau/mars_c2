@@ -2,6 +2,7 @@ import { ArrowRightLeft, Cable, CircleHelp, EyeOff, Fingerprint, Navigation, Rou
   type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Context, Identities, Row, Sources, Tag, vesselText } from "../components/Elements";
+import PreuveImage from "../components/PreuveImage";
 import { hm, num, utc } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
@@ -152,6 +153,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
       const d = p.details ?? {};
       if (d.source === "viirs") return (
         <>
+          {d.detection_id && <PreuveImage source="viirs" detectionId={Number(d.detection_id)} />}
           <Row label={P.capteur}>{L.fiche.viirs.satellites[d.satellite] ?? d.satellite}</Row>
           <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
           <Row label={P.intensite}>{num(d.nanowatts, 1)} nW/cm²/sr</Row>

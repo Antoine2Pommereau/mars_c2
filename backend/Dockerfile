@@ -6,5 +6,5 @@ WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY mars ./mars
-COPY backend/app.py backend/contenu.py backend/regions.py backend/satellites.py backend/travailleurs.py ./
+COPY backend/app.py backend/contenu.py backend/regions.py backend/satellites.py backend/travailleurs.py backend/preuves.py ./
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

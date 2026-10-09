@@ -16,6 +16,7 @@ Détections nocturnes VIIRS, chaque jour à VIIRS_HEURE (UTC, 06:30 par défaut,
 la nuit) : granules des dernières nuits pas encore traitées (rattrapage automatique), analysées par un travailleur
 éphémère Scaleway (mars/travailleurs.py, mars/viirs.py). Chaque minute : surveillance des travailleurs (résultats
 traités, instances finies ou trop vieilles détruites, orphelins détruits, exécutions journalisées dans task_runs).
+Preuves images (vignettes des détections sur R2), chaque nuit : sans limite si liées à une alerte, 30 jours sinon.
 Toutes les 10 minutes : espace disque, alerte sous ALERTE_DISQUE_PCT (15 %).
 Toutes les 5 minutes (section continu de config/rules.yaml) : règles comportementales sur le flux en direct
 (rendez vous, coupures AIS, navires des listes, changements d'identité), consignées dans task_runs (tâche regles),
@@ -132,7 +133,14 @@ def tasks(conn):
         "listes_gur": (lambda: update_list(conn, "gur"), 7, HOUR),
         "passages": (lambda: update_passes(conn), 1, HOUR),
         "viirs": (lambda: launch_viirs(conn), 1, VIIRS_HOUR),
+        "preuves": (lambda: purge_proofs(conn), 1, HOUR),
     }
+
+
+def purge_proofs(conn) -> dict:
+    """Preuves images : sans limite si liées à une alerte, CONSERVATION_JOURS (30) sinon (mars/preuves.py)."""
+    from mars import preuves
+    return preuves.purge(conn, r2(), KEEP_DAYS)
 
 
 def launch_viirs(conn) -> dict:

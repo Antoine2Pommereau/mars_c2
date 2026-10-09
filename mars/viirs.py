@@ -331,6 +331,7 @@ def ingest(conn, w: dict, rules: dict) -> dict:
     # res["erreur"] : arrêt du travailleur (données inaccessibles…) ; les granules reçues sont tout de même écrites,
     # le motif est porté par l'exécution (mars/travailleurs.py)
     new_ids: list[int] = []
+    images: list[tuple] = []
     for g in res.get("granules", []):
         p = by_dnb.get(g.get("dnb"))
         if p is None:
@@ -356,7 +357,7 @@ def ingest(conn, w: dict, rules: dict) -> dict:
             continue
         conn.execute("DELETE FROM alert_evidence WHERE evidence_type = 'viirs' AND evidence_id IN "
                      "(SELECT id FROM viirs_detections WHERE granule_id = %s)", (gid,))
-        conn.execute("DELETE FROM viirs_detections WHERE granule_id = %s", (gid,))
+        conn.execute("DELETE FROM viirs_detections WHERE granule_id = %s", (gid,))   # leurs preuves seront purgées
         dets = [{**d, "ts": detection_time(d["lon"], d["lat"], start, end, frame)} for d in g.get("detections", [])]
         if dets:
             box = (min(d["lon"] for d in dets) - 0.2, min(d["lat"] for d in dets) - 0.2,
@@ -375,6 +376,8 @@ def ingest(conn, w: dict, rules: dict) -> dict:
                  d.get("ciel_clair"), vid, dist)).fetchone()
             if did:                                   # index unique : une même détection n'est jamais écrite deux fois
                 new_ids.append(did[0])
+                if d.get("vignette"):
+                    images.append((did[0], d["vignette"], d.get("vignette_geo"), d["ts"], p["nuit"], p["nom"]))
         conn.execute("UPDATE viirs_granules SET detections = (SELECT count(*) FROM viirs_detections WHERE granule_id = %s) "
                      "WHERE id = %s", (gid, gid))
         _measure_granule(conn, gid, rules)
@@ -382,7 +385,32 @@ def ingest(conn, w: dict, rules: dict) -> dict:
         out["appariees"] += len(matched)
     if new_ids:
         out.update(_screen(conn, new_ids, rules, out))
+    out.update(_store_images(conn, images))
     return out
+
+
+def _store_images(conn, images: list[tuple]) -> dict:
+    """Vignettes des détections rangées sur R2 et inscrites au registre des preuves (mars/preuves.py). Sans R2
+    configuré, ou en cas d'échec d'un envoi, la détection reste sans image (compté, sans bloquer le traitement)."""
+    import base64
+    from mars import preuves
+    if not images:
+        return {"vignettes": 0}
+    try:
+        from mars.r2 import R2
+        r2 = R2()
+    except Exception as e:
+        return {"vignettes": 0, "vignettes_non_rangees": len(images), "vignettes_motif": str(e)[:200]}
+    ok, failed, octets = 0, 0, 0
+    for did, b64, geo, ts, nuit, nom in images:
+        png = base64.b64decode(b64)
+        try:
+            preuves.store(conn, r2, "viirs", did, png, geo, ts, preuves.key("viirs", str(nuit), nom, did))
+            ok += 1
+            octets += len(png)
+        except Exception:
+            failed += 1
+    return {"vignettes": ok, "vignettes_octets": octets, **({"vignettes_non_rangees": failed} if failed else {})}
 
 
 def _screen(conn, ids: list[int], rules: dict, out: dict) -> dict:

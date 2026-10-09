@@ -132,6 +132,15 @@ export const L = {
     navireListe: "Navire des listes proche",
   },
 
+  // Preuves images des détections satellites (registre : registres/preuves.ts)
+  preuveImage: {
+    titre: "Image satellite", alt: "Vignette satellite de la détection", agrandir: "Agrandir l'image",
+    aucune: "Pas d'image pour cette détection",
+    legende: (n: number, apparie: string | number | null) =>
+      `${n ? `${n} AIS à moins de 5 km` : "Aucun AIS à moins de 5 km"}${apparie ? `, apparié : ${apparie}` : ""}`,
+    taille: (ko: number) => `${String(ko).replace(".", ",")} Ko`,
+  },
+
   // Fiche (registre : registres/sections.tsx)
   fiche: {
     sections: {

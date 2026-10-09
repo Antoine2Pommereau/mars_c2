@@ -102,6 +102,23 @@ réception fiable sera construite (`build_masks.py`), elle remplacera le critèr
 près de la côte, la lumière fixe reconnue à la troisième nuit avec ses deux alertes antérieures classées, une alerte
 élevée près d'un câble, une critique près d'un câble et d'un navire sanctionné.
 
+**Preuves images** : pour chaque détection, le travailleur tire de l'image déjà en mémoire une vignette PNG de
+240 × 240 pixels (40 pixels DNB agrandis six fois, environ 30 km de côté), étirée en logarithme de 0 à 100 nW/cm²/sr,
+avec un marqueur autour de la détection, une échelle de 10 km, la flèche du nord, le satellite, la date, la lune et
+le ciel clair ; il y joint sa géoréférence (pixels en fonction de la longitude et de la latitude, moindres carrés sur
+la géolocalisation du découpage : la détection retombe à un pixel près de son centre). Les vignettes partent avec les
+résultats ; le conteneur taches les range sur R2 (`vignettes/viirs/<nuit>/<granule>/<détection>.png`) et les inscrit
+au registre `preuves_images` (aucun fichier sur le disque du serveur ; le texte base64 disparaît de la base avec le
+résultat traité). L'API les relit par une adresse présignée (`/api/preuves/<id>.png`, sans boto3, quelques images en
+mémoire) ; la fiche de la détection donne aussi les positions AIS à moins de 5 km à l'heure du passage, superposées
+à la vignette dans l'interface (navire apparié en blanc). Conservation : sans limite pour une image liée à une alerte,
+30 jours sinon (tâche `preuves`, chaque nuit) ; une image dont la détection a disparu est retirée aussitôt. Le même
+registre servira à Sentinel 1 et Sentinel 2 au lot C (`mars/preuves.py`, `web/src/registres/preuves.ts`).
+Mesure sur le jeu d'exemple d'allenai (46 détections) : **4,7 Ko en moyenne par vignette** (5,0 Ko au plus), soit
+environ 0,25 Mo par nuit pour une cinquantaine de détections (24 à 73 les trois premières nuits), environ 7 Mo par
+mois avant la purge, et une quarantaine de kilooctets par nuit gardés sans limite pour une dizaine d'alertes :
+négligeable devant les 10 Go gratuits de R2.
+
 **Déclenchement** : chaque jour à `VIIRS_HEURE` (06:30 UTC), après la publication de la dernière granule de la nuit.
 Les trois dernières nuits sont relues : une nuit manquée (serveur arrêté, NASA injoignable, travailleur en échec) est
 rattrapée au passage suivant ; une granule en échec est retentée une fois.

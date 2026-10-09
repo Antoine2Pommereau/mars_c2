@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
+from preuves import ais_near, proof_of
 from regions import dans_region, region_ewkt
 
 router = APIRouter()
@@ -99,7 +100,8 @@ async def viirs_detections(request: Request, start: datetime | None = None, end:
 
 @router.get("/api/viirs/detections/{did}")
 async def viirs_detection(request: Request, did: int):
-    """Fiche d'une détection : heure, intensité, navire AIS apparié ou absence d'appariement, alertes liées."""
+    """Fiche d'une détection : heure, intensité, navire AIS apparié ou absence d'appariement, alertes liées, preuve
+    image (vignette sur R2) et positions AIS à moins de 5 km à l'heure du passage pour la surimpression."""
     async with request.app.state.pool.acquire() as c:
         r = await c.fetchrow(
             f"""SELECT d.id, d.ts, d.nanowatts, d.orientation, d.lune, d.ciel_clair, d.mask_reason, {STATUT} AS statut,
@@ -116,7 +118,9 @@ async def viirs_detection(request: Request, did: int):
             """SELECT a.id, a.type, a.severity, a.status, a.event_time FROM alerts a
                JOIN alert_evidence e ON e.alert_id = a.id AND e.evidence_type = 'viirs' AND e.evidence_id = $1
                ORDER BY a.event_time DESC""", did)
-    return {**_row(r), "alertes": [_row(a) for a in alerts]}
+        preuve = await proof_of(c, "viirs_detection", did)
+        ais = await ais_near(c, r["lon"], r["lat"], r["ts"], r["vessel_id"])
+    return {**_row(r), "alertes": [_row(a) for a in alerts], "preuve": preuve, "ais_proches": ais}
 
 
 @router.get("/api/viirs/nuits")

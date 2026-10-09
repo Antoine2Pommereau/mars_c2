@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import AlertActions from "../components/AlertActions";
 import Chip from "../components/Chip";
+import PreuveImage from "../components/PreuveImage";
 import { Row, Sources, Tag } from "../components/Elements";
 import { Comportement, EnTeteNavire, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
   PassageInfras, PassageListes, PassageResume, Trajectoire, ViirsAlertes, ViirsMesures, ViirsNavire, Vignette, ZoneResume,
@@ -147,6 +148,8 @@ const SECTIONS: Section[] = [
   // Détection nocturne VIIRS
   { id: "viirs", objet: "detection", ordre: 10, etape: null, titre: false, condition: (c) => c.detection?.source === "viirs",
     rendu: (c) => <ViirsMesures id={Number(c.detection!.id)} /> },
+  { id: "image", objet: "detection", ordre: 15, etape: null, titre: false, condition: (c) => c.detection?.source === "viirs",
+    rendu: (c) => <PreuveImage source="viirs" detectionId={Number(c.detection!.id)} /> },
   { id: "apparie", objet: "detection", ordre: 20, etape: null, titre: true, condition: (c) => c.detection?.source === "viirs",
     rendu: (c) => <ViirsNavire id={Number(c.detection!.id)} onPickVessel={c.onPickVessel} /> },
   { id: "liees", objet: "detection", ordre: 30, etape: null, titre: true, condition: (c) => c.detection?.source === "viirs",

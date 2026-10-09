@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from contenu import router as contenu_router
 from regions import dans_region, region_ewkt, regions_list
 from satellites import next_passes, router as satellites_router
+from preuves import router as preuves_router
 from travailleurs import router as travailleurs_router, viirs_status
 from mars.config import load_rules
 from mars.frise import timeline
@@ -53,6 +54,7 @@ app = FastAPI(title="MARS C2", lifespan=lifespan)
 app.include_router(contenu_router)      # recherche, fiches, notes, navires suivis, photo (backend/contenu.py)
 app.include_router(satellites_router)   # calendrier des passages Sentinel 1 et 2 (backend/satellites.py)
 app.include_router(travailleurs_router) # travailleurs, détections VIIRS, mesures (backend/travailleurs.py)
+app.include_router(preuves_router)      # preuves images des détections satellites, relayées depuis R2
 
 
 def feature(geometry, properties):

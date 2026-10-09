@@ -1,6 +1,7 @@
 """Travailleurs sur une vraie base PostgreSQL (migrations de db/init appliquées) : verrou contre les lancements
 concurrents, échec de lancement, délai de démarrage, résultats reçus deux fois. Ignorés sans MARS_TEST_DATABASE_URL,
 par exemple : MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars (base de test, docs/deploiement.md)."""
+import base64
 import json
 import os
 import threading
@@ -249,3 +250,92 @@ def test_reevaluation_of_existing_viirs_alerts(conn):
     assert sev["sans_reception"] is None and sev["coupure"] is None                 # alertes vierges retirées
     assert sev["decision"][0] == "faible"
     assert conn.execute("SELECT details->>'non_evaluable' FROM alerts WHERE id = %s", (alerts["decision"],)).fetchone()[0]
+
+
+class FakeR2:
+    """Faux seau R2 : objets en mémoire (ni disque, ni réseau)."""
+
+    def __init__(self):
+        self.objects = {}
+
+    def put_verified(self, data, key):
+        self.objects[key] = data
+        return {"cle": key, "octets": len(data)}
+
+    def delete(self, key):
+        self.objects.pop(key, None)
+
+
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABc3UBGAAAAABJRU5ErkJggg==")
+
+
+def _worker_with_images(conn, nom="NOAA20.A2026282.0100"):
+    start = datetime(2026, 10, 9, 1, 0, tzinfo=timezone.utc)
+    g = {"nom": nom, "satellite": "NOAA20", "dnb": f"VJ102DNB_NRT.{nom[7:]}.nc", "debut": start.isoformat(), "nuit": "2026-10-08"}
+    geo = {"x": [100.0, 0.0, 700.0], "y": [0.0, -100.0, 4900.0], "largeur": 240, "hauteur": 240, "m_par_px": 124.0}
+    dets = [{"lon": -6.5 + k * 0.1, "lat": 48.5, "nanowatts": 40.0, "vignette": base64.b64encode(PNG).decode(),
+             "vignette_geo": geo} for k in range(2)]
+    res = {"granules": [{"dnb": g["dnb"], "debut": start.isoformat(), "fin": (start + timedelta(minutes=6)).isoformat(),
+                         "emprise": [[-10, 52], [10, 52], [10, 40], [-10, 40], [-10, 52]], "statut": ["processed"],
+                         "detections": dets}], "mesures": {}}
+    return conn.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, etat, resultat) "
+                        "VALUES ('viirs', 'DEV1-M', 'fr-par-1', 'x', %s, 'resultats', %s) RETURNING id",
+                        (json.dumps({"granules": [g]}), json.dumps(res))).fetchone()[0]
+
+
+def test_vignettes_go_to_r2_and_the_registry_never_to_disk(conn, monkeypatch):
+    import mars.r2
+    r2 = FakeR2()
+    monkeypatch.setattr(mars.r2, "R2", lambda: r2)
+    conn.execute("DELETE FROM preuves_images")
+    wid = _worker_with_images(conn)
+    T.supervise(conn, None, RULES, {"viirs": lambda c, w: ingest(c, w, RULES)}, log=lambda _m: None)
+    mesures = conn.execute("SELECT mesures FROM travailleurs WHERE id = %s", (wid,)).fetchone()[0]
+    assert mesures["vignettes"] == 2 and mesures["vignettes_octets"] == 2 * len(PNG)
+    rows = conn.execute("SELECT p.cle, p.octets, p.geo, p.objet_id = d.id FROM preuves_images p "
+                        "JOIN viirs_detections d ON d.id = p.objet_id ORDER BY p.id").fetchall()
+    assert len(rows) == 2 and all(r[3] for r in rows) and rows[0][2]["largeur"] == 240
+    assert rows[0][0].startswith("vignettes/viirs/2026-10-08/NOAA20.A2026282.0100/") and rows[0][0] in r2.objects
+    assert conn.execute("SELECT resultat FROM travailleurs WHERE id = %s", (wid,)).fetchone()[0] is None  # base64 non gardé
+
+
+def test_without_r2_detections_are_kept_without_images(conn, monkeypatch):
+    import mars.r2
+
+    def absent():
+        raise RuntimeError("Identifiants R2 absents du .env : R2_BUCKET")
+    monkeypatch.setattr(mars.r2, "R2", absent)
+    conn.execute("DELETE FROM preuves_images")
+    wid = _worker_with_images(conn, "NOAA20.A2026282.0106")
+    T.supervise(conn, None, RULES, {"viirs": lambda c, w: ingest(c, w, RULES)}, log=lambda _m: None)
+    m = conn.execute("SELECT etat, mesures FROM travailleurs WHERE id = %s", (wid,)).fetchone()
+    assert m[0] == "termine" and m[1]["vignettes_non_rangees"] == 2 and "R2" in m[1]["vignettes_motif"]
+    assert conn.execute("SELECT count(*) FROM viirs_detections").fetchone()[0] == 2
+
+
+def test_proofs_are_kept_forever_with_an_alert_and_30_days_otherwise(conn):
+    from mars import preuves
+    r2 = FakeR2()
+    conn.execute("DELETE FROM preuves_images")
+    conn.execute("DELETE FROM alert_evidence WHERE evidence_type = 'viirs'")
+    gid = conn.execute("INSERT INTO viirs_granules (nom, satellite, nuit, debut, fin) VALUES ('NOAA20.A2026200.0100', "
+                       "'NOAA20', '2026-07-18', now(), now()) RETURNING id").fetchone()[0]
+    old = datetime.now(timezone.utc) - timedelta(days=40)
+    ids = {}
+    for name, when in (("ancienne_alerte", old), ("ancienne", old), ("recente", datetime.now(timezone.utc))):
+        did = conn.execute("INSERT INTO viirs_detections (granule_id, ts, geom) VALUES (%s, %s, "
+                           "ST_SetSRID(ST_MakePoint(%s, 48), 4326)::geography) RETURNING id",
+                           (gid, when, -6 - len(ids) * 0.1)).fetchone()[0]
+        ids[name] = preuves.store(conn, r2, "viirs", did, PNG, None, when, preuves.key("viirs", "nuit", "granule", did))
+        if name == "ancienne_alerte":
+            aid = conn.execute("INSERT INTO alerts (type, severity, event_time, geom, rule_version) VALUES "
+                               "('DARK_SHIP', 'faible', %s, ST_SetSRID(ST_MakePoint(-6, 48), 4326)::geography, 'x') "
+                               "RETURNING id", (when,)).fetchone()[0]
+            conn.execute("INSERT INTO alert_evidence VALUES (%s, 'viirs', %s)", (aid, did))
+    # Une preuve dont la détection a disparu (granule retraitée) : retirée aussitôt
+    orphan = preuves.store(conn, r2, "viirs", 999_999_999, PNG, None, datetime.now(timezone.utc), "vignettes/viirs/x/y/orphan.png")
+    out = preuves.purge(conn, r2, 30)
+    assert out["retirees"] == 2 and out["gardees"] == 2
+    gone = {r[0] for r in conn.execute("SELECT id FROM preuves_images WHERE supprime_le IS NOT NULL").fetchall()}
+    assert gone == {ids["ancienne"], orphan}
+    assert len(r2.objects) == 2
