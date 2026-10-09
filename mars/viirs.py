@@ -13,6 +13,7 @@ pures et couvertes par tests/test_viirs.py.
 import json
 import math
 import re
+import statistics
 from datetime import date, datetime, timedelta, timezone
 
 from mars.ais.live import ZONES
@@ -172,8 +173,51 @@ def match(dets: list[dict], tracks: dict[int, list[dict]], rules: dict) -> dict[
     return out
 
 
-def severity(corridor: bool, listed: bool) -> str:
-    return "critique" if corridor and listed else "elevee" if corridor or listed else "moyenne"
+def nearest_ais(lon: float, lat: float, t: datetime, tracks: dict[int, list[dict]], max_min: float):
+    """Navire AIS le plus proche à l'instant t (position interpolée, ou estimée sur `max_min` minutes au plus) :
+    (distance en m, navire, durée d'estime en s, 0 si interpolée), ou None si aucun navire n'est connu à cet instant."""
+    best = None
+    for vid, tr in tracks.items():
+        pos = position_at(tr, t, max_min)
+        if pos is None:
+            continue
+        d = haversine_m(lon, lat, pos[0], pos[1])
+        if best is None or d < best[0]:
+            best = (d, vid, pos[2])
+    return best
+
+
+def vessels_around(lon: float, lat: float, t: datetime, tracks: dict[int, list[dict]], radius_m: float,
+                   window_min: float) -> int:
+    """Navires AIS reçus à moins de `radius_m` dans les `window_min` minutes autour de t : mesure de la réception."""
+    w = timedelta(minutes=window_min)
+    return sum(1 for tr in tracks.values()
+               if any(abs(p["ts"] - t) <= w and haversine_m(lon, lat, p["lon"], p["lat"]) <= radius_m for p in tr))
+
+
+def feed_cut(counts: dict[datetime, int], t: datetime, ratio: float, margin_min: int, min_minutes: int = 3) -> bool:
+    """Flux AIS coupé à l'instant t : au moins `min_minutes` minutes, à `margin_min` minutes près, sous `ratio` fois
+    la médiane des positions par minute de la fenêtre (`counts`, minutes absentes comptées à zéro). Sans aucun
+    compte, rien n'est jugé (statistiques pas encore calculées)."""
+    if not counts:
+        return False
+    threshold = ratio * statistics.median(counts.values())
+    minute = t.replace(second=0, microsecond=0)
+    weak = sum(1 for k in range(-margin_min, margin_min + 1) if counts.get(minute + timedelta(minutes=k), 0) < threshold)
+    return weak >= min_minutes
+
+
+def severity(corridor: bool, listed: bool, coast_km: float | None, rules: dict) -> tuple[str, bool]:
+    """Gravité d'une détection sans AIS, et « à confirmer » : critique dans un corridor et près d'un navire des
+    listes, élevée pour l'un des deux, moyenne très au large, faible et à confirmer sinon (AIS incomplet, petite
+    pêche sans obligation d'AIS)."""
+    if corridor and listed:
+        return "critique", False
+    if corridor or listed:
+        return "elevee", False
+    if coast_km is not None and coast_km >= rules["viirs"]["tres_au_large_km"]:
+        return "moyenne", False
+    return "faible", True
 
 
 def _tracks(conn, t0: datetime, t1: datetime, box: tuple, margin_min: int) -> dict[int, list[dict]]:
@@ -188,6 +232,94 @@ def _tracks(conn, t0: datetime, t1: datetime, box: tuple, margin_min: int) -> di
     return out
 
 
+def _measure_granule(conn, gid: int, rules: dict):
+    """Navire AIS le plus proche et réception AIS autour de chaque détection d'une granule (mesures stockées)."""
+    v = rules["viirs"]
+    dets = conn.execute("SELECT id, ts, ST_X(geom::geometry), ST_Y(geom::geometry) FROM viirs_detections WHERE granule_id = %s",
+                        (gid,)).fetchall()
+    if not dets:
+        return
+    r = v["couverture_rayon_km"] * 1000
+    dlat = r / 111_000
+    dlon = r / (111_000 * math.cos(math.radians(max(abs(d[3]) for d in dets))))
+    box = (min(d[2] for d in dets) - dlon, min(d[3] for d in dets) - dlat, max(d[2] for d in dets) + dlon,
+           max(d[3] for d in dets) + dlat)
+    margin = max(v["estime_max_min"], v["couverture_fenetre_min"])
+    tracks = _tracks(conn, min(d[1] for d in dets), max(d[1] for d in dets), box, margin)
+    for did, ts, lon, lat in dets:
+        n = nearest_ais(lon, lat, ts, tracks, v["estime_max_min"])
+        conn.execute("UPDATE viirs_detections SET ais_proche_m = %s, ais_proche_vessel_id = %s, ais_proche_ecart_s = %s, "
+                     "ais_navires_rayon = %s WHERE id = %s",
+                     (n and n[0], n and n[1], n and n[2],
+                      vessels_around(lon, lat, ts, tracks, r, v["couverture_fenetre_min"]), did))
+
+
+def _evaluability(conn, ids: list[int], rules: dict) -> int:
+    """Détections sans AIS non évaluables (aucune alerte) : coupure du flux AIS à l'heure du passage, ou aucune
+    réception AIS autour (hors zone de réception fiable si elle est construite, sinon aucun navire reçu dans le
+    rayon). Retourne leur nombre."""
+    v, ratio = rules["viirs"], rules["continu"]["flux_min_ratio"]
+    cells = conn.execute("SELECT EXISTS (SELECT 1 FROM reception_cells)").fetchone()[0]
+    rows = conn.execute(
+        """SELECT d.id, d.ts, d.ais_navires_rayon,
+                  EXISTS (SELECT 1 FROM reception_cells c WHERE ST_Intersects(c.geom, d.geom)) AS couverte
+           FROM viirs_detections d WHERE d.id = ANY(%s) AND d.mask_reason IS NULL AND d.matched_vessel_id IS NULL""",
+        (ids,)).fetchall()
+    n = 0
+    for did, ts, around, covered in rows:
+        counts = dict(conn.execute("SELECT minute, positions FROM stats_minute WHERE minute BETWEEN %s AND %s",
+                                   (ts - timedelta(hours=3), ts + timedelta(hours=1))).fetchall())
+        if feed_cut(counts, ts, ratio, v["coupure_marge_min"]):
+            motif = "coupure du flux AIS à l'heure du passage"
+        elif cells and not covered:
+            motif = "hors de la zone de réception AIS fiable"
+        elif not cells and (around or 0) < v["couverture_min_navires"]:
+            motif = (f"aucun navire AIS reçu à moins de {v['couverture_rayon_km']} km dans les "
+                     f"{v['couverture_fenetre_min']} minutes autour du passage : réception AIS absente")
+        else:
+            continue
+        conn.execute("UPDATE viirs_detections SET mask_reason = 'non_evaluable', non_evaluable = %s WHERE id = %s",
+                     (motif, did))
+        n += 1
+    return n
+
+
+def reevaluate(conn, rules: dict, since: datetime | None = None) -> dict:
+    """Réévalue les détections déjà en base avec les règles en vigueur : mesures AIS, détections non évaluables,
+    gravité des alertes. Les alertes encore vierges d'une détection devenue non évaluable sont retirées ; celles qui
+    portent une décision de l'opérateur sont gardées, en gravité faible, avec le motif."""
+    since = since or datetime(2000, 1, 1, tzinfo=timezone.utc)
+    sev_sql = ("SELECT severity, count(*) FROM alerts WHERE type = 'DARK_SHIP' AND details->>'source' = 'viirs' "
+               "GROUP BY 1 ORDER BY 1")
+    before = dict(conn.execute(sev_sql).fetchall())
+    with conn.transaction():
+        conn.execute("UPDATE viirs_detections SET mask_reason = NULL, non_evaluable = NULL "
+                     "WHERE mask_reason = 'non_evaluable' AND ts >= %s", (since,))
+        for (gid,) in conn.execute("SELECT DISTINCT granule_id FROM viirs_detections WHERE ts >= %s", (since,)).fetchall():
+            _measure_granule(conn, gid, rules)
+        ids = [r[0] for r in conn.execute("SELECT id FROM viirs_detections WHERE ts >= %s", (since,)).fetchall()]
+        non_eval = _evaluability(conn, ids, rules)
+        removed = kept = 0
+        for aid, virgin, motif in conn.execute(
+                """SELECT a.id, a.status = 'nouvelle' AND NOT EXISTS (SELECT 1 FROM alert_actions x WHERE x.alert_id = a.id),
+                          coalesce(d.non_evaluable, d.mask_reason, 'appariée à l''AIS')
+                   FROM alerts a JOIN alert_evidence e ON e.alert_id = a.id AND e.evidence_type = 'viirs'
+                   JOIN viirs_detections d ON d.id = e.evidence_id
+                   WHERE a.type = 'DARK_SHIP' AND d.ts >= %s
+                     AND (d.mask_reason IS NOT NULL OR d.matched_vessel_id IS NOT NULL)""", (since,)).fetchall():
+            if virgin:
+                conn.execute("DELETE FROM alerts WHERE id = %s", (aid,))
+                removed += 1
+            else:
+                conn.execute("UPDATE alerts SET severity = 'faible', details = details || %s WHERE id = %s",
+                             (json.dumps({"non_evaluable": motif}), aid))
+                kept += 1
+        alerts = _alerts(conn, ids, rules)
+    return {"detections": len(ids), "non_evaluables": non_eval, "alertes": alerts, "alertes_retirees": removed,
+            "alertes_gardees_avec_decision": kept, "gravites_avant": before,
+            "gravites_apres": dict(conn.execute(sev_sql).fetchall())}
+
+
 def ingest(conn, w: dict, rules: dict) -> dict:
     """Résultat d'un travailleur VIIRS : granules et détections en base, appariement AIS, côtes, lumières fixes,
     alertes. Retourne le résumé (journal du travailleur et de task_runs)."""
@@ -195,7 +327,7 @@ def ingest(conn, w: dict, rules: dict) -> dict:
     res = w["resultat"] or {}
     by_dnb = {g["dnb"]: g for g in (w["parametres"] or {}).get("granules", [])}
     out = {"granules": 0, "granules_en_echec": 0, "detections": 0, "appariees": 0, "cote": 0, "lumiere_fixe": 0,
-           "alertes": 0, "reclassees": 0}
+           "alertes": 0, "reclassees": 0, "non_evaluables": 0}
     # res["erreur"] : arrêt du travailleur (données inaccessibles…) ; les granules reçues sont tout de même écrites,
     # le motif est porté par l'exécution (mars/travailleurs.py)
     new_ids: list[int] = []
@@ -245,6 +377,7 @@ def ingest(conn, w: dict, rules: dict) -> dict:
                 new_ids.append(did[0])
         conn.execute("UPDATE viirs_granules SET detections = (SELECT count(*) FROM viirs_detections WHERE granule_id = %s) "
                      "WHERE id = %s", (gid, gid))
+        _measure_granule(conn, gid, rules)
         out["detections"] += len(dets)
         out["appariees"] += len(matched)
     if new_ids:
@@ -299,6 +432,7 @@ def _screen(conn, ids: list[int], rules: dict, out: dict) -> dict:
             reclassees += 1
     out["lumiere_fixe"] = len(fixed) + len(persistent)
     out["reclassees"] = reclassees
+    out["non_evaluables"] = _evaluability(conn, ids, rules)
     out["alertes"] = _alerts(conn, ids, rules)
     return out
 
@@ -307,7 +441,7 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
     v = rules["viirs"]
     rows = conn.execute(
         """SELECT d.id, d.ts, ST_X(d.geom::geometry), ST_Y(d.geom::geometry), d.nanowatts, d.lune, d.ciel_clair,
-                  d.distance_cote_m, g.satellite, g.nom, g.nuit,
+                  d.distance_cote_m, g.satellite, g.nom, g.nuit, round(d.ais_proche_m) AS ais_m, d.ais_navires_rayon,
                   (SELECT json_build_object('id', i.id, 'name', i.name, 'type', i.attrs->>'type',
                                             'distance_m', round(ST_Distance(i.geom, d.geom)))
                    FROM infrastructure i WHERE ST_DWithin(i.geom, d.geom, %s)
@@ -330,7 +464,7 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
            WHERE d.id = ANY(%s) AND d.mask_reason IS NULL AND d.matched_vessel_id IS NULL""",
         (v["corridor_m"], v["liste_rayon_km"] * 1000, v["tolerance_m"], ids)).fetchall()
     n = 0
-    for (did, ts, lon, lat, nw, lune, ciel, cote_m, sat, nom, nuit, infra, liste, cands) in rows:
+    for (did, ts, lon, lat, nw, lune, ciel, cote_m, sat, nom, nuit, ais_m, around, infra, liste, cands) in rows:
         context = []
         if infra:
             context.append(f"À {infra['distance_m']:.0f} m d'une infrastructure ({infra.get('name') or infra.get('type')})")
@@ -340,14 +474,21 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
         if cote_m is None:
             context.append("Distance à la côte inconnue (trait de côte absent)")
         cands = sorted(cands or [], key=lambda c: c["distance_m"])[:3]
+        coast_km = None if cote_m is None else cote_m / 1000
+        sev, to_confirm = severity(bool(infra), bool(liste), coast_km, rules)
+        if to_confirm:
+            context.insert(0, "À confirmer : l'AIS peut être incomplet (un point par minute, réception partielle) et la "
+                              "petite pêche n'a pas l'obligation d'AIS")
         details = {
             "source": "viirs", "detection_id": did, "satellite": sat, "granule": nom, "nuit": str(nuit),
             "heure": ts.isoformat(), "nanowatts": nw, "lune": lune, "ciel_clair": ciel,
             "distance_cote_km": None if cote_m is None else round(cote_m / 1000, 1),
             "infrastructure": infra, "navire_liste": liste, "candidats_ais": cands, "contexte": context,
-            "motif": "Lumière en mer la nuit, sans navire AIS compatible, loin des côtes et absente les autres nuits",
+            "a_confirmer": to_confirm, "ais_proche_m": ais_m, "ais_navires_rayon": around,
+            "motif": "Lumière en mer la nuit, sans navire AIS compatible alors que l'AIS est reçu alentour, loin des côtes "
+                     "et absente les autres nuits",
             "parametres": {k: v[k] for k in ("tolerance_m", "cote_km", "persistance_m", "persistance_nuits", "corridor_m",
-                                             "liste_rayon_km")},
+                                             "liste_rayon_km", "tres_au_large_km", "couverture_rayon_km")},
         }
         aid = conn.execute(
             """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
@@ -355,7 +496,7 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
                ON CONFLICT (type, rule_key) WHERE rule_key IS NOT NULL DO UPDATE
                SET severity = EXCLUDED.severity, details = EXCLUDED.details, rule_version = EXCLUDED.rule_version
                RETURNING id""",
-            (severity(bool(infra), bool(liste)), ts, lon, lat, json.dumps(details, default=str), rules["version"],
+            (sev, ts, lon, lat, json.dumps(details, default=str), rules["version"],
              f"viirs:{nom}:{lon:.4f}:{lat:.4f}")).fetchone()[0]
         conn.execute("INSERT INTO alert_evidence VALUES (%s, 'viirs', %s) ON CONFLICT DO NOTHING", (aid, did))
         if liste:

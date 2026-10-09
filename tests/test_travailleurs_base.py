@@ -183,3 +183,69 @@ def test_quota_refusal_shows_only_its_reason(conn, capfd):
     status, details = conn.execute("SELECT status, details FROM task_runs WHERE task = 'viirs_essai'").fetchone()
     assert status == "echec" and details == {"erreur": "plafond de 4 travailleurs par jour atteint"}
     conn.execute("DELETE FROM task_runs WHERE task = 'viirs_essai'")
+
+
+def test_silent_worker_state_is_recorded_before_destruction(conn):
+    scw = FakeScw()
+    scw.diagnose = lambda _zone, _sid: {"etat": "running", "image": "Ubuntu 24.04", "cartes_privees": [{"adresses": ["172.16.8.6/22"]}]}
+    wid = T.launch(conn, scw, RULES, "viirs", {"granules": []}, {}, sleep=lambda _s: None)["travailleur"]
+    later = datetime.now(timezone.utc) + timedelta(minutes=RULES["travailleurs"]["delai_demarrage_min"] + 1)
+    T.supervise(conn, scw, RULES, {}, log=lambda _m: None, now=later)
+    diag = conn.execute("SELECT diagnostic FROM travailleurs WHERE id = %s", (wid,)).fetchone()[0]
+    assert diag["etat"] == "running" and diag["cartes_privees"][0]["adresses"] == ["172.16.8.6/22"] and not scw.servers
+
+
+def test_reevaluation_of_existing_viirs_alerts(conn):
+    """Les règles nouvelles appliquées aux détections en base : très au large avec AIS alentour, gravité moyenne ;
+    près des côtes, faible et à confirmer ; sans aucune réception AIS ou pendant une coupure du flux, non évaluable
+    (alerte vierge retirée, alerte portant une décision gardée en faible avec le motif)."""
+    from mars.viirs import reevaluate
+    for sql in ("DELETE FROM alert_actions", "DELETE FROM alert_evidence WHERE evidence_type IN ('viirs', 'vessel')",
+                "DELETE FROM alerts WHERE type = 'DARK_SHIP'", "DELETE FROM land WHERE source = 'essai'",
+                "DELETE FROM positions WHERE vessel_id >= 990000", "DELETE FROM vessels WHERE id >= 990000",
+                "DELETE FROM stats_minute", "DELETE FROM reception_cells"):
+        conn.execute(sql)
+    conn.execute("INSERT INTO land (source, geom) VALUES ('essai', ST_GeomFromText('POLYGON((-4.75 48.0,-4.2 48.65,"
+                 "-3.0 48.85,-1.5 48.7,-1.5 47.4,-2.5 47.3,-4.4 47.8,-4.75 48.0))', 4326)::geography)")
+    t = datetime(2026, 10, 8, 1, 0, tzinfo=timezone.utc)
+    for vid, lon, lat in ((990001, -6.2, 48.0), (990002, -5.0, 48.2)):          # deux navires AIS immobiles
+        conn.execute("INSERT INTO vessels (id, mmsi, name) VALUES (%s, %s, 'AIS')", (vid, vid))
+        for k in range(-60, 61, 2):
+            conn.execute("INSERT INTO positions (vessel_id, ts, geom, sog_kn) VALUES (%s, %s, "
+                         "ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, 0)", (vid, t + timedelta(minutes=k), lon, lat))
+    t_cut = t + timedelta(minutes=20)
+    for k in range(-240, 120):                                                    # flux normal, coupé vers t + 20 min
+        m = t + timedelta(minutes=k)
+        if not t_cut - timedelta(minutes=2) <= m <= t_cut + timedelta(minutes=2):
+            conn.execute("INSERT INTO stats_minute (minute, positions) VALUES (%s, 600)", (m,))
+    gid = conn.execute("INSERT INTO viirs_granules (nom, satellite, nuit, debut, fin) VALUES ('NOAA20.A2026281.0100', "
+                       "'NOAA20', '2026-10-07', %s, %s) RETURNING id", (t, t + timedelta(minutes=30))).fetchone()[0]
+    cases = {"large": (-6.0, 48.0, t), "cote": (-4.85, 48.05, t), "sans_reception": (-6.5, 47.5, t),
+             "coupure": (-6.05, 48.05, t_cut), "decision": (-6.6, 47.4, t)}
+    ids, alerts = {}, {}
+    for name, (lon, lat, ts) in cases.items():
+        ids[name] = conn.execute("INSERT INTO viirs_detections (granule_id, ts, geom, nanowatts) VALUES (%s, %s, "
+                                 "ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, 20) RETURNING id", (gid, ts, lon, lat)).fetchone()[0]
+        conn.execute("UPDATE viirs_detections SET distance_cote_m = (SELECT min(ST_Distance(l.geom, d.geom)) FROM land l) "
+                     "FROM viirs_detections d WHERE viirs_detections.id = d.id AND d.id = %s", (ids[name],))
+        # Alerte de l'ancienne règle (gravité moyenne), comme les 87 alertes du serveur
+        alerts[name] = conn.execute(
+            "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key) VALUES "
+            "('DARK_SHIP', 'moyenne', %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, '2026.10.19', %s) RETURNING id",
+            (ts, lon, lat, json.dumps({"source": "viirs"}), f"viirs:NOAA20.A2026281.0100:{lon:.4f}:{lat:.4f}")).fetchone()[0]
+        conn.execute("INSERT INTO alert_evidence VALUES (%s, 'viirs', %s)", (alerts[name], ids[name]))
+    conn.execute("INSERT INTO alert_actions (alert_id, action, note, author) VALUES (%s, 'acquitter', 'vu', 'essai')",
+                 (alerts["decision"],))
+    out = reevaluate(conn, RULES)
+    assert out["non_evaluables"] == 3 and out["alertes_retirees"] == 2 and out["alertes_gardees_avec_decision"] == 1
+    det = {n: conn.execute("SELECT mask_reason, non_evaluable, ais_navires_rayon FROM viirs_detections WHERE id = %s",
+                           (i,)).fetchone() for n, i in ids.items()}
+    assert det["sans_reception"][0] == "non_evaluable" and "réception AIS absente" in det["sans_reception"][1]
+    assert det["coupure"][0] == "non_evaluable" and "coupure du flux" in det["coupure"][1]
+    assert det["large"][0] is None and det["large"][2] >= 1
+    sev = {n: conn.execute("SELECT severity, details->>'a_confirmer', status FROM alerts WHERE id = %s", (a,)).fetchone()
+           for n, a in alerts.items()}
+    assert sev["large"][:2] == ("moyenne", "false") and sev["cote"][:2] == ("faible", "true")
+    assert sev["sans_reception"] is None and sev["coupure"] is None                 # alertes vierges retirées
+    assert sev["decision"][0] == "faible"
+    assert conn.execute("SELECT details->>'non_evaluable' FROM alerts WHERE id = %s", (alerts["decision"],)).fetchone()[0]

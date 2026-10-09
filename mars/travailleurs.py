@@ -195,6 +195,36 @@ class Scaleway:
         d = self._req("GET", f"/instance/v1/zones/{zone}/servers/{server_id}")
         return None if d is GONE else d["server"]
 
+    def diagnose(self, zone: str, server_id: str) -> dict:
+        """État d'une instance pour comprendre un travailleur muet : état, image, démarrage, volume de démarrage, cartes
+        du réseau privé avec leur adresse (API IPAM ; « inconnue » si la clé n'y a pas droit). Jamais d'erreur levée."""
+        out: dict = {"releve_le": datetime.now(timezone.utc).isoformat()}
+        try:
+            s = self.server(zone, server_id)
+        except Exception as e:
+            return {**out, "erreur": f"lecture de l'instance impossible : {e}"[:300]}
+        if s is None:
+            return {**out, "etat": "introuvable"}
+        root = (s.get("volumes") or {}).get("0") or {}
+        out.update({"etat": s.get("state"), "detail_etat": s.get("state_detail"), "type": s.get("commercial_type"),
+                    "image": (s.get("image") or {}).get("name"), "image_id": (s.get("image") or {}).get("id"),
+                    "demarrage": s.get("boot_type"),
+                    "volume_demarrage": {k: root.get(k) for k in ("id", "volume_type", "size", "state")} if root else None,
+                    "ipv4_publique": (s.get("public_ip") or {}).get("address")})
+        nics = []
+        for n in s.get("private_nics") or []:
+            nic = {k: n.get(k) for k in ("id", "state", "mac_address", "private_network_id")}
+            try:
+                d = self._req("GET", f"/ipam/v1/regions/{zone.rsplit('-', 1)[0]}/ips?resource_id={n['id']}"
+                                     "&resource_type=instance_private_nic")
+                ips = [] if d is GONE else [i.get("address") for i in d.get("ips", [])]
+                nic["adresses"] = ips or ["aucune attribuée"]
+            except Exception as e:
+                nic["adresses"] = [f"inconnue ({str(e)[:120]})"]
+            nics.append(nic)
+        out["cartes_privees"] = nics or "aucune carte sur le réseau privé"
+        return out
+
     def tagged(self, zone: str) -> list[dict]:
         """Travailleurs de la zone : filtre d'étiquette demandé à l'API, puis revérifié ici (garde complète)."""
         d = self._req("GET", f"/instance/v1/zones/{zone}/servers?tags={TAG}&per_page=100&project={self.project}")
@@ -463,14 +493,19 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
             out["traites"] += 1
         elif w["etat"] in ("demande", "cree") and w["demarre_le"] is None and age_min > p["delai_demarrage_min"]:
             motif = (f"aucun signe de vie {p['delai_demarrage_min']} min après la création (réseau privé ou démarrage en "
-                     "échec ; journal : taches.py journal-travailleur, ou console série Scaleway) : destruction")
-            conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s WHERE id = %s", (motif, w["id"]))
+                     "échec ; diagnostic : taches.py journal-travailleur, ou console série Scaleway) : destruction")
+            # État Scaleway relevé avant la destruction : sans lui, un travailleur muet ne laisse aucune trace
+            diag = scw.diagnose(w["zone"], w["scw_server_id"]) if scw is not None and w["scw_server_id"] else None
+            conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s, diagnostic = %s WHERE id = %s",
+                         (motif, json.dumps(diag) if diag else None, w["id"]))
             w["etat"], w["erreur"] = "echec", motif
             out["expires"] += 1
             log(f"travailleur {w['id']} : {motif}")
         elif w["etat"] in ("demande", "cree", "demarre") and age_min > p["duree_max_min"]:
-            conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s WHERE id = %s",
-                         (f"durée de vie de {p['duree_max_min']} min dépassée : destruction forcée", w["id"]))
+            diag = scw.diagnose(w["zone"], w["scw_server_id"]) if scw is not None and w["scw_server_id"] else None
+            conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s, diagnostic = %s WHERE id = %s",
+                         (f"durée de vie de {p['duree_max_min']} min dépassée : destruction forcée",
+                          json.dumps(diag) if diag else None, w["id"]))
             w["etat"] = "echec"
             out["expires"] += 1
             log(f"travailleur {w['id']} : durée de vie dépassée, destruction forcée")

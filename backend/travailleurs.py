@@ -76,8 +76,8 @@ async def worker_results(request: Request, wid: int, authorization: str | None =
 
 # Détections VIIRS
 
-STATUT = ("CASE WHEN d.mask_reason IS NOT NULL THEN 'ecartee' WHEN d.matched_vessel_id IS NOT NULL THEN 'avec_ais' "
-          "ELSE 'sans_ais' END")
+STATUT = ("CASE WHEN d.mask_reason = 'non_evaluable' THEN 'non_evaluable' WHEN d.mask_reason IS NOT NULL THEN 'ecartee' "
+          "WHEN d.matched_vessel_id IS NOT NULL THEN 'avec_ais' ELSE 'sans_ais' END")
 
 
 @router.get("/api/viirs/detections")
@@ -103,7 +103,8 @@ async def viirs_detection(request: Request, did: int):
     async with request.app.state.pool.acquire() as c:
         r = await c.fetchrow(
             f"""SELECT d.id, d.ts, d.nanowatts, d.orientation, d.lune, d.ciel_clair, d.mask_reason, {STATUT} AS statut,
-                       d.match_distance_m, d.distance_cote_m, g.satellite, g.nom AS granule, g.nuit,
+                       d.match_distance_m, d.distance_cote_m, g.satellite, g.nom AS granule, g.nuit, d.non_evaluable,
+                       round(d.ais_proche_m)::int AS ais_proche_m, d.ais_proche_ecart_s, d.ais_navires_rayon,
                        ST_X(d.geom::geometry) AS lon, ST_Y(d.geom::geometry) AS lat,
                        v.id AS vessel_id, v.name, v.mmsi, v.flag, w.level AS watch
                 FROM viirs_detections d JOIN viirs_granules g ON g.id = d.granule_id
@@ -128,6 +129,7 @@ async def viirs_nights(request: Request, start: datetime | None = None, end: dat
                       count(DISTINCT g.id) FILTER (WHERE g.erreur IS NOT NULL) AS en_echec,
                       array_agg(DISTINCT g.satellite) AS satellites, count(d.id) AS detections,
                       count(d.id) FILTER (WHERE d.mask_reason IS NULL AND d.matched_vessel_id IS NULL) AS sans_ais,
+                      count(d.id) FILTER (WHERE d.mask_reason = 'non_evaluable') AS non_evaluables,
                       round(avg(g.lune)::numeric)::int AS lune
                FROM viirs_granules g LEFT JOIN viirs_detections d ON d.granule_id = g.id
                GROUP BY g.nuit HAVING max(g.fin) >= $1 AND min(g.debut) <= $2 ORDER BY g.nuit""", start, end)

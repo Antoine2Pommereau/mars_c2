@@ -346,6 +346,12 @@ lancement journalisé « echec » avec destruction immédiate ; destruction apr�
 base (un seul travailleur VIIRS actif) ; une même détection jamais écrite deux fois (index unique, traitement d'un
 résultat verrouillé). Script de démarrage éprouvé dans un conteneur Ubuntu contre l'API locale.
 
+**Évaluation des détections VIIRS (09/10/2026)** (migration 22, règles 2026.10.20) : AIS le plus proche et réception
+AIS mesurés pour chaque détection ; non évaluable pendant une coupure du flux ou sans réception AIS autour ; gravité
+faible « à confirmer » sauf corridor, navire des listes ou au delà de 12 milles ; section VIIRS du rapport de mesures
+(par nuit et par région, luminosité, distances, tolérances) ; état Scaleway d'un travailleur muet relevé avant sa
+destruction. Détail et chiffres : `docs/travailleurs_viirs.md`.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -355,10 +361,10 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 107 réussis, 8 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 7 sans
+`python -m pytest tests` : 110 réussis, 10 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 9 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans trace). Avec la base de test des migrations
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 114 réussis, 1 ignoré. Couvrent aussi fusion,
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 119 réussis, 1 ignoré. Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -436,6 +442,11 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   avaient créé deux travailleurs : verrou par index unique en base. Les travailleurs n'ont pas de SSH : journal envoyé
   au serveur (`taches.py journal-travailleur`), sinon console série Scaleway.
 * `SCW_PRIVATE_NETWORK_ID` est l'identifiant du réseau privé (onglet Overview du réseau), pas celui du VPC.
+* **VIIRS sans AIS ne veut pas dire navire sombre** (mesure du 09/10, 152 détections) : la distance à l'AIS le plus
+  proche est bimodale (moins de 1 km, ou plus de 10 km), la tolérance n'y change rien ; 68 des 87 détections sans AIS
+  n'avaient aucun navire AIS reçu à moins de 20 km : c'est la réception AISStream qui manque au large (Méditerranée
+  surtout). D'où « non évaluable » (coupure du flux, ou aucune réception à 30 km) et la gravité faible « à confirmer »
+  par défaut (règles 2026.10.20, `taches.py viirs-reevaluer` pour l'existant).
 * **Essai du 08/10 à 06:30 (travailleur 5)** : Ubuntu, réseau privé, Docker et image d'AI2 fonctionnent. Les 39
   granules ont échoué (« NetCDF: Unknown file format ») : licence LANCE NRT non acceptée sur le compte Earthdata, la
   NASA renvoyait une page HTML de 10 Ko. Chaque fichier est désormais vérifié (taille, signature HDF5) et la cause

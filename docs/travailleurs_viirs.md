@@ -81,8 +81,22 @@ DEV1-S (2 Go) serait trop juste ; **DEV1-M** (3 vCPU, 4 Go, 0,0202 € de l'heur
 4. **Lumières fixes** (plateformes, éoliennes, phares) : revue à moins de 1 km sur au moins 3 nuits distinctes en 30
    jours, elle entre au registre `viirs_lumieres_fixes` ; ses détections antérieures sont écartées et les alertes encore
    vierges qu'elles avaient levées sont classées (faux positif) avec une note.
-5. **Alerte DARK_SHIP** de source VIIRS pour chaque détection restante sans AIS : gravité moyenne, élevée à moins de
-   2 milles d'une infrastructure ou à moins de 10 km d'un navire des listes, critique pour les deux.
+5. **Non évaluable** (aucune alerte) : coupure du flux AIS à l'heure du passage (au moins 3 minutes sous 20 % de la
+   médiane, à 5 minutes près), ou aucune réception AIS autour (hors zone de réception fiable quand elle est construite ;
+   en attendant, aucun navire AIS reçu à moins de 30 km dans la demi heure autour du passage).
+6. **Alerte DARK_SHIP** de source VIIRS pour chaque détection restante sans AIS : gravité **faible, « à confirmer »**
+   (AIS incomplet, petite pêche sans obligation d'AIS), sauf à moins de 2 milles d'une infrastructure ou à moins de
+   10 km d'un navire des listes (élevée ; les deux : critique) et au delà de 12 milles des côtes (22 km, moyenne).
+
+**Mesures des trois premières nuits (06 au 09/10/2026, 152 détections)** : la distance au navire AIS le plus proche
+(interpolé, ou estimé jusqu'à 20 min) est bimodale : 59 détections à moins de 1 km, puis presque rien entre 1,5 et
+10 km, et 80 au delà de 10 km. Élargir la tolérance n'y change rien (appariées : 39 % à 1 000 m, 40 % à 1 500 m,
+41 % à 5 000 m ; fenêtre d'estime de 5 à 30 min : 32 à 42 %). Les détections sans AIS sont isolées (5 paires
+seulement), à 42 km des côtes en médiane, 47 sur 87 en Méditerranée, et 68 sur 87 sans aucun navire AIS reçu à moins
+de 20 km (autour des détections appariées : 4 en médiane). Ce n'est donc pas l'appariement qui manque mais la
+réception AIS (AISStream, récepteurs côtiers) : d'où « non évaluable ». Appliqué aux 87 alertes : 61 non évaluables
+(retirées), 10 élevées, 6 moyennes, 10 faibles à confirmer. Aucune coupure du flux ces trois nuits. Quand la zone de
+réception fiable sera construite (`build_masks.py`), elle remplacera le critère des 30 km.
 
 Éprouvé sur la base de test (trois nuits simulées, retour par la vraie route) : une détection appariée, une écartée
 près de la côte, la lumière fixe reconnue à la troisième nuit avec ses deux alertes antérieures classées, une alerte

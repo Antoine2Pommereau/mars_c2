@@ -340,6 +340,9 @@ export function ViirsMesures({ id }: { id: number }) {
       <Row label={V.lune}>{d.lune != null ? `${num(d.lune, 0)} %` : L.commun.nd}</Row>
       <Row label={V.statut}>{V.statuts[d.statut] ?? d.statut}{d.mask_reason ? ` (${V.motifs[d.mask_reason] ?? d.mask_reason})` : ""}</Row>
       <Row label={V.cote}>{d.distance_cote_m != null ? `${num(d.distance_cote_m / 1000, 1)} km` : L.commun.nd}</Row>
+      <Row label={V.aisProche}>{d.ais_proche_m != null ? V.aisProcheDe(d.ais_proche_m, d.ais_proche_ecart_s) : V.aucunAis}</Row>
+      {d.ais_navires_rayon != null && <Row label={V.reception}>{V.receptionDe(d.ais_navires_rayon)}</Row>}
+      {d.non_evaluable && <Row label={V.motifNonEvaluable}>{d.non_evaluable}</Row>}
     </div>
   );
 }

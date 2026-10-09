@@ -99,9 +99,62 @@ def test_matching_uses_interpolated_ais_and_sensor_tolerance():
     assert position_at(alone, t, 20) is None                  # au delà de 20 min d'estime : inconnu
 
 
-def test_dark_ship_severity():
-    assert severity(False, False) == "moyenne" and severity(True, False) == "elevee"
-    assert severity(False, True) == "elevee" and severity(True, True) == "critique"
+def test_dark_ship_severity_is_low_and_to_confirm_unless_corridor_watchlist_or_far_offshore():
+    assert severity(False, False, 8.0, RULES) == ("faible", True)                 # à confirmer
+    assert severity(False, False, None, RULES) == ("faible", True)
+    assert severity(False, False, RULES["viirs"]["tres_au_large_km"], RULES) == ("moyenne", False)
+    assert severity(True, False, 3.0, RULES) == ("elevee", False) and severity(False, True, 3.0, RULES) == ("elevee", False)
+    assert severity(True, True, 50.0, RULES) == ("critique", False)
+
+
+def test_nearest_ais_interpolates_estimates_or_knows_nothing():
+    from mars.viirs import nearest_ais, vessels_around
+    t = datetime(2026, 10, 8, 1, 0, tzinfo=timezone.utc)
+    tracks = {1: [{"ts": t - 2 * M, "lon": -5.00, "lat": 48.0, "sog": 10, "cog": 90},
+                  {"ts": t + 2 * M, "lon": -4.98, "lat": 48.0, "sog": 10, "cog": 90}],
+              2: [{"ts": t - 6 * M, "lon": -5.30, "lat": 48.2, "sog": 12, "cog": 0}],
+              3: [{"ts": t - 50 * M, "lon": -4.99, "lat": 48.0, "sog": 0, "cog": None}]}   # trop ancien
+    d, vid, est = nearest_ais(-4.99, 48.0, t, tracks, 20)
+    assert vid == 1 and d < 50 and est == 0                                      # interpolé
+    d, vid, est = nearest_ais(-5.30, 48.21996, t, {2: tracks[2]}, 20)
+    assert vid == 2 and d < 100 and est == 360                                   # estimé : 12 nœuds pendant 6 min
+    assert nearest_ais(-4.99, 48.0, t, {3: tracks[3]}, 20) is None
+    assert vessels_around(-4.99, 48.0, t, tracks, 30_000, 30) == 1               # navire 2 à 32 km, navire 3 trop ancien
+    assert vessels_around(-4.99, 48.0, t, tracks, 40_000, 30) == 2
+
+
+def test_feed_cut_needs_several_weak_minutes():
+    from mars.viirs import feed_cut
+    t = datetime(2026, 10, 8, 1, 0, tzinfo=timezone.utc)
+    normal = {t + k * M: 600 for k in range(-180, 60)}
+    assert not feed_cut(normal, t, 0.2, 5)
+    one = {**normal, t: 30}                                                      # une minute faible : pas une coupure
+    assert not feed_cut(one, t, 0.2, 5)
+    cut = {k: v for k, v in normal.items() if not t - 2 * M <= k <= t + 1 * M}   # 4 minutes sans aucune position
+    assert feed_cut(cut, t, 0.2, 5)
+    assert not feed_cut({}, t, 0.2, 5)                                           # sans statistiques, rien n'est jugé
+
+
+def test_silent_worker_diagnosis_reads_state_volume_and_private_address():
+    class DiagApi(FakeApi):
+        def request(self, method, url, **_kw):
+            self.calls.append((method, url))
+            if "/ipam/v1/regions/fr-par/ips" in url:
+                assert "resource_id=nic-1" in url
+                return FakeResponse(200, {"ips": [{"address": "172.16.8.5/22"}]})
+            return FakeResponse(200, {"server": {
+                "id": "vrai", "state": "running", "state_detail": "booted", "commercial_type": "DEV1-M",
+                "image": {"id": "img", "name": "Ubuntu 24.04 Noble Numbat"}, "boot_type": "local",
+                "volumes": {"0": {"id": "v0", "volume_type": "l_ssd", "size": 20_000_000_000, "state": "available"}},
+                "public_ip": {"address": "51.15.0.1"},
+                "private_nics": [{"id": "nic-1", "state": "available", "mac_address": "02:00:00:aa:bb:cc",
+                                  "private_network_id": "pn"}]}})
+    api = DiagApi()
+    d = Scaleway("cle", PROJET, session=api, protected=set()).diagnose("fr-par-1", "vrai")
+    assert d["etat"] == "running" and d["image"] == "Ubuntu 24.04 Noble Numbat" and d["demarrage"] == "local"
+    assert d["volume_demarrage"] == {"id": "v0", "volume_type": "l_ssd", "size": 20_000_000_000, "state": "available"}
+    assert d["cartes_privees"][0]["adresses"] == ["172.16.8.5/22"]
+    assert api.destructive() == []                                               # relevé en lecture seule
 
 
 # Garde de destruction : jamais une instance qui n'est pas un travailleur, jamais le serveur principal

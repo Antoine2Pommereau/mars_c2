@@ -70,8 +70,8 @@ export const L = {
     pistes: { alertes: "Alertes", coupures: "Coupures du flux AIS", passages: "Passages satellites", viirs: "Nuits VIIRS" },
     coupure: (debut: string, fin: string) => `Flux AIS coupé de ${debut} à ${fin}`,
     passage: (sat: string, t: string, prevu: boolean) => `${sat}, ${t}${prevu ? ", prévu" : ""}`,
-    nuit: (d: string, g: number, n: number, sans: number, lune: number | null) =>
-      `Nuit VIIRS du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} : ${g} granules, ${n} détections dont ${sans} sans AIS${lune != null ? `, lune ${lune} %` : ""}`,
+    nuit: (d: string, g: number, n: number, sans: number, nonEval: number, lune: number | null) =>
+      `Nuit VIIRS du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} : ${g} granules, ${n} détections dont ${sans} sans AIS et ${nonEval} non évaluables${lune != null ? `, lune ${lune} %` : ""}`,
     navires: (n: number) => `${n} navires`, limite: "Au delà de 30 jours : archive R2",
   },
 
@@ -127,7 +127,7 @@ export const L = {
     toleranceDe: (le: number, tr: number) => `${le} m le long de la trace, ${tr} m en travers`,
     seuil: (v: string) => `seuil ${v}`, ecartee: (r: string) => `Écartée (${r})`, appariee: (n: string) => `Appariée à ${n}`,
     sansAis: "Sans AIS", detection: "Détection radar", statut: "Statut",
-    lumiere: "Lumière en mer sans AIS", viirsDe: (nw: string) => `VIIRS, ${nw} nW`, capteur: "Capteur",
+    lumiere: "Lumière en mer sans AIS", viirsDe: (nw: string) => `VIIRS, ${nw} nW`, aConfirmer: "à confirmer", capteur: "Capteur",
     intensite: "Intensité", lune: "Éclairement lunaire", infrastructure: "Infrastructure proche",
     navireListe: "Navire des listes proche",
   },
@@ -164,7 +164,10 @@ export const L = {
       titre: "Détection nocturne VIIRS", heure: "Heure", capteur: "Capteur", intensite: "Intensité",
       lune: "Éclairement lunaire", statut: "Statut", cote: "Distance à la côte",
       satellites: { SNPP: "Suomi NPP", NOAA20: "NOAA 20", NOAA21: "NOAA 21" } as Record<string, string>,
-      statuts: { avec_ais: "appariée à l'AIS", sans_ais: "sans AIS", ecartee: "écartée" } as Record<string, string>,
+      statuts: { avec_ais: "appariée à l'AIS", sans_ais: "sans AIS", ecartee: "écartée", non_evaluable: "non évaluable" } as Record<string, string>,
+      aisProche: "AIS le plus proche", aisProcheDe: (m: number, estime: number | null) =>
+        `${m} m${estime ? `, estimé sur ${Math.round(estime / 60)} min` : ", interpolé"}`, aucunAis: "aucun navire AIS connu à cette heure",
+      reception: "Réception AIS", receptionDe: (n: number) => `${n} navires reçus à moins de 30 km`, motifNonEvaluable: "Non évaluable",
       motifs: { cote: "près de la côte", lumiere_fixe: "lumière fixe" } as Record<string, string>,
       aucunNavire: "Aucun navire AIS compatible à l'heure du passage", ecart: (m: string) => `${m} m`,
     },
@@ -215,7 +218,7 @@ export const L = {
     legende: {
       enRoute: "En route", immobile: "Immobile", silencieux: "Silencieux", surListe: "Sur liste de surveillance",
       enAlerte: "Alerte ouverte", avecAis: "Avec AIS", sansAis: "Sans AIS", ecartee: "Écartée",
-      acquis: "Acquis", prevu: "Prévu",
+      acquis: "Acquis", prevu: "Prévu", nonEvaluable: "Non évaluable (AIS absent)",
     },
     passages: (n: number) => `${n} sur la plage`,
     typesNavire: [["#6ea8fe", "Cargo"], ["#f0a35e", "Pétrolier"], ["#5fd38d", "Pêche"], ["#c792ea", "Passagers"],

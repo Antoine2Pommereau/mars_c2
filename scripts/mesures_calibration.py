@@ -17,9 +17,10 @@ Usage (sur le serveur, dans le conteneur taches) :
 """
 import argparse
 import math
+import statistics
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -233,10 +234,78 @@ def measure(conn, days: int, rules: dict, log) -> tuple[Mesures, dict]:
            FROM alerts WHERE type = 'IDENTITY_CHANGE' AND event_time >= %s""",
         (datetime(first.year, first.month, first.day, tzinfo=timezone.utc),)).fetchone()
     zones = conn.execute("SELECT count(*), coalesce(sum(vessels), 0) FROM stationary_zones").fetchone()
+    viirs = measure_viirs(conn, first, last)
     reception_now = conn.execute(
         "SELECT count(*), coalesce(round((sum(ST_Area(geom)) / 1e6)::numeric), 0) FROM reception_cells").fetchone()
     return m, {"first": first, "last": last, "episodes": episodes, "alerts": alerts, "identity": identity,
-               "stationary_zones": zones, "reception_now": reception_now}
+               "stationary_zones": zones, "reception_now": reception_now, "viirs": viirs}
+
+
+VIIRS_DIST = [500, 1000, 1500, 2000, 3000, 5000, 10000]
+L_REGION = {"bretagne": "Bretagne", "manche": "Manche", "gascogne": "Gascogne", "mediterranee": "Méditerranée"}
+
+
+def measure_viirs(conn, first: date, last: date) -> dict:
+    """Détections VIIRS de la période : par nuit et par région (une détection du recouvrement Bretagne et Manche compte
+    dans les deux), statut, luminosité ; distance au navire AIS le plus proche ; distance à la côte des sans AIS."""
+    rows = conn.execute(
+        """SELECT g.nuit, lower(r.name),
+                  CASE WHEN d.mask_reason = 'non_evaluable' THEN 'non_evaluable' WHEN d.mask_reason IS NOT NULL THEN 'ecartee'
+                       WHEN d.matched_vessel_id IS NOT NULL THEN 'avec_ais' ELSE 'sans_ais' END,
+                  d.nanowatts, d.ais_proche_m, d.ais_proche_ecart_s, d.distance_cote_m
+           FROM viirs_detections d JOIN viirs_granules g ON g.id = d.granule_id
+           LEFT JOIN regions r ON lower(r.name) = ANY(%s) AND ST_Intersects(r.geom::geometry, d.geom::geometry)
+           WHERE g.nuit BETWEEN %s AND %s""",
+        (["bretagne", "manche", "gascogne", "mediterranee"], first - timedelta(days=1), last)).fetchall()
+    return {"lignes": rows}
+
+
+def viirs_section(x: dict, rules: dict) -> list[str]:
+    """Section du rapport : répartition par nuit et par région, distances à l'AIS, tolérances, distance à la côte."""
+    rows = x["viirs"]["lignes"]
+    if not rows:
+        return ["## 4. Détections nocturnes VIIRS", "", "Aucune détection sur la période.", ""]
+    stat = ("avec_ais", "ecartee", "sans_ais", "non_evaluable")
+    groups = defaultdict(lambda: defaultdict(list))
+    for nuit, region, st, nw, *_ in rows:
+        groups[(nuit, region or "hors région")][st].append(nw or 0)
+    table_rows = []
+    for (nuit, region), g in sorted(groups.items()):
+        cells = [f"{len(g[s])} ({num(statistics.median(g[s]), 0)} nW)" if g[s] else "0" for s in stat]
+        table_rows.append([f"{nuit:%d/%m/%Y}", L_REGION.get(region, region), *cells])
+    # Une détection par ligne pour les distances (le recouvrement des régions la compterait deux fois)
+    seen = {}
+    for nuit, region, st, nw, dist, ecart, cote in rows:
+        seen[(nuit, st, nw, dist, cote)] = (st, dist, ecart, cote)
+    uniq = list(seen.values())
+    evaluated = [u for u in uniq if u[0] in ("avec_ais", "sans_ais")]
+    def bucket_d(d):
+        if d is None:
+            return "aucun navire connu"
+        return next((f"≤ {num(b)} m" for b in VIIRS_DIST if d <= b), "> 10 km")
+    order = [f"≤ {num(b)} m" for b in VIIRS_DIST] + ["> 10 km", "aucun navire connu"]
+    dist_rows = []
+    for st in ("avec_ais", "sans_ais", "non_evaluable"):
+        c = Counter(bucket_d(u[1]) for u in uniq if u[0] == st)
+        dist_rows.append([{"avec_ais": "Avec AIS", "sans_ais": "Sans AIS", "non_evaluable": "Non évaluables"}[st],
+                          *(num(c[k]) for k in order)])
+    tol_rows = [[f"{num(t)} m", pct(sum(1 for u in evaluated if u[1] is not None and u[1] <= t), len(evaluated))]
+                for t in (1000, 1500, 2000, 3000, 5000)]
+    far = sorted(u[3] / 1000 for u in uniq if u[0] == "sans_ais" and u[3] is not None)
+    far_rows = [[f"{s} km", num(sum(1 for d in far if d >= s))] for s in (5, 12, 22, 30, 50)]
+    v = rules["viirs"]
+    return ["## 4. Détections nocturnes VIIRS", "",
+            "Par nuit et par région : nombre de détections et luminosité médiane (nW/cm²/sr) selon le statut. Non "
+            "évaluable : coupure du flux AIS ou aucune réception AIS autour (aucune alerte).", "",
+            table(["Nuit", "Région", "Avec AIS", "Écartées", "Sans AIS", "Non évaluables"], table_rows), "",
+            "Distance au navire AIS le plus proche à l'heure du passage (position interpolée, ou estimée sur "
+            f"{v['estime_max_min']} minutes au plus) :", "",
+            table(["Statut", *order], dist_rows), "",
+            f"Part des détections évaluées appariables selon la tolérance (actuelle : {v['tolerance_m']} m) :", "",
+            table(["Tolérance", "Appariées"], tol_rows), "",
+            f"Détections sans AIS selon la distance à la côte (seuil « très au large » actuel : {v['tres_au_large_km']} km), "
+            f"sur {len(far)} :", "",
+            table(["Au delà de", "Détections"], far_rows), ""]
 
 
 # Rapport
@@ -366,7 +435,8 @@ def report(m: Mesures, x: dict, rules: dict) -> str:
           else "Aucune alerte sur la période.", ""]
 
     # 4. Seuils
-    L += ["## 4. Seuils de config/rules.yaml : valeur, mesure, proposition", ""]
+    L += viirs_section(x, rules)
+    L += ["## 5. Seuils de config/rules.yaml : valeur, mesure, proposition", ""]
     L += [table(["Seuil", "Valeur", "Ce que montrent les mesures", "Proposition"], proposals(m, x, rules, grid)), ""]
     return "\n".join(L) + "\n"
 

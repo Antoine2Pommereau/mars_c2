@@ -69,6 +69,7 @@ function Legende({ c, byType }: { c: Couche; byType: boolean }) {
         <Key swatch={<span className="h-2 w-2 rounded-full bg-[#e6ecf0] opacity-60" />}>{C.legende.avecAis}</Key>
         <Key swatch={<span className="h-2.5 w-2.5 rounded-full bg-dark ring-2 ring-dark/30" />}>{C.legende.sansAis}</Key>
         <Key swatch={<span className="h-1.5 w-1.5 rounded-full bg-faint" />}>{C.legende.ecartee}</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-muted opacity-50" />}>{C.legende.nonEvaluable}</Key>
       </div>
     );
   }

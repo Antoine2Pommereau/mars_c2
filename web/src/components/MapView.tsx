@@ -182,9 +182,9 @@ export default function MapView(p: Props) {
       // Détections nocturnes VIIRS : point lumineux, neutre avec AIS, couleur du navire sombre sans AIS, discret écartée
       map.addLayer({ id: "viirs", type: "circle", source: "viirs", layout: { visibility: "none" },
         paint: {
-          "circle-radius": ["match", ["get", "statut"], "ecartee", 2, "sans_ais", 5.5, 4],
-          "circle-color": ["match", ["get", "statut"], "ecartee", "#4c5a66", "sans_ais", "#e85bc7", "#e6ecf0"],
-          "circle-opacity": ["match", ["get", "statut"], "avec_ais", 0.55, 0.9],
+          "circle-radius": ["match", ["get", "statut"], "ecartee", 2, "non_evaluable", 3, "sans_ais", 5.5, 4],
+          "circle-color": ["match", ["get", "statut"], "ecartee", "#4c5a66", "non_evaluable", "#7c8b97", "sans_ais", "#e85bc7", "#e6ecf0"],
+          "circle-opacity": ["match", ["get", "statut"], "avec_ais", 0.55, "non_evaluable", 0.5, 0.9],
           "circle-stroke-width": ["match", ["get", "statut"], "sans_ais", 4, 0],
           "circle-stroke-color": "#e85bc7", "circle-stroke-opacity": 0.25,
         } as any });

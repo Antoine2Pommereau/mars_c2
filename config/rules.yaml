@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.19"
+version: "2026.10.20"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -170,6 +170,17 @@ viirs:
   persistance_jours: 30
   corridor_m: 3704         # à moins de 2 milles d'une infrastructure : gravité élevée
   liste_rayon_km: 10       # navire des listes à moins de 10 km (30 min près) : gravité élevée ; les deux : critique
+  # Sans AIS ailleurs : gravité faible, « à confirmer » (AIS incomplet, petite pêche sans obligation d'AIS) ; moyenne
+  # au delà de 12 milles des côtes (22 km, limite des eaux territoriales : la petite pêche côtière reste en deçà)
+  tres_au_large_km: 22
+  # Non évaluable (aucune alerte) : coupure du flux AIS à l'heure du passage (minutes sous continu.flux_min_ratio de
+  # la médiane, à 5 minutes près), ou aucune réception AIS autour : hors zone de réception fiable quand elle est
+  # construite, sinon aucun navire AIS reçu à moins de 30 km dans les 30 minutes autour du passage. Mesure des trois
+  # premières nuits : 68 des 87 détections sans AIS n'avaient aucun navire AIS à moins de 20 km
+  coupure_marge_min: 5
+  couverture_rayon_km: 30
+  couverture_fenetre_min: 30
+  couverture_min_navires: 1
 
 # Travailleurs éphémères (mars/travailleurs.py) : instances Scaleway créées à la demande, détruites par le serveur.
 # Garde fous : durée de vie, plafonds quotidiens, destruction des orphelins à chaque minute et au redémarrage.

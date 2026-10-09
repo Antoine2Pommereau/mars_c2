@@ -26,7 +26,8 @@ Usage :
     python scripts/taches.py                          # boucle (service Docker « taches »)
     python scripts/taches.py archiver | purger | sauvegarder | disque | regles | listes | passages | viirs
     python scripts/taches.py travailleurs             # état des travailleurs, une surveillance tout de suite
-    python scripts/taches.py journal-travailleur [ID] # journal de démarrage envoyé par un travailleur
+    python scripts/taches.py journal-travailleur [ID] # journal envoyé par un travailleur, état Scaleway s'il est muet
+    python scripts/taches.py viirs-reevaluer          # détections VIIRS en base réévaluées (gravité, non évaluables)
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
     python scripts/taches.py mesures [--jours 14]     # mesures de calibration (scripts/mesures_calibration.py)
     python scripts/taches.py sauvegardes              # liste des sauvegardes sur R2
@@ -248,7 +249,7 @@ def main():
     ap = argparse.ArgumentParser(description="Tâches planifiées de MARS C2")
     ap.add_argument("commande", nargs="?", default="boucle",
                     choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "viirs",
-                             "travailleurs", "journal-travailleur", "detruire-travailleurs", "mesures",
+                             "travailleurs", "journal-travailleur", "detruire-travailleurs", "viirs-reevaluer", "mesures",
                              "sauvegardes", "telecharger", "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
@@ -279,11 +280,14 @@ def main():
                               "ORDER BY id DESC LIMIT 10").fetchall():
             print(*r)
     elif a.commande == "journal-travailleur":           # journal envoyé par un travailleur (le dernier par défaut)
-        row = conn.execute("SELECT id, etat, erreur, journal_le, journal FROM travailleurs WHERE (%s::bigint IS NULL OR id = %s) "
-                           "ORDER BY id DESC LIMIT 1", (a.args[0] if a.args else None,) * 2).fetchone()
+        row = conn.execute("SELECT id, etat, erreur, journal_le, journal, diagnostic FROM travailleurs "
+                           "WHERE (%s::bigint IS NULL OR id = %s) ORDER BY id DESC LIMIT 1",
+                           (a.args[0] if a.args else None,) * 2).fetchone()
         if row is None:
             raise SystemExit("aucun travailleur")
         print(f"travailleur {row[0]}, état {row[1]}, journal reçu le {row[3] or 'jamais'}\n{row[2] or ''}")
+        if row[5]:
+            print("état Scaleway relevé avant la destruction :\n" + json.dumps(row[5], ensure_ascii=False, indent=2))
         print(row[4] or "(aucun journal : le travailleur n'a jamais joint le serveur ; lire la console série Scaleway)")
     elif a.commande == "detruire-travailleurs":
         from mars import travailleurs
@@ -297,6 +301,9 @@ def main():
                 print(s["id"], s.get("name"), f"REFUSÉE : {e}")
         conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = coalesce(fini_le, now()), "
                      "erreur = coalesce(erreur, 'arrêt d''urgence') WHERE detruit_le IS NULL AND etat NOT IN ('termine', 'echec')")
+    elif a.commande == "viirs-reevaluer":                # règles VIIRS en vigueur appliquées aux détections en base
+        from mars import viirs
+        print(json.dumps(viirs.reevaluate(conn, load_rules()), ensure_ascii=False, indent=2, default=str))
     elif a.commande == "passages":
         if run(conn, "passages", lambda: update_passes(conn)) is None:
             sys.exit(1)

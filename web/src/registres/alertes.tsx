@@ -145,7 +145,9 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     // Deux sources : écho radar sans AIS (Sentinel 1) ou lumière nocturne sans AIS (VIIRS, details.source)
     navires: (d) => [...(d.navire_liste ? [d.navire_liste] : []), ...(d.candidats_ais ?? [])],
     titre: (d) => d.source === "viirs" ? P.lumiere : P.echo(num(d.length_m, 0)),
-    signe: (d) => d.source === "viirs" ? <Tag>{P.viirsDe(num(d.nanowatts, 0))}</Tag> : <Tag>{P.contrasteDe(num(d.contrast_vv_db, 0))}</Tag>,
+    signe: (d) => d.source === "viirs"
+      ? <>{d.a_confirmer && <Tag>{P.aConfirmer}</Tag>}<Tag>{P.viirsDe(num(d.nanowatts, 0))}</Tag></>
+      : <Tag>{P.contrasteDe(num(d.contrast_vv_db, 0))}</Tag>,
     preuves: (p) => {
       const d = p.details ?? {};
       if (d.source === "viirs") return (

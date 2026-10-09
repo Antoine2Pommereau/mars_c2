@@ -182,7 +182,8 @@ docker compose exec taches python scripts/taches.py listes        # les deux lis
 docker compose exec taches python scripts/taches.py passages      # calendrier des passages, sans attendre la nuit
 docker compose exec taches python scripts/taches.py viirs         # nuits VIIRS à traiter, sans attendre 06:30
 docker compose exec taches python scripts/taches.py travailleurs  # état des travailleurs (dix derniers)
-docker compose exec taches python scripts/taches.py journal-travailleur [ID]   # journal envoyé par un travailleur
+docker compose exec taches python scripts/taches.py journal-travailleur [ID]   # journal et état Scaleway d'un travailleur
+docker compose exec taches python scripts/taches.py viirs-reevaluer             # règles VIIRS appliquées aux détections en base
 docker compose exec taches python scripts/taches.py detruire-travailleurs   # arrêt d'urgence de toute instance
 docker compose exec taches python scripts/taches.py sauvegardes   # liste des sauvegardes sur R2
 docker compose exec taches python scripts/import_watchlist.py --gur data/listes/Vessels1.db   # fichier local
@@ -297,6 +298,10 @@ le détruit en marche, par `terminate`. Une étape refusée par l'API est repris
 surveillance des autres travailleurs.
 
 **Diagnostic d'un travailleur muet**, sans ouvrir de port :
+* avant de détruire un travailleur sans signe de vie (ou dont la durée de vie est dépassée), le serveur relève son
+  état chez Scaleway (état, image, mode de démarrage, volume de démarrage, cartes du réseau privé et leur adresse
+  attribuée) dans `travailleurs.diagnostic`, affiché par `taches.py journal-travailleur <n>` ; l'adresse privée vient
+  de l'API IPAM (« inconnue » si la clé n'y a pas droit, sans effet sur le reste) ;
 * s'il a joint le serveur au moins une fois, son journal est en base :
   `docker compose exec taches python scripts/taches.py journal-travailleur` (le dernier) ou `... journal-travailleur 3` ;
 * sinon, lire sa **console série** : console Scaleway, Instances, l'instance `mars-travailleur-<n>` (zone fr-par-1),
