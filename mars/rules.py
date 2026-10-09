@@ -516,6 +516,22 @@ def passages(times: list[datetime], gap: timedelta) -> list[tuple[int, int]]:
     return out
 
 
+def stay(points: list[dict], stop_kn: float) -> dict:
+    """Séjour d'un navire sur un passage (positions triées : ts, lon, lat, sog) : durée, part du temps à l'arrêt et
+    lieu d'arrêt. La part se mesure sur les intervalles entre positions (l'allègement ne garde qu'un point toutes les
+    dix minutes à l'arrêt, contre un par minute en route : compter les positions la sous estimerait)."""
+    if len(points) < 2:
+        return {"duree_h": 0.0, "arret_part": None, "lieu": None}
+    total = (points[-1]["ts"] - points[0]["ts"]).total_seconds()
+    stopped = sum((b["ts"] - a["ts"]).total_seconds() for a, b in zip(points, points[1:])
+                  if a.get("sog") is not None and a["sog"] < stop_kn)
+    halts = [p for p in points if p.get("sog") is not None and p["sog"] < stop_kn]
+    place = None
+    if halts:
+        place = [round(statistics.median(p["lon"] for p in halts), 5), round(statistics.median(p["lat"] for p in halts), 5)]
+    return {"duree_h": round(total / 3600, 1), "arret_part": round(stopped / total, 2) if total else None, "lieu": place}
+
+
 def zone_names(points) -> list[str]:
     seen = []
     for lon, lat in points:
@@ -531,6 +547,34 @@ def watch_severity(level: str, matched_by: str) -> str:
     return s if matched_by == "omi" else SEVERITIES[max(0, SEVERITIES.index(s) - 1)]
 
 
+async def stay_place(c, place) -> dict:
+    """Lieu d'un arrêt : mouillage connu (zone de mouillage à moins de 1 km) et distance à la côte."""
+    if not place:
+        return {"mouillage_connu": None, "distance_cote_km": None}
+    r = await c.fetchrow(
+        """SELECT EXISTS (SELECT 1 FROM stationary_zones z WHERE ST_DWithin(z.geom, g, 1000)) AS mouillage,
+                  (SELECT min(ST_Distance(l.geom, g)) FROM land l WHERE ST_DWithin(l.geom, g, 200000)) AS cote_m
+           FROM (SELECT ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography AS g) p""", place[0], place[1])
+    return {"mouillage_connu": r["mouillage"],
+            "distance_cote_km": None if r["cote_m"] is None else round(r["cote_m"] / 1000, 1)}
+
+
+def stay_text(s: dict) -> str:
+    """Contexte d'un séjour prolongé, en clair."""
+    txt = f"Séjour prolongé : {s['duree_h']:.0f} h dans nos eaux".replace(".", ",")
+    if s.get("arret_part") is not None:
+        txt += f", {round(100 * s['arret_part'])} % du temps à l'arrêt"
+    if s.get("lieu"):
+        txt += ", au mouillage connu" if s.get("mouillage_connu") else ", hors de tout mouillage connu"
+        if s.get("distance_cote_km") is not None:
+            txt += f", à {s['distance_cote_km']} km des côtes".replace(".", ",")
+    return txt
+
+
+POS_SQL = ("SELECT ts, ST_X(geom::geometry) AS lon, ST_Y(geom::geometry) AS lat, sog_kn AS sog FROM positions "
+           "WHERE vessel_id = $1 AND ts >= $2::timestamptz AND ts < $3::timestamptz ORDER BY ts")
+
+
 async def run_watchlist(c, start, end, rules: dict) -> dict:
     """Une alerte par passage dans nos eaux d'un navire des listes (niveaux fort, sanctionné, flotte fantôme,
     suspect GUR). Un passage prolongé met à jour son alerte : pas une alerte par position."""
@@ -542,9 +586,7 @@ async def run_watchlist(c, start, end, rules: dict) -> dict:
         w["niveaux"])
     items = []
     for v in vessels:
-        pos = await c.fetch("SELECT ts, ST_X(geom::geometry) AS lon, ST_Y(geom::geometry) AS lat FROM positions "
-                            "WHERE vessel_id = $1 AND ts >= $2::timestamptz AND ts < $3::timestamptz ORDER BY ts",
-                            v["vessel_id"], start, end)
+        pos = await c.fetch(POS_SQL, v["vessel_id"], start, end)
         if not pos:
             continue
         prior = await c.fetch("SELECT rule_key, (details->>'debut')::timestamptz AS debut FROM alerts "
@@ -564,6 +606,15 @@ async def run_watchlist(c, start, end, rules: dict) -> dict:
             if former:
                 context.append("MMSI différent sur la liste : " + ", ".join(
                     f"{f['mmsi']} ({f['pavillon'] or 'pavillon inconnu'})" for f in former))
+            # Séjour mesuré depuis le vrai début du passage : la fenêtre des règles (24 h) le tronquerait
+            seg = pos[i:j + 1] if debut >= pos[i]["ts"] else await c.fetch(
+                POS_SQL, v["vessel_id"], debut, fin + timedelta(microseconds=1))
+            sejour = stay([dict(p) for p in seg], w["arret_kn"])
+            if sejour["duree_h"] >= w["sejour_prolonge_h"]:
+                sejour.update(await stay_place(c, sejour["lieu"]))
+                context.append(stay_text(sejour))
+            else:
+                sejour = None
             details = {
                 "navire": {"vessel_id": v["vessel_id"], "mmsi": v["mmsi"], "imo": v["imo"], "name": v["name"],
                            "pavillon": v["flag"], "ship_type": v["ship_type"], "length_m": _finite(v["length_m"])},
@@ -572,6 +623,7 @@ async def run_watchlist(c, start, end, rules: dict) -> dict:
                 "debut": debut.isoformat(), "fin": fin.isoformat(), "positions": j - i + 1,
                 "zones": zone_names((p["lon"], p["lat"]) for p in pos[i:j + 1]),
                 "entree": [pos[i]["lon"], pos[i]["lat"]], "derniere_position": [pos[j]["lon"], pos[j]["lat"]],
+                "sejour": sejour,
                 "contexte": context,
                 "motif": "Navire d'une liste de surveillance présent dans une zone couverte",
             }

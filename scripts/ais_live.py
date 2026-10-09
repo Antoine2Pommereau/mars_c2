@@ -25,7 +25,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mars.ais.live import ZONES  # noqa: E402  (zones partagées avec l'ingestion en base)
+from mars.ais.live import SOURCE, ZONES  # noqa: E402  (zones et origine partagées avec l'ingestion en base)
 
 OUT = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
 URL = "wss://stream.aisstream.io/v0/stream"
@@ -73,7 +73,7 @@ class Buffer:
                 "zone": zone, "mmsi": meta.get("MMSI"), "ts": meta.get("time_utc"), "received_at": now,
                 "lat": lat, "lon": lon, "sog": body.get("Sog"), "cog": body.get("Cog"),
                 "heading": body.get("TrueHeading"), "nav_status": body.get("NavigationalStatus"),
-                "class_b": kind != "PositionReport",
+                "class_b": kind != "PositionReport", "source": SOURCE,
             })
         elif kind in STATIC_TYPES:
             dim = body.get("Dimension") or {}
@@ -84,7 +84,7 @@ class Buffer:
                 "imo": body.get("ImoNumber"), "callsign": body.get("CallSign"),
                 "ship_type": body.get("Type") or (body.get("ReportB") or {}).get("ShipType"),
                 "length_m": (dim.get("A") or 0) + (dim.get("B") or 0) or None,
-                "destination": body.get("Destination"),
+                "destination": body.get("Destination"), "source": SOURCE,
             })
 
     def flush(self):

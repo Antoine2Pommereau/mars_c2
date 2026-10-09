@@ -104,12 +104,24 @@ export const L = {
   reconnuPar: {
     omi: "par OMI", mmsi: "par MMSI seul, moins sûr", mmsi_omi_different: "par MMSI, OMI différent",
   } as Record<string, string>,
-  sources: { gur: "Catalogue GUR", opensanctions: "OpenSanctions", fiche: "fiche" },
+  sources: {
+    fiche: "fiche",
+    organismes: {
+      gur: "Catalogue GUR (Ukraine)", ue: "Union européenne", gb: "Royaume Uni", us: "États Unis", ca: "Canada",
+      ch: "Suisse", au: "Australie", nz: "Nouvelle Zélande", jp: "Japon", ua: "Ukraine", onu: "Nations unies",
+      tokyo_mou: "Mémorandum de Tokyo", paris_mou: "Mémorandum de Paris", opensanctions: "OpenSanctions",
+    } as Record<string, string>,
+    motifs: { sanction: "sanction", flotte: "flotte fantôme", immobilisation: "immobilisation", poi: "point d'intérêt" } as Record<string, string>,
+  },
 
   // Lignes du fil et preuves
   preuves: {
     navire: "Navire", navire1: "Navire 1", navire2: "Navire 2", signal: "Signal", dansNosEaux: "Dans nos eaux",
     zones: "Zones", positions: "Positions", sources: "Sources", nom: "Nom", omi: "OMI", depuis: "Depuis",
+    sejour: "Séjour prolongé", sejourDuree: (h: string) => `${h} h dans nos eaux`, sejourArret: "Temps à l'arrêt",
+    sejourLieu: "Lieu de l'arrêt", sejourMouillage: "mouillage connu",
+    sejourHorsMouillage: (km: string) => `hors de tout mouillage connu, à ${km} km des côtes`,
+    sejourHorsMouillageSeul: "hors de tout mouillage connu", sejourTag: (h: string) => `séjour ${h} h`,
     identites: "Identités successives", pavillon: "Pavillon", mmsi: "MMSI", vuDu: "Vu du", au: "au",
     rencontre: "Rencontre", distance: "Distance", distanceCote: "Distance à la côte",
     dernierMessage: "Dernier message", reapparition: "Réapparition", aucuneReapparition: "aucune dans la fenêtre",
@@ -151,7 +163,7 @@ export const L = {
       prediction: "Trajectoire prédite", mesures: "Mesures", navires: "Navires concernés",
       passes: "Navires passés à moins de 2 milles", liees: "Alertes liées", resume: "Zone", trafic: "Trafic",
       passage: "Passage", infrastructures: "Infrastructures couvertes", listes_couvertes: "Navires des listes couverts",
-      viirs: "Détection", apparie: "Navire AIS apparié",
+      viirs: "Détection", apparie: "Navire AIS apparié", sejour: "Séjour prolongé", navire: "Navire",
     } as Record<string, string>,
     etat: { route: "en route", immobile: "immobile", silencieux: "silencieux" } as Record<string, string>,
     dernierMessageIlYa: (t: string) => `dernier message il y a ${t}`, horsTrafic: "hors du trafic affiché",

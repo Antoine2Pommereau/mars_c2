@@ -80,6 +80,14 @@ def compact(paths: list[Path]) -> tuple[bytes, int]:
     tables = [pq.read_table(p) for p in paths]
     n = sum(t.num_rows for t in tables)
     table = pa.concat_tables(tables, promote_options="permissive")
+    if "mmsi" in table.column_names:              # origine de la donnée : fichiers antérieurs au champ, AISStream
+        import pyarrow.compute as pc
+        from mars.ais.live import SOURCE
+        if "source" not in table.column_names:
+            table = table.append_column("source", pa.array([SOURCE] * table.num_rows, pa.string()))
+        else:
+            table = table.set_column(table.column_names.index("source"), "source",
+                                     pc.fill_null(table["source"], pa.scalar(SOURCE)))
     if {"mmsi", "ts"} <= set(table.column_names):
         table = table.sort_by([("mmsi", "ascending"), ("ts", "ascending")])
     buf = io.BytesIO()

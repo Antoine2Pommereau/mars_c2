@@ -4,6 +4,7 @@ trajectoire en GPX, notes, photo), alerte, infrastructure et zone, navires suivi
 Sobriété : aucune écriture sur le disque du serveur (la photo est relayée, gardée en mémoire pour quelques navires,
 puis par le navigateur) ; requêtes bornées par la plage de temps et par des limites de résultats.
 """
+import logging
 import os
 import re
 import time
@@ -209,42 +210,56 @@ async def add_note(request: Request, vessel_id: int, n: Note):
 PHOTOS = os.environ.get("PHOTOS", "vesselfinder")
 _PAGE = "https://www.vesselfinder.com/vessels/details/{mmsi}"
 _IMAGE = re.compile(r"https://static\.vesselfinder\.net/ship-photo/[^\"'\s]+")
-_CACHE: "OrderedDict[int, tuple[float, bytes | None]]" = OrderedDict()
+_CACHE: "OrderedDict[int, tuple[float, bytes | None, str | None]]" = OrderedDict()
 _CACHE_MAX, _ABSENT_TTL = 40, 24 * 3600
+log = logging.getLogger("mars.photos")
+
+
+async def fetch_photo(client, mmsi: int) -> tuple[bytes | None, str | None]:
+    """Photo d'un navire depuis sa fiche VesselFinder : (image, None) ou (None, motif de l'échec en clair)."""
+    page = await client.get(_PAGE.format(mmsi=mmsi))
+    if page.status_code != 200:
+        return None, f"VesselFinder a répondu {page.status_code} pour la fiche du navire"
+    m = _IMAGE.search(page.text)
+    if not m:
+        return None, "pas de photo sur la fiche VesselFinder du navire"
+    r = await client.get(m.group(0))
+    ctype = r.headers.get("content-type", "")
+    # Une vraie image : un corps minuscule trahit un pixel ou une page d'erreur
+    if r.status_code != 200 or not ctype.startswith("image/") or len(r.content) <= 2048:
+        return None, f"image refusée par VesselFinder ({r.status_code}, {ctype or 'type inconnu'}, {len(r.content)} octets)"
+    return r.content, None
 
 
 @router.get("/api/vessels/{vessel_id}/photo")
 async def photo(request: Request, vessel_id: int):
+    """Photo relayée depuis VesselFinder ; en cas d'échec, le motif est dans la réponse (detail) et dans les journaux."""
     if PHOTOS != "vesselfinder":
-        raise HTTPException(404, "Photos désactivées")
+        raise HTTPException(404, "Photos désactivées sur ce serveur (PHOTOS=aucune)")
     async with pool(request).acquire() as c:
         mmsi = await c.fetchval("SELECT mmsi FROM vessels WHERE id = $1", vessel_id)
     if mmsi is None or not 100_000_000 <= mmsi <= 999_999_999:
-        raise HTTPException(404, "Navire inconnu")
+        raise HTTPException(404, "Navire inconnu ou MMSI invalide")
     hit = _CACHE.get(mmsi)
     if hit and (hit[1] is not None or time.time() - hit[0] < _ABSENT_TTL):
         _CACHE.move_to_end(mmsi)
         if hit[1] is None:
-            raise HTTPException(404, "Pas de photo pour ce navire")
+            raise HTTPException(404, hit[2] or "Pas de photo pour ce navire")
         return Response(hit[1], media_type="image/jpeg", headers={"Cache-Control": "max-age=86400", "X-Source": "VesselFinder"})
-    data = None
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=4), follow_redirects=True,
                                      headers={"User-Agent": "Mozilla/5.0 (MARS C2)"}) as client:
-            page = await client.get(_PAGE.format(mmsi=mmsi))
-            m = _IMAGE.search(page.text) if page.status_code == 200 else None
-            if m:
-                r = await client.get(m.group(0))
-                # Une vraie image : un corps minuscule trahit un pixel ou une page d'erreur
-                if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/") and len(r.content) > 2048:
-                    data = r.content
-    except httpx.HTTPError:
-        raise HTTPException(503, "Source de photo injoignable")
-    _CACHE[mmsi] = (time.time(), data)
+            data, reason = await fetch_photo(client, mmsi)
+    except httpx.HTTPError as e:
+        log.warning("photo du MMSI %s : VesselFinder injoignable (%s)", mmsi, type(e).__name__)
+        raise HTTPException(503, f"VesselFinder injoignable depuis le serveur ({type(e).__name__})")
+    if reason:
+        log.warning("photo du MMSI %s : %s", mmsi, reason)
+    _CACHE[mmsi] = (time.time(), data, reason)
     while len(_CACHE) > _CACHE_MAX:
         _CACHE.popitem(last=False)
     if data is None:
-        raise HTTPException(404, "Pas de photo pour ce navire")
+        raise HTTPException(404, reason)
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400", "X-Source": "VesselFinder"})
 
 

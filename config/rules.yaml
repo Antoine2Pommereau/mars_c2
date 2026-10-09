@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.20"
+version: "2026.10.21"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -135,6 +135,8 @@ watchlist:
   # Niveaux signalés ; « autre risque » (immobilisations, avertissements) est trop bruyant
   niveaux: [fort, sanctionne, flotte_fantome, suspect_gur]
   passage_gap_h: 12        # sans position pendant 12 h : le passage suivant est une nouvelle alerte
+  sejour_prolonge_h: 24    # passage de plus de 24 h : séjour prolongé signalé (durée, part à l'arrêt, lieu)
+  arret_kn: 1.0            # à l'arrêt sous 1 nœud
 
 identite:
   # Un nouveau nom n'est signalé qu'après 6 h sans retour à un nom antérieur : les alternances (deux émetteurs,

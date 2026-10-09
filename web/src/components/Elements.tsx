@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { dayLabel, num } from "../lib/format";
 import { L } from "../lib/libelles";
+import { grouperSources } from "../lib/sources";
 import type { Props } from "../lib/types";
 
 /** Éléments communs des fiches : ligne libellé et valeur, contexte, identités successives, sources des listes. */
@@ -37,26 +38,43 @@ export function Identities({ rows }: { rows?: Props[] }) {
   );
 }
 
+/** Sources des listes, une ligne par organisme : motifs et liens vers les fiches. */
 export function Sources({ entries }: { entries?: Props[] }) {
   if (!entries?.length) return null;
+  const S = L.sources;
   return (
     <ul className="mt-1 space-y-0.5 text-[12px]">
-      {entries.map((e, i) => (
-        <li key={i}>
-          {e.source === "gur" ? L.sources.gur : L.sources.opensanctions}
-          {e.name ? `, ${e.name}` : ""}{e.mmsi ? `, MMSI ${e.mmsi}` : ""}
-          {e.risks?.length ? <span className="text-muted"> ({e.risks.join(", ")})</span> : null}
-          {e.url && <> <a href={e.url} target="_blank" rel="noreferrer" className="text-signal hover:underline">{L.sources.fiche}</a></>}
+      {grouperSources(entries).map((o) => (
+        <li key={o.cle}>
+          {S.organismes[o.cle] ?? o.cle}
+          {o.motifs.length ? <span className="text-muted"> ({o.motifs.map((m) => S.motifs[m] ?? m).join(", ")})</span> : null}
+          {o.liens.map((u, i) => (
+            <span key={u}> <a href={u} target="_blank" rel="noreferrer" className="text-signal hover:underline">
+              {o.liens.length > 1 ? `${S.fiche} ${i + 1}` : S.fiche}</a></span>
+          ))}
         </li>
       ))}
     </ul>
   );
 }
 
-/** Pastille discrète (niveau de signal, pavillon) dans une ligne du fil ou un en tête de fiche. */
 export function Tag({ children, color }: { children: ReactNode; color?: string }) {
   return (
     <span className="inline-flex items-center rounded border px-1 text-[10.5px] leading-[15px]"
       style={{ borderColor: color ?? "#26323d", color: color ?? "#7c8b97" }}>{children}</span>
+  );
+}
+
+/** Séjour prolongé d'un navire des listes (alerte WATCHLIST) : durée, part du temps à l'arrêt, lieu. */
+export function Sejour({ s }: { s: Props }) {
+  const P = L.preuves;
+  const lieu = s.mouillage_connu ? P.sejourMouillage
+    : s.distance_cote_km != null ? P.sejourHorsMouillage(num(s.distance_cote_km, 0)) : P.sejourHorsMouillageSeul;
+  return (
+    <>
+      <Row label={P.sejour}>{P.sejourDuree(num(s.duree_h, 0))}</Row>
+      <Row label={P.sejourArret}>{num((s.arret_part ?? 0) * 100, 0)} %</Row>
+      {s.arret_part > 0 && <Row label={P.sejourLieu}>{lieu}</Row>}
+    </>
   );
 }

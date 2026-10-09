@@ -119,7 +119,7 @@ la fusion (`mars/fusion/pipeline.py`) et la persistance des échos fixes, écrit
 mars_c2/
   CLAUDE.md, start.sh, pyproject.toml, docker-compose.yml, docker-compose.serveur.yml
   config/rules.yaml       seuils versionnés
-  db/init/01 à 19         schéma et migrations (idempotentes à partir de 02)
+  db/init/01 à 24         schéma et migrations (idempotentes à partir de 02)
   mars/
     ais/live.py, ingest.py, mid.py   zones, nettoyage, allègement, ingestion, pavillon
     watchlist.py, archive.py, r2.py  listes, archivage et sauvegarde, client R2
@@ -358,6 +358,18 @@ relue par l'API sans boto3 (`mars/r2_signature.py`, signature vérifiée sur l'e
 superposition des positions AIS à 5 km dans la fiche détection et les preuves des alertes DARK_SHIP, agrandissable ;
 4,7 Ko par vignette, environ 0,25 Mo par nuit ; conservation sans limite avec alerte, 30 jours sinon.
 
+**Fiches, sources et séjours (09/10/2026)** (migration 24, règles 2026.10.21) : photo du navire en tête de toute
+fiche d'alerte qui concerne un navire (section `navire` du registre), motif de l'échec dans la fiche et dans les
+journaux de l'API (`mars.photos` : page refusée, pas de photo, image refusée, source injoignable) ; vérifié sur le
+serveur, SMYRTOS (27,6 Ko) et GROSSULYAR (51,7 Ko) servies par VesselFinder. Sources des listes regroupées par
+organisme (`web/src/lib/sources.ts` : GUR, Union européenne, Royaume Uni, États Unis, puis les autres, d'après le
+préfixe du jeu OpenSanctions, motifs et liens réunis) : pour SMYRTOS, les sept entrées OpenSanctions deviennent six autorités, les deux listes de l'UE fusionnées. Champ `source` dans chaque position et dans
+le Parquet (`mars.ais.live.SOURCE`, `aisstream`). Séjour prolongé d'un navire des listes (`watchlist.sejour_prolonge_h`,
+24 h) : durée mesurée depuis le début du passage (la fenêtre des règles de 24 h le tronquerait), part du temps à
+l'arrêt pondérée par la durée (un point toutes les dix minutes à l'arrêt contre un par minute en route), lieu
+(mouillage connu ou non, distance à la côte), dans l'alerte WATCHLIST et la fiche navire. Rapport de mesures :
+section portée de réception.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -367,10 +379,11 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 112 réussis, 13 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 12 sans
+`python -m pytest tests` : 118 réussis, 15 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 14 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
-lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans trace). Avec la base de test des migrations
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 124 réussis, 1 ignoré. Couvrent aussi fusion,
+lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
+trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 132 réussis, 1 ignoré. Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -472,5 +485,7 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   script passe par cloud-init plutôt que par une image privée de près d'un Go.
 * Un élément `fixed` placé dans un panneau à `backdrop-blur` est contenu par ce panneau (le flou crée un bloc
   conteneur) : une vue agrandie passe par un portail (`createPortal` vers `document.body`).
+* Une règle en continu ne voit que sa fenêtre (24 h) : une durée qui la dépasse (séjour d'un navire des listes) se
+  mesure depuis le début repris de l'alerte précédente, en relisant les positions.
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.

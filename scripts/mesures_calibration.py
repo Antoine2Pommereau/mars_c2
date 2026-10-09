@@ -235,10 +235,12 @@ def measure(conn, days: int, rules: dict, log) -> tuple[Mesures, dict]:
         (datetime(first.year, first.month, first.day, tzinfo=timezone.utc),)).fetchone()
     zones = conn.execute("SELECT count(*), coalesce(sum(vessels), 0) FROM stationary_zones").fetchone()
     viirs = measure_viirs(conn, first, last)
+    portee = measure_range(conn, first)
     reception_now = conn.execute(
         "SELECT count(*), coalesce(round((sum(ST_Area(geom)) / 1e6)::numeric), 0) FROM reception_cells").fetchone()
     return m, {"first": first, "last": last, "episodes": episodes, "alerts": alerts, "identity": identity,
-               "stationary_zones": zones, "reception_now": reception_now, "viirs": viirs}
+               "stationary_zones": zones, "reception_now": reception_now, "viirs": viirs,
+               "portee": portee}
 
 
 VIIRS_DIST = [500, 1000, 1500, 2000, 3000, 5000, 10000]
@@ -258,6 +260,66 @@ def measure_viirs(conn, first: date, last: date) -> dict:
            WHERE g.nuit BETWEEN %s AND %s""",
         (["bretagne", "manche", "gascogne", "mediterranee"], first - timedelta(days=1), last)).fetchall()
     return {"lignes": rows}
+
+
+RANGE_SAMPLE, RANGE_MAX_M = 3000, 300_000
+
+RANGE_SQL = """
+WITH s AS (
+    SELECT p.geom, p.source, ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat
+    FROM positions p TABLESAMPLE SYSTEM (%(pct)s) WHERE p.ts >= %(d0)s
+), z AS (
+    SELECT s.*, {zone} AS zone FROM s
+), t AS (
+    SELECT z.*, row_number() OVER (PARTITION BY zone ORDER BY random()) AS rn FROM z WHERE zone <> 'hors zone'
+)
+SELECT zone, source, (SELECT min(ST_Distance(l.geom, t.geom)) FROM land l WHERE ST_DWithin(l.geom, t.geom, %(max)s))
+FROM t WHERE rn <= %(n)s
+"""
+
+
+def measure_range(conn, first: date) -> dict:
+    """Portée de réception : distance à la côte d'un échantillon de positions reçues, par région collectée (au plus
+    RANGE_SAMPLE positions tirées au hasard par région ; au delà de RANGE_MAX_M, la côte n'est pas cherchée)."""
+    if conn.execute("SELECT NOT EXISTS (SELECT 1 FROM land)").fetchone()[0]:
+        return {"sans_terres": True, "lignes": []}
+    total = conn.execute("SELECT greatest(reltuples, 1) FROM pg_class WHERE relname = 'positions'").fetchone()[0]
+    pct = min(100.0, 100.0 * 40 * RANGE_SAMPLE / total)       # assez de blocs pour remplir chaque région
+    rows = conn.execute(RANGE_SQL.format(zone=ZONE_SQL), {
+        "pct": pct, "d0": datetime(first.year, first.month, first.day, tzinfo=timezone.utc),
+        "max": RANGE_MAX_M, "n": RANGE_SAMPLE}).fetchall()
+    return {"sans_terres": False, "lignes": rows}
+
+
+def range_section(x: dict) -> list[str]:
+    """Section du rapport : jusqu'où notre AIS voit, par région (distance à la côte des positions reçues)."""
+    p = x["portee"]
+    head = ["## 5. Portée de réception", ""]
+    if p["sans_terres"]:
+        return head + ["Masque des terres absent (table `land` vide) : construire les masques "
+                       "(`scripts/build_masks.py`) pour mesurer la portée.", ""]
+    if not p["lignes"]:
+        return head + ["Aucune position sur la période.", ""]
+    by = defaultdict(list)
+    sources = defaultdict(Counter)
+    for zone, source, d in p["lignes"]:
+        by[zone].append(RANGE_MAX_M if d is None else d)
+        sources[zone][source] += 1
+    def km(v):
+        return f"> {num(RANGE_MAX_M / 1000)} km" if v >= RANGE_MAX_M else f"{num(v / 1000, 1)} km"
+    rows = []
+    for zone in sorted(by, key=lambda k: list(L_REGION).index(k) if k in L_REGION else 99):
+        d = sorted(by[zone])
+        q90 = d[min(len(d) - 1, int(0.9 * len(d)))]
+        rows.append([L_REGION.get(zone, zone), num(len(d)), km(statistics.median(d)), km(q90), km(d[-1]),
+                     pct(sum(1 for v in d if v > 22_000), len(d)),
+                     ", ".join(f"{k} {num(v)}" for k, v in sources[zone].most_common())])
+    return head + [
+        f"Distance à la côte d'un échantillon de positions reçues ({num(RANGE_SAMPLE)} au plus par région, tirées au "
+        "hasard sur la période). Le recouvrement de la Bretagne et de la Manche est compté en Bretagne. Une portée "
+        "courte signale une réception surtout terrestre : au delà, un navire sans AIS reçu n'est pas forcément "
+        "silencieux.", "",
+        table(["Région", "Positions", "Médiane", "9e décile", "Maximum", "Au delà de 12 milles", "Source"], rows), ""]
 
 
 def viirs_section(x: dict, rules: dict) -> list[str]:
@@ -434,9 +496,10 @@ def report(m: Mesures, x: dict, rules: dict) -> str:
           table(["Type"] + [f"{j:%d/%m}" for j in jours] + ["Total", "Gravité et décisions"], rows) if rows
           else "Aucune alerte sur la période.", ""]
 
-    # 4. Seuils
+    # 4. Détections VIIRS, 5. portée de réception, 6. seuils
     L += viirs_section(x, rules)
-    L += ["## 5. Seuils de config/rules.yaml : valeur, mesure, proposition", ""]
+    L += range_section(x)
+    L += ["## 6. Seuils de config/rules.yaml : valeur, mesure, proposition", ""]
     L += [table(["Seuil", "Valeur", "Ce que montrent les mesures", "Proposition"], proposals(m, x, rules, grid)), ""]
     return "\n".join(L) + "\n"
 

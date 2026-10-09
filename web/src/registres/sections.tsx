@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 import AlertActions from "../components/AlertActions";
 import Chip from "../components/Chip";
 import PreuveImage from "../components/PreuveImage";
-import { Row, Sources, Tag } from "../components/Elements";
-import { Comportement, EnTeteNavire, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
+import { Row, Sejour, Sources, Tag } from "../components/Elements";
+import { Comportement, EnTeteAlerteNavire, EnTeteNavire, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
   PassageInfras, PassageListes, PassageResume, Trajectoire, ViirsAlertes, ViirsMesures, ViirsNavire, Vignette, ZoneResume,
   ZoneTrafic } from "../components/Fiches";
 import type { VesselCard } from "../lib/api";
@@ -51,12 +51,24 @@ interface Section {
   rendu: (c: Contexte) => ReactNode;
 }
 
+// Séjour prolongé le plus récent porté par une alerte WATCHLIST du navire
+const sejourNavire = (c: Contexte): Props | undefined => (c.carte?.alerts ?? [])
+  .filter((a) => a.properties.type === "WATCHLIST" && a.properties.details?.sejour)
+  .sort((a, b) => String(b.properties.event_time).localeCompare(String(a.properties.event_time)))[0]?.properties.details.sejour;
+
 const zoneOfVessel = (v: Props) => (v.lon == null ? null : zoneOf(v.lon, v.lat));
 const toujours = () => true;
 const rien = () => null;
 
 const SECTIONS: Section[] = [
   // Alerte
+  { id: "navire", objet: "alerte", ordre: 5, etape: null, titre: false,
+    condition: (c) => naviresAlerte(c.alerte!)[0]?.vessel_id != null,
+    rendu: (c) => {
+      const n = naviresAlerte(c.alerte!)[0], v = c.vessels.get(n.vessel_id);
+      return <EnTeteAlerteNavire navire={{ ...n, name: n.name ?? v?.name, flag: n.flag ?? v?.flag, mmsi: n.mmsi ?? v?.mmsi }}
+        onOuvrir={() => c.onPickVessel(v ?? { ...n })} />;
+    } },
   { id: "motif", objet: "alerte", ordre: 10, etape: null, titre: false,
     condition: (c) => !!c.alerte?.properties.details?.motif,
     rendu: (c) => <p className="text-ink/90">{c.alerte!.properties.details.motif}</p> },
@@ -107,6 +119,8 @@ const SECTIONS: Section[] = [
         </div>
       );
     } },
+  { id: "sejour", objet: "navire", ordre: 25, etape: null, titre: true, condition: (c) => !!sejourNavire(c),
+    rendu: (c) => <Sejour s={sejourNavire(c)!} /> },
   { id: "identites", objet: "navire", ordre: 30, etape: null, titre: true,
     condition: (c) => (c.carte?.identities ?? []).length > 1, rendu: (c) => <IdentitesFrise rows={c.carte!.identities} /> },
   { id: "alertes", objet: "navire", ordre: 40, etape: null, titre: true,

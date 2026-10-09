@@ -62,7 +62,7 @@ export const INDICATEURS: Indicateur[] = [
         const texte = `${l.navires}, ${E.importeLe} ${date(l.importe_le)}`
           + (ok ? `, ${E.verifieeLe} ${date(ok)}` : "")
           + (run?.statut === "echec" ? `, ${E.echecListe(date(run.debut))}` : "");
-        return { niveau, vu, detail: [l.source === "gur" ? L.sources.gur : L.sources.opensanctions, texte] as [string, string] };
+        return { niveau, vu, detail: [L.sources.organismes[l.source === "gur" ? "gur" : "opensanctions"], texte] as [string, string] };
       });
       const detail = lignes.map((x) => x.detail);
       if (listes.some((l) => l.source === "opensanctions")) detail.push(["", E.attribution]);

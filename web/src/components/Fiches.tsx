@@ -17,28 +17,66 @@ function ageTexte(s: number) {
   return s < 120 ? `${Math.round(s)} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`;
 }
 
+/** Photo d'un navire : en cas d'échec, le motif donné par l'API (désactivée, absente de la source, source injoignable). */
+function usePhoto(vesselId: number) {
+  const [etat, setEtat] = useState<"chargement" | "ok" | "absente">("chargement");
+  const [motif, setMotif] = useState<string | null>(null);
+  const echec = () => {
+    setEtat("absente");
+    fetch(photoUrl(vesselId)).then((r) => (r.ok ? null : r.json())).then((j) => setMotif(j?.detail ?? null)).catch(() => setMotif(null));
+  };
+  return { etat, motif, ok: () => setEtat("ok"), echec };
+}
+
+function CadrePhoto({ vesselId, className }: { vesselId: number; className: string }) {
+  const p = usePhoto(vesselId);
+  return (
+    <div className="shrink-0">
+      <div className={`relative overflow-hidden rounded-md border border-hair bg-abyss ${className}`}>
+        {p.etat !== "absente" && (
+          <img src={photoUrl(vesselId)} alt={F.photo.alt} onLoad={p.ok} onError={p.echec}
+            className="h-full w-full object-cover" style={{ opacity: p.etat === "ok" ? 1 : 0 }} />
+        )}
+        {p.etat !== "ok" && (
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 px-2 text-center text-[11px] text-faint"
+            title={p.motif ?? undefined}>
+            <Ship size={20} strokeWidth={1.2} />{p.etat === "absente" ? F.photo.aucune : ""}
+          </span>
+        )}
+      </div>
+      <div className="mt-0.5 text-right text-[10.5px] text-faint">
+        {p.etat === "ok" ? F.photo.source("VesselFinder") : p.etat === "absente" && p.motif ? p.motif : ""}
+      </div>
+    </div>
+  );
+}
+
+/** En tête d'une fiche d'alerte qui concerne un navire : photo, nom et pavillon, accès à la fiche du navire. */
+export function EnTeteAlerteNavire({ navire, onOuvrir }: { navire: Props; onOuvrir: () => void }) {
+  return (
+    <div className="flex items-start gap-3">
+      <CadrePhoto key={Number(navire.vessel_id)} vesselId={Number(navire.vessel_id)} className="aspect-[16/9] w-[112px]" />
+      <button onClick={onOuvrir} className="min-w-0 text-left hover:text-signal">
+        <div className="truncate text-[14px] font-semibold text-ink">{navire.name ?? `MMSI ${navire.mmsi ?? ""}`}</div>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[12px] text-muted">
+          {navire.flag && <Tag>{navire.flag}</Tag>}{navire.mmsi && <span>MMSI {navire.mmsi}</span>}
+        </div>
+        <div className="mt-1 text-[12px] text-muted">{F.ouvrir}</div>
+      </button>
+    </div>
+  );
+}
+
 /** En tête du navire : photo (source indiquée), niveau de signal, état et dernier message, bouton suivre, identité. */
 export function EnTeteNavire({ navire, carte, suivi, onSuivre }:
   { navire: Props; carte?: VesselCard; suivi: boolean; onSuivre: (on: boolean) => void }) {
-  const [photo, setPhoto] = useState<"chargement" | "ok" | "absente">("chargement");
   const id = Number(navire.vessel_id);
   const age = navire.age_s as number | undefined;
   const etat = age == null || age > 1800 ? "silencieux" : (navire.sog_kn ?? 0) < 0.5 ? "immobile" : "route";
   const w = carte?.watch;
   return (
     <div>
-      <div className="relative mb-2 aspect-[16/9] w-full overflow-hidden rounded-md border border-hair bg-abyss">
-        {photo !== "absente" && (
-          <img src={photoUrl(id)} alt={F.photo.alt} onLoad={() => setPhoto("ok")} onError={() => setPhoto("absente")}
-            className="h-full w-full object-cover" style={{ opacity: photo === "ok" ? 1 : 0 }} />
-        )}
-        {photo !== "ok" && (
-          <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-[11.5px] text-faint">
-            <Ship size={22} strokeWidth={1.2} />{photo === "absente" ? F.photo.aucune : ""}
-          </span>
-        )}
-      </div>
-      {photo === "ok" && <div className="-mt-1 mb-2 text-right text-[10.5px] text-faint">{F.photo.source("VesselFinder")}</div>}
+      <div className="mb-2"><CadrePhoto key={id} vesselId={id} className="aspect-[16/9] w-full" /></div>
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
         {w && <Tag color={COULEUR_LISTE}>{L.signal[w.level] ?? w.level}</Tag>}
         <Tag>{F.etat[etat]}</Tag>

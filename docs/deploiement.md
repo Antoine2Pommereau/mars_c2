@@ -193,7 +193,9 @@ docker compose exec taches python scripts/import_watchlist.py --gur data/listes/
 intervalles entre messages par type de navire, par navire et par zone ; paires d'intervalles par cellule et surface
 de la zone de réception fiable pour plusieurs valeurs de `reception.min_pairs`, `min_coverage` et `max_interval_s` ;
 épisodes et alertes par règle et par jour ; puis, pour chaque seuil de `config/rules.yaml`, sa valeur, la mesure et
-une proposition argumentée. Calcul journée par journée : 140 Mo de mémoire mesurés pour le processus (limite du
+une proposition argumentée ; enfin la **portée de réception** : par région, distance à la côte des positions reçues
+(médiane, 9e décile, maximum, part au delà de 12 milles, source des positions), sur 3 000 positions au plus par région
+tirées au hasard (il faut le trait de côte, table `land`). Calcul journée par journée : 140 Mo de mémoire mesurés pour le processus (limite du
 conteneur : 768 Mo) et quelques dizaines de Mo de
 fichiers temporaires PostgreSQL par journée. Le rapport sort sur la sortie standard, à rapatrier sur le Mac :
 
@@ -454,6 +456,14 @@ Au passage aux images du registre, les anciennes images locales (`mars_c2-backen
 
 **Revenir à une version précédente** : `MARS_TAG=<empreinte> docker compose pull` puis
 `MARS_TAG=<empreinte> docker compose up -d --no-build` (ou inscrire `MARS_TAG` dans le `.env` du serveur).
+
+**Migration 24 (origine des positions).** `db/init/24_sources_sejours.sql` ajoute la colonne `positions.source`
+(aujourd'hui toujours `aisstream`). Valeur par défaut constante : l'ajout est immédiat, sans réécrire la table, quel
+que soit le nombre de positions. Elle doit précéder le démarrage de la nouvelle image des scripts : la nouvelle
+ingestion écrit cette colonne. Les fichiers Parquet de la collecte portent le même champ ; les fichiers et archives
+antérieurs, qui ne l'ont pas, sont lus comme `aisstream` (ingestion, rechargement depuis R2 et compactage de
+l'archive le complètent). Contrôle : `SELECT source, count(*) FROM positions WHERE ts > now() - interval '1 hour'
+GROUP BY 1`.
 
 Ne jamais lancer `docker system prune --volumes` : il effacerait le volume de la base.
 

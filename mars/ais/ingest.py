@@ -137,13 +137,13 @@ class Ingestor:
                     first = k.groupby("mmsi").t.min().to_dict()
                     cls = k.groupby("mmsi").class_b.last().map({True: "B", False: "A"}).to_dict()
                     ids = self._vessels(cur, list(first), first, cls)
-                    with cur.copy("COPY positions (vessel_id, ts, geom, sog_kn, cog_deg, heading_deg, nav_status) "
+                    with cur.copy("COPY positions (vessel_id, ts, geom, sog_kn, cog_deg, heading_deg, nav_status, source) "
                                   "FROM STDIN") as cp:
                         for r in kept:
                             cp.write_row((ids[int(r.mmsi)], r.t.to_pydatetime(), f"SRID=4326;POINT({r.lon} {r.lat})",
                                           _num(r.sog), _num(r.cog),
                                           None if _num(r.heading) is None else int(r.heading),
-                                          None if _num(r.nav_status) is None else int(r.nav_status)))
+                                          None if _num(r.nav_status) is None else int(r.nav_status), r.source))
                     agg = k.groupby("mmsi").agg(t0=("t", "min"), t1=("t", "max"))
                     cur.execute(
                         """UPDATE vessels v SET first_seen = least(v.first_seen, x.t0),

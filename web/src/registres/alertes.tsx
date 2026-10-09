@@ -1,7 +1,7 @@
 import { ArrowRightLeft, Cable, CircleHelp, EyeOff, Fingerprint, Navigation, Route, Ruler, ShieldAlert, WifiOff,
   type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import { Context, Identities, Row, Sources, Tag, vesselText } from "../components/Elements";
+import { Context, Identities, Row, Sejour, Sources, Tag, vesselText } from "../components/Elements";
 import PreuveImage from "../components/PreuveImage";
 import { hm, num, utc } from "../lib/format";
 import { L } from "../lib/libelles";
@@ -46,7 +46,12 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     navires: (d) => [d.navire ? { ...d.navire, flag: d.navire.pavillon } : null],
     titre: (d) => nom(d.navire),
     // Niveau de signal ; le pavillon est affiché par la ligne du fil, pour tous les types
-    signe: (d) => <Tag color={COULEUR_LISTE}>{L.signal[d.niveau] ?? d.niveau}</Tag>,
+    signe: (d) => (
+      <>
+        <Tag color={COULEUR_LISTE}>{L.signal[d.niveau] ?? d.niveau}</Tag>
+        {d.sejour && <Tag>{P.sejourTag(num(d.sejour.duree_h, 0))}</Tag>}
+      </>
+    ),
     preuves: (p) => {
       const d = p.details ?? {};
       return (
@@ -56,6 +61,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
           <Row label={P.dansNosEaux}>{utc(d.debut)} {P.au} {utc(d.fin)}</Row>
           <Row label={P.zones}>{(d.zones ?? []).map((z: string) => L.zones[z] ?? z).join(", ")}</Row>
           <Row label={P.positions}>{d.positions}</Row>
+          {d.sejour && <Sejour s={d.sejour} />}
           <Context items={d.contexte} />
           <div className="mt-3 font-semibold">{P.sources}</div>
           <Sources entries={d.sources} />

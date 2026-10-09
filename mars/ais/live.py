@@ -10,6 +10,10 @@ from dataclasses import dataclass
 import pandas as pd
 
 # Zones : [lat_min, lon_min, lat_max, lon_max]
+# Origine des données AIS, inscrite dans chaque message de l'archive et chaque position en base : prépare un
+# changement de fournisseur (Spire, récepteur personnel…) et distingue les périodes dans les calibrations.
+SOURCE = "aisstream"
+
 ZONES = {
     "bretagne": [47.3, -6.8, 49.6, -3.0],
     "mediterranee": [41.2, 3.0, 43.7, 9.8],
@@ -90,6 +94,9 @@ def clean_positions(df: pd.DataFrame, now: pd.Timestamp) -> tuple[pd.DataFrame, 
     des retraits, pour que chaque règle reste traçable."""
     stats = {"lus": len(df)}
     df = df.copy()
+    if "source" not in df:                   # fichiers antérieurs au champ « source » : tous issus d'AISStream
+        df["source"] = SOURCE
+    df["source"] = df["source"].fillna(SOURCE)
     df["t"] = parse_times(df["ts"])
     df["mmsi"] = pd.to_numeric(df["mmsi"], errors="coerce")
     n = len(df)
