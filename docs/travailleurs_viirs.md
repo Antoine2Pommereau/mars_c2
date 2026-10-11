@@ -81,9 +81,11 @@ DEV1-S (2 Go) serait trop juste ; **DEV1-M** (3 vCPU, 4 Go, 0,0202 € de l'heur
 4. **Lumières fixes** (plateformes, éoliennes, phares) : revue à moins de 1 km sur au moins 3 nuits distinctes en 30
    jours, elle entre au registre `viirs_lumieres_fixes` ; ses détections antérieures sont écartées et les alertes encore
    vierges qu'elles avaient levées sont classées (faux positif) avec une note.
-5. **Non évaluable** (aucune alerte) : coupure du flux AIS à l'heure du passage (au moins 3 minutes sous 20 % de la
-   médiane, à 5 minutes près), ou aucune réception AIS autour (hors zone de réception fiable quand elle est construite ;
-   en attendant, aucun navire AIS reçu à moins de 30 km dans la demi heure autour du passage).
+5. **Non évaluable** (aucune alerte ; règle commune aux détections satellites, `mars/evaluation.py`) : coupure du
+   flux AIS à l'heure du passage (au moins 3 minutes sous 20 % de la médiane, à 5 minutes près), ou hors de la zone de
+   réception fiable dès qu'elle est construite (elle seule décide alors, même si des navires AIS passent alentour) ;
+   tant qu'elle ne l'est pas, critère provisoire : aucun navire AIS reçu à moins de 30 km dans la demi heure autour du
+   passage. Chaque alerte note le critère employé (`critere_evaluation`).
 6. **Alerte DARK_SHIP** de source VIIRS pour chaque détection restante sans AIS : gravité **faible, « à confirmer »**
    (AIS incomplet, petite pêche sans obligation d'AIS), sauf à moins de 2 milles d'une infrastructure ou à moins de
    10 km d'un navire des listes (élevée ; les deux : critique) et au delà de 12 milles des côtes (22 km, moyenne).

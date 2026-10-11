@@ -205,6 +205,7 @@ def measure(conn, days: int, rules: dict, log) -> tuple[Mesures, dict]:
         log(f"{d:%d/%m/%Y} mesuré en {time.time() - t:.1f} s")
         d += timedelta(days=1)
 
+    log("épisodes et alertes")
     # Épisodes : chaque cycle des règles consigne ses comptes (fenêtre de 24 h) ; on garde le plus haut du jour
     episodes = conn.execute(
         """SELECT run_day,
@@ -234,12 +235,23 @@ def measure(conn, days: int, rules: dict, log) -> tuple[Mesures, dict]:
            FROM alerts WHERE type = 'IDENTITY_CHANGE' AND event_time >= %s""",
         (datetime(first.year, first.month, first.day, tzinfo=timezone.utc),)).fetchone()
     zones = conn.execute("SELECT count(*), coalesce(sum(vessels), 0) FROM stationary_zones").fetchone()
+    log("détections VIIRS")
     viirs = measure_viirs(conn, first, last)
+    t = time.time()
+    log("portée de réception")
     portee = measure_range(conn, first)
+    log(f"portée de réception mesurée en {time.time() - t:.1f} s")
     reception_now = conn.execute(
         "SELECT count(*), coalesce(round((sum(ST_Area(geom)) / 1e6)::numeric), 0) FROM reception_cells").fetchone()
+    log("zone de réception fiable par région")
+    reception_regions = conn.execute(
+        """SELECT lower(r.name), count(*), round((sum(ST_Area(c.geom)) / 1e6)::numeric)
+           FROM reception_cells c JOIN regions r ON lower(r.name) = ANY(%s)
+             AND ST_Intersects(r.geom::geometry, ST_Centroid(c.geom::geometry))
+           GROUP BY 1""", (list(L_REGION),)).fetchall()
     return m, {"first": first, "last": last, "episodes": episodes, "alerts": alerts, "identity": identity,
                "stationary_zones": zones, "reception_now": reception_now, "viirs": viirs,
+               "reception_regions": reception_regions,
                "portee": portee}
 
 
@@ -254,15 +266,48 @@ def measure_viirs(conn, first: date, last: date) -> dict:
         """SELECT g.nuit, lower(r.name),
                   CASE WHEN d.mask_reason = 'non_evaluable' THEN 'non_evaluable' WHEN d.mask_reason IS NOT NULL THEN 'ecartee'
                        WHEN d.matched_vessel_id IS NOT NULL THEN 'avec_ais' ELSE 'sans_ais' END,
-                  d.nanowatts, d.ais_proche_m, d.ais_proche_ecart_s, d.distance_cote_m
+                  d.nanowatts, d.ais_proche_m, d.ais_proche_ecart_s, d.distance_cote_m,
+                  d.ais_navires_rayon, coalesce(d.non_evaluable, '') LIKE 'coupure du flux%%' AS flux_coupe,
+                  EXISTS (SELECT 1 FROM reception_cells c WHERE ST_Intersects(c.geom, d.geom)) AS dans_zone
            FROM viirs_detections d JOIN viirs_granules g ON g.id = d.granule_id
            LEFT JOIN regions r ON lower(r.name) = ANY(%s) AND ST_Intersects(r.geom::geometry, d.geom::geometry)
            WHERE g.nuit BETWEEN %s AND %s""",
         (["bretagne", "manche", "gascogne", "mediterranee"], first - timedelta(days=1), last)).fetchall()
-    return {"lignes": rows}
+    zone = conn.execute("SELECT EXISTS (SELECT 1 FROM reception_cells)").fetchone()[0]
+    return {"lignes": [r[:7] for r in rows], "evaluation": [(r[1], r[2], *r[7:]) for r in rows], "zone": zone}
 
 
-RANGE_SAMPLE, RANGE_MAX_M = 3000, 300_000
+def evaluability_rows(x: dict, rules: dict) -> list[list]:
+    """Détections VIIRS sans navire AIS apparié (ni écartées pour la côte ou une lumière fixe) : part évaluable selon
+    le critère provisoire (navires AIS dans le rayon) et selon la zone de réception fiable (mars/evaluation.py)."""
+    from mars.evaluation import motif_non_evaluable
+    v, ev = rules["viirs"], x["viirs"]
+    seen = {}
+    for region, st, around, cut, inside in ev["evaluation"]:
+        if st in ("sans_ais", "non_evaluable"):
+            seen.setdefault(region or "hors région", []).append((around, cut, inside))
+    rows = []
+    for region, items in sorted(seen.items(), key=lambda kv: list(L_REGION).index(kv[0]) if kv[0] in L_REGION else 99):
+        before = sum(motif_non_evaluable(cut, False, inside, around, v) is None for around, cut, inside in items)
+        after = sum(motif_non_evaluable(cut, True, inside, around, v) is None for around, cut, inside in items)
+        rows.append([L_REGION.get(region, region), num(len(items)), pct(before, len(items)),
+                     pct(after, len(items)) if ev["zone"] else "zone non construite"])
+    return rows
+
+
+RANGE_SAMPLE, RANGE_MAX_M, RANGE_QUAI_M = 3000, 300_000, 1000
+
+# Trait de côte pour ce seul calcul : polygones de `land` en géométrie, subdivisés en morceaux de 64 sommets et indexés
+# (table temporaire de la session). La distance de chaque position se cherche parmi les 32 morceaux les plus proches
+# (index, ordre des plus proches voisins, en degrés), puis se mesure en géodésique sur ces 32 seulement : 14,8 s pour
+# 12 000 positions réelles sur le Mac, 14 m d'écart au plus au calcul exact sur 300 positions (8 voisins : 9,2 s mais
+# jusqu'à 4,6 km d'écart). L'ancienne requête mesurait la distance géodésique à tous les polygones à moins de 300 km :
+# 65 ms par position, environ 13 minutes pour 12 000 positions sur le Mac, bien plus sur le serveur.
+RANGE_COAST_SQL = [
+    "CREATE TEMP TABLE IF NOT EXISTS portee_cote AS SELECT ST_Subdivide(geom::geometry, 64) AS g FROM land",
+    "CREATE INDEX IF NOT EXISTS portee_cote_g ON portee_cote USING gist (g)",
+    "ANALYZE portee_cote",
+]
 
 RANGE_SQL = """
 WITH s AS (
@@ -273,21 +318,25 @@ WITH s AS (
 ), t AS (
     SELECT z.*, row_number() OVER (PARTITION BY zone ORDER BY random()) AS rn FROM z WHERE zone <> 'hors zone'
 )
-SELECT zone, source, (SELECT min(ST_Distance(l.geom, t.geom)) FROM land l WHERE ST_DWithin(l.geom, t.geom, %(max)s))
+SELECT zone, source,
+       (SELECT min(ST_Distance(c.g::geography, t.geom))
+        FROM (SELECT g FROM portee_cote ORDER BY g <-> t.geom::geometry LIMIT 32) c)
 FROM t WHERE rn <= %(n)s
 """
 
 
 def measure_range(conn, first: date) -> dict:
     """Portée de réception : distance à la côte d'un échantillon de positions reçues, par région collectée (au plus
-    RANGE_SAMPLE positions tirées au hasard par région ; au delà de RANGE_MAX_M, la côte n'est pas cherchée)."""
+    RANGE_SAMPLE positions tirées au hasard par région)."""
     if conn.execute("SELECT NOT EXISTS (SELECT 1 FROM land)").fetchone()[0]:
         return {"sans_terres": True, "lignes": []}
+    for q in RANGE_COAST_SQL:
+        conn.execute(q)
     total = conn.execute("SELECT greatest(reltuples, 1) FROM pg_class WHERE relname = 'positions'").fetchone()[0]
     pct = min(100.0, 100.0 * 40 * RANGE_SAMPLE / total)       # assez de blocs pour remplir chaque région
     rows = conn.execute(RANGE_SQL.format(zone=ZONE_SQL), {
         "pct": pct, "d0": datetime(first.year, first.month, first.day, tzinfo=timezone.utc),
-        "max": RANGE_MAX_M, "n": RANGE_SAMPLE}).fetchall()
+        "n": RANGE_SAMPLE}).fetchall()
     return {"sans_terres": False, "lignes": rows}
 
 
@@ -303,23 +352,30 @@ def range_section(x: dict) -> list[str]:
     by = defaultdict(list)
     sources = defaultdict(Counter)
     for zone, source, d in p["lignes"]:
-        by[zone].append(RANGE_MAX_M if d is None else d)
+        by[zone].append(RANGE_MAX_M if d is None else min(d, RANGE_MAX_M))
         sources[zone][source] += 1
+
     def km(v):
         return f"> {num(RANGE_MAX_M / 1000)} km" if v >= RANGE_MAX_M else f"{num(v / 1000, 1)} km"
     rows = []
     for zone in sorted(by, key=lambda k: list(L_REGION).index(k) if k in L_REGION else 99):
-        d = sorted(by[zone])
-        q90 = d[min(len(d) - 1, int(0.9 * len(d)))]
-        rows.append([L_REGION.get(zone, zone), num(len(d)), km(statistics.median(d)), km(q90), km(d[-1]),
-                     pct(sum(1 for v in d if v > 22_000), len(d)),
+        allv = by[zone]
+        d = sorted(v for v in allv if v >= RANGE_QUAI_M)       # en mer : à plus de 1 km de la terre
+        if d:
+            q90 = d[min(len(d) - 1, int(0.9 * len(d)))]
+            stats = [km(statistics.median(d)), km(q90), km(d[-1]), pct(sum(1 for v in d if v > 22_000), len(d))]
+        else:
+            stats = ["n.d."] * 4
+        rows.append([L_REGION.get(zone, zone), num(len(allv)), pct(len(allv) - len(d), len(allv)), *stats,
                      ", ".join(f"{k} {num(v)}" for k, v in sources[zone].most_common())])
     return head + [
         f"Distance à la côte d'un échantillon de positions reçues ({num(RANGE_SAMPLE)} au plus par région, tirées au "
-        "hasard sur la période). Le recouvrement de la Bretagne et de la Manche est compté en Bretagne. Une portée "
-        "courte signale une réception surtout terrestre : au delà, un navire sans AIS reçu n'est pas forcément "
-        "silencieux.", "",
-        table(["Région", "Positions", "Médiane", "9e décile", "Maximum", "Au delà de 12 milles", "Source"], rows), ""]
+        "hasard sur la période). Le recouvrement de la Bretagne et de la Manche est compté en Bretagne. « À quai » : à "
+        "moins de 1 km de la terre (ports, rades) ; médiane, 9e décile, maximum et part au delà de 12 milles portent "
+        "sur les positions en mer. Une portée courte signale une réception surtout terrestre : au delà, un navire sans "
+        "AIS reçu n'est pas forcément silencieux.", "",
+        table(["Région", "Positions", "À quai", "Médiane en mer", "9e décile", "Maximum", "Au delà de 12 milles",
+               "Source"], rows), ""]
 
 
 def viirs_section(x: dict, rules: dict) -> list[str]:
@@ -367,7 +423,13 @@ def viirs_section(x: dict, rules: dict) -> list[str]:
             table(["Tolérance", "Appariées"], tol_rows), "",
             f"Détections sans AIS selon la distance à la côte (seuil « très au large » actuel : {v['tres_au_large_km']} km), "
             f"sur {len(far)} :", "",
-            table(["Au delà de", "Détections"], far_rows), ""]
+            table(["Au delà de", "Détections"], far_rows), "",
+            "Détections sans AIS apparié évaluables (une alerte est possible) : avant, critère provisoire (au moins "
+            f"{v['couverture_min_navires']} navire AIS reçu à moins de {v['couverture_rayon_km']} km dans les "
+            f"{v['couverture_fenetre_min']} minutes) ; après, dans la zone de réception fiable en base. Les deux hors "
+            "coupure du flux AIS. Une détection du recouvrement de la Bretagne et de la Manche compte dans les deux.", "",
+            table(["Région", "Sans AIS apparié", "Évaluables avant", "Évaluables après"], evaluability_rows(x, rules)),
+            ""]
 
 
 # Rapport
@@ -452,6 +514,12 @@ def report(m: Mesures, x: dict, rules: dict) -> str:
           f"navire de classe A en route, sous 2 h ; {z['min_vessels']} navires distincts au moins par cellule "
           f"(sur toute la période). Zone actuellement en base : {num(x['reception_now'][0])} cellules, "
           f"{num(float(x['reception_now'][1]))} km².", ""]
+    if x["reception_regions"]:
+        by = {r[0]: r for r in x["reception_regions"]}
+        L += ["Zone en base par région (une cellule est comptée dans la région qui contient son centre ; le "
+              "recouvrement de la Bretagne et de la Manche est compté dans les deux) :", "",
+              table(["Région", "Cellules", "Surface"],
+                    [[L_REGION[k], num(by[k][1]), f"{num(float(by[k][2]))} km²"] for k in L_REGION if k in by]), ""]
     pairs = sorted(c[0] for c in m.cells.values())
     if pairs:
         def qp(q):

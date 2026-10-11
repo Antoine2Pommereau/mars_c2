@@ -3,6 +3,7 @@ concurrents, échec de lancement, délai de démarrage, résultats reçus deux f
 par exemple : MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars (base de test, docs/deploiement.md)."""
 import base64
 import json
+import math
 import os
 import threading
 import time
@@ -196,11 +197,8 @@ def test_silent_worker_state_is_recorded_before_destruction(conn):
     assert diag["etat"] == "running" and diag["cartes_privees"][0]["adresses"] == ["172.16.8.6/22"] and not scw.servers
 
 
-def test_reevaluation_of_existing_viirs_alerts(conn):
-    """Les règles nouvelles appliquées aux détections en base : très au large avec AIS alentour, gravité moyenne ;
-    près des côtes, faible et à confirmer ; sans aucune réception AIS ou pendant une coupure du flux, non évaluable
-    (alerte vierge retirée, alerte portant une décision gardée en faible avec le motif)."""
-    from mars.viirs import reevaluate
+def _viirs_cases(conn):
+    """Cinq détections VIIRS de l'ancienne règle, chacune avec son alerte (gravité moyenne) ; l'une porte une décision."""
     for sql in ("DELETE FROM alert_actions", "DELETE FROM alert_evidence WHERE evidence_type IN ('viirs', 'vessel')",
                 "DELETE FROM alerts WHERE type = 'DARK_SHIP'", "DELETE FROM land WHERE source = 'essai'",
                 "DELETE FROM positions WHERE vessel_id >= 990000", "DELETE FROM vessels WHERE id >= 990000",
@@ -237,6 +235,23 @@ def test_reevaluation_of_existing_viirs_alerts(conn):
         conn.execute("INSERT INTO alert_evidence VALUES (%s, 'viirs', %s)", (alerts[name], ids[name]))
     conn.execute("INSERT INTO alert_actions (alert_id, action, note, author) VALUES (%s, 'acquitter', 'vu', 'essai')",
                  (alerts["decision"],))
+    return ids, alerts
+
+
+def _states(conn, ids, alerts):
+    det = {n: conn.execute("SELECT mask_reason, non_evaluable, ais_navires_rayon FROM viirs_detections WHERE id = %s",
+                           (i,)).fetchone() for n, i in ids.items()}
+    sev = {n: conn.execute("SELECT severity, details->>'a_confirmer', status, details->>'critere_evaluation' "
+                           "FROM alerts WHERE id = %s", (a,)).fetchone() for n, a in alerts.items()}
+    return det, sev
+
+
+def test_reevaluation_of_existing_viirs_alerts(conn):
+    """Les règles nouvelles appliquées aux détections en base : très au large avec AIS alentour, gravité moyenne ;
+    près des côtes, faible et à confirmer ; sans aucune réception AIS ou pendant une coupure du flux, non évaluable
+    (alerte vierge retirée, alerte portant une décision gardée en faible avec le motif)."""
+    from mars.viirs import reevaluate
+    ids, alerts = _viirs_cases(conn)
     out = reevaluate(conn, RULES)
     assert out["non_evaluables"] == 3 and out["alertes_retirees"] == 2 and out["alertes_gardees_avec_decision"] == 1
     det = {n: conn.execute("SELECT mask_reason, non_evaluable, ais_navires_rayon FROM viirs_detections WHERE id = %s",
@@ -250,6 +265,32 @@ def test_reevaluation_of_existing_viirs_alerts(conn):
     assert sev["sans_reception"] is None and sev["coupure"] is None                 # alertes vierges retirées
     assert sev["decision"][0] == "faible"
     assert conn.execute("SELECT details->>'non_evaluable' FROM alerts WHERE id = %s", (alerts["decision"],)).fetchone()[0]
+
+
+def test_reception_zone_decides_evaluability_once_built(conn):
+    """Zone de réception fiable construite : elle remplace le critère des navires reçus à 30 km. Dans la zone, une
+    détection sans aucun navire alentour devient évaluable ; hors zone, non évaluable, même près de navires AIS ;
+    l'alerte qui porte une décision de l'opérateur est gardée."""
+    from mars.viirs import reevaluate
+    ids, alerts = _viirs_cases(conn)
+    z = RULES["reception"]
+    for lon, lat in ((-6.0, 48.0), (-6.5, 47.5)):                     # cellules de « large » et « sans_reception »
+        cx, cy = math.floor(lon / z["cell_deg_lon"]), math.floor(lat / z["cell_deg_lat"])
+        x0, y0, x1, y1 = cx * z["cell_deg_lon"], cy * z["cell_deg_lat"], (cx + 1) * z["cell_deg_lon"], (cy + 1) * z["cell_deg_lat"]
+        conn.execute("INSERT INTO reception_cells (cx, cy, messages, vessels, hours, coverage, geom) VALUES "
+                     "(%s, %s, 100, 5, 10, 0.95, ST_MakeEnvelope(%s, %s, %s, %s, 4326)::geography)", (cx, cy, x0, y0, x1, y1))
+    out = reevaluate(conn, RULES)
+    det, sev = _states(conn, ids, alerts)
+    assert det["sans_reception"][0] is None and det["sans_reception"][2] == 0      # évaluable : dans la zone
+    assert det["cote"][1] == "hors de la zone de réception AIS fiable"             # navires à côté, mais hors zone
+    assert det["decision"][1] == "hors de la zone de réception AIS fiable"
+    assert "coupure du flux" in det["coupure"][1]
+    assert out["non_evaluables"] == 3 and out["alertes_retirees"] == 2 and out["alertes_gardees_avec_decision"] == 1
+    assert sev["decision"] is not None and sev["cote"] is None and sev["coupure"] is None
+    new = conn.execute("SELECT details->>'critere_evaluation' FROM alerts a JOIN alert_evidence e ON e.alert_id = a.id "
+                       "WHERE e.evidence_type = 'viirs' AND e.evidence_id = %s", (ids["sans_reception"],)).fetchone()
+    assert new == ("zone_de_reception_fiable",)
+    conn.execute("DELETE FROM reception_cells")
 
 
 class FakeR2:

@@ -29,6 +29,8 @@ Usage :
     python scripts/taches.py travailleurs             # état des travailleurs, une surveillance tout de suite
     python scripts/taches.py journal-travailleur [ID] # journal envoyé par un travailleur, état Scaleway s'il est muet
     python scripts/taches.py viirs-reevaluer          # détections VIIRS en base réévaluées (gravité, non évaluables)
+    python scripts/taches.py coupures-injection [--jour 2026-10-09] [--essais 20]
+                                                      # test par injection de la règle des coupures (rien n'est écrit)
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
     python scripts/taches.py mesures [--jours 14]     # mesures de calibration (scripts/mesures_calibration.py)
     python scripts/taches.py sauvegardes              # liste des sauvegardes sur R2
@@ -202,6 +204,25 @@ def update_list(conn, source: str) -> dict:
     return out
 
 
+def injection(day: date, essais: int) -> dict:
+    """Test par injection de la règle des coupures AIS (mars/rules.py, ais_gap_injection) : coupures de 3 h à 2, 6,
+    10, 14 et 18 h UTC, sur une connexion asyncpg dédiée ; chaque essai est annulé, la base n'est pas modifiée."""
+    import asyncio
+    import asyncpg
+    from mars.rules import ais_gap_injection
+
+    async def go():
+        c = await asyncpg.connect(database_url())
+        try:
+            if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM reception_cells)"):
+                return {"refus": "zone de réception fiable absente : lancer scripts/build_masks.py"}
+            start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+            return await ais_gap_injection(c, start, load_rules(), essais=essais, heures=[2, 6, 10, 14, 18])
+        finally:
+            await c.close()
+    return asyncio.run(go())
+
+
 def rules_cycle(lists_only: bool = False) -> dict:
     """Un cycle des règles sur le flux en direct (mars/rules.py), sur une connexion asyncpg dédiée. `lists_only` :
     seulement les règles qui dépendent des listes (navires des listes, gravité des changements d'identité)."""
@@ -258,11 +279,14 @@ def main():
     ap.add_argument("commande", nargs="?", default="boucle",
                     choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "viirs",
                              "travailleurs", "journal-travailleur", "detruire-travailleurs", "viirs-reevaluer", "mesures",
+                             "coupures-injection",
                              "sauvegardes", "telecharger", "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
     ap.add_argument("--au", type=date.fromisoformat)
     ap.add_argument("--jours", type=int, default=14, help="mesures : nombre de jours examinés")
+    ap.add_argument("--jour", type=date.fromisoformat, help="coupures-injection : journée (par défaut, la veille)")
+    ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")
     a = ap.parse_args()
     load_env()
     conn = connect()
@@ -312,6 +336,9 @@ def main():
     elif a.commande == "viirs-reevaluer":                # règles VIIRS en vigueur appliquées aux détections en base
         from mars import viirs
         print(json.dumps(viirs.reevaluate(conn, load_rules()), ensure_ascii=False, indent=2, default=str))
+    elif a.commande == "coupures-injection":             # coupures simulées dans des transactions annulées
+        print(json.dumps(injection(a.jour or (datetime.now(timezone.utc) - timedelta(days=1)).date(), a.essais),
+                         ensure_ascii=False, indent=2, default=str))
     elif a.commande == "passages":
         if run(conn, "passages", lambda: update_passes(conn)) is None:
             sys.exit(1)

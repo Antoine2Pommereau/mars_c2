@@ -17,6 +17,7 @@ import statistics
 from datetime import date, datetime, timedelta, timezone
 
 from mars.ais.live import ZONES
+from mars.evaluation import critere, motif_non_evaluable
 from mars.satellites import extent
 
 CMR = "https://cmr.earthdata.nasa.gov/search/granules.json"
@@ -255,9 +256,9 @@ def _measure_granule(conn, gid: int, rules: dict):
 
 
 def _evaluability(conn, ids: list[int], rules: dict) -> int:
-    """Détections sans AIS non évaluables (aucune alerte) : coupure du flux AIS à l'heure du passage, ou aucune
-    réception AIS autour (hors zone de réception fiable si elle est construite, sinon aucun navire reçu dans le
-    rayon). Retourne leur nombre."""
+    """Détections sans AIS non évaluables (aucune alerte), selon mars/evaluation.py : coupure du flux AIS à l'heure
+    du passage, ou hors de la zone de réception fiable dès qu'elle est construite (sinon, critère provisoire : aucun
+    navire reçu dans le rayon). Retourne leur nombre."""
     v, ratio = rules["viirs"], rules["continu"]["flux_min_ratio"]
     cells = conn.execute("SELECT EXISTS (SELECT 1 FROM reception_cells)").fetchone()[0]
     rows = conn.execute(
@@ -269,14 +270,8 @@ def _evaluability(conn, ids: list[int], rules: dict) -> int:
     for did, ts, around, covered in rows:
         counts = dict(conn.execute("SELECT minute, positions FROM stats_minute WHERE minute BETWEEN %s AND %s",
                                    (ts - timedelta(hours=3), ts + timedelta(hours=1))).fetchall())
-        if feed_cut(counts, ts, ratio, v["coupure_marge_min"]):
-            motif = "coupure du flux AIS à l'heure du passage"
-        elif cells and not covered:
-            motif = "hors de la zone de réception AIS fiable"
-        elif not cells and (around or 0) < v["couverture_min_navires"]:
-            motif = (f"aucun navire AIS reçu à moins de {v['couverture_rayon_km']} km dans les "
-                     f"{v['couverture_fenetre_min']} minutes autour du passage : réception AIS absente")
-        else:
+        motif = motif_non_evaluable(feed_cut(counts, ts, ratio, v["coupure_marge_min"]), cells, covered, around, v)
+        if motif is None:
             continue
         conn.execute("UPDATE viirs_detections SET mask_reason = 'non_evaluable', non_evaluable = %s WHERE id = %s",
                      (motif, did))
@@ -467,6 +462,7 @@ def _screen(conn, ids: list[int], rules: dict, out: dict) -> dict:
 
 def _alerts(conn, ids: list[int], rules: dict) -> int:
     v = rules["viirs"]
+    cells = conn.execute("SELECT EXISTS (SELECT 1 FROM reception_cells)").fetchone()[0]
     rows = conn.execute(
         """SELECT d.id, d.ts, ST_X(d.geom::geometry), ST_Y(d.geom::geometry), d.nanowatts, d.lune, d.ciel_clair,
                   d.distance_cote_m, g.satellite, g.nom, g.nuit, round(d.ais_proche_m) AS ais_m, d.ais_navires_rayon,
@@ -513,6 +509,7 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
             "distance_cote_km": None if cote_m is None else round(cote_m / 1000, 1),
             "infrastructure": infra, "navire_liste": liste, "candidats_ais": cands, "contexte": context,
             "a_confirmer": to_confirm, "ais_proche_m": ais_m, "ais_navires_rayon": around,
+            "critere_evaluation": critere(cells),
             "motif": "Lumière en mer la nuit, sans navire AIS compatible alors que l'AIS est reçu alentour, loin des côtes "
                      "et absente les autres nuits",
             "parametres": {k: v[k] for k in ("tolerance_m", "cote_km", "persistance_m", "persistance_nuits", "corridor_m",

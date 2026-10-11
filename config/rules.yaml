@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.21"
+version: "2026.10.22"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -79,12 +79,20 @@ reception:
   # bien couverte, deux messages successifs d'un navire de classe A en route sont presque toujours rapprochés.
   cell_deg_lon: 0.10     # environ 6 km
   cell_deg_lat: 0.05     # environ 5,5 km
-  max_interval_s: 180    # intervalle jugé normal entre deux messages d'un navire en route
-  min_coverage: 0.95     # au moins 95 % des intervalles sous ce seuil
-  min_pairs: 200         # assez d'observations pour juger
-  min_vessels: 3
+  # PROVISOIRE (11/10/2026), en attendant la recalibration complète sur dix jours de collecte. Les valeurs danoises
+  # (180 s, 95 %, 200 paires) laissaient la zone vide sur les quatre jours mesurés du 06 au 09/10 : le flux AISStream
+  # est partiel et les positions sont allégées à un point par minute en route. Avec 600 s, 90 % et 50 paires, la zone
+  # couvrait 1 067 cellules, environ 44 000 km² (rapport de mesures, section 2).
+  max_interval_s: 600    # intervalle jugé normal entre deux messages d'un navire en route (provisoire)
+  min_coverage: 0.90     # au moins 90 % des intervalles sous ce seuil (provisoire)
+  min_pairs: 50          # assez d'observations pour juger (provisoire)
+  min_vessels: 3         # navires distincts au moins
 
 ais_gap:
+  # observation : épisodes détectés comptés et journalisés dans task_runs (tâche regles), sans alerte ; alertes :
+  # alertes AIS_GAP. En observation tant que les seuils ci dessous (messages avant la coupure, durée, projection) sont
+  # ceux du Danemark : ils alimentent la recalibration sans remplir le fil.
+  mode: observation
   min_gap_min: 120       # silence d'au moins deux heures
   min_speed_kn: 1.0      # le navire faisait route au moment de se taire
   min_prior_messages: 10 # et émettait régulièrement : au moins 10 messages dans l'heure précédente

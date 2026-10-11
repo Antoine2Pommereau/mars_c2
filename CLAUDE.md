@@ -270,7 +270,9 @@ France.
 24 heures bornée par la dernière position reçue (`mars/rules.py`, `run_continuous` ; section `continu` de
 `config/rules.yaml`, seuils de calibration inchangés) :
 * rendez vous et coupures AIS, comme avant, mais enregistrés par clé stable ; les minutes de flux AIS coupé (moins
-  de 20 % de la médiane par minute) ne comptent pas dans un silence ;
+  de 20 % de la médiane par minute) ne comptent pas dans un silence ; **coupures AIS en mode observation** depuis le
+  11/10/2026 (`ais_gap.mode`) : épisodes comptés et décrits dans `task_runs`, aucune alerte, tant que leurs seuils
+  sont danois ;
 * **WATCHLIST** : une alerte par passage dans nos eaux d'un navire des listes (fort, sanctionné, flotte fantôme,
   suspect GUR), gravité selon le niveau, un cran de moins si reconnu par le MMSI seul ;
 * **IDENTITY_CHANGE** : nouveau nom confirmé 6 h sans retour à un nom antérieur (les alternances comme MUTIN ne
@@ -370,6 +372,18 @@ l'arrêt pondérée par la durée (un point toutes les dix minutes à l'arrêt c
 (mouillage connu ou non, distance à la côte), dans l'alerte WATCHLIST et la fiche navire. Rapport de mesures :
 section portée de réception.
 
+**Zone de réception fiable provisoire (11/10/2026)** (règles 2026.10.22, aucune migration) : mesuré sur le serveur
+du 06 au 09/10, les seuils danois (intervalle normal 3 min, continuité 95 %, 200 paires) donnent une zone vide (flux
+AISStream partiel, un point par minute en route) ; réglage provisoire 10 min, 90 %, 50 paires, 3 navires (1 067
+cellules, environ 44 000 km² sur le serveur), à recalibrer sur dix jours. Dès que la zone existe, elle seule décide
+qu'une détection satellite sans AIS est évaluable (`mars/evaluation.py`, commun à VIIRS et à Sentinel ; alerte notée
+`critere_evaluation`) ; `taches.py viirs-reevaluer` après chaque reconstruction. Coupures AIS en observation. Test par
+injection partagé (`ais_gap_injection`, API et `taches.py coupures-injection`), éprouvé sur 135 769 positions réelles
+de 500 navires en route (48 h lues sur le serveur), zone de test de 351 cellules : **181 coupures de 3 h retrouvées sur 253 injectées (72 %)** ; 54 manquées prises pour des sorties de couverture (route projetée hors d'une zone de test plus petite que celle du serveur), 18 par d'autres filtres ; avant tout essai, 316 navires en route sur 988 (32 %) n'ont pas les 10 messages dans l'heure qu'exige `min_prior_messages` (valeur danoise) : premier seuil à recalibrer. Rapport de mesures : surface de la zone par
+région, part des détections VIIRS évaluables avant et après, portée de réception (trait de côte subdivisé et indexé,
+32 plus proches voisins : 14,8 s pour 12 000 positions au lieu d'environ 13 min, écart au calcul exact de 14 m au
+plus), progression affichée par section.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -379,11 +393,11 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 118 réussis, 15 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 14 sans
+`python -m pytest tests` : 122 réussis, 16 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 15 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 132 réussis, 1 ignoré. Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 137 réussis, 1 ignoré (zone de réception fiable qui décide de l'évaluation des détections). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -485,6 +499,10 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   script passe par cloud-init plutôt que par une image privée de près d'un Go.
 * Un élément `fixed` placé dans un panneau à `backdrop-blur` est contenu par ce panneau (le flou crée un bloc
   conteneur) : une vue agrandie passe par un portail (`createPortal` vers `document.body`).
+* Les tests en base (`MARS_TEST_DATABASE_URL`) vident des tables de la base de test (positions, zone de réception) :
+  sauvegarder d'abord un jeu chargé pour une mesure (`pg_dump -Fc -t positions …`).
+* Distance à la côte de nombreux points : jamais `ST_DWithin` à grand rayon sur `land` (distance géodésique à des
+  centaines de polygones par point) ; table subdivisée et indexée, plus proches voisins puis distance exacte.
 * Une règle en continu ne voit que sa fenêtre (24 h) : une durée qui la dépasse (séjour d'un navire des listes) se
   mesure depuis le début repris de l'alerte précédente, en relisant les positions.
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à

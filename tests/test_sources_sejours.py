@@ -151,8 +151,9 @@ def test_reception_range_section():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
     from mesures_calibration import RANGE_MAX_M, range_section
 
-    lignes = [("bretagne", "aisstream", d) for d in (1000, 5000, 10_000, 30_000, None)]
+    # 200 m : à quai ; les autres en mer (sans côte à 300 km : au delà)
+    lignes = [("bretagne", "aisstream", d) for d in (200, 1000, 5000, 10_000, 30_000, None)]
     txt = "\n".join(range_section({"portee": {"sans_terres": False, "lignes": lignes}}))
-    assert "| Bretagne | 5 | 10,0 km | > 300 km | > 300 km | 40 % | aisstream 5 |" in txt
+    assert "| Bretagne | 6 | 17 % | 10,0 km | > 300 km | > 300 km | 40 % | aisstream 6 |" in txt
     assert RANGE_MAX_M == 300_000
     assert "table `land` vide" in "\n".join(range_section({"portee": {"sans_terres": True, "lignes": []}}))

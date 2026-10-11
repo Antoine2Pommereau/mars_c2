@@ -492,13 +492,121 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
                       "event_time": event_time, "lon": x["lon"], "lat": x["lat"], "details": details,
                       "vessels": [x["vessel_id"]] + [p["vessel_id"] for p in partners]})
 
+    counts = {"silences_detectes": len(rows), "exclus_sortie_de_couverture": exits,
+              "exclus_coupure_du_flux": outages, "coupures_retenues": len(items),
+              "avec_partenaire_possible": with_partner, "minutes_de_flux_coupe": len(outage)}
+    if g.get("mode", "alertes") == "observation":
+        # Seuils encore danois : les épisodes sont comptés et décrits pour la recalibration, aucune alerte n'est créée,
+        # mise à jour ni retirée (celles qui existeraient déjà restent telles quelles)
+        return {**counts, "mode": "observation", **observation_summary(items)}
     # Les alertes dont le dernier message précède le début de la fenêtre plus la fenêtre d'historique de la règle ne
     # sont pas retirées : la fenêtre glissante ne voit plus leur historique, elles restent valables
     prune_from = day_start + timedelta(minutes=g["prior_window_min"])
     saved = await save_alerts(c, "AIS_GAP", items, prune_from, day_end, "dernier_message", rules["version"])
-    return {"silences_detectes": len(rows), "exclus_sortie_de_couverture": exits,
-            "exclus_coupure_du_flux": outages, "coupures_retenues": len(items),
-            "avec_partenaire_possible": with_partner, "minutes_de_flux_coupe": len(outage), **saved}
+    return {**counts, "mode": "alertes", **saved}
+
+
+OBSERVATION_MAX = 30
+
+
+def observation_summary(items: list[dict]) -> dict:
+    """Épisodes de coupure retenus en mode observation, pour task_runs : gravité qu'aurait eue l'alerte, et les
+    OBSERVATION_MAX plus longs décrits en quelques champs (le journal reste petit : un cycle toutes les 5 minutes)."""
+    by_sev: dict[str, int] = {}
+    for it in items:
+        by_sev[it["severity"]] = by_sev.get(it["severity"], 0) + 1
+    longest = sorted(items, key=lambda it: -it["details"]["duree_min"])[:OBSERVATION_MAX]
+    return {"gravites_hypothetiques": by_sev, "episodes": [
+        {"vessel_id": it["details"]["navire"]["vessel_id"], "mmsi": it["details"]["navire"]["mmsi"],
+         "dernier_message": it["details"]["dernier_message"], "duree_min": it["details"]["duree_min"],
+         "reapparition": it["details"]["reapparition"] is not None, "comportement": it["details"]["comportement"],
+         "messages_heure_precedente": it["details"]["messages_heure_precedente"],
+         "derniere_position": it["details"]["derniere_position"], "gravite": it["severity"]} for it in longest]}
+
+
+# Test par injection de la règle des coupures (API /api/rules/ais_gap/selftest, taches.py coupures-injection)
+
+class _Rollback(Exception):
+    pass
+
+
+async def ais_gap_injection(c, day_start, rules: dict, essais: int = 5, heures=(11,)) -> dict:
+    """Coupures de trois heures simulées en effaçant les messages de navires réels, chacune dans une transaction
+    annulée : la base n'est jamais modifiée. Pour chaque heure de coupure, les navires de classe A en route dans
+    l'heure qui précède sont triés : historique insuffisant pour la règle (moins de min_prior_messages dans la fenêtre
+    prior_window_min), pas de réapparition dans l'heure qui suit, dernière position près des côtes ou hors de la zone
+    de réception fiable ; parmi les autres (au plus `essais`), la règle doit retrouver le silence (find_gaps, et
+    projection restée dans la zone fiable). Vaut en mode observation comme en mode alertes : seule la détection est
+    éprouvée, aucune alerte n'est écrite."""
+    g, z = rules["ais_gap"], rules["reception"]
+    essais = max(1, min(int(essais), 50))
+    trials, rejected, total_moving = [], {"historique_insuffisant": 0, "sans_reapparition": 0, "pres_des_cotes": 0,
+                                          "hors_zone_de_reception_fiable": 0}, 0
+    for h in heures:
+        t_cut = day_start + timedelta(hours=int(h))
+        t_back = t_cut + timedelta(hours=3)
+        rows = await c.fetch(
+            """SELECT p.vessel_id, v.mmsi, v.name,
+                      count(*) FILTER (WHERE p.ts < $1::timestamptz
+                                         AND p.ts >= $1::timestamptz - make_interval(mins => $4::int)) AS avant,
+                      count(*) FILTER (WHERE p.ts >= $2::timestamptz) AS apres
+               FROM positions p JOIN vessels v ON v.id = p.vessel_id
+               WHERE p.ts >= $1::timestamptz - make_interval(mins => greatest($4::int, 60)) AND p.ts < $1::timestamptz
+                     OR p.ts >= $2::timestamptz AND p.ts < $2::timestamptz + interval '1 hour'
+               GROUP BY p.vessel_id, v.mmsi, v.name, v.ais_class, v.ship_type
+               HAVING v.ais_class = 'A' AND NOT (coalesce(v.ship_type, '') = ANY($3::text[]))
+                  AND avg(p.sog_kn) FILTER (WHERE p.ts < $1::timestamptz) >= 8""",
+            t_cut, t_back, g["excluded_ship_types"], g["prior_window_min"])
+        total_moving += len(rows)
+        kept = 0
+        for cand in sorted(rows, key=lambda r: -r["avant"]):
+            if cand["avant"] < g["min_prior_messages"] + 1:
+                rejected["historique_insuffisant"] += 1
+                continue
+            if not cand["apres"]:
+                rejected["sans_reapparition"] += 1
+                continue
+            where = await c.fetchrow(
+                """SELECT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, p.geom, 10000)) AS cote,
+                          EXISTS (SELECT 1 FROM reception_cells rc
+                                  WHERE rc.cx = floor(ST_X(p.geom::geometry) / $3::float8)::int
+                                    AND rc.cy = floor(ST_Y(p.geom::geometry) / $4::float8)::int) AS fiable
+                   FROM positions p WHERE p.vessel_id = $1 AND p.ts < $2 ORDER BY p.ts DESC LIMIT 1""",
+                cand["vessel_id"], t_cut, z["cell_deg_lon"], z["cell_deg_lat"])
+            if where["cote"]:
+                rejected["pres_des_cotes"] += 1
+                continue
+            if not where["fiable"]:
+                rejected["hors_zone_de_reception_fiable"] += 1
+                continue
+            if kept >= essais:
+                continue
+            kept += 1
+            result = {"mmsi": cand["mmsi"], "name": cand["name"], "coupure": f"{t_cut:%d/%m %H:%M}"}
+            try:
+                async with c.transaction():
+                    result["messages_effaces"] = int((await c.execute(
+                        "DELETE FROM positions WHERE vessel_id = $1 AND ts >= $2 AND ts < $3",
+                        cand["vessel_id"], t_cut, t_back)).split()[-1])
+                    found = [r for r in await find_gaps(c, t_cut - timedelta(hours=2), t_back + timedelta(hours=1), rules)
+                             if r["vessel_id"] == cand["vessel_id"]]
+                    hit = [r for r in found if r["projection_couverte"]]
+                    result["detectee"] = bool(hit)
+                    if hit:
+                        result["duree_detectee_min"] = round(hit[0]["duration_min"])
+                    elif found:
+                        result["raison_probable"] = "route menant hors de la zone fiable : traitée comme une sortie de couverture"
+                    else:
+                        result["raison_probable"] = "autre filtre de la règle (vitesse, bord des données, distance à la côte)"
+                    raise _Rollback()
+            except _Rollback:
+                pass
+            trials.append(result)
+    detected = sum(1 for t in trials if t.get("detectee"))
+    return {"mode": g.get("mode", "alertes"), "heures_de_coupure": list(heures), "duree_coupure_h": 3,
+            "navires_en_route_classe_a": total_moving, "ecartes_avant_essai": rejected, "essais": len(trials),
+            "detectees": detected, "taux_de_detection": round(detected / len(trials), 3) if trials else None,
+            "details": trials}
 
 
 # Navire d'une liste de surveillance dans nos eaux (WATCHLIST)

@@ -151,7 +151,7 @@ de 24 heures bornée par la dernière position reçue :
 | Règle | Alerte | Prérequis |
 |---|---|---|
 | Rendez vous | `RENDEZVOUS` | trait de côte (`land`) |
-| Coupure AIS | `AIS_GAP` | zone de réception fiable (`reception_cells`) |
+| Coupure AIS | `AIS_GAP` ; en **mode observation** (`ais_gap.mode`) tant que ses seuils sont danois : épisodes comptés et décrits dans `task_runs`, aucune alerte | zone de réception fiable (`reception_cells`) |
 | Navire d'une liste dans nos eaux | `WATCHLIST`, une par passage (12 h sans position ouvrent un passage nouveau), niveaux fort, sanctionné, flotte fantôme, suspect GUR | listes importées |
 | Changement d'identité | `IDENTITY_CHANGE` : nouveau nom confirmé 6 h, ou même OMI sous un autre MMSI | aucun |
 
@@ -184,6 +184,7 @@ docker compose exec taches python scripts/taches.py viirs         # nuits VIIRS 
 docker compose exec taches python scripts/taches.py travailleurs  # état des travailleurs (dix derniers)
 docker compose exec taches python scripts/taches.py journal-travailleur [ID]   # journal et état Scaleway d'un travailleur
 docker compose exec taches python scripts/taches.py viirs-reevaluer             # règles VIIRS appliquées aux détections en base
+docker compose exec taches python scripts/taches.py coupures-injection --jour 2026-10-09 --essais 20   # test par injection
 docker compose exec taches python scripts/taches.py detruire-travailleurs   # arrêt d'urgence de toute instance
 docker compose exec taches python scripts/taches.py sauvegardes   # liste des sauvegardes sur R2
 docker compose exec taches python scripts/import_watchlist.py --gur data/listes/Vessels1.db   # fichier local
@@ -359,7 +360,14 @@ docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
   téléchargée, sans l'extraire, dans un dossier temporaire du conteneur effacé à la fin.
 * **Zones de mouillage et zone de réception fiable** : calculées par l'API sur les 7 derniers jours (`--jours 7`) ;
   sans cette option, sur toutes les positions en base, ce qui coûte plus de mémoire et de fichiers temporaires à
-  PostgreSQL. Les seuils (`stationary_zones`, `reception`) sont ceux de la calibration danoise, à recalibrer.
+  PostgreSQL. Seuils de la zone de réception : **provisoires** depuis les règles 2026.10.22 (intervalle normal
+  10 min, continuité 90 %, 50 paires et 3 navires par cellule) ; les seuils danois (3 min, 95 %, 200 paires)
+  laissaient la zone vide avec le flux AISStream allégé. Recalibration complète après dix jours de collecte.
+* **Après chaque reconstruction de la zone** : `taches.py viirs-reevaluer`. Dès que la zone existe, elle seule décide
+  qu'une détection satellite sans AIS est évaluable (`mars/evaluation.py`) ; les détections et alertes déjà en base
+  suivent la zone du moment (alerte vierge d'une détection devenue non évaluable retirée, alerte portant une
+  décision gardée). Contrôle de la zone :
+  `docker compose exec db psql -U mars -d mars -c "SELECT count(*), round(sum(ST_Area(geom)) / 1e6) AS km2 FROM reception_cells"`.
 * **Coût mesuré** (image linux/amd64 émulée sur le Mac, base de test, 06/10/2026) : 61 s au total dont le
   téléchargement de 149 Mo ; **300 Mo de mémoire au plus** pendant une minute (539 Mo avant lecture économe du
   shapefile : le polygone de l'Eurasie compte plus d'un million de points) ; **142 Mo de disque au plus**,

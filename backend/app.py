@@ -28,7 +28,8 @@ from mars.frise import timeline
 from mars.fusion.pipeline import fuse
 from mars.geo import bbox_size_km
 from mars.sar.catalog import get_token, search_passes
-from mars.rules import build_reception_cells, build_stationary_zones, find_gaps, run_ais_gap, run_rendezvous
+from mars.rules import (ais_gap_injection, build_reception_cells, build_stationary_zones, run_ais_gap,
+                        run_rendezvous)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://mars:mars@localhost:5432/mars")
 INFERENCE_URL = os.environ.get("INFERENCE_URL", "http://host.docker.internal:8001")
@@ -657,6 +658,8 @@ async def inference_health():
 
 class RuleRun(BaseModel):
     day: str | None = None   # AAAA-MM-JJ ; toutes les journées chargées si absent
+    essais: int = 5          # test par injection : navires essayés par heure de coupure (50 au plus)
+    heures: list[int] | None = None   # test par injection : heures UTC du début des coupures (11 h par défaut)
 
 
 @app.post("/api/masks/stationary")
@@ -751,98 +754,15 @@ async def ais_gap_run(req: RuleRun):
     return results
 
 
-class _Rollback(Exception):
-    pass
-
-
 @app.post("/api/rules/ais_gap/selftest")
 async def ais_gap_selftest(req: RuleRun):
-    """Test par injection : on efface trois heures de messages de navires réels, dans une transaction annulée
-    à la fin, et on vérifie que la règle détecte bien chaque coupure ainsi créée. La base n'est pas modifiée."""
+    """Test par injection (mars/rules.py, ais_gap_injection) : coupures de trois heures simulées sur des navires réels,
+    dans des transactions annulées ; la base n'est pas modifiée."""
     rules = load_rules()
     async with app.state.pool.acquire() as c:
         day = (await _rule_days(c, req.day))[0]
         start = pd.Timestamp(day, tz="UTC").to_pydatetime()
-        t_cut = start + pd.Timedelta(hours=11)
-        t_back = t_cut + pd.Timedelta(hours=3)
-        # Candidats : navires de classe A qui satisfont, avant la coupure, l'exigence de la règle elle même
-        # (min_prior_messages dans la fenêtre prior_window), faisaient route et réapparaissent dans l'heure qui suit.
-        # Les critères suivent les paramètres de la règle et non une densité fixe : l'AIS en base est allégé (un
-        # point par minute au plus en route), et l'ancien seuil de 100 messages en 5 heures supposait l'AIS danois
-        # non allégé.
-        g = rules["ais_gap"]
-        candidates = await c.fetch(
-            """SELECT p.vessel_id, v.mmsi, v.name,
-                      count(*) FILTER (WHERE p.ts < $1::timestamptz) AS avant
-               FROM positions p JOIN vessels v ON v.id = p.vessel_id
-               WHERE p.ts >= $1::timestamptz - make_interval(mins => $4::int) AND p.ts < $2::timestamptz + interval '1 hour'
-                 AND v.ais_class = 'A' AND NOT (coalesce(v.ship_type, '') = ANY($3::text[]))
-               GROUP BY p.vessel_id, v.mmsi, v.name
-               HAVING count(*) FILTER (WHERE p.ts < $1::timestamptz) >= $5::int + 1
-                  AND count(*) FILTER (WHERE p.ts >= $2::timestamptz) >= 1
-                  AND avg(p.sog_kn) FILTER (WHERE p.ts < $1::timestamptz) >= 8
-               ORDER BY avant DESC LIMIT 200""",
-            t_cut, t_back, g["excluded_ship_types"], g["prior_window_min"], g["min_prior_messages"])
-        candidates_all = candidates
-        # On teste la détection elle même : dernière position avant la coupure au large (plus de 10 km des côtes)
-        # et dans la zone de réception fiable, là où la règle doit voir le silence
-        offshore, rejected = [], {"pres_des_cotes": 0, "hors_zone_de_reception_fiable": 0}
-        for cand in candidates:
-            where = await c.fetchrow(
-                """SELECT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, p.geom, 10000)) AS cote,
-                          EXISTS (SELECT 1 FROM reception_cells rc
-                                  WHERE rc.cx = floor(ST_X(p.geom::geometry) / $3::float8)::int
-                                    AND rc.cy = floor(ST_Y(p.geom::geometry) / $4::float8)::int) AS fiable
-                   FROM positions p WHERE p.vessel_id = $1 AND p.ts < $2 ORDER BY p.ts DESC LIMIT 1""",
-                cand["vessel_id"], t_cut, rules["reception"]["cell_deg_lon"], rules["reception"]["cell_deg_lat"])
-            if where["cote"]:
-                rejected["pres_des_cotes"] += 1
-            elif not where["fiable"]:
-                rejected["hors_zone_de_reception_fiable"] += 1
-            else:
-                offshore.append(cand)
-            if len(offshore) == 5:
-                break
-        candidates = offshore
-        trials = []
-        for cand in candidates:
-            result = {"mmsi": cand["mmsi"], "name": cand["name"]}
-            try:
-                async with c.transaction():
-                    result["messages_effaces"] = int((await c.execute(
-                        "DELETE FROM positions WHERE vessel_id = $1 AND ts >= $2 AND ts < $3",
-                        cand["vessel_id"], t_cut, t_back)).split()[-1])
-                    rows = await find_gaps(c, t_cut - pd.Timedelta(hours=2), t_back + pd.Timedelta(hours=1), rules)
-                    found = [r for r in rows if r["vessel_id"] == cand["vessel_id"]]
-                    hit = [r for r in found if r["projection_couverte"]]
-                    result["detectee"] = bool(hit)
-                    if found and not hit:
-                        result["raison_probable"] = "route menant hors de la zone fiable : traitée comme une sortie de couverture"
-                    elif hit:
-                        result["duree_detectee_min"] = round(hit[0]["duration_min"])
-                    if not found:
-                        last = await c.fetchrow(
-                            """SELECT p.sog_kn,
-                                      EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, p.geom, $3::float8)) AS pres_cote,
-                                      EXISTS (SELECT 1 FROM reception_cells rc
-                                              WHERE rc.cx = floor(ST_X(p.geom::geometry) / $4::float8)::int
-                                                AND rc.cy = floor(ST_Y(p.geom::geometry) / $5::float8)::int) AS reception_fiable
-                               FROM positions p WHERE p.vessel_id = $1 AND p.ts < $2 ORDER BY p.ts DESC LIMIT 1""",
-                            cand["vessel_id"], t_cut, rules["ais_gap"]["min_coast_km"] * 1000.0,
-                            rules["reception"]["cell_deg_lon"], rules["reception"]["cell_deg_lat"])
-                        result["raison_probable"] = (
-                            "dernière position près de la côte" if last["pres_cote"] else
-                            "dernière position hors zone de réception fiable" if not last["reception_fiable"] else
-                            "vitesse trop faible avant la coupure" if (last["sog_kn"] or 0) < rules["ais_gap"]["min_speed_kn"]
-                            else "autre filtre (bord des données, classe, historique)")
-                    raise _Rollback()
-            except _Rollback:
-                pass
-            trials.append(result)
-    detected = [t for t in trials if t.get("detectee")]
-    return {"coupure_simulee": f"{t_cut:%H:%M} à {t_back:%H:%M} UTC", "detectees": len(detected),
-            "essais": len(trials), "candidats": len(candidates_all), "candidats_ecartes": rejected,
-            "details": trials}
+        return await ais_gap_injection(c, start, rules, essais=req.essais, heures=req.heures or [11])
 
 
 @app.post("/api/rules/rendezvous/run")
