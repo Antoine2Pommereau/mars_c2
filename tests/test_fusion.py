@@ -67,3 +67,20 @@ def test_echo_fixe_ne_declenche_pas_d_alerte():
     assert out.mask_reason.iloc[1] == "echo fixe"       # l'écho de 43 m sans AIS, revu à 25 m près
     assert alerts == []
     assert extras["fixed_hits"][0]["refs"][0]["ref"] == 42
+
+
+def test_same_result_without_scipy_nor_pyproj():
+    """L'image des scripts (conteneur taches, Sentinel 1) n'a ni scipy ni pyproj : projection locale et affectation
+    gloutonne doivent donner les mêmes masques et les mêmes appariements."""
+    import subprocess
+    import sys
+    code = (
+        "import sys; sys.modules['pyproj'] = None; sys.modules['scipy'] = None; sys.modules['scipy.optimize'] = None\n"
+        "sys.path.insert(0, 'tests'); from test_fusion import _cas, T0, BBOX\n"
+        "from mars.config import load_rules; from mars.fusion.pipeline import fuse\n"
+        "det, pos = _cas(); out, alerts, n, _ = fuse(det, pos, T0, BBOX, load_rules())\n"
+        "print(out.mask_reason.tolist(), out.matched_vessel_id.tolist(), len(alerts), n)\n")
+    sans = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.strip()
+    det, pos = _cas()
+    out, alerts, n, _ = fuse(det, pos, T0, BBOX, load_rules())
+    assert sans == str(out.mask_reason.tolist()) + " " + str(out.matched_vessel_id.tolist()) + f" {len(alerts)} {n}"

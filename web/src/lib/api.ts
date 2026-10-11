@@ -107,6 +107,12 @@ export const api = {
   viirs: (start: string, end: string, region: string | null) =>
     get<FC>(`/viirs/detections?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
   viirsDetection: (id: number) => get<Props>(`/viirs/detections/${id}`),
+  /** Détections Sentinel 1 de la plage (couche « Détections radar et optiques ») */
+  sentinel: (start: string, end: string, region: string | null) =>
+    get<FC>(`/sentinel/detections?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
+  sentinelDetection: (id: number) => get<Props>(`/sentinel/detections/${id}`),
+  /** Vérification satellite d'un navire : échos radar et lumières VIIRS appariés */
+  verification: (id: number) => get<{ radar: Props[]; viirs: Props[] }>(`/vessels/${id}/satellite`),
   viirsNuits: (start: string, end: string) => get<Props[]>(`/viirs/nuits?start=${enc(start)}&end=${enc(end)}`),
   track: (vesselId: number, start: string, end: string, maxPoints = 2000) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${enc(start)}&end=${enc(end)}&max_points=${maxPoints}`),

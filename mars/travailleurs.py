@@ -113,31 +113,37 @@ class Scaleway:
             raise ScalewayError(f"{method} {path} : {r.status_code} {r.text[:300]}")
         return r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else None
 
-    def resolve_image(self, zone: str, label: str, commercial_type: str, arch: str = "x86_64") -> dict:
-        """Image de démarrage : catalogue Scaleway (libellé, zone, type d'instance, architecture, disque local), puis
-        fiche de l'image dans l'API Instance pour son volume racine. Retourne {"id", "name", "arch", "root_type",
-        "root_size"} ; ScalewayError si rien ne convient ou si l'image n'a pas de volume racine local."""
-        d = self._req("GET", f"/marketplace/v2/local-images?image_label={label}&zone={zone}&type=instance_local")
+    def resolve_image(self, zone: str, label: str, commercial_type: str, arch: str = "x86_64",
+                      volume: str = "l_ssd") -> dict:
+        """Image de démarrage : catalogue Scaleway (libellé, zone, type d'instance, architecture, type de stockage),
+        puis fiche de l'image dans l'API Instance pour son volume racine. `volume` : « l_ssd » (disque local, instances
+        CPU) ou « sbs_volume » (stockage bloc, seul proposé sur les GPU L4 ; image de type instance_sbs, volume racine
+        tiré d'un instantané bloc). Retourne {"id", "name", "arch", "root_type", "root_size"}, `root_type` étant le
+        type du volume de l'instance ; ScalewayError si rien ne convient."""
+        kind = "instance_sbs" if volume == "sbs_volume" else "instance_local"
+        d = self._req("GET", f"/marketplace/v2/local-images?image_label={label}&zone={zone}&type={kind}")
         found = [i for i in (d.get("local_images", []) if d is not GONE else [])
                  if commercial_type in i.get("compatible_commercial_types", []) and i.get("arch") == arch
-                 and i.get("type", "instance_local") == "instance_local"]
+                 and i.get("type", "instance_local") == kind]
         if not found:
-            raise ScalewayError(f"aucune image « {label} » {arch} sur disque local pour {commercial_type} en {zone}")
+            what = "en stockage bloc" if volume == "sbs_volume" else "sur disque local"
+            raise ScalewayError(f"aucune image « {label} » {arch} {what} pour {commercial_type} en {zone}")
         img = self._req("GET", f"/instance/v1/zones/{zone}/images/{found[0]['id']}")
         img = None if img is GONE else img.get("image")
         root = (img or {}).get("root_volume") or {}
         if not img or img.get("arch") != arch or not root.get("id") or not root.get("size"):
             raise ScalewayError(f"image {found[0]['id']} ({label}) introuvable ou sans volume racine")
-        if root.get("volume_type") != "l_ssd":
-            raise ScalewayError(f"image {img['id']} : volume racine {root.get('volume_type')}, disque local attendu")
-        return {"id": img["id"], "name": img.get("name"), "arch": img["arch"], "root_type": root["volume_type"],
+        expected = ("sbs_snapshot", "sbs_volume") if volume == "sbs_volume" else ("l_ssd",)
+        if root.get("volume_type") not in expected:
+            raise ScalewayError(f"image {img['id']} : volume racine {root.get('volume_type')}, attendu {' ou '.join(expected)}")
+        return {"id": img["id"], "name": img.get("name"), "arch": img["arch"], "root_type": volume,
                 "root_size": int(root["size"])}
 
     def create(self, zone: str, name: str, commercial_type: str, image: dict, disque_go: int, tags: list) -> dict:
         """Crée l'instance éteinte à partir de l'image : le volume racine (index 0) n'est décrit que par sa taille et son
         type, ceux de l'image (comme le fait la ligne de commande Scaleway) ; il est ainsi copié de l'image, agrandi à
         `disque_go` au besoin. Refuse toute création sans image résolue."""
-        if not image or not image.get("id") or image.get("root_type") != "l_ssd" or not image.get("root_size"):
+        if not image or not image.get("id") or image.get("root_type") not in ("l_ssd", "sbs_volume") or not image.get("root_size"):
             raise ScalewayError("création refusée : aucune image de démarrage résolue")
         size = max(int(disque_go * 1e9), image["root_size"])
         body = {"name": name, "project": self.project, "commercial_type": commercial_type, "image": image["id"],
@@ -231,15 +237,30 @@ class Scaleway:
         servers = [] if d is GONE else d.get("servers", [])
         return [s for s in servers if refus(s, self.project, self.protected) is None]
 
-    def destroy(self, zone: str, server_id: str) -> bool:
+    def delete_block_volumes(self, zone: str, ids: list[str]) -> list[str]:
+        """Supprime des volumes bloc (API Block Storage) ; retourne ceux qui restent (encore attachés ou en cours de
+        détachement : réessayé à la minute suivante). Seuls les volumes enregistrés à la création d'un travailleur sont
+        passés ici (colonne travailleurs.volumes_bloc), jamais une liste lue ailleurs."""
+        left = []
+        for v in ids:
+            try:
+                self._req("DELETE", f"/block/v1alpha1/zones/{zone}/volumes/{v}")       # 404 : déjà supprimé
+            except ScalewayError as e:
+                if "in_use" not in str(e) and "precondition" not in str(e) and "409" not in str(e) and "412" not in str(e):
+                    raise
+                left.append(v)
+        return left
+
+    def destroy(self, zone: str, server_id: str, block_volumes: list[str] | None = None) -> bool:
         """Détruit l'instance et ses volumes, après avoir vérifié chez Scaleway que c'est un travailleur (sinon
         RefusDestruction, sans aucun appel destructeur). Vrai quand plus rien n'existe ; faux si la destruction est en
-        cours (un nouvel appel, à la minute suivante, la termine)."""
+        cours (un nouvel appel, à la minute suivante, la termine). `block_volumes` : volumes bloc enregistrés à la
+        création (GPU) ; ils survivent à l'instance chez Scaleway et sont supprimés une fois l'instance partie."""
         if not server_id or server_id in self.protected:
             raise RefusDestruction(f"instance {server_id} protégée : serveur principal")
         s = self.server(zone, server_id)
         if s is None:
-            return True
+            return not self.delete_block_volumes(zone, block_volumes or [])
         motif = refus(s, self.project, self.protected)
         if motif:
             raise RefusDestruction(motif)
@@ -252,14 +273,17 @@ class Scaleway:
         #   starting, stopping, locked… : attendre.
         state = s.get("state")
         action = f"/instance/v1/zones/{zone}/servers/{server_id}/action"
+        vols = {v["id"]: v.get("volume_type") for v in (s.get("volumes") or {}).values() if v and v.get("id")}
+        block = [v for v, kind in vols.items() if kind == "sbs_volume"]
         if state == "running":
-            self._req("POST", action, json={"action": "terminate"})
+            # terminate supprime l'instance et ses disques locaux, mais laisse les volumes bloc (facturés) : pour
+            # une instance à volume bloc, extinction puis suppression explicite
+            self._req("POST", action, json={"action": "poweroff" if block else "terminate"})
             return False
         if state == "stopped in place":
             self._req("POST", action, json={"action": "poweroff"})
             return False
         if state == "stopped":
-            vols = [v["id"] for v in (s.get("volumes") or {}).values() if v and v.get("id")]
             try:
                 self._req("DELETE", f"/instance/v1/zones/{zone}/servers/{server_id}")
             except ScalewayError as e:
@@ -267,9 +291,10 @@ class Scaleway:
                     raise
                 self._req("POST", action, json={"action": "poweroff"})     # pas encore libérée : on recommence
                 return False
-            for v in vols:                                       # 404 : déjà supprimé avec l'instance
-                self._req("DELETE", f"/instance/v1/zones/{zone}/volumes/{v}")
-            return True
+            for v, kind in vols.items():                         # 404 : déjà supprimé avec l'instance
+                if kind != "sbs_volume":
+                    self._req("DELETE", f"/instance/v1/zones/{zone}/volumes/{v}")
+            return not self.delete_block_volumes(zone, sorted(set(block) | set(block_volumes or [])))
         return False
 
 
@@ -315,16 +340,17 @@ def orphans(servers: list[dict], active: dict[str, datetime], now: datetime, max
     return out
 
 
-def cloud_init(script: str, tache: dict, env: dict, image: str, mac: str, gpu: bool = False) -> str:
+def cloud_init(script: str, tache: dict, env: dict, image: str, mac: str, docker_opts: str = "") -> str:
     """Configuration cloud-init : script de démarrage (travailleurs/demarrage.sh), script et tâche du travailleur,
-    secrets en 0600 ; `mac` : adresse de la carte du réseau privé, que le démarrage configure explicitement."""
+    secrets en 0600 ; `mac` : adresse de la carte du réseau privé, que le démarrage configure explicitement ;
+    `docker_opts` : options du conteneur d'analyse (GPU : « --gpus all --shm-size=16g »)."""
     def f(path, content, mode):
         b = base64.b64encode(content.encode()).decode()
         return f"  - path: {path}\n    encoding: b64\n    permissions: '{mode}'\n    content: {b}\n"
     envtxt = "".join(f"{k}={v}\n" for k, v in env.items())
     name = Path(tache.get("script", "travailleur.py")).name
     boot = {"RETOUR": tache["retour"], "JETON": tache["jeton"], "MAC": mac.lower(), "IMAGE": image, "SCRIPT": name,
-            "GPU": "--gpus all" if gpu else ""}
+            "GPU": docker_opts}
     boottxt = "".join(f"{k}={json.dumps(v)}\n" for k, v in boot.items())
     return ("#cloud-config\nwrite_files:\n" + f("/mars/demarrage.sh", (ROOT / "travailleurs" / "demarrage.sh").read_text(), "0755")
             + f("/mars/demarrage.env", boottxt, "0600") + f(f"/mars/{name}", script, "0644")
@@ -352,14 +378,20 @@ def boot_problem(server: dict | None, image: dict) -> str | None:
 
 
 def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, private_network_id: str,
-              user_data, sleep=time.sleep, on_created=None) -> dict:
+              user_data, sleep=time.sleep, on_created=None, on_block_volumes=None) -> dict:
     """Crée un travailleur dans l'ordre sûr, chaque étape vérifiée : instance éteinte, réseau privé rattaché et prêt,
     cloud-init (qui reçoit l'adresse MAC de la carte privée), démarrage jusqu'à « running ». `user_data(mac)` produit
-    le cloud-init ; `on_created(server_id)` est appelé dès la création (pour pouvoir détruire en cas d'échec)."""
-    image = scw.resolve_image(zone, t["image_label"], t["commercial_type"], t.get("arch", "x86_64"))
+    le cloud-init ; `on_created(server_id)` est appelé dès la création (pour pouvoir détruire en cas d'échec),
+    `on_block_volumes(ids)` dès que les volumes bloc sont connus (pour les supprimer à coup sûr)."""
+    image = scw.resolve_image(zone, t["image_label"], t["commercial_type"], t.get("arch", "x86_64"),
+                              t.get("volume", "l_ssd"))
     s = scw.create(zone, name, t["commercial_type"], image, t["disque_go"], tags)
     if on_created:
         on_created(s["id"])
+    block = [v["id"] for v in (s.get("volumes") or {}).values()
+             if v and v.get("id") and v.get("volume_type") == "sbs_volume"]
+    if block and on_block_volumes:
+        on_block_volumes(block)
     if s.get("state") not in (None, "stopped"):
         raise ScalewayError(f"instance créée dans l'état « {s.get('state')} » au lieu de « stopped »")
     # Relecture : l'instance doit démarrer sur le disque local copié de l'image attendue (sinon « UEFI Interactive
@@ -396,7 +428,7 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
         return {"refus": "réseau privé non configuré (MARS_IP_PRIVEE, SCW_PRIVATE_NETWORK_ID)"}
     retour = f"http://{ip}:8090/api/travailleurs"           # nginx, port réservé au retour (web/nginx.conf)
     token = secrets.token_urlsafe(32)
-    zone = p["zone"]
+    zone = t.get("zone", p["zone"])            # GPU L4 : fr-par-2 ; le réseau privé est régional (fr-par)
     # Verrou : index unique sur « verrou » parmi les travailleurs non détruits. L'insertion est atomique ; un second
     # lancement concurrent (rattrapage automatique et commande manuelle) échoue ici, avant tout appel à Scaleway.
     import psycopg
@@ -414,12 +446,17 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
     def on_created(server_id):
         created.append(server_id)
         conn.execute("UPDATE travailleurs SET scw_server_id = %s WHERE id = %s", (server_id, wid))
+
+    def on_block_volumes(ids):
+        block.extend(ids)
+        conn.execute("UPDATE travailleurs SET volumes_bloc = %s WHERE id = %s", (ids, wid))
+    block: list[str] = []
     try:
         task = {**parametres, "retour": f"{retour.rstrip('/')}/{wid}", "jeton": token, "script": t["script"]}
         script = (ROOT / t["script"]).read_text()
         r = provision(scw, zone, f"mars-travailleur-{wid}", t, [TAG, f"run-{wid}", f"tache-{tache}"], pn,
-                      lambda mac: cloud_init(script, task, env, t["image"], mac, gpu="gpu" in t["image_label"]),
-                      sleep=sleep, on_created=on_created)
+                      lambda mac: cloud_init(script, task, env, t["image"], mac, t.get("docker_opts", "")),
+                      sleep=sleep, on_created=on_created, on_block_volumes=on_block_volumes)
         conn.execute("UPDATE travailleurs SET etat = 'cree' WHERE id = %s", (wid,))
         return {"travailleur": wid, "instance": r["server_id"], "type": t["commercial_type"], "mac_privee": r["mac"]}
     except Exception as e:
@@ -428,7 +465,7 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
         gone = True
         for server_id in created:                     # destruction aussitôt, par le garde
             try:
-                gone = scw.destroy(zone, server_id)
+                gone = scw.destroy(zone, server_id, block)
             except Exception as d:
                 gone = False
                 log(f"travailleur {wid} : destruction après échec impossible ({d}) ; la surveillance réessaiera")
@@ -454,7 +491,7 @@ def _journal(conn, w: dict, rules: dict):
 
 
 COLS = ("id", "tache", "etat", "commercial_type", "zone", "scw_server_id", "resultat", "mesures", "erreur",
-        "cree_le", "fini_le", "detruit_le", "parametres", "demarre_le")
+        "cree_le", "fini_le", "detruit_le", "parametres", "demarre_le", "volumes_bloc")
 
 
 def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print, now: datetime | None = None) -> dict:
@@ -516,7 +553,7 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
                 gone = False
             else:
                 try:
-                    gone = scw.destroy(w["zone"], w["scw_server_id"])
+                    gone = scw.destroy(w["zone"], w["scw_server_id"], w["volumes_bloc"] or [])
                 except RefusDestruction as e:
                     # Jamais détruite : la ligne est close, sans rien toucher chez Scaleway
                     log(f"travailleur {w['id']} : DESTRUCTION REFUSÉE, {e}")
@@ -534,7 +571,8 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
                 out["detruits"] += 1
     if scw is not None:
         active = {w["scw_server_id"]: w["cree_le"] for w in rows if w["scw_server_id"] and w["etat"] not in ("termine", "echec")}
-        for zone in sorted({p["zone"], *(w["zone"] for w in rows)}):
+        zones = {p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values()), *(w["zone"] for w in rows)}
+        for zone in sorted(zones):
             for sid in orphans(scw.tagged(zone), active, now, p["duree_max_min"], scw.project, scw.protected):
                 try:
                     scw.destroy(zone, sid)

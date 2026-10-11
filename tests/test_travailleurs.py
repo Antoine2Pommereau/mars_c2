@@ -395,7 +395,7 @@ def test_no_suitable_image_means_no_creation():
     assert "creation" not in api.order
 
 
-@pytest.mark.parametrize("image", [None, {}, {"id": UBUNTU}, {"id": UBUNTU, "root_type": "sbs_volume", "root_size": 1}])
+@pytest.mark.parametrize("image", [None, {}, {"id": UBUNTU}, {"id": UBUNTU, "root_type": "b_ssd", "root_size": 1}])
 def test_creation_without_resolved_image_is_refused(image):
     from mars.travailleurs import ScalewayError
     api = ProvisionApi()

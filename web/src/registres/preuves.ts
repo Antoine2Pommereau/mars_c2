@@ -11,7 +11,7 @@ interface SourcePreuve {
 
 const SOURCES_PREUVE: SourcePreuve[] = [
   { source: "viirs", etape: null, fiche: (id) => `/viirs/detections/${id}` },
-  { source: "sentinel1", etape: "C", fiche: (id) => `/detections/${id}` },
+  { source: "sentinel1", etape: null, fiche: (id) => `/sentinel/detections/${id}` },
   { source: "sentinel2", etape: "C", fiche: (id) => `/detections/${id}` },
 ];
 

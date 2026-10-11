@@ -57,7 +57,7 @@ class FakeScw(T.Scaleway):
     def tagged(self, _zone):
         return [s for s in self.servers.values() if T.refus(s, self.project, self.protected) is None]
 
-    def destroy(self, _zone, sid):
+    def destroy(self, _zone, sid, *_volumes):
         s = self.servers.get(sid)
         if s and T.refus(s, self.project, self.protected):
             raise T.RefusDestruction("pas un travailleur")

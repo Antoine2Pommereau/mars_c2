@@ -23,6 +23,7 @@ interface PanelProps {
   onPickInfra: (id: number) => void;
   onSuivre: (vesselId: number, on: boolean) => void;
   onRejeu: (vesselId: number) => void;
+  onPickDetection: (source: "sentinel1" | "viirs", id: number) => void;
 }
 
 /** Fiche de l'objet sélectionné (navire, alerte, infrastructure, zone, détection) : un en tête, puis les sections du
@@ -40,7 +41,7 @@ export default function DetailPanel(p: PanelProps) {
   let title = "", color = "#4fb6c8", badge: string | null = null, footer: string | null = null;
   const ctx: Contexte = { objet: "detection", passTime: p.passTime, plage: p.plage, suivis: p.suivis, vessels: p.vessels,
     alerts: p.alerts, onStatus: p.onStatus, onPickAlert: p.onPickAlert, onPickVessel: p.onPickVessel,
-    onPickInfra: p.onPickInfra, onSuivre: p.onSuivre, onRejeu: p.onRejeu };
+    onPickInfra: p.onPickInfra, onSuivre: p.onSuivre, onRejeu: p.onRejeu, onPickDetection: p.onPickDetection };
   if (selection.kind === "alert") {
     const a = selection.feature.properties;
     Object.assign(ctx, { objet: "alerte", alerte: selection.feature });
@@ -68,9 +69,9 @@ export default function DetailPanel(p: PanelProps) {
     title = L.zones[selection.properties.zone] ?? selection.properties.zone;
   } else {
     Object.assign(ctx, { detection: selection.properties });
-    const viirs = selection.properties.source === "viirs";
-    title = viirs ? L.fiche.viirs.titre : L.preuves.detection;
-    if (viirs) color = selection.properties.statut === "sans_ais" ? typeAlerte("DARK_SHIP").couleur : "#8a93c9";
+    const viirs = selection.properties.source === "viirs", radar = selection.properties.source === "sentinel1";
+    title = viirs ? L.fiche.viirs.titre : radar ? L.fiche.radar.titre : L.preuves.detection;
+    if (viirs || radar) color = selection.properties.statut === "sans_ais" ? typeAlerte("DARK_SHIP").couleur : "#8a93c9";
   }
 
   return (

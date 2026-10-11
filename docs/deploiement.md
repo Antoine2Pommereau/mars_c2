@@ -185,6 +185,8 @@ docker compose exec taches python scripts/taches.py travailleurs  # état des tr
 docker compose exec taches python scripts/taches.py journal-travailleur [ID]   # journal et état Scaleway d'un travailleur
 docker compose exec taches python scripts/taches.py viirs-reevaluer             # règles VIIRS appliquées aux détections en base
 docker compose exec taches python scripts/taches.py coupures-injection --jour 2026-10-09 --essais 20   # test par injection
+docker compose exec taches python scripts/taches.py sentinel                    # passages Sentinel 1 à analyser maintenant
+docker compose exec taches python scripts/taches.py sentinel-analyser 1234      # un passage choisi à la main (sar_passes)
 docker compose exec taches python scripts/taches.py detruire-travailleurs   # arrêt d'urgence de toute instance
 docker compose exec taches python scripts/taches.py sauvegardes   # liste des sauvegardes sur R2
 docker compose exec taches python scripts/import_watchlist.py --gur data/listes/Vessels1.db   # fichier local
@@ -253,6 +255,13 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
    La zone et le type d'instance des travailleurs sont dans `config/rules.yaml` (`travailleurs`). Puis
    `docker compose up -d --no-build web taches` (nginx publie le port 8090 sur l'adresse privée).
 5. **Vérifier** sans attendre 06:30 : procédure d'essai ci dessous.
+6. **Sentinel 1 (lot C, `docs/sentinel.md`)** : quota GPU L4-1-24G (identité du compte validée), droit
+   **BlockStorageFullAccess** ajouté à la politique de l'application (les L4 n'ont que des volumes bloc, supprimés
+   explicitement), clés S3 de Copernicus Data Space dans le `.env` (`CDSE_ACCESS_KEY`, `CDSE_SECRET_KEY`, obtenues sur
+   https://eodata-s3keysmanager.dataspace.copernicus.eu). Le réseau privé est régional : le travailleur GPU en fr-par-2
+   rejoint le serveur en fr-par-1 sans autre réglage. Migration 25 (`db/init/25_sentinel.sql`). Sans clés CDSE, rien
+   n'est lancé ; premier essai sur un passage choisi à la main : `taches.py sentinel-analyser <id>` (procédure dans
+   `docs/sentinel.md`).
 
 **Comment un travailleur démarre.** L'image de démarrage est résolue à chaque lancement dans le catalogue Scaleway :
 Ubuntu 24.04 officielle (`ubuntu_noble`), zone fr-par-1, type DEV1-M, architecture x86_64, sur disque local ; sa fiche

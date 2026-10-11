@@ -140,10 +140,14 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
           const t = Date.parse(f.properties.acquired_at);
           if (t < debut || t > fin) return null;
           const prevu = f.properties.statut === "prevu";
+          const analyse = f.properties.analyse as string | undefined;
+          const analyseOk = analyse === "done";
           return (
-            <span key={f.properties.id} title={F.passage(f.properties.satellite, utc(f.properties.acquired_at), prevu)}
+            <span key={f.properties.id}
+              title={F.passage(f.properties.satellite, utc(f.properties.acquired_at), prevu,
+                L.fiche.passage.analyses[analyse ?? ""] ?? undefined)}
               onPointerDown={(e) => { e.stopPropagation(); onPickPassage(f); }}
-              className={`absolute bottom-0 h-2.5 w-[5px] -translate-x-1/2 cursor-pointer rounded-sm border ${prevu ? "border-dashed" : ""}`}
+              className={`absolute bottom-0 w-[5px] -translate-x-1/2 cursor-pointer rounded-sm border ${prevu ? "border-dashed" : ""} ${analyseOk ? "h-4 ring-1 ring-ink/80" : "h-2.5"}`}
               style={{ left: `${pct(t)}%`, borderColor: COULEUR_PASSAGE, background: prevu ? "transparent" : COULEUR_PASSAGE }} />
           );
         })}

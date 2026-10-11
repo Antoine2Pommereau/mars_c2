@@ -58,8 +58,8 @@ C'est le cœur de l'outil : la liste de ce qui demande une décision, triée par
 | AIS\_GAP | Silence d'un navire là où la réception est fiable | Les deux | Après recalibration |
 | INFRA\_THREAT | Arrêt, flânerie ou vitesse d'ancre traînante dans un corridor d'infrastructure | Infrastructures | Après recalibration |
 | DARK\_SHIP | Écho satellite sans AIS correspondant | Les deux | 3 |
-| AIS\_UNCONFIRMED | Position AIS que le radar ne confirme pas | Les deux | 3 |
-| IDENTITY\_MISMATCH | Longueur ou cap mesurés par satellite contraires à la déclaration | Flotte fantôme | 3 |
+| AIS\_UNCONFIRMED | Position AIS que le radar ne confirme pas | Les deux | 3, **fait (lot C, Sentinel 1)** |
+| IDENTITY\_MISMATCH | Longueur ou cap mesurés par satellite contraires à la déclaration | Flotte fantôme | 3, **fait (lot C, Sentinel 1)** |
 | TRAJECTOIRE\_ANORMALE | Trajectoire jugée improbable par GeoTrackNet | Les deux | Pilote |
 | PASSAGE\_PREVU | Passage prédit d'un navire des listes dans un corridor | Infrastructures | 4 |
 
@@ -90,7 +90,7 @@ C'est le dossier d'un navire, celui qu'un opérateur lirait avant de décider ou
 | Comportement | Coupures AIS, arrêts au large, rendez vous, passages à moins de 2 milles d'une infrastructure (nom, durée, vitesse minimale) | 2 |
 | Trajectoire | Route sur la période affichée sur la carte, rejeu, export GPX | 2 |
 | Score de risque | Somme pondérée et auditable : chaque point s'explique par une alerte ou une liste | 2 ou 3 |
-| Vérification satellite | Détections radar, optiques et nocturnes rattachées au navire ; longueur mesurée contre longueur déclarée ; vignettes | 3 |
+| Vérification satellite | Détections radar, optiques et nocturnes rattachées au navire ; longueur mesurée contre longueur déclarée ; vignettes | **Fait (lot C : radar Sentinel 1 et VIIRS)** |
 | Comportement appris | Score d'anomalie de GeoTrackNet le long de la trajectoire, segments improbables surlignés | Pilote |
 | Trajectoire prédite | Route anticipée sur 2 à 10 heures avec son incertitude, corridors qu'elle traverse | 4 |
 | Notes de l'opérateur | Commentaires libres, horodatés | 2 |
@@ -112,7 +112,7 @@ La carte affiche tout ce qui a une position, filtré par la plage de temps et pa
 | Infrastructures | Corridors de surveillance | Bande autour des infrastructures affichées |  | 2 |
 | Zones | Couverture, mouillages, réception fiable | Contours et cellules | Date de calcul | 2 |
 | Satellites | Passages Sentinel 1 et 2 | Emprises des acquisitions de la plage : trait plein acquis, pointillé prévu | Prochain passage (barre d'état) | **Fait (lot A)** |
-| Satellites | Détections radar et optiques | Cercles : avec AIS, sans AIS, écartée |  | 3 |
+| Satellites | Détections radar et optiques | Anneaux : avec AIS, sans AIS, écartée ou non évaluable ; un clic ouvre la fiche « détection radar » |  | **Fait (lot C, Sentinel 1)** |
 | Satellites | Détections nocturnes VIIRS | Points lumineux de la nuit : neutre avec AIS, couleur du navire sombre sans AIS, discret écarté (côte, lumière fixe) ; un clic ouvre la fiche « détection nocturne » | Dernière nuit traitée, dernier travailleur (barre d'état) | **Fait (lot B)** |
 | Activité | Cartes de chaleur | Densité, arrêts dans les corridors, détections sans AIS, coupures, sur la plage ; comparaison à la normale EMODnet |  | 3 |
 | Prédictions | Trajectoires prédites | Route anticipée et cône d'incertitude |  | 4 |
@@ -177,7 +177,7 @@ Elle dit ensuite en permanence si la plateforme voit bien, car une absence d'ale
 | Listes | Date du dernier import GUR et OpenSanctions | 2 |
 | Disque | Place libre sur le serveur | 2 |
 | Archivage | Dernière archive et dernière sauvegarde sur R2 | 2 |
-| Satellites | Prochain passage Sentinel 1 et Sentinel 2 sur la région affichée, dernier passage acquis, date du calendrier (fait, lot A) ; dernière nuit VIIRS traitée et état du dernier travailleur éphémère (fait, lot B) ; dernier passage Sentinel analysé (lot C) | 3 |
+| Satellites | Prochain passage Sentinel 1 et Sentinel 2 sur la région affichée, dernier passage acquis, date du calendrier (fait, lot A) ; dernière nuit VIIRS traitée et état du dernier travailleur éphémère (fait, lot B) ; dernier passage Sentinel analysé, dernier travailleur GPU et coût du mois (fait, lot C) | 3 |
 
 ### Panneau des analyses satellites
 
@@ -235,3 +235,10 @@ couche, piste des nuits, fiche « détection nocturne », alertes DARK_SHIP de s
 « Satellites » complété. Suite : lot C, analyse Sentinel d'un passage par un
 travailleur GPU, déclenchée quand il couvre un corridor ou un navire des listes (l'état « non analysé » de la fiche
 passage sera remplacé par l'analyse ; les nuages annoncés écartent les images Sentinel 2 couvertes).
+
+Lot C, première livraison (11/10/2026, `docs/sentinel.md`) : analyse Sentinel 1 par un travailleur GPU, déclenchée sur
+les passages qui couvrent un corridor avec un navire des listes ou une alerte VIIRS ; couche « Détections radar et
+optiques » (anneaux), fiche « détection radar Sentinel 1 » (mesures, vignette radar avec AIS superposés, navire apparié,
+longueur déclarée, alertes liées), section « Vérification satellite » de la fiche navire, passages analysés distingués
+sur la frise, indicateur « Satellites » (dernier passage analysé, travailleur GPU, coût du mois) ; alertes DARK_SHIP de
+source radar, AIS_UNCONFIRMED et IDENTITY_MISMATCH. Sentinel 2 (optique) reste à faire.

@@ -37,7 +37,8 @@ TrAISformer ensuite ; **CircleNet** (xView3) gardé en repli et en comparaison.
 **Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu (**faites**, alertes WATCHLIST et
 IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (lot A, calendrier des
 passages Sentinel 1 et 2, **fait** ; lot B, VIIRS chaque nuit par travailleurs éphémères, **fait** ; lot C, analyse
-Sentinel déclenchée sur les corridors, par la même architecture sur GPU ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
+Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1 et C2 faits, pas encore essayés sur une vraie
+instance** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
 
 **Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
 plutôt qu'affirmer (une règle silencieuse est prouvée par un test par injection) ; respecter la physique du
@@ -101,7 +102,7 @@ que sur le serveur.
 | `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) |
 | `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` |
 | `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine), calendrier des passages satellites ; 06:30 : nuits VIIRS confiées à un travailleur éphémère ; chaque minute : surveillance des travailleurs ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
-| Travailleurs | Instances Scaleway éphémères (API Scaleway, `mars/travailleurs.py`) | Analyse satellite hors du serveur : créées à la demande, script et tâche par cloud-init, résultat renvoyé par le réseau privé (nginx, port 8090, jeton), détruites par le serveur ; DEV1-M pour VIIRS, GPU au lot C |
+| Travailleurs | Instances Scaleway éphémères (API Scaleway, `mars/travailleurs.py`) | Analyse satellite hors du serveur : créées à la demande, script et tâche par cloud-init, résultat renvoyé par le réseau privé (nginx, port 8090, jeton), détruites par le serveur ; DEV1-M pour VIIRS (fr-par-1), L4-1-24G pour Sentinel 1 (fr-par-2, volume bloc) |
 | Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
 
 **Chaîne du direct** : AISStream, Parquet local, ingestion toutes les 15 s (un point par minute en route, un toutes
@@ -119,13 +120,16 @@ la fusion (`mars/fusion/pipeline.py`) et la persistance des échos fixes, écrit
 mars_c2/
   CLAUDE.md, start.sh, pyproject.toml, docker-compose.yml, docker-compose.serveur.yml
   config/rules.yaml       seuils versionnés
-  db/init/01 à 24         schéma et migrations (idempotentes à partir de 02)
+  db/init/01 à 25         schéma et migrations (idempotentes à partir de 02)
   mars/
     ais/live.py, ingest.py, mid.py   zones, nettoyage, allègement, ingestion, pavillon
     watchlist.py, archive.py, r2.py  listes, archivage et sauvegarde, client R2
     satellites.py                    calendrier des passages Sentinel 1 et 2 (catalogue, plans de l'ESA, couverture)
     travailleurs.py, viirs.py        orchestrateur des travailleurs éphémères ; granules VIIRS, appariement, alertes
   travailleurs/viirs.py              script du travailleur VIIRS (exécuté dans l'image publique d'allenai)
+  mars/sentinel.py                   Sentinel 1 : sélection des passages, garde fous, adresses signées, fusion, alertes
+  mars/evaluation.py                 détection satellite évaluable ou non (zone de réception fiable), VIIRS et Sentinel
+  travailleurs/sentinel.py           script du travailleur GPU (image publique d'AI2, Python 3.8)
   .github/workflows/                 nettoyage du registre GitHub (trois dernières versions par image)
     fusion/                          positions à l'instant du passage, tolérance Doppler, appariement, persistance
     sar/                             passages, extraction Sentinel Hub, CircleNet
@@ -133,7 +137,8 @@ mars_c2/
   mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
   backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo ;
                                      backend/regions.py : région affichée ; backend/satellites.py : passages ;
-                                     backend/travailleurs.py : retour des travailleurs, VIIRS, /api/metrics
+                                     backend/travailleurs.py : retour des travailleurs, VIIRS, /api/metrics ;
+                                     backend/sentinel.py : détections Sentinel 1, vérification satellite
   inference/app.py                   service d'inférence
   scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar,
                                      mesures de calibration (mesures_calibration.py)
@@ -176,7 +181,10 @@ passage dans `/api/ingestion`. **VIIRS** : `/api/viirs/detections?start&end&regi
 `/api/viirs/nuits`, état dans `/api/ingestion` (`satellites.viirs`) ; retour des travailleurs
 `POST /api/travailleurs/{id}/etat|resultats` (jeton, réseau privé seulement). **Mesures** : `/api/metrics` (texte
 Prometheus, pour Grafana plus tard). Tables du lot B : `travailleurs`, `viirs_granules`, `viirs_detections`,
-`viirs_lumieres_fixes` (migration 20). L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
+`viirs_lumieres_fixes` (migration 20). **Sentinel 1** : `/api/sentinel/detections?start&end&region`,
+`/api/sentinel/detections/{id}` (fiche : mesures, vignette, AIS à 2 km, navire apparié), `/api/vessels/{id}/satellite`
+(vérification satellite), `satellites.sentinel` dans `/api/ingestion` ; analyses `source = 'sentinel1'` dans `analyses`
+et `detections` (migration 25), alerte IDENTITY_MISMATCH. L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
 par l'interface : l'instant est tenu par chaque navigateur et inscrit dans l'adresse de la page.
 
 ## 7. Interface
@@ -204,6 +212,10 @@ contextuel, carte, **fiche** à droite, **frise** en bas.
   piste des nuits dans la frise, fiche « détection nocturne » (heure, intensité, lune, navire AIS apparié ou absence,
   alertes liées), alertes DARK_SHIP de source VIIRS dans le fil avec leurs preuves ; l'indicateur « Satellites » donne
   aussi la dernière nuit traitée et l'état du dernier travailleur.
+* **Échos radar Sentinel 1** (lot C) : anneaux de la couche « Détections radar et optiques » (blanc avec AIS, couleur
+  du navire sombre sans AIS, gris écarté), fiche « détection radar Sentinel 1 » (mesures, vignette avec AIS, navire
+  apparié et longueur déclarée), section « Vérification satellite » de la fiche navire, passage analysé plus haut et
+  cerclé sur la frise, alertes IDENTITY_MISMATCH et AIS_UNCONFIRMED actives.
 * **Photos dans les alertes** : vignette (source VesselFinder indiquée, emplacement neutre sinon) devant chaque navire
   de « Navires concernés » ; dans le fil, très petite vignette facultative (bouton image de l'en tête du fil, réglage
   gardé dans le navigateur, désactivée par défaut).
@@ -384,6 +396,20 @@ région, part des détections VIIRS évaluables avant et après, portée de réc
 32 plus proches voisins : 14,8 s pour 12 000 positions au lieu d'environ 13 min, écart au calcul exact de 14 m au
 plus), progression affichée par section.
 
+**Étape 3, lot C, C1 et C2 (11/10/2026)** (migration 25, règles 2026.10.23, `docs/sentinel.md`) : travailleur GPU
+L4-1-24G en fr-par-2 (réseau privé régional, image Ubuntu GPU OS sur volume bloc, supprimé explicitement : jamais
+`terminate`), image publique d'AI2 épinglée (`sha-fafc6c3`, 5 Go) avec un script maison qui appelle sa chaîne (son
+serveur intégré est incohérent à cette version) ; scènes COG lues par adresses S3 signées par le serveur (clés CDSE
+jamais transmises) ; sélection des passages sur corridor avec navire des listes ou alerte VIIRS moyenne au moins,
+scènes utiles seulement, une session GPU ; plafond de 2 scènes par jour et budget de 6 € par mois ; fusion existante
+réutilisée sans scipy ni pyproj dans l'image des scripts (mêmes résultats, testé) ; éoliennes, échos fixes,
+évaluation commune avec VIIRS ; alertes DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH (longueur au delà de 40 m
+et 40 %, orientation en travers seulement) ; vignette radar de 3 km, 19 Ko au plus (essai GDAL sur image synthétique
+géolocalisée : cible au pixel près, contraste de 32,6 dB attendu) ; couche, fiche, vérification satellite, frise,
+indicateur, `/api/metrics`. Éprouvé de bout en bout sur la base de test avec de faux clients Copernicus et Scaleway ;
+**pas encore sur un vrai GPU** (CUDA 11.3 de l'image sur L4, mémoire, poids dans l'image : à trancher au premier
+essai, `taches.py sentinel-analyser <id>`).
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -393,11 +419,11 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 122 réussis, 16 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 15 sans
+`python -m pytest tests` : 133 réussis, 18 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 17 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 137 réussis, 1 ignoré (zone de réception fiable qui décide de l'évaluation des détections). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 150 réussis, 1 ignoré (zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -505,5 +531,13 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   centaines de polygones par point) ; table subdivisée et indexée, plus proches voisins puis distance exacte.
 * Une règle en continu ne voit que sa fenêtre (24 h) : une durée qui la dépasse (séjour d'un navire des listes) se
   mesure depuis le début repris de l'alerte précédente, en relisant les positions.
+* **Image d'AI2 pour Sentinel** (`sha-fafc6c3`) : Ubuntu 20.04, donc **Python 3.8** (pas de `str | None` hors
+  annotations différées, pas de fusion de dictionnaires par `|`) ; son `main.py` passe à `detect_vessels` des arguments
+  qu'elle n'accepte pas : appeler `prepare_scenes` puis `detect_vessels` (16 arguments) directement.
+* **GPU L4 chez Scaleway** : pas de disque local, volume bloc (`sbs_volume`, image de type `instance_sbs`) ; `terminate`
+  laisse le volume bloc (facturé) : extinction, suppression de l'instance, puis du volume par l'API Block Storage
+  (droit BlockStorageFullAccess) ; volumes enregistrés en base dès la création.
+* Le catalogue STAC `sentinel-1-grd` ne renvoie que la version COG des produits (`IW_GRDH_1S-COG`, fichiers
+  `-cog.tiff`) ; le produit d'origine reste trouvable par OData (`S3Path`).
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.

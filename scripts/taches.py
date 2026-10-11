@@ -29,6 +29,8 @@ Usage :
     python scripts/taches.py travailleurs             # état des travailleurs, une surveillance tout de suite
     python scripts/taches.py journal-travailleur [ID] # journal envoyé par un travailleur, état Scaleway s'il est muet
     python scripts/taches.py viirs-reevaluer          # détections VIIRS en base réévaluées (gravité, non évaluables)
+    python scripts/taches.py sentinel                 # passages Sentinel 1 à analyser maintenant (sélection automatique)
+    python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py coupures-injection [--jour 2026-10-09] [--essais 20]
                                                       # test par injection de la règle des coupures (rien n'est écrit)
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
@@ -168,13 +170,34 @@ def launch_viirs(conn) -> dict:
     return {**r, "nuits": p["nuits"], "granules": len(p["granules"])}
 
 
+def launch_sentinel(conn, pass_id: int | None = None) -> dict:
+    """Passages Sentinel 1 à analyser (corridor avec un navire des listes, alerte VIIRS), ou un passage choisi à la
+    main : une session GPU, dans les limites du plafond de scènes et du budget (mars/sentinel.py)."""
+    import requests
+    from mars import sentinel, travailleurs
+    rules = load_rules()
+    scw = travailleurs.Scaleway.from_env()
+    missing = [k for k in ("CDSE_ACCESS_KEY", "CDSE_SECRET_KEY") if not os.environ.get(k)]
+    if scw is None or missing:
+        raise travailleurs.RefusLancement("clés absentes du .env : " + ", ".join(
+            (["SCW_SECRET_KEY, SCW_PROJECT_ID"] if scw is None else []) + missing))
+    busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'sentinel' AND detruit_le IS NULL").fetchone()
+    if busy:
+        return {"en_cours": busy[0]}
+    r = sentinel.launch(conn, scw, rules, datetime.now(timezone.utc), requests.Session(), pass_id, log=log)
+    if "refus" in r:
+        raise travailleurs.RefusLancement(r["refus"])
+    return r
+
+
 def supervise_workers(conn, quiet: bool = True) -> dict | None:
     """Une minute de surveillance des travailleurs ; une erreur (API Scaleway injoignable) n'arrête pas la boucle."""
-    from mars import travailleurs, viirs
+    from mars import sentinel, travailleurs, viirs
     rules = load_rules()
     try:
         out = travailleurs.supervise(conn, travailleurs.Scaleway.from_env(), rules,
-                                     {"viirs": lambda c, w: viirs.ingest(c, w, rules)}, log=log)
+                                     {"viirs": lambda c, w: viirs.ingest(c, w, rules),
+                                      "sentinel": lambda c, w: sentinel.ingest(c, w, rules)}, log=log)
     except Exception as e:
         log(f"surveillance des travailleurs : ÉCHEC, {e}")
         return None
@@ -259,7 +282,7 @@ def loop(conn):
         log(f"{n} tâche(s) interrompue(s) marquée(s) en échec")
     log(f"Tâches planifiées : chaque nuit à {HOUR} UTC (archivage, purge au delà de {KEEP_DAYS} jours, sauvegarde, "
         f"{KEEP_BACKUPS} gardées) ; disque toutes les {DISK_EVERY_S // 60} min, alerte sous {DISK_PCT:.0f} %")
-    last_disk = last_rules = 0.0
+    last_disk = last_rules = last_sentinel = 0.0
     while True:
         supervise_workers(conn)                     # chaque minute, et dès le démarrage : aucun orphelin
         if time.time() - last_disk >= DISK_EVERY_S:
@@ -268,6 +291,12 @@ def loop(conn):
         if time.time() - last_rules >= 60 * load_rules()["continu"]["intervalle_min"]:
             last_rules = time.time()
             run(conn, "regles", rules_cycle, quiet=True)
+        # Sentinel 1 : passages examinés toutes les 30 minutes (rien n'est lancé sans point d'intérêt ; un refus du
+        # plafond ou du budget est consigné dans task_runs, sans trace d'erreur)
+        if time.time() - last_sentinel >= 60 * load_rules()["sentinel"]["intervalle_min"]:
+            last_sentinel = time.time()
+            if os.environ.get("CDSE_ACCESS_KEY") and os.environ.get("SCW_SECRET_KEY"):
+                run(conn, "sentinel", lambda: launch_sentinel(conn), quiet=True)
         for task, (fn, every, hour) in tasks(conn).items():
             if due(conn, task, datetime.now(timezone.utc), every, hour):
                 run(conn, task, fn)
@@ -279,7 +308,7 @@ def main():
     ap.add_argument("commande", nargs="?", default="boucle",
                     choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "viirs",
                              "travailleurs", "journal-travailleur", "detruire-travailleurs", "viirs-reevaluer", "mesures",
-                             "coupures-injection",
+                             "coupures-injection", "sentinel", "sentinel-analyser",
                              "sauvegardes", "telecharger", "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
@@ -326,16 +355,28 @@ def main():
         scw = travailleurs.Scaleway.from_env()
         if scw is None:
             raise SystemExit("clés Scaleway absentes")
-        for s in scw.tagged(load_rules()["travailleurs"]["zone"]):    # travailleurs seulement (garde complète)
-            try:
-                print(s["id"], s["name"], "détruite" if scw.destroy(s["zone"], s["id"]) else "destruction en cours")
-            except travailleurs.RefusDestruction as e:
-                print(s["id"], s.get("name"), f"REFUSÉE : {e}")
+        p = load_rules()["travailleurs"]
+        zones = sorted({p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values())})   # GPU : fr-par-2
+        block = {r[0]: r[1] or [] for r in conn.execute(
+            "SELECT scw_server_id, volumes_bloc FROM travailleurs WHERE scw_server_id IS NOT NULL").fetchall()}
+        for zone in zones:
+            for s in scw.tagged(zone):                                     # travailleurs seulement (garde complète)
+                try:
+                    gone = scw.destroy(zone, s["id"], block.get(s["id"], []))
+                    print(s["id"], s["name"], zone, "détruite" if gone else "destruction en cours (relancer dans une minute)")
+                except travailleurs.RefusDestruction as e:
+                    print(s["id"], s.get("name"), f"REFUSÉE : {e}")
         conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = coalesce(fini_le, now()), "
                      "erreur = coalesce(erreur, 'arrêt d''urgence') WHERE detruit_le IS NULL AND etat NOT IN ('termine', 'echec')")
     elif a.commande == "viirs-reevaluer":                # règles VIIRS en vigueur appliquées aux détections en base
         from mars import viirs
         print(json.dumps(viirs.reevaluate(conn, load_rules()), ensure_ascii=False, indent=2, default=str))
+    elif a.commande in ("sentinel", "sentinel-analyser"):
+        pid = int(a.args[0]) if a.commande == "sentinel-analyser" and a.args else None
+        if a.commande == "sentinel-analyser" and pid is None:
+            raise SystemExit("Préciser l'identifiant du passage : taches.py sentinel-analyser ID (table sar_passes)")
+        if run(conn, "sentinel", lambda: launch_sentinel(conn, pid)) is None:
+            sys.exit(1)
     elif a.commande == "coupures-injection":             # coupures simulées dans des transactions annulées
         print(json.dumps(injection(a.jour or (datetime.now(timezone.utc) - timedelta(days=1)).date(), a.essais),
                          ensure_ascii=False, indent=2, default=str))

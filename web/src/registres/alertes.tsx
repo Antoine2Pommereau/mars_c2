@@ -151,12 +151,38 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     type: "DARK_SHIP", Icone: EyeOff, couleur: "#e85bc7", piste: "deux", etape: "3", actif: true, vignette: true,
     // Deux sources : écho radar sans AIS (Sentinel 1) ou lumière nocturne sans AIS (VIIRS, details.source)
     navires: (d) => [...(d.navire_liste ? [d.navire_liste] : []), ...(d.candidats_ais ?? [])],
-    titre: (d) => d.source === "viirs" ? P.lumiere : P.echo(num(d.length_m, 0)),
+    titre: (d) => d.source === "viirs" ? P.lumiere : P.echo(num(d.longueur_m ?? d.length_m, 0)),
     signe: (d) => d.source === "viirs"
       ? <>{d.a_confirmer && <Tag>{P.aConfirmer}</Tag>}<Tag>{P.viirsDe(num(d.nanowatts, 0))}</Tag></>
-      : <Tag>{P.contrasteDe(num(d.contrast_vv_db, 0))}</Tag>,
+      : d.source === "sentinel1"
+        ? <>{d.a_confirmer && <Tag>{P.aConfirmer}</Tag>}<Tag>{P.radarDe(num(d.longueur_m, 0))}</Tag></>
+        : <Tag>{P.contrasteDe(num(d.contrast_vv_db, 0))}</Tag>,
     preuves: (p) => {
       const d = p.details ?? {};
+      if (d.source === "sentinel1") return (
+        <>
+          {d.detection_id && <PreuveImage source="sentinel1" detectionId={Number(d.detection_id)} />}
+          <Row label={P.capteur}>{String(d.satellite ?? "").replace(/^S1/, "Sentinel 1")}</Row>
+          <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
+          <Row label={P.longueurEstimee}>{d.longueur_m != null ? `${num(d.longueur_m, 0)} m` : L.commun.nd}</Row>
+          <Row label={P.largeurEstimee}>{d.largeur_m != null ? `${num(d.largeur_m, 0)} m` : L.commun.nd}</Row>
+          <Row label={P.contraste}>{d.contraste_db != null ? `${num(d.contraste_db, 1)} dB` : L.commun.nd}</Row>
+          <Row label={P.distanceCote}>{d.distance_cote_km != null ? `${num(d.distance_cote_km)} km` : L.commun.nd}</Row>
+          {d.infrastructure && <Row label={P.infrastructure}>{d.infrastructure.name ?? d.infrastructure.type}, {d.infrastructure.distance_m} m</Row>}
+          {d.navire_liste && <Row label={P.navireListe}>{d.navire_liste.name ?? d.navire_liste.mmsi}, {num(d.navire_liste.distance_km)} km</Row>}
+          <Context items={d.contexte} />
+          <div className="mt-3 font-semibold">{P.naviresExamines}</div>
+          {(d.candidats_ais ?? []).length ? (
+            <table className="mt-1 w-full text-left">
+              <thead className="text-muted"><tr><th>{P.navire}</th><th>{P.distance}</th><th>{P.tolerance}</th></tr></thead>
+              <tbody>{d.candidats_ais.map((c: Props) => (
+                <tr key={c.vessel_id} className="border-t border-hair/70">
+                  <td>{c.name ?? c.mmsi}</td><td>{c.distance_m} m</td><td>{c.tolerance_le_long_m} m</td>
+                </tr>))}</tbody>
+            </table>
+          ) : <p className="text-muted">{P.aucunNavireProche}</p>}
+        </>
+      );
       if (d.source === "viirs") return (
         <>
           {d.detection_id && <PreuveImage source="viirs" detectionId={Number(d.detection_id)} />}
@@ -221,8 +247,26 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     },
   },
   {
-    type: "IDENTITY_MISMATCH", Icone: Ruler, couleur: "#c9a0ff", piste: "flotte", etape: "3", actif: false,
-    navires: (d) => [d.navire], titre: (d) => nom(d.navire), signe: () => null, preuves: aVenir,
+    type: "IDENTITY_MISMATCH", Icone: Ruler, couleur: "#c9a0ff", piste: "flotte", etape: "3", actif: true,
+    // Écho Sentinel 1 apparié au navire, mais dont la longueur ou l'orientation contredit la déclaration AIS
+    navires: (d) => [d.navire], titre: (d) => nom(d.navire),
+    signe: (d) => <Tag>{(d.ecarts ?? []).map((e: string) => e.startsWith("Longueur") ? P.longueurEcart : P.capEcart).join(", ")}</Tag>,
+    preuves: (p) => {
+      const d = p.details ?? {}, n = d.navire ?? {};
+      return (
+        <>
+          {d.detection_id && <PreuveImage source="sentinel1" detectionId={Number(d.detection_id)} />}
+          <Row label={P.navire}>{vesselText(n)}</Row>
+          <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
+          <Row label={P.longueurEstimee}>{d.longueur_m != null ? `${num(d.longueur_m, 0)} m` : L.commun.nd}</Row>
+          <Row label={P.longueurDeclaree}>{n.length_m != null ? `${num(n.length_m, 0)} m` : L.commun.nd}</Row>
+          <Row label={P.orientation}>{d.cap_deg != null ? `${num(d.cap_deg, 0)}°` : L.commun.nd}</Row>
+          <Row label={P.routeDeclaree}>{n.cog != null ? `${num(n.cog, 0)}°, ${num(n.sog_kn)} ${L.commun.noeuds}` : L.commun.nd}</Row>
+          <div className="mt-3 font-semibold">{P.ecarts}</div>
+          <Context items={d.contexte} />
+        </>
+      );
+    },
   },
   {
     type: "TRAJECTOIRE_ANORMALE", Icone: Route, couleur: "#ff86b3", piste: "deux", etape: "pilote", actif: false,

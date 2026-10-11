@@ -8,7 +8,20 @@ import math
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import linear_sum_assignment
+try:
+    from scipy.optimize import linear_sum_assignment
+except ImportError:                     # image des scripts (sans scipy) : affectation gloutonne par coût croissant
+    def linear_sum_assignment(cost):
+        rows, cols, used_r, used_c = [], [], set(), set()
+        for flat in np.argsort(cost, axis=None):
+            r, c = divmod(int(flat), cost.shape[1])
+            if r in used_r or c in used_c:
+                continue
+            used_r.add(r)
+            used_c.add(c)
+            rows.append(r)
+            cols.append(c)
+        return np.array(rows, int), np.array(cols, int)
 
 
 def tolerance(ais: pd.DataFrame, base_radius_m: float, doppler_s: float, heading_deg: float | None):

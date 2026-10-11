@@ -14,6 +14,7 @@ from fastapi.responses import PlainTextResponse
 
 from preuves import ais_near, proof_of
 from regions import dans_region, region_ewkt
+from sentinel import sentinel_metrics
 
 router = APIRouter()
 
@@ -195,6 +196,7 @@ async def metrics(request: Request):
         out.append(_line("mars_viirs_granules_total", await c.fetchval("SELECT count(*) FROM viirs_granules")))
         for r in await c.fetch("SELECT mission, statut, count(*) AS n FROM sar_passes WHERE mission IS NOT NULL GROUP BY 1, 2"):
             out.append(_line("mars_passages_total", r["n"], {"mission": r["mission"], "etat": r["statut"]}))
+        out += await sentinel_metrics(c, _line)
         for r in await c.fetch("SELECT type, status, count(*) AS n FROM alerts GROUP BY 1, 2"):
             out.append(_line("mars_alertes_total", r["n"], {"type": r["type"], "etat": r["status"]}))
     return "\n".join(out) + "\n"

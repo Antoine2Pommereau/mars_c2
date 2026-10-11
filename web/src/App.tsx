@@ -33,7 +33,8 @@ const arrondi = (ms: number) => Math.floor(ms / 30_000) * 30_000;
 const selKey = (s: Selection | null) => !s ? null : s.kind === "alert" ? `alerte:${s.feature.properties.id}`
   : s.kind === "vessel" ? `navire:${s.properties.vessel_id}` : s.kind === "infrastructure" ? `infrastructure:${s.properties.id}`
   : s.kind === "zone" ? `zone:${s.properties.zone}` : s.kind === "passage" ? `passage:${s.properties.id}`
-  : s.kind === "detection" && s.properties.source === "viirs" ? `viirs:${s.properties.id}` : null;
+  : s.kind === "detection" && s.properties.source === "viirs" ? `viirs:${s.properties.id}`
+  : s.kind === "detection" && s.properties.source === "sentinel1" ? `s1:${s.properties.id}` : null;
 type Focus = { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] };
 
 /** Emprise d'une géométrie GeoJSON */
@@ -155,6 +156,9 @@ export default function App() {
   // Détections nocturnes VIIRS (couche) et nuits traitées (piste de la frise)
   const viirsQ = useQuery({ queryKey: ["viirs", qDebut, qFin, region], queryFn: () => api.viirs(qDebut, qFin, region),
     enabled: actives.includes("viirs"), refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData });
+  // Échos radar Sentinel 1 (couche « Détections radar et optiques »)
+  const sentinelQ = useQuery({ queryKey: ["sentinel", qDebut, qFin, region], queryFn: () => api.sentinel(qDebut, qFin, region),
+    enabled: actives.includes("detections"), refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData });
   const nuitsQ = useQuery({ queryKey: ["nuits", qDebut, qFin], queryFn: () => api.viirsNuits(qDebut, qFin),
     refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData, retry: 2 });
 
@@ -191,6 +195,9 @@ export default function App() {
       setPendingSel(null);
     } else if (kind === "viirs") {
       setSelection({ kind: "detection", properties: { id: Number(id), source: "viirs" } });
+      setPendingSel(null);
+    } else if (kind === "s1") {
+      setSelection({ kind: "detection", properties: { id: Number(id), source: "sentinel1" } });
       setPendingSel(null);
     } else setPendingSel(null);
   }, [pendingSel, rangeAlerts, alertsQ.isFetched, vessels]);
@@ -370,7 +377,7 @@ export default function App() {
           <MapView traffic={traffic} trails={trailsQ.data ?? EMPTY} aoi={showDet ? analysis : null} detections={detQ.data ?? EMPTY}
             analysisAlerts={analysisAlertsQ.data ?? EMPTY} liveAlerts={mapAlerts} zones={zonesQ.data ?? null}
             reception={receptionQ.data ?? null} infrastructure={infraQ.data ?? null} highlight={highlight} actives={actives}
-            byType={byType} region={region} passages={passagesQ.data ?? EMPTY} viirs={viirsQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
+            byType={byType} region={region} passages={passagesQ.data ?? EMPTY} viirs={viirsQ.data ?? EMPTY} sentinel={sentinelQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
             drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom} />
           </Garde>
           <button onClick={drawing || draft ? cancelDraw : startDraw}
@@ -381,7 +388,8 @@ export default function App() {
           <DetailPanel selection={selection} onClose={() => setSelection(null)} passTime={analysis?.properties.acquired_at ?? null}
             plage={{ debut: qDebut, fin: qFin }} suivis={suivis} vessels={vessels} alerts={filtered} onStatus={onStatus}
             onPickAlert={pickAlert} onPickVessel={pickVessel} onPickInfra={(id) => pickInfra(id)}
-            onSuivre={(id, on) => suivre.mutate({ id, on })} onRejeu={onRejeu} />
+            onSuivre={(id, on) => suivre.mutate({ id, on })} onRejeu={onRejeu}
+            onPickDetection={(source, id) => setSelection({ kind: "detection", properties: { id, source } })} />
           <Frise temps={temps} now={now} onChange={setTemps} alerts={{ type: "FeatureCollection", features: filtered }}
             timeline={timelineQ.isError ? null : timelineQ.data ?? null} onPickAlert={pickAlert}
             passages={passagesQ.data ?? EMPTY} onPickPassage={pickPassage} nuits={nuitsQ.isError ? [] : nuitsQ.data ?? []} />

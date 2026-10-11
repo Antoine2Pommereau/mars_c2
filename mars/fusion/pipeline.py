@@ -4,11 +4,10 @@ Fonctions pures (tableaux en entrée et en sortie), utilisées par le backend. L
 """
 import numpy as np
 import pandas as pd
-from pyproj import Transformer
 
 from mars.fusion.positions import positions_at
 from mars.fusion.match import match, normalized_distance, tolerance
-from mars.geo import utm_epsg
+from mars.geo import local_projector
 
 
 def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: dict, heading_deg: float | None = None,
@@ -22,11 +21,10 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
     les positions AIS à t0, les navires AIS non confirmés par le radar et la statistique des décalages.
     """
     f, thr, c_min = rules["fusion"], rules["model"]["thresholds"], rules["contrast"]["min_vv_db"]
-    epsg = utm_epsg((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
-    to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    to_xy = local_projector((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
 
     det = det.reset_index(drop=True).copy()
-    det["x"], det["y"] = (to_utm.transform(det.lon.to_numpy(), det.lat.to_numpy()) if len(det)
+    det["x"], det["y"] = (to_xy(det.lon.to_numpy(), det.lat.to_numpy()) if len(det)
                           else (np.array([]), np.array([])))
 
     ais = positions_at(pos, t0, pd.Timedelta(minutes=f["max_gap_min"])) if len(pos) else pd.DataFrame()
@@ -38,7 +36,7 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
         ais = ais[ais.lon.between(bbox[0] - dlon, bbox[2] + dlon) & ais.lat.between(bbox[1] - dlat, bbox[3] + dlat)]
         ais = ais.reset_index(drop=True)
         ais["inside"] = ais.lon.between(bbox[0], bbox[2]) & ais.lat.between(bbox[1], bbox[3])
-        ais["x"], ais["y"] = to_utm.transform(ais.lon.to_numpy(), ais.lat.to_numpy())
+        ais["x"], ais["y"] = to_xy(ais.lon.to_numpy(), ais.lat.to_numpy())
 
     # Masques, dans l'ordre de priorité : terre, contraste, classification
     det["mask_reason"] = None
@@ -46,7 +44,8 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
         if "on_land" in det:
             det.loc[det.on_land.astype(bool), "mask_reason"] = "terre"
         free = det.mask_reason.isna()
-        det.loc[free & det.contrast_vv_db.isna(), "mask_reason"] = "contraste indetermine"
+        if rules["contrast"].get("obligatoire", True):       # Sentinel 1 d'AI2 : contraste facultatif
+            det.loc[free & det.contrast_vv_db.isna(), "mask_reason"] = "contraste indetermine"
         free = det.mask_reason.isna()
         det.loc[free & (det.contrast_vv_db < c_min), "mask_reason"] = "contraste faible"
         free = det.mask_reason.isna()
@@ -64,7 +63,7 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
     fixed_hits = []
     det["fixed_refs"] = [[] for _ in range(len(det))]
     if fixed_points is not None and len(fixed_points) and len(det):
-        fx, fy = to_utm.transform(fixed_points.lon.to_numpy(), fixed_points.lat.to_numpy())
+        fx, fy = to_xy(fixed_points.lon.to_numpy(), fixed_points.lat.to_numpy())
         fxy = np.stack([fx, fy], axis=1)
         radius = rules["persistence"]["radius_m"]
         for i, d in det.iterrows():

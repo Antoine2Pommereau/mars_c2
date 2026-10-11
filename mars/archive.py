@@ -184,9 +184,11 @@ def run_purge(conn, root: Path, keep_days: int, now: datetime | None = None) -> 
     gone = [f for f in old if not (root / f).exists()]
     if gone:
         stats["registre_supprime"] = conn.execute("DELETE FROM ingested_files WHERE folder = ANY(%s)", (gone,)).rowcount
-    # Journal des cycles de règles (un toutes les 5 minutes) : deux jours suffisent
+    # Journal des cycles de règles (un toutes les 5 minutes) et des examens Sentinel sans lancement ni refus (un toutes
+    # les 30 minutes) : deux jours suffisent ; un lancement ou un refus Sentinel est gardé
     stats["cycles_de_regles_supprimes"] = conn.execute(
-        "DELETE FROM task_runs WHERE task = 'regles' AND started_at < now() - interval '2 days'").rowcount
+        "DELETE FROM task_runs WHERE (task = 'regles' OR (task = 'sentinel' AND status = 'ok' "
+        "AND details->>'passages' = '0')) AND started_at < now() - interval '2 days'").rowcount
     return stats
 
 

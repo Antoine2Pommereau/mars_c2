@@ -1,0 +1,49 @@
+{
+ "id": "S1C_IW_GRDH_1SDV_20261010T180430_20261010T180455_009826_01393A_4384_COG",
+ "geometry": {
+  "type": "Polygon",
+  "coordinates": [
+   [
+    [
+     -5.682716,
+     49.419949
+    ],
+    [
+     -5.226131,
+     47.924587
+    ],
+    [
+     -1.752055,
+     48.329845
+    ],
+    [
+     -2.103746,
+     49.826393
+    ],
+    [
+     -5.682716,
+     49.419949
+    ]
+   ]
+  ]
+ },
+ "properties": {
+  "datetime": "2026-10-10T18:04:30.011729Z",
+  "start_datetime": "2026-10-10T18:04:30.011729Z",
+  "end_datetime": "2026-10-10T18:04:55.009707Z",
+  "platform": "sentinel-1c",
+  "sat:orbit_state": "ascending",
+  "sar:instrument_mode": "IW",
+  "sat:absolute_orbit": 9826
+ },
+ "assets": {
+  "vv": {
+   "href": "s3://eodata/Sentinel-1/SAR/IW_GRDH_1S-COG/2026/10/10/S1C_IW_GRDH_1SDV_20261010T180430_20261010T180455_009826_01393A_4384_COG.SAFE/measurement/s1c-iw-grd-vv-20261010t180430-20261010t180455-009826-01393a-001-cog.tiff",
+   "file:size": 568518437
+  },
+  "vh": {
+   "href": "s3://eodata/Sentinel-1/SAR/IW_GRDH_1S-COG/2026/10/10/S1C_IW_GRDH_1SDV_20261010T180430_20261010T180455_009826_01393A_4384_COG.SAFE/measurement/s1c-iw-grd-vh-20261010t180430-20261010t180455-009826-01393a-002-cog.tiff",
+   "file:size": 422757937
+  }
+ }
+}

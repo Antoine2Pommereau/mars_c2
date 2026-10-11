@@ -3,7 +3,7 @@ import AlertActions from "../components/AlertActions";
 import Chip from "../components/Chip";
 import PreuveImage from "../components/PreuveImage";
 import { Row, Sejour, Sources, Tag } from "../components/Elements";
-import { Comportement, EnTeteAlerteNavire, EnTeteNavire, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
+import { Comportement, EnTeteAlerteNavire, EnTeteNavire, RadarAlertes, RadarMesures, RadarNavire, VerificationSatellite, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
   PassageInfras, PassageListes, PassageResume, Trajectoire, ViirsAlertes, ViirsMesures, ViirsNavire, Vignette, ZoneResume,
   ZoneTrafic } from "../components/Fiches";
 import type { VesselCard } from "../lib/api";
@@ -39,6 +39,7 @@ export interface Contexte {
   onPickInfra: (id: number) => void;
   onSuivre: (vesselId: number, on: boolean) => void;
   onRejeu: (vesselId: number) => void;
+  onPickDetection: (source: "sentinel1" | "viirs", id: number) => void;
 }
 
 interface Section {
@@ -55,6 +56,9 @@ interface Section {
 const sejourNavire = (c: Contexte): Props | undefined => (c.carte?.alerts ?? [])
   .filter((a) => a.properties.type === "WATCHLIST" && a.properties.details?.sejour)
   .sort((a, b) => String(b.properties.event_time).localeCompare(String(a.properties.event_time)))[0]?.properties.details.sejour;
+
+// Détections des travailleurs (VIIRS, Sentinel 1) : fiches propres ; les autres sont celles des analyses du Mac
+const SATELLITES = ["viirs", "sentinel1"];
 
 const zoneOfVessel = (v: Props) => (v.lon == null ? null : zoneOf(v.lon, v.lat));
 const toujours = () => true;
@@ -74,7 +78,7 @@ const SECTIONS: Section[] = [
     rendu: (c) => <p className="text-ink/90">{c.alerte!.properties.details.motif}</p> },
   { id: "vignette", objet: "alerte", ordre: 20, etape: null, titre: false,
     condition: (c) => !!typeAlerte(c.alerte!.properties.type).vignette && !!c.alerte!.properties.event_time
-      && c.alerte!.properties.details?.source !== "viirs",
+      && !SATELLITES.includes(c.alerte!.properties.details?.source),       // VIIRS, Sentinel 1 : vignette du travailleur
     rendu: (c) => {
       const [lon, lat] = c.alerte!.geometry.coordinates as [number, number];
       return <Chip lon={lon} lat={lat} time={c.alerte!.properties.event_time} />;
@@ -131,7 +135,9 @@ const SECTIONS: Section[] = [
     rendu: (c) => <Trajectoire vesselId={Number(c.navire!.vessel_id)} debut={c.plage.debut} fin={c.plage.fin}
       onRejeu={() => c.onRejeu(Number(c.navire!.vessel_id))} /> },
   { id: "risque", objet: "navire", ordre: 70, etape: "reporte", titre: true, condition: toujours, rendu: rien },
-  { id: "satellite", objet: "navire", ordre: 80, etape: "3", titre: true, condition: toujours, rendu: rien },
+  { id: "satellite", objet: "navire", ordre: 80, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <VerificationSatellite vesselId={Number(c.navire!.vessel_id)}
+      onPickDetection={(source, id) => c.onPickDetection(source, id)} /> },
   { id: "appris", objet: "navire", ordre: 85, etape: "pilote", titre: true, condition: toujours, rendu: rien },
   { id: "prediction", objet: "navire", ordre: 88, etape: "4", titre: true, condition: toujours, rendu: rien },
   { id: "notes", objet: "navire", ordre: 90, etape: null, titre: true, condition: toujours,
@@ -170,7 +176,17 @@ const SECTIONS: Section[] = [
     rendu: (c) => <ViirsAlertes id={Number(c.detection!.id)} onPickAlert={c.onPickAlert} /> },
 
   // Détection radar
-  { id: "mesures", objet: "detection", ordre: 10, etape: null, titre: false, condition: (c) => c.detection?.source !== "viirs",
+  // Détection radar Sentinel 1 (lot C)
+  { id: "radar", objet: "detection", ordre: 10, etape: null, titre: false, condition: (c) => c.detection?.source === "sentinel1",
+    rendu: (c) => <RadarMesures id={Number(c.detection!.id)} /> },
+  { id: "image", objet: "detection", ordre: 15, etape: null, titre: false, condition: (c) => c.detection?.source === "sentinel1",
+    rendu: (c) => <PreuveImage source="sentinel1" detectionId={Number(c.detection!.id)} /> },
+  { id: "apparie", objet: "detection", ordre: 20, etape: null, titre: true, condition: (c) => c.detection?.source === "sentinel1",
+    rendu: (c) => <RadarNavire id={Number(c.detection!.id)} onPickVessel={c.onPickVessel} /> },
+  { id: "liees", objet: "detection", ordre: 30, etape: null, titre: true, condition: (c) => c.detection?.source === "sentinel1",
+    rendu: (c) => <RadarAlertes id={Number(c.detection!.id)} onPickAlert={c.onPickAlert} /> },
+  // Détection d'une analyse du Mac (zone tracée)
+  { id: "mesures", objet: "detection", ordre: 10, etape: null, titre: false, condition: (c) => !SATELLITES.includes(c.detection?.source),
     rendu: (c) => {
       const p = c.detection!, P = L.preuves;
       const statut = p.mask_reason && p.mask_reason !== "null" ? P.ecartee(p.mask_reason)
@@ -186,7 +202,7 @@ const SECTIONS: Section[] = [
       );
     } },
   { id: "vignette", objet: "detection", ordre: 20, etape: null, titre: false,
-    condition: (c) => !!c.passTime && c.detection?.lon != null && c.detection?.source !== "viirs",
+    condition: (c) => !!c.passTime && c.detection?.lon != null && !SATELLITES.includes(c.detection?.source),
     rendu: (c) => <Chip lon={c.detection!.lon} lat={c.detection!.lat} time={c.passTime!} /> },
 ];
 

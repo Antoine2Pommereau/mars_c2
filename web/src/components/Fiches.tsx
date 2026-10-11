@@ -438,3 +438,96 @@ export function Vignette({ vesselId, taille = "moyenne", source = false }:
     </span>
   );
 }
+
+// Détection radar Sentinel 1 (lot C) : mesures, navire apparié (longueur mesurée contre déclarée), alertes liées
+
+function useRadar(id: number) {
+  return useQuery({ queryKey: ["sentinelDetection", id], queryFn: () => api.sentinelDetection(id), staleTime: 60_000, enabled: id > 0 });
+}
+
+export function RadarMesures({ id }: { id: number }) {
+  const d = useRadar(id).data;
+  if (!d) return null;
+  const R = F.radar, V = F.viirs;
+  return (
+    <div>
+      <Row label={R.heure}>{utc(d.ts)}</Row>
+      <Row label={R.capteur}>{String(d.satellite ?? "").replace(/^S1/, "Sentinel 1")}</Row>
+      <Row label={R.statut}>{V.statuts[d.statut] ?? d.statut}{d.mask_reason && d.mask_reason !== "non_evaluable" ? ` (${R.motifs[d.mask_reason] ?? d.mask_reason})` : ""}</Row>
+      <Row label={R.longueur}>{d.length_m != null ? `${num(d.length_m, 0)} m` : L.commun.nd}</Row>
+      <Row label={R.largeur}>{d.width_m != null ? `${num(d.width_m, 0)} m` : L.commun.nd}</Row>
+      <Row label={R.cap}>{d.heading_deg != null ? R.capDe(num(d.heading_deg, 0), num(d.heading_prob, 2)) : L.commun.nd}</Row>
+      <Row label={R.score}>{num(d.score, 2)}</Row>
+      <Row label={R.contraste}>{d.contrast_vv_db != null ? `${num(d.contrast_vv_db, 1)} dB` : L.commun.nd}</Row>
+      <Row label={R.cote}>{d.distance_cote_m != null ? `${num(d.distance_cote_m / 1000, 1)} km` : L.commun.nd}</Row>
+      {d.non_evaluable && <Row label={R.motifNonEvaluable}>{d.non_evaluable}</Row>}
+    </div>
+  );
+}
+
+export function RadarNavire({ id, onPickVessel }: { id: number; onPickVessel: (p: Props) => void }) {
+  const d = useRadar(id).data;
+  if (!d) return null;
+  if (!d.vessel_id) return <p className="text-[12px] text-muted">{F.radar.aucunNavire}</p>;
+  return (
+    <button onClick={() => onPickVessel({ vessel_id: d.vessel_id, name: d.name, mmsi: d.mmsi, flag: d.flag })}
+      className="flex w-full items-center gap-2 text-left text-[12px] hover:text-ink">
+      <Vignette vesselId={d.vessel_id} />
+      <span className="text-ink">{d.name ?? `MMSI ${d.mmsi}`}</span>{d.flag && <Tag>{d.flag}</Tag>}
+      {d.watch && <Tag color={COULEUR_LISTE}>{L.signal[d.watch]}</Tag>}
+      {d.longueur_declaree_m != null && <span className="ml-auto text-muted">{F.radar.declaree(num(d.longueur_declaree_m, 0))}</span>}
+    </button>
+  );
+}
+
+export function RadarAlertes({ id, onPickAlert }: { id: number; onPickAlert: (f: Feature) => void }) {
+  const d = useRadar(id).data;
+  if (!d) return null;
+  return <AlertesListe alertes={d.alertes} onPickAlert={onPickAlert} />;
+}
+
+function AlertesListe({ alertes, onPickAlert }: { alertes: Props[]; onPickAlert: (f: Feature) => void }) {
+  if (!alertes.length) return <p className="text-[12px] text-muted">{F.infra.aucuneAlerte}</p>;
+  return (
+    <ul className="space-y-1 text-[12px]">
+      {alertes.map((a: Props) => (
+        <li key={a.id}>
+          <button onClick={() => api.alert(a.id).then(onPickAlert).catch(() => undefined)}
+            className="flex w-full items-center gap-1.5 text-left hover:text-ink">
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: couleurAlerte(a.type) }} />
+            <span className="text-ink">{libelleAlerte(a.type)}</span>
+            <span className="ml-auto text-muted">{L.gravite[a.severity]}, {L.statut[a.status]}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Vérification satellite d'un navire : échos radar et lumières VIIRS appariés, longueur mesurée contre déclarée. */
+export function VerificationSatellite({ vesselId, onPickDetection }:
+  { vesselId: number; onPickDetection: (source: "sentinel1" | "viirs", id: number) => void }) {
+  const q = useQuery({ queryKey: ["verification", vesselId], queryFn: () => api.verification(vesselId), staleTime: 60_000 });
+  const d = q.data;
+  if (!d) return null;
+  const V = F.verification;
+  if (!d.radar.length && !d.viirs.length) return <p className="text-[12px] text-muted">{V.aucun}</p>;
+  const ligne = (src: "sentinel1" | "viirs", x: Props, texte: string) => (
+    <li key={`${src}${x.id}`}>
+      <button onClick={() => onPickDetection(src, x.id)} className="flex w-full items-center gap-2 text-left hover:text-ink">
+        {x.preuve ? <img src={x.preuve} alt="" className="h-8 w-8 shrink-0 rounded-sm border border-hair object-cover" />
+          : <span className="h-8 w-8 shrink-0 rounded-sm border border-hair bg-abyss" />}
+        <span className="text-muted">{jourHeure(x.ts)}</span><span className="ml-auto text-ink">{texte}</span>
+      </button>
+    </li>
+  );
+  return (
+    <div className="space-y-2 text-[12px]">
+      {d.radar.length > 0 && <div><div className="mb-1 text-muted">{V.radar}</div><ul className="space-y-1">
+        {d.radar.map((x) => ligne("sentinel1", x, x.longueur_declaree_m != null
+          ? V.longueurs(num(x.longueur_m, 0), num(x.longueur_declaree_m, 0)) : `${num(x.longueur_m, 0)} m`))}</ul></div>}
+      {d.viirs.length > 0 && <div><div className="mb-1 text-muted">{V.viirs}</div><ul className="space-y-1">
+        {d.viirs.map((x) => ligne("viirs", x, V.lumiere(num(x.nanowatts, 1))))}</ul></div>}
+    </div>
+  );
+}

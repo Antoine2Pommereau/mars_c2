@@ -34,7 +34,8 @@ export const COUCHES: Couche[] = [
   { id: "couverture", groupe: "zones", etape: null, defaut: false, calques: ["couverture", "couverture-fond"], legende: "trait", couleur: "#4fb6c8" },
   { id: "mouillages", groupe: "zones", etape: null, defaut: false, calques: ["zones"], legende: "surface", couleur: "#f0a84b" },
   { id: "reception", groupe: "zones", etape: null, defaut: false, calques: ["reception"], legende: "surface", couleur: "#4fb6c8" },
-  { id: "detections", groupe: "satellites", etape: null, defaut: true, calques: ["aoi", "det", "alerts"], legende: "cercles" },
+  // Analyses du Mac (zone tracée) et échos Sentinel 1 des travailleurs GPU (lot C), même grammaire que VIIRS
+  { id: "detections", groupe: "satellites", etape: null, defaut: true, calques: ["aoi", "det", "alerts", "s1"], legende: "cercles" },
   // Emprises des passages Sentinel 1 et 2 de la plage : trait plein acquis, pointillé prévu (deux couches filtrées)
   { id: "passages", groupe: "satellites", etape: null, defaut: false, calques: ["passages-fond", "passages", "passages-prevus"],
     legende: "passages", couleur: COULEUR_PASSAGE },

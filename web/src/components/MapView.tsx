@@ -68,6 +68,7 @@ interface Props {
   region: string | null;                 // région affichée : seul son contour reste dans la couche « couverture »
   passages: FC;                          // emprises des passages Sentinel 1 et 2 de la plage
   viirs: FC;                             // détections nocturnes VIIRS de la plage
+  sentinel: FC;                          // échos radar Sentinel 1 de la plage (travailleur GPU, lot C)
   concernedInfra: number[] | null;       // mode « concernées seulement » : identifiants à montrer
   focus: { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] } | null;
   onSelect: (s: Selection) => void;
@@ -102,7 +103,7 @@ export default function MapView(p: Props) {
 
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages", "viirs"].forEach(src);
+      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages", "viirs", "s1"].forEach(src);
       // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
       map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
       map.addSource("couverture", { type: "geojson", data: zonesGeoJSON() as any });
@@ -188,6 +189,15 @@ export default function MapView(p: Props) {
           "circle-stroke-width": ["match", ["get", "statut"], "sans_ais", 4, 0],
           "circle-stroke-color": "#e85bc7", "circle-stroke-opacity": 0.25,
         } as any });
+      // Échos radar Sentinel 1 : anneau (un écho, pas une lumière), mêmes couleurs que VIIRS selon le statut
+      map.addLayer({ id: "s1", type: "circle", source: "s1", layout: { visibility: "none" },
+        paint: {
+          "circle-radius": ["match", ["get", "statut"], "ecartee", 2.5, "non_evaluable", 3.5, "sans_ais", 6, 4.5],
+          "circle-color": "rgba(0,0,0,0)",
+          "circle-stroke-width": ["match", ["get", "statut"], "sans_ais", 2.5, 1.5],
+          "circle-stroke-color": ["match", ["get", "statut"], "ecartee", "#4c5a66", "non_evaluable", "#7c8b97", "sans_ais", "#e85bc7", "#e6ecf0"],
+          "circle-stroke-opacity": ["match", ["get", "statut"], "avec_ais", 0.6, "non_evaluable", 0.5, 0.95],
+        } as any });
       // Trajectoires surlignées (traits pleins) et trajet présumé d'une coupure AIS (pointillés)
       map.addLayer({ id: "highlight", type: "line", source: "highlight", filter: ["!=", ["get", "dashed"], true],
         paint: { "line-color": ["coalesce", ["get", "color"], "#f0a84b"], "line-width": 2.5 } });
@@ -266,7 +276,13 @@ export default function MapView(p: Props) {
         const [lon, lat] = (f.geometry as any).coordinates;
         onSelect.current({ kind: "detection", properties: { ...(f.properties as any), source: "viirs", lon, lat } });
       });
-      for (const id of ["traffic", "det", "alerts", "live", "viirs"]) {
+      map.on("click", "s1", (e) => {
+        if (drawing.current) return;
+        const f = e.features![0];
+        const [lon, lat] = (f.geometry as any).coordinates;
+        onSelect.current({ kind: "detection", properties: { ...(f.properties as any), source: "sentinel1", lon, lat } });
+      });
+      for (const id of ["traffic", "det", "alerts", "live", "viirs", "s1"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = drawing.current ? "crosshair" : ""));
       }
@@ -293,6 +309,7 @@ export default function MapView(p: Props) {
   useEffect(() => setData("focus", p.focusGeom), [ready, p.focusGeom]);
   useEffect(() => setData("passages", p.passages), [ready, p.passages]);
   useEffect(() => setData("viirs", p.viirs), [ready, p.viirs]);
+  useEffect(() => setData("s1", p.sentinel), [ready, p.sentinel]);
   useEffect(() => {
     const z = zonesGeoJSON();
     setData("couverture", p.region ? { ...z, features: z.features.filter((f) => f.properties.zone === p.region) } as FC : z as FC);

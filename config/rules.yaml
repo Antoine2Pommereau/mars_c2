@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.22"
+version: "2026.10.23"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -192,6 +192,49 @@ viirs:
   couverture_fenetre_min: 30
   couverture_min_navires: 1
 
+# Sentinel 1 (étape 3, lot C, mars/sentinel.py) : analyse d'un passage par un travailleur GPU
+sentinel:
+  # Sélection sobre : un passage Sentinel 1 (mode IW) n'est analysé que s'il couvre un corridor d'infrastructure où se
+  # trouvait un navire des listes, ou une alerte DARK_SHIP de source VIIRS ouverte de gravité moyenne au moins
+  corridor_m: 3704              # 2 milles autour d'une infrastructure
+  liste_fenetre_min: 30         # navire des listes vu dans le corridor à 30 minutes près de l'acquisition
+  viirs_gravite_min: moyenne
+  viirs_fenetre_h: 24           # alerte VIIRS de moins de 24 heures avant le passage
+  interet_rayon_m: 10000        # une scène est retenue si elle couvre un point d'intérêt à 10 km près
+  passages_recents_h: 36        # passages examinés : acquis depuis moins de 36 heures
+  attente_publication_h: 12     # scène pas encore au catalogue : nouvel essai au cycle suivant, jusqu'à 12 heures
+  intervalle_min: 30            # examen des passages toutes les 30 minutes
+  # Garde fous : au delà, refus clair consigné dans task_runs (tâche sentinel)
+  scenes_max_par_jour: 2
+  budget_mensuel_eur: 6.0
+  # Coût estimé avant lancement (refus si le budget du mois serait dépassé) : démarrage, pilotes et image d'analyse
+  # (5 Go), puis téléchargement et analyse par scène (307 s sur un T4 selon AI2 ; L4 au moins aussi rapide)
+  minutes_fixes: 12
+  minutes_par_scene: 6
+  # Modèle d'AI2 (paramètres de sa chaîne)
+  confiance: 0.9
+  nms_m: 10
+  # Vignette radar : environ 3 km de côté autour de la détection, VV en décibels
+  vignette_km: 3
+  # Contraste local mesuré par le travailleur sur l'image VV d'origine (intensité, pic sur 5 × 5 pixels contre la
+  # médiane d'un anneau de 10 à 40 pixels) ; indéterminé : la détection n'est pas écartée (le modèle a déjà filtré)
+  contraste_obligatoire: false
+  # Incohérences entre l'écho et la déclaration AIS (IDENTITY_MISMATCH). Longueur : pixel de 10 m, résolution
+  # d'environ 20 m en GRD haute résolution, soit deux pixels d'incertitude à chaque bout, plus l'erreur du modèle ;
+  # incohérence seulement au delà de 40 m ET de 40 % de la longueur déclarée
+  ecart_longueur_m: 40
+  ecart_longueur_relatif: 0.4
+  longueur_declaree_min_m: 15   # longueurs AIS plus courtes : souvent non renseignées ou fausses
+  # Cap : classes de 22,5° (incertitude d'une demi classe), et le radar confond souvent l'avant et l'arrière ; un écart
+  # n'est retenu qu'entre 67,5° et 112,5° (navire déclaré en travers de son écho), probabilité de la classe 0,5 au
+  # moins, navire faisant route (3 nœuds au moins, cap AIS significatif)
+  cap_ecart_min_deg: 67.5
+  cap_ecart_max_deg: 112.5
+  cap_probabilite_min: 0.5
+  cap_vitesse_min_kn: 3
+  # Éoliennes : une détection sans AIS à moins de 150 m d'un parc éolien en mer est un écho fixe probable
+  eolien_m: 150
+
 # Travailleurs éphémères (mars/travailleurs.py) : instances Scaleway créées à la demande, détruites par le serveur.
 # Garde fous : durée de vie, plafonds quotidiens, destruction des orphelins à chaque minute et au redémarrage.
 travailleurs:
@@ -210,9 +253,18 @@ travailleurs:
       prix_heure: 0.0202             # euros hors taxes, API Scaleway du 07/10/2026
       image: ghcr.io/allenai/vessel-detection-viirs@sha256:eb5ae0e165add2997d57e786d4efd8f1d969bb27ccd02d0c60ce3ac38bb91198
       script: travailleurs/viirs.py
-    sentinel:                        # lot C : GPU, image et script à venir
-      commercial_type: L4-1-24G
-      image_label: ubuntu_noble_gpu_os_13_nvidia
-      disque_go: 60
-      prix_heure: 0.7875
-      facturation_min_min: 1         # instances GPU facturées à la minute
+    sentinel:                        # lot C : détection des navires sur Sentinel 1, GPU NVIDIA L4 (24 Go)
+      commercial_type: L4-1-24G      # 8 vCPU, 48 Go ; zones fr-par-1, fr-par-2, pl-waw-2 (catalogue du 11/10/2026)
+      zone: fr-par-2                 # GPU surtout disponibles ici ; réseau privé régional, commun à fr-par-1 et 2
+      image_label: ubuntu_noble_gpu_os_13_nvidia   # Ubuntu 24.04 GPU OS : pilotes NVIDIA et Docker GPU installés
+      volume: sbs_volume             # les L4 n'ont pas de disque local : volume bloc, supprimé explicitement
+      arch: x86_64
+      disque_go: 60                  # image d'analyse (5 Go compressés, environ 15 installée), scènes, fichiers de travail
+      prix_heure: 0.7875             # euros hors taxes, facturé à la minute
+      facturation_min_min: 1
+      # Image publique d'AI2 (étiquette sha-fafc6c3, commit du 04/01/2024, 5,0 Go compressés en 18 couches, dont
+      # 291 Mo pour le code et les poids des modèles), épinglée par empreinte ; script maison qui appelle sa chaîne
+      # (prepare_scenes, detect_vessels) : le serveur intégré de l'image est incohérent à cette version
+      image: ghcr.io/allenai/vessel-detection-sentinels@sha256:43880082de543afe25770de07f4b5f888f18a368f11bc32b5ecc90ae54fa487e
+      script: travailleurs/sentinel.py
+      docker_opts: "--gpus all --shm-size=16g"
