@@ -565,15 +565,23 @@ def report(m: Mesures, x: dict, rules: dict) -> str:
         L += ["Coupures AIS comptées à part (cycle le plus chargé du jour) : sorties de couverture le long de la route "
               f"déclarée (horizon {rules['ais_gap'].get('route_horizon_min')} min), coupures déclassées sur un point de "
               f"disparition collectif ({rules['ais_gap'].get('disparition_min_navires')} navires sans lien au moins, même "
-              "maille, même jour : limite de réception, pas des navires sombres).", "",
+              "maille de 0,2 × 0,1 degré, même jour). Des navires sans lien qui se taisent au même endroit révèlent notre "
+              "réception, pas des navires sombres : silences regroupés en une demi heure, coupure de réception "
+              "simultanée (récepteur ou relais tombé) ; étalés sur la journée, limite de couverture (récepteurs côtiers, "
+              "ou navires qu'AISStream cesse de transmettre sur une voie). Les coupures concernées sont déclassées en "
+              "faible, pas exclues.", "",
               table(["Jour", "Sorties le long de la route", "Coupures retenues", "dont déclassées (point collectif)",
                      "Points collectifs"], [[f"{r[0]:%d/%m/%Y}", num(r[1]), num(r[5]), num(r[2]), num(r[3])]
                                             for r in x["coupures_suite"]]), ""]
         pts = [(r[0], p) for r in x["coupures_suite"] for p in (r[4] or [])]
         if pts:
-            L += ["Points de disparition collectifs (centre de la maille) :", "",
-                  table(["Jour", "Latitude", "Longitude", "Navires sans lien"],
-                        [[f"{d:%d/%m/%Y}", num(p["lat"], 2), num(p["lon"], 2), num(p["navires"])] for d, p in pts[:30]]), ""]
+            nature = {"limite_de_couverture": "limite de couverture", "coupure_simultanee": "coupure simultanée"}
+            L += ["Points de disparition collectifs (centre de la maille ; heures UTC du premier et du dernier silence ; "
+                  "cap médian des navires au moment de se taire) :", "",
+                  table(["Jour", "Latitude", "Longitude", "Navires sans lien", "Nature", "Silences de", "à", "Cap médian"],
+                        [[f"{d:%d/%m/%Y}", num(p["lat"], 2), num(p["lon"], 2), num(p["navires"]),
+                          nature.get(p.get("nature"), "n.d."), p.get("premier", "n.d."), p.get("dernier", "n.d."),
+                          f"{p['cap_median']}°" if p.get("cap_median") is not None else "n.d."] for d, p in pts[:30]]), ""]
     by = defaultdict(lambda: defaultdict(int))
     sev = defaultdict(lambda: defaultdict(int))
     for typ, jour, severity, status, n in x["alerts"]:

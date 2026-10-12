@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.24"
+version: "2026.10.25"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -108,11 +108,14 @@ ais_gap:
                          # 120 min : le 17 juin, PEARL SEAWAYS parti vers Oslo et revenu 17 h plus tard passait le filtre
   # Route déclarée (dernier cap, dernière vitesse) suivie sur 60 min, un point toutes les 10 min : si elle quitte la
   # zone fiable, le silence est une sortie de couverture, même quand la disparition a lieu dans la zone (11/10/2026 :
-  # les navires engagés sur le rail ouest au sud de l'île de Wight cessent d'être transmis par AISStream)
+  # en Manche, à 40 km au sud de l'île de Wight, les navires de la voie ouest cessent d'être reçus)
   route_horizon_min: 60
   route_pas_min: 10
   # Point de disparition collectif : au moins 3 navires sans lien qui se taisent le même jour dans la même maille
   # (0,2 × 0,1 degré, environ 14 × 11 km) signalent une limite de réception : leurs coupures sont déclassées (faible)
+  # Un silence qui commence dans un trou de notre collecte, ou dans les 10 minutes qui le précèdent, a un début
+  # inconnu (le navire a pu émettre pendant le trou) : écarté et compté à part (12/10/2026)
+  debut_incertain_min: 10
   disparition_min_navires: 3
   disparition_cellule_deg: [0.2, 0.1]
   projection_open_min: 120   # sans réapparition, horizon porté à la durée minimale du silence : un navire qui

@@ -388,12 +388,15 @@ async def feed_outage(c, start, end, ratio: float) -> set:
     return outage_minutes({r["m"]: r["n"] for r in rows}, ratio)
 
 
-async def find_gaps(c, day_start, day_end, rules: dict):
+async def find_gaps(c, day_start, day_end, rules: dict, min_prior: int | None = None):
+    """Silences candidats. `min_prior` : historique exigé avant le silence (par défaut `min_prior_messages`) ; abaissé
+    par run_ais_gap quand le flux a été coupé, l'exigence étant alors appliquée silence par silence au prorata."""
     g, rc = rules["ais_gap"], rules["reception"]
     return await c.fetch(AIS_GAP_SQL, day_start, day_end, g["min_gap_min"], g["min_speed_kn"],
                          rc["cell_deg_lon"], rc["cell_deg_lat"], g["ais_classes"], g["excluded_ship_types"],
                          g["edge_margin_deg"], g["min_coast_km"] * 1000.0, g["prior_window_min"],
-                         g["min_prior_messages"], g["projection_min"], g["projection_open_min"],
+                         g["min_prior_messages"] if min_prior is None else min_prior,
+                         g["projection_min"], g["projection_open_min"],
                          int(g.get("route_horizon_min", 0)), max(1, int(g.get("route_pas_min", 10))))
 
 
@@ -405,9 +408,8 @@ def collective_points(rows: list, g: dict) -> dict:
     """Points de disparition collectifs : cellules (`disparition_cellule_deg`) où, le même jour (UTC), au moins
     `disparition_min_navires` navires sans lien se sont tus (silences détectés, sorties de couverture comprises). Deux
     navires qui se taisent à moins de `partner_radius_m` et 30 minutes l'un de l'autre comptent pour un (ils peuvent
-    être liés : rendez vous, convoi). Une limite de réception (récepteurs côtiers, AISStream qui cesse de transmettre
-    un navire engagé sur un rail) fait taire des navires sans lien au même endroit ; un navire sombre, non.
-    Retourne {(cx, cy, jour): nombre de navires sans lien}."""
+    être liés : rendez vous, convoi). Des navires sans lien qui se taisent au même endroit signalent notre réception,
+    pas des navires sombres. Retourne {(cx, cy, jour): nombre de navires sans lien} ; `point_kind` en donne la nature."""
     size, need = g["disparition_cellule_deg"], g["disparition_min_navires"]
     groups: dict[tuple, list] = {}
     for x in rows:
@@ -429,6 +431,17 @@ def collective_points(rows: list, g: dict) -> dict:
     return out
 
 
+def point_kind(times: list[datetime], need: int) -> str:
+    """Nature d'un point collectif d'après la répartition des silences dans le temps : la moitié au moins des silences
+    (et `need` au moins) en une demi heure, coupure de réception simultanée (récepteur ou relais tombé) ; étalés sur la
+    journée, limite de couverture (au rythme du trafic, trois silences tombent forcément proches un moment ou un autre :
+    le seul nombre ne suffit pas) (le cas du 11/10/2026 en Manche, 40 km au sud de l'île de Wight : 19 navires vers l'ouest sur la voie
+    descendante du dispositif de séparation, de 00:39 à 18:51, environ un par heure)."""
+    ts = sorted(times)
+    burst = max((sum(1 for u in ts if t <= u <= t + timedelta(minutes=30)) for t in ts), default=0)
+    return "coupure_simultanee" if burst >= need and burst >= len(ts) / 2 else "limite_de_couverture"
+
+
 def _hav(lon1, lat1, lon2, lat2) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
@@ -440,26 +453,50 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
     Un silence n'est compté que pendant les minutes où le flux AIS fonctionnait (section continu de rules.yaml) : une
     coupure du flux AISStream ou de la collecte ne fait pas apparaître une coupure sur chaque navire."""
     g = rules["ais_gap"]
-    rows = await find_gaps(c, day_start, day_end, rules)
     outage = await feed_outage(c, day_start, day_end, rules["continu"]["flux_min_ratio"])
-    items, with_partner, exits, outages, route_exits, downgraded = [], 0, 0, 0, 0, 0
-    collective = collective_points(rows, g)
-    for x in rows:
+    # Un trou de notre collecte (déploiement, coupure d'AISStream : toutes les minutes vides à la fois) agit de trois
+    # façons, toutes neutralisées ici : il allonge les silences (minutes retirées de leur durée), il cache leur vrai
+    # début (silence qui commence dans le trou ou juste avant : écarté, début inconnu), et il retire des messages de
+    # l'heure qui précède (historique exigé réduit au prorata des minutes où la collecte fonctionnait). Éprouvé sur la
+    # copie réelle du 11/10/2026 : arrêts simulés de 20 et 140 minutes sans effet sur les coupures retenues.
+    raw = await find_gaps(c, day_start, day_end, rules, min_prior=1 if outage else None)
+    window, margin = g["prior_window_min"], timedelta(minutes=g.get("debut_incertain_min", 10))
+    rows, real, outages, uncertain = [], [], 0, 0
+    for x in raw:
+        if outage:
+            avail = window - outage_overlap_min(outage, x["t_last"] - timedelta(minutes=window), x["t_last"])
+            if x["prior_n"] < max(1, math.ceil(g["min_prior_messages"] * max(avail, 0) / window)):
+                continue                                  # historique insuffisant, comme sans coupure
+        rows.append(x)
+        if outage and outage_overlap_min(outage, x["t_last"], x["t_last"] + margin) > 0:
+            uncertain += 1                                # début du silence inconnu : la collecte était coupée
+            continue
+        t_end = day_end if x["t_next"] is None else x["t_next"]
+        lost = outage_overlap_min(outage, x["t_last"], t_end)
+        if (t_end - x["t_last"]).total_seconds() / 60 - lost < g["min_gap_min"]:
+            outages += 1                                  # silence dû au flux coupé, pas au navire
+            continue
+        real.append(x)
+    items, with_partner, exits, route_exits, downgraded = [], 0, 0, 0, 0
+    # Points collectifs : sur les vrais silences seulement (ceux d'un trou de collecte gonfleraient chaque maille)
+    collective = collective_points(real, g)
+    by_point: dict[tuple, list] = {}
+    for x in real:
+        by_point.setdefault((*_cell(x["lon"], x["lat"], g["disparition_cellule_deg"]),
+                             x["t_last"].astimezone(timezone.utc).date()), []).append(x)
+    kinds = {k: point_kind([x["t_last"] for x in by_point[k]], g["disparition_min_navires"]) for k in collective}
+    for x in real:
         if not x["projection_couverte"]:
             exits += 1   # cap et vitesse menaient hors de la zone fiable : sortie de couverture probable
             continue
         if not x["route_couverte"]:
             # La route déclarée quitte la zone fiable dans l'horizon : la disparition a lieu dans la zone, mais la suite
-            # de la route n'est pas couverte (cas du rail ouest au sud de l'île de Wight, 11/10/2026)
+            # de la route n'est pas couverte (voie ouest en Manche, 40 km au sud de l'île de Wight, 11/10/2026)
             route_exits += 1
             continue
         open_gap = x["t_next"] is None
         t_end = day_end if open_gap else x["t_next"]
-        # Silence effectif : les minutes où le flux AIS lui même était coupé ne comptent pas
-        lost = outage_overlap_min(outage, x["t_last"], t_end)
-        if (t_end - x["t_last"]).total_seconds() / 60 - lost < g["min_gap_min"]:
-            outages += 1
-            continue
+        lost = outage_overlap_min(outage, x["t_last"], t_end)   # minutes de flux coupé pendant le silence
         # Lieux où une rencontre dissimulée laisserait une trace : la dernière position et la réapparition
         if open_gap:
             ref = f"SRID=4326;POINT({x['lon']} {x['lat']})"
@@ -519,12 +556,21 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
         else:
             severity = "moyenne"
         point = (*_cell(x["lon"], x["lat"], g["disparition_cellule_deg"]), x["t_last"].astimezone(timezone.utc).date())
-        if point in collective:
-            # Déclassée, pas exclue : un navire sombre pourrait se cacher derrière une limite de réception
+        before = severity
+        strong = bool(offshore_partners or linked or behaviour == "arret")
+        if point in collective and not strong:
+            # Déclassée, pas exclue : un navire sombre pourrait se cacher derrière une limite de réception. Un indice
+            # propre au navire (partenaire au large, rendez vous lié, arrêt pendant le silence) garde sa gravité : seul
+            # le silence long sans réapparition, signature d'une sortie de notre couverture, est déclassé
             severity = "faible"
             downgraded += 1
+            nature = ("coupure de réception simultanée" if kinds[point] == "coupure_simultanee"
+                      else "limite de couverture de notre réception")
             context.insert(0, f"Point de disparition collectif : {collective[point]} navires sans lien se sont tus dans "
-                              "cette zone le même jour : limite de réception probable, indice faible")
+                              f"cette zone le même jour ({nature}) : indice faible")
+        elif point in collective:
+            context.append(f"Point de disparition collectif ({collective[point]} navires sans lien le même jour), mais "
+                           "indice propre au navire : gravité gardée")
         details = {
             "navire": {"vessel_id": x["vessel_id"], "mmsi": x["mmsi"], "name": x["name"], "ship_type": x["ship_type"],
                        "length_m": _finite(x["length_m"]), "classe_ais": x["ais_class"]},
@@ -552,18 +598,26 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
                            f"{round(x['duration_min'] - lost)} min")
         details["flux_interrompu_min"] = round(lost)
         details["disparition_collective"] = collective.get(point)
+        details["nature_point_collectif"] = kinds.get(point)
+        details["gravite_avant_declassement"] = before
         event_time = x["t_last"] + timedelta(minutes=g["min_gap_min"])
         items.append({"key": f"{x['vessel_id']}:{stamp(x['t_last'])}", "severity": severity,
                       "event_time": event_time, "lon": x["lon"], "lat": x["lat"], "details": details,
                       "vessels": [x["vessel_id"]] + [p["vessel_id"] for p in partners]})
 
     counts = {"silences_detectes": len(rows), "exclus_sortie_de_couverture": exits,
-              "exclus_route_hors_zone": route_exits, "exclus_coupure_du_flux": outages, "coupures_retenues": len(items),
+              "exclus_route_hors_zone": route_exits, "exclus_coupure_du_flux": outages,
+              "exclus_debut_pendant_coupure_du_flux": uncertain, "coupures_retenues": len(items),
               "coupures_declassees_disparition_collective": downgraded,
               "points_de_disparition_collectifs": len(collective),
               "points_collectifs": [{"lon": round((k[0] + 0.5) * g["disparition_cellule_deg"][0], 3),
                                      "lat": round((k[1] + 0.5) * g["disparition_cellule_deg"][1], 3), "jour": str(k[2]),
-                                     "navires": n} for k, n in sorted(collective.items(), key=lambda kv: -kv[1])[:20]],
+                                     "navires": n, "nature": kinds[k],
+                                     "premier": min(x["t_last"] for x in by_point[k]).strftime("%H:%M"),
+                                     "dernier": max(x["t_last"] for x in by_point[k]).strftime("%H:%M"),
+                                     "cap_median": round(statistics.median([x["cog_deg"] for x in by_point[k]
+                                                                            if x["cog_deg"] is not None] or [0]))}
+                             for k, n in sorted(collective.items(), key=lambda kv: -kv[1])[:20]],
               "avec_partenaire_possible": with_partner, "minutes_de_flux_coupe": len(outage)}
     if g.get("mode", "alertes") == "observation":
         # Seuils encore danois : les épisodes sont comptés et décrits pour la recalibration, aucune alerte n'est créée,
@@ -591,7 +645,9 @@ def observation_summary(items: list[dict]) -> dict:
          "dernier_message": it["details"]["dernier_message"], "duree_min": it["details"]["duree_min"],
          "reapparition": it["details"]["reapparition"] is not None, "comportement": it["details"]["comportement"],
          "messages_heure_precedente": it["details"]["messages_heure_precedente"],
-         "derniere_position": it["details"]["derniere_position"], "gravite": it["severity"]} for it in longest]}
+         "derniere_position": it["details"]["derniere_position"], "gravite": it["severity"],
+         "gravite_avant_declassement": it["details"].get("gravite_avant_declassement"),
+         "point_collectif": it["details"].get("disparition_collective")} for it in longest]}
 
 
 # Test par injection de la règle des coupures (API /api/rules/ais_gap/selftest, taches.py coupures-injection)
@@ -1004,21 +1060,30 @@ async def run_identity(c, start, end, rules: dict) -> dict:
 
 async def run_continuous(c, now: datetime, rules: dict) -> dict:
     """Un cycle des règles sur le flux en direct : fenêtre glissante, bornée par la dernière position reçue (une
-    collecte en retard ne fait pas croire à des silences)."""
+    collecte en retard ne fait pas croire à des silences). Durée de chaque étape dans `durees_s` (task_runs)."""
+    import time
     p = rules["continu"]
     start = now - timedelta(hours=p["fenetre_h"])
     watermark = await c.fetchval("SELECT max(ts) FROM positions WHERE ts <= $1::timestamptz", now)
     out = {"fenetre": [start.isoformat(), watermark.isoformat() if watermark else None]}
     if watermark is None or watermark < start:
         return {**out, "ignore": "aucune position dans la fenêtre"}
+    durees: dict[str, float] = {}
+
+    async def step(name, coro):
+        t = time.perf_counter()
+        r = await coro
+        durees[name] = round(time.perf_counter() - t, 2)
+        return r
     if await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
-        out["rendezvous"] = await run_rendezvous(c, start, watermark, rules)
+        out["rendezvous"] = await step("rendezvous", run_rendezvous(c, start, watermark, rules))
     else:
         out["rendezvous"] = "trait de côte absent : lancer scripts/build_masks.py"
     if await c.fetchval("SELECT EXISTS (SELECT 1 FROM reception_cells)"):
-        out["ais_gap"] = await run_ais_gap(c, start, watermark, rules)
+        out["ais_gap"] = await step("ais_gap", run_ais_gap(c, start, watermark, rules))
     else:
         out["ais_gap"] = "zone de réception absente : lancer scripts/build_masks.py"
-    out["watchlist"] = await run_watchlist(c, start, now, rules)
-    out["identite"] = await run_identity(c, now - timedelta(hours=p["identite_fenetre_h"]), now, rules)
+    out["watchlist"] = await step("watchlist", run_watchlist(c, start, now, rules))
+    out["identite"] = await step("identite", run_identity(c, now - timedelta(hours=p["identite_fenetre_h"]), now, rules))
+    out["durees_s"] = durees
     return out

@@ -411,7 +411,7 @@ indicateur, `/api/metrics`. Éprouvé de bout en bout sur la base de test avec d
 **pas encore sur un vrai GPU** (CUDA 11.3 de l'image sur L4, mémoire, poids dans l'image : à trancher au premier
 essai, `taches.py sentinel-analyser <id>`).
 
-**Corrections après les essais des 11 et 12/10/2026** (règles 2026.10.24, aucune migration ; seule l'image
+**Corrections après les essais des 11 et 12/10/2026** (règles 2026.10.25, aucune migration ; seule l'image
 `mars_c2-scripts` change) :
 * **Plafond des travailleurs** : seuls comptent ceux dont une instance a été créée (`scw_server_id`) ; les sept refus de
   Scaleway en 0,1 s (lancements Sentinel 10 à 16) avaient épuisé le plafond et privé la nuit VIIRS du 12/10 ; place
@@ -430,9 +430,23 @@ essai, `taches.py sentinel-analyser <id>`).
   Mesuré sur une copie réelle du 11/10 (Manche et Bretagne, 1 752 navires en route, 146 635 positions, vraie zone
   fiable de 1 395 cellules, lues sur le serveur) : avant, 85 coupures retenues dont 43 élevées (le serveur en voyait 88
   dont 45) ; route suivie, 22 sorties de plus, 63 retenues ; points collectifs, 13 points dont le premier, 19 navires
-  en 50,35 N 0,9 O (île de Wight), 47 coupures déclassées : 55 faibles, 2 moyennes, 6 élevées. **Coût** : la projection
+  en 50,35 N 0,9 O (en pleine Manche, 40 km au sud de l'île de Wight, voie ouest du dispositif de séparation du trafic :
+  limite de couverture, silences étalés de 00:39 à 18:51, tous vers l'ouest), 47 coupures déclassées : 55 faibles, 2 moyennes, 6 élevées. **Coût** : la projection
   ajoute 0,01 s ; le cycle lent venait d'ailleurs : PostgreSQL recalculait le bord des données en mer (union du trait
   de côte) pour chaque silence ; sous requêtes `MATERIALIZED`, `find_gaps` passe de 68 s à 0,7 s, mêmes silences.
+  Cycle complet sur la copie, étape par étape (ancien, nouveau) : rendez vous 7,0 et 7,2 s ; coupures 92,4 et 0,9 s ;
+  listes et identités 0,03 et 0,01 s ; frise 1,7 et 1,6 s ; total **101 s et 9,7 s** (serveur avant correctif : 113 s).
+  Chaque cycle consigne désormais `durees_s` par étape dans `task_runs`.
+* **Points collectifs, nature et garde** (13/10/2026) : la moitié au moins des silences d'un point en une demi heure,
+  coupure de réception simultanée ; sinon limite de couverture (les 13 points du 11/10, dont celui de 50,35 N 0,9 O :
+  19 navires vers l'ouest, cap médian 254°, de 00:39 à 18:51). Un indice propre au navire (partenaire au large,
+  rendez vous lié, arrêt pendant le silence) garde sa gravité : seul le silence long sans réapparition est déclassé
+  (les 30 élevées déclassées du 11/10 l'étaient toutes pour cette seule raison) ; `gravite_avant_declassement` gardée.
+* **Trous de notre collecte** (déploiement, coupure d'AISStream : toutes les minutes vides à la fois, `feed_outage`) :
+  minutes retirées des silences (déjà), silence dont le début tombe dans le trou ou 10 min avant écarté (début
+  inconnu, `debut_incertain_min`), historique exigé réduit au prorata des minutes collectées, points collectifs sur les
+  vrais silences seulement. Copie du 11/10 : arrêt simulé de 20 min, résultat identique à sans arrêt (63 retenues, 6
+  élevées) ; 140 min, mêmes élevées, 7 coupures dont le début tombait dans le trou écartées (choix délibéré).
 
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
@@ -443,11 +457,11 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 147 réussis, 25 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 24 sans
+`python -m pytest tests` : 148 réussis, 27 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 26 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 171 réussis, 1 ignoré (plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 174 réussis, 1 ignoré (trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -572,6 +586,9 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   `.venv` du dépôt sert aux tests.
 * Les tests passent depuis le dépôt même si une image ne copie pas un module (cas de `backend/sentinel.py`, 11/10) :
   `tests/test_images.py` et `scripts/verifier_images.sh` avant chaque publication.
+* Un trou de notre collecte agit de trois façons sur la règle des coupures : durée des silences, début inconnu des
+  silences qui commencent dedans, historique manquant dans l'heure qui suit. Ne retirer que les minutes ne suffit pas
+  (arrêt de 20 min : une coupure élevée fabriquée, un point collectif perdu, avant correction).
 * PostgreSQL 12 et plus déplie une sous requête `WITH` utilisée une fois : une géométrie lourde (union du trait de
   côte) y est recalculée pour chaque ligne. La marquer `MATERIALIZED` (cas de `find_gaps`, 68 s ramenées à 0,7 s).
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à

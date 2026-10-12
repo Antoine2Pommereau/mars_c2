@@ -416,3 +416,14 @@ def test_viirs_keeps_its_reserved_place(conn):
     # La nuit VIIRS a eu son travailleur : plus de place réservée, mais le plafond global tient
     assert T.launch(conn, FakeScw(), RULES, "sentinel", {"scenes": []}, {}, sleep=lambda _s: None) == {
         "refus": "plafond de 4 travailleurs par jour atteint"}
+    conn.execute("UPDATE travailleurs SET detruit_le = now() WHERE detruit_le IS NULL")     # verrous libérés
+
+
+def test_a_sentinel_trial_before_the_viirs_night_is_not_refused(conn):
+    """Essai Sentinel à la main en journée, avant le travailleur VIIRS du jour : la place réservée (1 travailleur,
+    60 minutes) laisse 3 travailleurs et 120 minutes aux autres tâches ; un essai, même le deuxième, passe."""
+    assert "travailleur" in T.launch(conn, FakeScw(), RULES, "sentinel", {"scenes": []}, {}, sleep=lambda _s: None)
+    conn.execute("UPDATE travailleurs SET etat = 'termine', fini_le = now(), detruit_le = now()")
+    _with_instance(conn, "sentinel", 1)                                         # deux sessions GPU déjà ce jour
+    assert "travailleur" in T.launch(conn, FakeScw(), RULES, "sentinel", {"scenes": []}, {}, sleep=lambda _s: None)
+    conn.execute("UPDATE travailleurs SET detruit_le = now() WHERE detruit_le IS NULL")     # verrous libérés

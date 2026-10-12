@@ -280,7 +280,9 @@ def rules_cycle(lists_only: bool = False) -> dict:
                 return {"watchlist": await run_watchlist(c, now - timedelta(hours=p["fenetre_h"]), now, rules),
                         "identite": await run_identity(c, now - timedelta(hours=p["identite_fenetre_h"]), now, rules)}
             out = await run_continuous(c, now, rules)
+            t = time.perf_counter()
             out["frise"] = await refresh_stats(c, now)      # statistiques de la frise (densité, coupures du flux)
+            out.setdefault("durees_s", {})["frise"] = round(time.perf_counter() - t, 2)
             return out
         finally:
             await c.close()
