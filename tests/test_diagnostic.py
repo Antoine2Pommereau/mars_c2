@@ -41,7 +41,10 @@ class Copernicus:
 
     def get(self, url, **_kw):
         self.gets.append(url)
-        return Resp(self.read)
+        r = Resp(self.read)
+        if self.read == 403:
+            r.text = "<?xml version='1.0'?><Error><Code>InvalidAccessKeyId</Code><Message>expired</Message></Error>"
+        return r
 
 
 class ScalewayApi:
@@ -71,8 +74,11 @@ class ScalewayApi:
 
     def request(self, method, url, **_kw):
         assert method == "GET", f"diagnostic en écriture : {method} {url}"
-        path = url.replace("https://api.scaleway.com", "").split("?", 1)[0]
+        path, _, query = url.replace("https://api.scaleway.com", "").partition("?")
         self.calls.append(path)
+        if path.endswith("/products/servers/availability") and "pages" in self.__dict__:
+            page = int(dict(q.split("=") for q in query.split("&")).get("page", 1))
+            return Resp(200, self.pages[page - 1] if page <= len(self.pages) else {"servers": {}, "total_count": 0})
         code, body = self.routes.get(path, (404, {"message": "inconnu"}))
         return Resp(code, body)
 
@@ -121,7 +127,36 @@ def test_missing_and_unreadable_points_are_named(monkeypatch):
 def test_copernicus_is_checked_first_and_refused_keys_are_reported(monkeypatch):
     _env(monkeypatch)
     lines, _ = _run(ScalewayApi(), Copernicus(read=403))
-    assert lines["Clés Copernicus valides"][0] == D.MANQUE and "HTTP 403" in lines["Clés Copernicus valides"][1]
+    assert lines["Clés Copernicus valides"][0] == D.MANQUE
+    assert "HTTP 403, code InvalidAccessKeyId" in lines["Clés Copernicus valides"][1]
     monkeypatch.delenv("CDSE_SECRET_KEY")
     lines, _ = _run(ScalewayApi())
     assert lines["Clés Copernicus"] == (D.MANQUE, "absentes du .env : CDSE_SECRET_KEY")
+
+
+def test_availability_is_read_across_pages(monkeypatch):
+    """Réponse paginée (100 types par page) : le L4 n'est pas sur la première page (cas du 13/10/2026)."""
+    _env(monkeypatch)
+    api = ScalewayApi()
+    api.pages = [{"servers": {f"DEV{k}": {"availability": "available"} for k in range(100)}, "total_count": 140},
+                 {"servers": {"L4-1-24G": {"availability": "scarce"}}, "total_count": 140}]
+    lines, _ = _run(api)
+    assert lines["L4-1-24G en fr-par-2"] == (D.PRET, "disponibilité annoncée : scarce (stock faible ou épuisé)")
+    api.pages = [{"servers": {"DEV1-S": {"availability": "available"}}, "total_count": 1}]
+    lines, shown = _run(api)
+    assert lines["L4-1-24G en fr-par-2"][0] == D.A_VERIFIER and "absent des 1 types listés" in lines["L4-1-24G en fr-par-2"][1]
+    assert any("Réponse brute de la disponibilité" in x for x in shown)
+
+
+def test_key_expiry_when_reported_in_env(monkeypatch):
+    _env(monkeypatch)
+    for value, status, text in (("2026-10-10", D.MANQUE, "clés expirées le 10/10/2026"),
+                                ("2026-10-20", D.A_VERIFIER, "encore 8 jour(s)"),
+                                ("2027-01-31", D.PRET, "valables jusqu'au 31/01/2027"),
+                                ("31/01/2027", D.A_VERIFIER, "format AAAA-MM-JJ attendu")):
+        monkeypatch.setenv("CDSE_CLES_EXPIRENT_LE", value)
+        lines, _ = _run(ScalewayApi())
+        assert lines["Expiration des clés Copernicus"][0] == status and text in lines["Expiration des clés Copernicus"][1]
+    monkeypatch.delenv("CDSE_CLES_EXPIRENT_LE")
+    lines, _ = _run(ScalewayApi())
+    assert lines["Expiration des clés Copernicus"][0] == D.INFO

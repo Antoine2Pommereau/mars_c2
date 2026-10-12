@@ -24,6 +24,7 @@ tests/test_sentinel.py.
 import json
 import math
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from mars.evaluation import critere, motif_non_evaluable
@@ -195,13 +196,23 @@ def check_cdse(session, url: str) -> str | None:
     except Exception as e:
         return f"Copernicus injoignable ({type(e).__name__})"
     code = r.status_code
-    r.close()
     if code in (200, 206):
+        r.close()
         return None
+    # Réponse d'erreur S3 (XML, quelques centaines d'octets) : son code dit la cause (InvalidAccessKeyId : clé inconnue
+    # ou expirée ; SignatureDoesNotMatch : clé secrète fausse ; AccessDenied…)
+    detail = ""
+    try:
+        text = (getattr(r, "text", "") or "")[:600]
+        found = re.search(r"<Code>([^<]+)</Code>", text)
+        detail = f", code {found.group(1)}" if found else ""
+    except Exception:
+        pass
+    r.close()
     if code in (401, 403):
-        return (f"clés Copernicus refusées (HTTP {code}) : CDSE_ACCESS_KEY ou CDSE_SECRET_KEY invalides ou périmées "
-                "(https://eodata-s3keysmanager.dataspace.copernicus.eu)")
-    return f"lecture d'essai refusée par Copernicus (HTTP {code})"
+        return (f"clés Copernicus refusées (HTTP {code}{detail}) : CDSE_ACCESS_KEY ou CDSE_SECRET_KEY invalides ou "
+                "périmées (https://eodata-s3keysmanager.dataspace.copernicus.eu)")
+    return f"lecture d'essai refusée par Copernicus (HTTP {code}{detail})"
 
 
 def launch_failures_today(conn, now: datetime) -> list[int]:

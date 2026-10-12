@@ -142,7 +142,7 @@ La durée réelle (démarrage d'une image GPU, téléchargement de 5 Go) n'est p
    n'est montrée qu'une fois). Dans le `.env` du serveur : `CDSE_ACCESS_KEY` et `CDSE_SECRET_KEY`.
 5. Migration 25, images, puis le premier essai réel ci dessous.
 
-## Image GPU sur volume bloc (corrigé le 12/10/2026, hypothèse à confirmer)
+## Image GPU sur volume bloc (corrigé le 12/10/2026, confirmé le 13/10/2026)
 
 Les lancements 10 à 16 ont échoué avant toute création : « image e6d1b7f4 (ubuntu_noble_gpu_os_13_nvidia) introuvable
 ou sans volume racine ». Le catalogue public trouve bien l'image `e6d1b7f4` (type `instance_sbs`, compatible
@@ -150,12 +150,12 @@ L4-1-24G, fr-par-2). L'échec venait de la lecture de sa fiche dans l'API Instan
 DEV1-M (disque local) juge selon quatre conditions confondues dans un seul message. Désormais :
 * un message par cause (introuvable, architecture, pas de volume racine, taille inconnue) ;
 * pour le stockage bloc : volume racine de type `sbs_snapshot` accepté, et si la fiche n'en donne pas la taille
-  (taille nulle, l'**hypothèse la plus probable**, non vérifiable sans clé), elle est lue dans l'API Block Storage
+  (taille nulle : **confirmé par le diagnostic du 13/10/2026**, fiche brute avec `sbs_snapshot` de taille 0), elle est
+  lue dans l'API Block Storage (20 Go pour l'image GPU)
   (`/block/v1alpha1/zones/<zone>/snapshots/<id>`), comme le fait la ligne de commande Scaleway ;
 * la vérification des DEV1-M est inchangée (disque local, taille dans la fiche), testée.
-Ce qui reste une hypothèse : la forme exacte de la fiche d'une image sur volume bloc, le chemin Block Storage
-`v1alpha1` (celui de la ligne de commande ; une `v1` existe aussi), le nom du quota GPU dans l'API IAM. Le diagnostic
-affiche la fiche brute pour trancher.
+Le chemin Block Storage `v1alpha1` (celui de la ligne de commande ; une `v1` existe aussi) répond. Reste à voir au
+premier essai : le nom du quota GPU dans l'API IAM (lisible ou non avec la clé du serveur).
 
 ## Diagnostic avant tout essai (lecture seule)
 
@@ -169,7 +169,12 @@ réseau privé dans le `.env`, API Instances en fr-par-2, **image GPU résolue a
 annoncée du L4-1-24G en fr-par-2, quota du L4 (API IAM ; « à vérifier » si la clé limitée au projet ne peut pas le lire),
 stockage bloc (lecture), ensembles de droits de la politique de la clé (si lisibles), réseau privé (régional, donc
 rattachable depuis fr-par-2). Chaque ligne dit PRÊT, MANQUE (à corriger) ou À VÉRIFIER (illisible avec cette clé : à
-contrôler dans la console) ; le plafond de scènes est donné pour information. Code de sortie non nul s'il manque quelque
+contrôler dans la console) ; le plafond de scènes est donné pour information. La disponibilité du type d'instance est
+une réponse paginée (100 types par page, les GPU au delà de la première) : toutes les pages sont lues, et la réponse
+brute s'affiche si le type reste introuvable. Expiration des clés Copernicus : illisible avec les seules clés S3 (le
+gestionnaire de clés demande une connexion au compte) ; la reporter dans le `.env` à la création
+(`CDSE_CLES_EXPIRENT_LE=AAAA-MM-JJ`) pour que le diagnostic la compare à la date du jour (moins de 14 jours : à
+vérifier ; dépassée : manque). Un refus de Copernicus donne son code S3 (`InvalidAccessKeyId`, `SignatureDoesNotMatch`…). Code de sortie non nul s'il manque quelque
 chose.
 
 ## Premier essai réel (passage choisi à la main)

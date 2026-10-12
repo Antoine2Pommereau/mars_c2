@@ -125,8 +125,9 @@ class Scaleway:
         * Volume bloc (« sbs_volume », seul stockage des GPU L4 ; image du catalogue de type « instance_sbs ») : le
           volume racine de l'image est un instantané du stockage bloc (« sbs_snapshot ») ; si la fiche de l'API
           Instances n'en donne pas la taille, elle est lue dans l'API Block Storage (instantané), comme le fait la
-          ligne de commande Scaleway. HYPOTHÈSE à confirmer par `taches.py sentinel-diagnostic` (aucune clé au moment
-          de l'écriture) : c'est la taille nulle qui faisait refuser l'image GPU les 11 et 12/10/2026."""
+          ligne de commande Scaleway. Confirmé par `taches.py sentinel-diagnostic` le 13/10/2026 : fiche de l'image
+          GPU avec un volume racine « sbs_snapshot » de taille 0, instantané de 20 Go dans l'API Block Storage ; c'est
+          cette taille nulle qui faisait refuser l'image les 11 et 12/10/2026."""
         kind = "instance_sbs" if volume == "sbs_volume" else "instance_local"
         d = self._req("GET", f"/marketplace/v2/local-images?image_label={label}&zone={zone}&type={kind}")
         found = [i for i in (d.get("local_images", []) if d is not GONE else [])

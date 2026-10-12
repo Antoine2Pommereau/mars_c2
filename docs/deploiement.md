@@ -258,7 +258,8 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
 6. **Sentinel 1 (lot C, `docs/sentinel.md`)** : quota GPU L4-1-24G (identité du compte validée), droit
    **BlockStorageFullAccess** ajouté à la politique de l'application (les L4 n'ont que des volumes bloc, supprimés
    explicitement), clés S3 de Copernicus Data Space dans le `.env` (`CDSE_ACCESS_KEY`, `CDSE_SECRET_KEY`, obtenues sur
-   https://eodata-s3keysmanager.dataspace.copernicus.eu). Le réseau privé est régional : le travailleur GPU en fr-par-2
+   https://eodata-s3keysmanager.dataspace.copernicus.eu ; leur date d'expiration, choisie à la création, dans
+   `CDSE_CLES_EXPIRENT_LE=AAAA-MM-JJ`, que `taches.py sentinel-diagnostic` surveille). Le réseau privé est régional : le travailleur GPU en fr-par-2
    rejoint le serveur en fr-par-1 sans autre réglage. Migration 25 (`db/init/25_sentinel.sql`). Sans clés CDSE, rien
    n'est lancé ; premier essai sur un passage choisi à la main : `taches.py sentinel-analyser <id>` (procédure dans
    `docs/sentinel.md`).

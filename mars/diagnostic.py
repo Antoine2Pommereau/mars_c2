@@ -32,6 +32,7 @@ def copernicus(session, now: datetime) -> list[tuple[str, str, str]]:
     if missing:
         return [(MANQUE, "Clés Copernicus", f"absentes du .env : {', '.join(missing)}")]
     out.append((PRET, "Clés Copernicus", "présentes dans le .env"))
+    out.append(_expiry(os.environ.get("CDSE_CLES_EXPIRENT_LE"), now))
     try:
         r = session.post(sentinel.STAC, headers=sentinel.HEADERS, timeout=60, json={
             "collections": ["sentinel-1-grd"], "bbox": [-6.8, 47.3, -3.0, 49.6], "limit": 5,
@@ -46,6 +47,26 @@ def copernicus(session, now: datetime) -> list[tuple[str, str, str]]:
     out.append((MANQUE, "Clés Copernicus valides", motif) if motif else
                (PRET, "Clés Copernicus valides", f"16 octets lus de {scenes[0]['id']} (image VV)"))
     return out
+
+
+def _expiry(value: str | None, now: datetime) -> tuple[str, str, str]:
+    """Date d'expiration des clés S3 de Copernicus. Elle n'est pas lisible avec les seules clés (le gestionnaire de clés
+    demande une connexion au compte) : on la reporte dans le .env à la création (CDSE_CLES_EXPIRENT_LE=AAAA-MM-JJ)."""
+    rubrique = "Expiration des clés Copernicus"
+    if not value:
+        return (INFO, rubrique, "non renseignée : CDSE_CLES_EXPIRENT_LE=AAAA-MM-JJ dans le .env, date choisie sur "
+                                "https://eodata-s3keysmanager.dataspace.copernicus.eu")
+    try:
+        day = datetime.strptime(value.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return (A_VERIFIER, rubrique, f"CDSE_CLES_EXPIRENT_LE illisible ({value!r}) : format AAAA-MM-JJ attendu")
+    left = (day - now.date()).days
+    shown = day.strftime("%d/%m/%Y")
+    if left < 0:
+        return (MANQUE, rubrique, f"clés expirées le {shown} : les régénérer")
+    if left < 14:
+        return (A_VERIFIER, rubrique, f"clés valables jusqu'au {shown}, encore {left} jour(s) : penser à les régénérer")
+    return (PRET, rubrique, f"clés valables jusqu'au {shown} ({left} jours)")
 
 
 def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
@@ -82,10 +103,7 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
                 show(f"Fiche brute de l'image {im['id']} (API Instances, HTTP {c2}) :")
                 show(json.dumps(fiche, ensure_ascii=False, indent=2, default=str)[:4000])
 
-    code, body = _get(scw, f"/instance/v1/zones/{zone}/products/servers/availability")
-    av = (body.get("servers", {}).get(ctype) or {}).get("availability") if code == 200 and isinstance(body, dict) else None
-    out.append((PRET if av in ("available", "scarce") else A_VERIFIER, f"{ctype} en {zone}",
-                f"disponibilité annoncée : {av or f'illisible (HTTP {code})'}"))
+    out.append(_availability(scw, zone, ctype, show))
 
     out += _quota(scw, ctype, zone)
     out += _rights(scw, zone)
@@ -99,6 +117,31 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
         else:
             out.append((MANQUE, f"Réseau privé en {zone}", f"HTTP {code} : {str(body)[:200]}"))
     return out
+
+
+def _availability(scw, zone: str, ctype: str, show) -> tuple[str, str, str]:
+    """Disponibilité annoncée du type d'instance. La réponse est paginée (100 types au plus par page, GPU au delà de la
+    première : « illisible (HTTP 200) » au premier diagnostic du 13/10/2026) : pages lues jusqu'à trouver le type ;
+    introuvable, la réponse brute de la première page est affichée."""
+    rubrique, first, seen = f"{ctype} en {zone}", None, 0
+    for page in range(1, 11):
+        code, body = _get(scw, f"/instance/v1/zones/{zone}/products/servers/availability?per_page=100&page={page}")
+        if code != 200 or not isinstance(body, dict):
+            show(f"Réponse brute de la disponibilité (page {page}, HTTP {code}) :")
+            show(json.dumps(body, ensure_ascii=False, indent=2, default=str)[:3000])
+            return (A_VERIFIER, rubrique, f"disponibilité illisible (HTTP {code}, réponse brute affichée)")
+        first = first or body
+        servers = body.get("servers") or {}
+        seen += len(servers)
+        av = (servers.get(ctype) or {}).get("availability")
+        if av:
+            return (PRET if av in ("available", "scarce") else A_VERIFIER, rubrique,
+                    f"disponibilité annoncée : {av}" + ("" if av == "available" else " (stock faible ou épuisé)"))
+        if not servers or seen >= int(body.get("total_count") or 0):
+            break
+    show(f"Réponse brute de la disponibilité (première page, {seen} types lus en tout) :")
+    show(json.dumps(first, ensure_ascii=False, indent=2, default=str)[:3000])
+    return (A_VERIFIER, rubrique, f"{ctype} absent des {seen} types listés (réponse brute affichée)")
 
 
 def _quota(scw, ctype: str, zone: str) -> list[tuple[str, str, str]]:

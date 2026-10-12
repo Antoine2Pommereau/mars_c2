@@ -418,7 +418,8 @@ essai, `taches.py sentinel-analyser <id>`).
   réservée à VIIRS (1 travailleur, 60 min) tant que sa nuit n'a pas eu son travailleur ; échec de lancement Sentinel :
   sélection automatique suspendue jusqu'au lendemain (motif dans `task_runs` et l'indicateur), passage jamais bloqué.
 * **Image GPU** : résolution sur volume bloc (`sbs_snapshot` accepté, taille lue dans l'API Block Storage si la fiche
-  la donne nulle, hypothèse la plus probable de l'échec), un message par cause ; DEV1-M inchangées. Clés Copernicus
+  la donne nulle, confirmé par le diagnostic du 13/10 : `sbs_snapshot` de taille 0, 20 Go au stockage bloc), un message
+  par cause ; DEV1-M inchangées. Clés Copernicus
   vérifiées par une lecture réelle avant tout appel à Scaleway. `taches.py sentinel-diagnostic` (lecture seule, fiche
   brute de l'image, quota, droits, réseau privé).
 * **Garde fou des images** : `tests/test_images.py` (modules locaux copiés par chaque Dockerfile, bibliothèques
@@ -457,11 +458,11 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 148 réussis, 27 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 26 sans
+`python -m pytest tests` : 150 réussis, 27 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 26 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 174 réussis, 1 ignoré (trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 176 réussis, 1 ignoré (trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -589,6 +590,9 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * Un trou de notre collecte agit de trois façons sur la règle des coupures : durée des silences, début inconnu des
   silences qui commencent dedans, historique manquant dans l'heure qui suit. Ne retirer que les minutes ne suffit pas
   (arrêt de 20 min : une coupure élevée fabriquée, un point collectif perdu, avant correction).
+* La disponibilité des types d'instance (`/products/servers/availability`) est paginée, 100 types par page : les GPU ne
+  sont pas sur la première (« illisible (HTTP 200) » au diagnostic du 13/10/2026). Lire toutes les pages.
+* L'expiration des clés S3 de Copernicus n'est pas lisible avec ces clés : `CDSE_CLES_EXPIRENT_LE` dans le `.env`.
 * PostgreSQL 12 et plus déplie une sous requête `WITH` utilisée une fois : une géométrie lourde (union du trait de
   côte) y est recalculée pour chaque ligne. La marquer `MATERIALIZED` (cas de `find_gaps`, 68 s ramenées à 0,7 s).
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
