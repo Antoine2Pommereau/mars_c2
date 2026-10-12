@@ -380,3 +380,39 @@ def test_proofs_are_kept_forever_with_an_alert_and_30_days_otherwise(conn):
     gone = {r[0] for r in conn.execute("SELECT id FROM preuves_images WHERE supprime_le IS NOT NULL").fetchall()}
     assert gone == {ids["ancienne"], orphan}
     assert len(r2.objects) == 2
+
+
+# Plafond quotidien : seuls les travailleurs dont une instance a été créée comptent ; place réservée à VIIRS
+
+class NoImageScw(FakeScw):
+    """Scaleway refuse avant toute création (cas des 11 et 12/10/2026 : image GPU jugée sans volume racine)."""
+
+    def resolve_image(self, *_args):
+        raise T.ScalewayError("image e6d1b7f4 (ubuntu_noble_gpu_os_13_nvidia) introuvable ou sans volume racine")
+
+
+def _with_instance(conn, tache, n):
+    for k in range(n):
+        conn.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, etat, scw_server_id, "
+                     "fini_le, detruit_le) VALUES (%s, 'X', 'fr-par-1', 'x', '{}', 'termine', %s, now(), now())",
+                     (tache, f"srv-essai-{tache}-{k}"))
+
+
+def test_launches_refused_before_any_instance_do_not_count(conn):
+    for _ in range(RULES["travailleurs"]["max_par_jour"] + 3):                 # 7 échecs, comme les lancements 10 à 16
+        with pytest.raises(T.ScalewayError, match="sans volume racine"):
+            T.launch(conn, NoImageScw(), RULES, "sentinel", {"scenes": []}, {}, sleep=lambda _s: None)
+    assert conn.execute("SELECT count(*) FROM travailleurs WHERE scw_server_id IS NULL").fetchone()[0] == 7
+    # La nuit VIIRS passe : aucun de ces lancements n'a créé d'instance, aucun ne compte
+    assert "travailleur" in T.launch(conn, FakeScw(), RULES, "viirs", {"granules": []}, {}, sleep=lambda _s: None)
+
+
+def test_viirs_keeps_its_reserved_place(conn):
+    p = RULES["travailleurs"]
+    _with_instance(conn, "sentinel", p["max_par_jour"] - p["reserve_viirs"]["travailleurs"])      # 3 sessions GPU
+    r = T.launch(conn, FakeScw(), RULES, "sentinel", {"scenes": []}, {}, sleep=lambda _s: None)
+    assert r == {"refus": "plafond de 4 travailleurs par jour atteint, dont 1 réservé à la nuit VIIRS"}
+    assert "travailleur" in T.launch(conn, FakeScw(), RULES, "viirs", {"granules": []}, {}, sleep=lambda _s: None)
+    # La nuit VIIRS a eu son travailleur : plus de place réservée, mais le plafond global tient
+    assert T.launch(conn, FakeScw(), RULES, "sentinel", {"scenes": []}, {}, sleep=lambda _s: None) == {
+        "refus": "plafond de 4 travailleurs par jour atteint"}

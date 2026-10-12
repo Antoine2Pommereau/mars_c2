@@ -59,9 +59,13 @@ sélection automatique et la commande manuelle).
 
 | Garde fou | Valeur (`config/rules.yaml`, section `sentinel`) |
 |---|---|
-| Plafond quotidien | 2 scènes par jour (les plus riches en points d'intérêt d'abord) ; au delà, refus clair dans `task_runs` |
+| Plafond quotidien | 2 scènes par jour (les plus riches en points d'intérêt d'abord) ; au delà, refus clair dans `task_runs`. **0 versionné depuis le 12/10/2026** : Sentinel arrêté tant que le diagnostic n'est pas au vert |
 | Budget mensuel | 6 € : coût estimé avant lancement (12 min fixes et 6 min par scène, au tarif du L4) ajouté au coût engagé du mois ; au delà, refus |
 | Travailleur | un seul travailleur Sentinel actif (verrou), plafonds communs (4 travailleurs et 180 min par jour), durée de vie 45 min, délai de démarrage 10 min, destruction gardée (`docs/travailleurs_viirs.md`) |
+| Plafond commun | seuls comptent les travailleurs dont une instance a été créée chez Scaleway : un lancement refusé avant (image, quota, clés) ne coûte rien et ne compte pas (les 11 et 12/10/2026, sept refus de Scaleway en 0,1 s avaient épuisé le plafond et privé la nuit VIIRS de son travailleur) |
+| Place réservée à VIIRS | tant que la nuit VIIRS du jour n'a pas eu son travailleur, Sentinel laisse 1 travailleur et 60 minutes (`travailleurs.reserve_viirs`) |
+| Échec de lancement | même jour, mêmes passages : pas de nouvel essai toutes les 30 minutes ; la sélection automatique attend le lendemain (`task_runs`, tâche `sentinel`, motif affiché dans l'indicateur « Satellites ») ; l'analyse en échec ne bloque pas son passage (l'index unique ignore les analyses en échec) |
+| Clés Copernicus | vérifiées par une lecture réelle de 16 octets d'une image avant toute analyse et avant tout appel à Scaleway |
 | Volume bloc | enregistré en base dès la création ; instance éteinte puis supprimée (jamais `terminate`, qui laisserait le volume, facturé) ; volume supprimé ensuite, retenté chaque minute jusqu'au bout |
 | Adresses de lecture | signées par le serveur, valables 3 heures ; aucune clé sur le travailleur |
 
@@ -138,9 +142,42 @@ La durée réelle (démarrage d'une image GPU, téléchargement de 5 Go) n'est p
    n'est montrée qu'une fois). Dans le `.env` du serveur : `CDSE_ACCESS_KEY` et `CDSE_SECRET_KEY`.
 5. Migration 25, images, puis le premier essai réel ci dessous.
 
+## Image GPU sur volume bloc (corrigé le 12/10/2026, hypothèse à confirmer)
+
+Les lancements 10 à 16 ont échoué avant toute création : « image e6d1b7f4 (ubuntu_noble_gpu_os_13_nvidia) introuvable
+ou sans volume racine ». Le catalogue public trouve bien l'image `e6d1b7f4` (type `instance_sbs`, compatible
+L4-1-24G, fr-par-2). L'échec venait de la lecture de sa fiche dans l'API Instances, que la vérification écrite pour les
+DEV1-M (disque local) juge selon quatre conditions confondues dans un seul message. Désormais :
+* un message par cause (introuvable, architecture, pas de volume racine, taille inconnue) ;
+* pour le stockage bloc : volume racine de type `sbs_snapshot` accepté, et si la fiche n'en donne pas la taille
+  (taille nulle, l'**hypothèse la plus probable**, non vérifiable sans clé), elle est lue dans l'API Block Storage
+  (`/block/v1alpha1/zones/<zone>/snapshots/<id>`), comme le fait la ligne de commande Scaleway ;
+* la vérification des DEV1-M est inchangée (disque local, taille dans la fiche), testée.
+Ce qui reste une hypothèse : la forme exacte de la fiche d'une image sur volume bloc, le chemin Block Storage
+`v1alpha1` (celui de la ligne de commande ; une `v1` existe aussi), le nom du quota GPU dans l'API IAM. Le diagnostic
+affiche la fiche brute pour trancher.
+
+## Diagnostic avant tout essai (lecture seule)
+
+```bash
+docker compose exec taches python scripts/taches.py sentinel-diagnostic
+```
+
+Aucune création, aucun coût : des lectures sur les API Scaleway et 16 octets d'une image Copernicus. Une ligne par
+point, dans l'ordre du lancement : clés Copernicus (présentes, puis valides par une lecture réelle), clés Scaleway et
+réseau privé dans le `.env`, API Instances en fr-par-2, **image GPU résolue avec sa fiche brute affichée**, disponibilité
+annoncée du L4-1-24G en fr-par-2, quota du L4 (API IAM ; « à vérifier » si la clé limitée au projet ne peut pas le lire),
+stockage bloc (lecture), ensembles de droits de la politique de la clé (si lisibles), réseau privé (régional, donc
+rattachable depuis fr-par-2). Chaque ligne dit PRÊT, MANQUE (à corriger) ou À VÉRIFIER (illisible avec cette clé : à
+contrôler dans la console) ; le plafond de scènes est donné pour information. Code de sortie non nul s'il manque quelque
+chose.
+
 ## Premier essai réel (passage choisi à la main)
 
-Rien n'est automatique tant que les clés CDSE sont absentes du `.env`. Pour valider la chaîne sur un seul passage :
+Seulement quand `sentinel-diagnostic` est entièrement au vert (aucune ligne MANQUE, et les lignes « à vérifier »
+contrôlées dans la console). Le plafond versionné vaut 0 : le relever d'abord, sur le serveur seulement
+(`sed -i 's/^  scenes_max_par_jour: 0$/  scenes_max_par_jour: 2/' config/rules.yaml`, relu au cycle suivant).
+Pour valider la chaîne sur un seul passage :
 
 1. Choisir un passage Sentinel 1 récent et acquis :
    `docker compose exec db psql -U mars -d mars -c "SELECT id, satellite, mode, acquired_at, cardinality(infra_ids) AS infra, cardinality(watch_ids) AS listes FROM sar_passes WHERE mission = 'S1' AND statut = 'acquis' ORDER BY acquired_at DESC LIMIT 10"`

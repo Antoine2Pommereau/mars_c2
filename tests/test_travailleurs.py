@@ -382,6 +382,7 @@ def test_provision_stops_before_start_when_private_network_fails():
 def test_image_is_resolved_from_the_catalogue_for_zone_type_and_architecture():
     scw = Scaleway("cle", PROJET, session=ProvisionApi(), protected=set())
     img = scw.resolve_image("fr-par-1", "ubuntu_noble", "DEV1-M", "x86_64")
+    assert img.pop("fiche")["id"] == UBUNTU                      # fiche brute gardée pour le diagnostic
     assert img == {"id": UBUNTU, "name": "Ubuntu 24.04 Noble Numbat", "arch": "x86_64", "root_type": "l_ssd",
                    "root_size": 10_000_000_000}
 
@@ -581,3 +582,12 @@ def test_worker_stops_at_the_first_failing_granule(monkeypatch):
     monkeypatch.setattr(w, "download", licence)
     calls.clear()
     assert w.run(task)["erreur"].startswith("licence LANCE") and len(calls) == 1
+
+
+def test_reserved_minutes_for_viirs():
+    w = lambda tache, minutes: {"cree_le": T0 - 200 * M, "fini_le": T0 - 200 * M + minutes * M, "tache": tache}
+    reserve = RULES["travailleurs"]["reserve_viirs"]["minutes"]
+    used = [w("sentinel", RULES["travailleurs"]["max_minutes_par_jour"] - reserve)]
+    assert "réservées à la nuit VIIRS" in quota(RULES, used, T0, "sentinel")
+    assert quota(RULES, used, T0, "viirs") is None
+    assert quota(RULES, used + [w("viirs", 60)], T0, "sentinel").startswith("plafond de 180 minutes")

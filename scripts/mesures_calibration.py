@@ -249,7 +249,18 @@ def measure(conn, days: int, rules: dict, log) -> tuple[Mesures, dict]:
            FROM reception_cells c JOIN regions r ON lower(r.name) = ANY(%s)
              AND ST_Intersects(r.geom::geometry, ST_Centroid(c.geom::geometry))
            GROUP BY 1""", (list(L_REGION),)).fetchall()
-    return m, {"first": first, "last": last, "episodes": episodes, "alerts": alerts, "identity": identity,
+    # Coupures AIS : sorties de couverture le long de la route et points de disparition collectifs (règles 2026.10.24),
+    # comptés à part ; points du cycle le plus chargé de chaque jour
+    gaps_extra = conn.execute(
+        """SELECT DISTINCT ON (run_day) run_day,
+                  (details->'ais_gap'->>'exclus_route_hors_zone')::int,
+                  (details->'ais_gap'->>'coupures_declassees_disparition_collective')::int,
+                  (details->'ais_gap'->>'points_de_disparition_collectifs')::int,
+                  details->'ais_gap'->'points_collectifs', (details->'ais_gap'->>'coupures_retenues')::int
+           FROM task_runs WHERE task = 'regles' AND status = 'ok' AND run_day BETWEEN %s AND %s
+             AND details->'ais_gap' ? 'exclus_route_hors_zone'
+           ORDER BY run_day, (details->'ais_gap'->>'silences_detectes')::int DESC""", (first, last)).fetchall()
+    return m, {"first": first, "last": last, "episodes": episodes, "coupures_suite": gaps_extra, "alerts": alerts, "identity": identity,
                "stationary_zones": zones, "reception_now": reception_now, "viirs": viirs,
                "reception_regions": reception_regions,
                "portee": portee}
@@ -550,6 +561,19 @@ def report(m: Mesures, x: dict, rules: dict) -> str:
                  "Sorties de couverture", "Coupures retenues", "Minutes de flux coupé", "Passages des listes",
                  "Changements d'identité", "Cycle le plus long", "Cycles"], rows) if rows
           else "Aucun cycle des règles consigné sur la période.", ""]
+    if x.get("coupures_suite"):
+        L += ["Coupures AIS comptées à part (cycle le plus chargé du jour) : sorties de couverture le long de la route "
+              f"déclarée (horizon {rules['ais_gap'].get('route_horizon_min')} min), coupures déclassées sur un point de "
+              f"disparition collectif ({rules['ais_gap'].get('disparition_min_navires')} navires sans lien au moins, même "
+              "maille, même jour : limite de réception, pas des navires sombres).", "",
+              table(["Jour", "Sorties le long de la route", "Coupures retenues", "dont déclassées (point collectif)",
+                     "Points collectifs"], [[f"{r[0]:%d/%m/%Y}", num(r[1]), num(r[5]), num(r[2]), num(r[3])]
+                                            for r in x["coupures_suite"]]), ""]
+        pts = [(r[0], p) for r in x["coupures_suite"] for p in (r[4] or [])]
+        if pts:
+            L += ["Points de disparition collectifs (centre de la maille) :", "",
+                  table(["Jour", "Latitude", "Longitude", "Navires sans lien"],
+                        [[f"{d:%d/%m/%Y}", num(p["lat"], 2), num(p["lon"], 2), num(p["navires"])] for d, p in pts[:30]]), ""]
     by = defaultdict(lambda: defaultdict(int))
     sev = defaultdict(lambda: defaultdict(int))
     for typ, jour, severity, status, n in x["alerts"]:

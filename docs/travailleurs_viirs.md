@@ -36,7 +36,7 @@ conteneur taches (serveur)                          instance Scaleway éphémèr
 | Garde fou | Valeur (`config/rules.yaml`, section `travailleurs`) |
 |---|---|
 | Durée de vie maximale | 45 min : au delà, destruction forcée par le serveur |
-| Plafonds quotidiens | 4 travailleurs et 180 minutes par jour ; au delà, refus consigné |
+| Plafonds quotidiens | 4 travailleurs et 180 minutes par jour, comptés sur les seules instances vraiment créées chez Scaleway (un lancement refusé avant ne compte pas) ; tant que la nuit VIIRS du jour n'a pas eu son travailleur, les autres tâches lui laissent 1 travailleur et 60 minutes ; au delà, refus consigné |
 | Un seul travailleur VIIRS à la fois | une nuit n'est pas lancée deux fois |
 | Orphelins | chaque minute, et au démarrage du conteneur : toute instance étiquetée `mars-c2-travailleur` inconnue de la base, ou plus vieille que la durée de vie, est détruite (même après une base restaurée) |
 | Journal | chaque exécution dans `task_runs` (tâche `travailleur_viirs`) : durée, mémoire, volume téléchargé, coût estimé, résultat ; la table `travailleurs` garde l'état et les mesures |

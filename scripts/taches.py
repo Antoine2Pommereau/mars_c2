@@ -31,6 +31,7 @@ Usage :
     python scripts/taches.py viirs-reevaluer          # détections VIIRS en base réévaluées (gravité, non évaluables)
     python scripts/taches.py sentinel                 # passages Sentinel 1 à analyser maintenant (sélection automatique)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
+    python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? lecture seule, aucune création, aucun coût
     python scripts/taches.py coupures-injection [--jour 2026-10-09] [--essais 20]
                                                       # test par injection de la règle des coupures (rien n'est écrit)
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
@@ -170,11 +171,25 @@ def launch_viirs(conn) -> dict:
     return {**r, "nuits": p["nuits"], "granules": len(p["granules"])}
 
 
-def launch_sentinel(conn, pass_id: int | None = None) -> dict:
+def sentinel_suspended(conn) -> str | None:
+    """Motif du dernier échec de lancement Sentinel du jour (UTC), s'il y en a un : la sélection automatique attend
+    alors le lendemain au lieu de recommencer toutes les 30 minutes (même motif, mêmes passages). Le motif reste dans
+    task_runs, donc dans l'indicateur « Satellites »."""
+    r = conn.execute("SELECT details->>'erreur' FROM task_runs WHERE task = 'sentinel' AND status = 'echec' "
+                     "AND run_day = %s ORDER BY started_at DESC LIMIT 1", (datetime.now(timezone.utc).date(),)).fetchone()
+    return r and (r[0] or "échec sans motif")
+
+
+def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False) -> dict:
     """Passages Sentinel 1 à analyser (corridor avec un navire des listes, alerte VIIRS), ou un passage choisi à la
-    main : une session GPU, dans les limites du plafond de scènes et du budget (mars/sentinel.py)."""
+    main : une session GPU, dans les limites du plafond de scènes et du budget (mars/sentinel.py). `auto` : appel de
+    la boucle, suspendu jusqu'au lendemain après un échec du jour."""
     import requests
     from mars import sentinel, travailleurs
+    if auto:
+        motif = sentinel_suspended(conn)
+        if motif:
+            return {"passages": 0, "suspendu_jusqu_au_lendemain": motif}
     rules = load_rules()
     scw = travailleurs.Scaleway.from_env()
     missing = [k for k in ("CDSE_ACCESS_KEY", "CDSE_SECRET_KEY") if not os.environ.get(k)]
@@ -296,7 +311,7 @@ def loop(conn):
         if time.time() - last_sentinel >= 60 * load_rules()["sentinel"]["intervalle_min"]:
             last_sentinel = time.time()
             if os.environ.get("CDSE_ACCESS_KEY") and os.environ.get("SCW_SECRET_KEY"):
-                run(conn, "sentinel", lambda: launch_sentinel(conn), quiet=True)
+                run(conn, "sentinel", lambda: launch_sentinel(conn, auto=True), quiet=True)
         for task, (fn, every, hour) in tasks(conn).items():
             if due(conn, task, datetime.now(timezone.utc), every, hour):
                 run(conn, task, fn)
@@ -309,6 +324,7 @@ def main():
                     choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "viirs",
                              "travailleurs", "journal-travailleur", "detruire-travailleurs", "viirs-reevaluer", "mesures",
                              "coupures-injection", "sentinel", "sentinel-analyser",
+                             "sentinel-diagnostic",
                              "sauvegardes", "telecharger", "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
@@ -371,6 +387,12 @@ def main():
     elif a.commande == "viirs-reevaluer":                # règles VIIRS en vigueur appliquées aux détections en base
         from mars import viirs
         print(json.dumps(viirs.reevaluate(conn, load_rules()), ensure_ascii=False, indent=2, default=str))
+    elif a.commande == "sentinel-diagnostic":            # lecture seule : Copernicus, puis Scaleway
+        import requests
+        from mars import diagnostic, travailleurs
+        lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env())
+        print(diagnostic.report(lines))
+        sys.exit(1 if any(s == diagnostic.MANQUE for s, _r, _d in lines) else 0)
     elif a.commande in ("sentinel", "sentinel-analyser"):
         pid = int(a.args[0]) if a.commande == "sentinel-analyser" and a.args else None
         if a.commande == "sentinel-analyser" and pid is None:

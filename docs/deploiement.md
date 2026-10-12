@@ -206,7 +206,7 @@ fichiers temporaires PostgreSQL par journée. Le rapport sort sur la sortie stan
 # Sur le serveur
 cd /opt/mars_c2 && docker compose exec -T taches python scripts/taches.py mesures --jours 14 > /tmp/mesures_calibration.md
 # Sur le Mac (petit fichier : scp convient)
-scp root@IP_DU_SERVEUR:/tmp/mesures_calibration.md ~/Documents/"Projet Perso"/MarsC2/mars_c2/mars_c2/docs/
+scp root@IP_DU_SERVEUR:/tmp/mesures_calibration.md ~/Documents/"Projet Perso"/MarsC2/mars_c2/docs/
 ```
 
 ## Travailleurs éphémères Scaleway (étape 3)
@@ -414,7 +414,7 @@ parce qu'ils appartiennent au même compte.
 **1. Sur le Mac : construire**, depuis le dépôt à jour (commandes compatibles zsh) :
 
 ```zsh
-cd ~/Documents/"Projet Perso"/MarsC2/mars_c2/mars_c2 && git pull origin main
+cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git pull origin main
 touch .env                                         # la surcouche lit .env ; un fichier vide suffit pour construire
 DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.yml -f docker-compose.serveur.yml \
   --profile direct build backend web collector
@@ -424,6 +424,19 @@ for i in mars_c2-backend mars_c2-web mars_c2-scripts; do docker image inspect "$
 
 Les trois doivent afficher `amd64`. Ces images remplacent sur le Mac celles du même nom : pour retrouver des images
 natives en local, relancer ensuite `docker compose build backend web`.
+
+**1 bis. Sur le Mac : vérifier les images construites**, avant toute publication. Le 11/10/2026, l'API a planté en
+boucle au démarrage sur le serveur (`backend/sentinel.py` non copié par `backend/Dockerfile`), alors que les tests
+passaient depuis le dépôt. Le script démarre chaque image comme le serveur le fera :
+
+```zsh
+scripts/verifier_images.sh                     # les trois ; ou seulement celles qui changent : scripts/verifier_images.sh scripts
+```
+
+Ce qu'on doit lire : une ligne `OK` par image (`backend : l'API démarre et /api/health répond`, `scripts : points
+d'entrée chargés`, `web : nginx sert la page`), puis `Publication possible`. Une ligne `ÉCHEC` arrête tout, avec le
+journal du conteneur. Le test `tests/test_images.py` fait la même vérification sans Docker (modules copiés par chaque
+Dockerfile, bibliothèques déclarées), à chaque `pytest`.
 
 **2. Sur le Mac : publier**, avec l'étiquette du commit en plus de `latest` :
 
@@ -470,6 +483,34 @@ docker compose up -d --no-build
 `docker image prune -af` ne retire que les images qu'aucun conteneur n'utilise : celle de la base, en service, reste.
 Au passage aux images du registre, les anciennes images locales (`mars_c2-backend`, `mars_c2-web`,
 `mars_c2-scripts`, et plus anciennes `mars_c2-collector`, `mars_c2-ingest`, `mars_c2-taches`) partent avec elles.
+
+**Une seule image qui change, disque très juste** (354 Mo libres le 12/10/2026 : le serveur ne supporte qu'une image
+à la fois). Cas d'un lot qui ne touche que `mars/`, `scripts/`, `config/` : seule `mars_c2-scripts` (collecte,
+ingestion, tâches) est republiée. L'API garde son image : elle embarque aussi `mars/`, mais n'en utilise pas les
+parties modifiées, et la configuration (`config/rules.yaml`) est lue depuis le dépôt, montée dans les conteneurs.
+
+```zsh
+# Sur le Mac
+cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git checkout main && git pull origin main
+touch .env
+DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.yml -f docker-compose.serveur.yml --profile direct build collector
+scripts/verifier_images.sh scripts
+R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
+docker tag "${R}/mars_c2-scripts:latest" "${R}/mars_c2-scripts:${TAG}"
+docker push "${R}/mars_c2-scripts:latest" && docker push "${R}/mars_c2-scripts:${TAG}"
+```
+
+```bash
+# Sur le serveur : l'ancienne image des scripts libérée avant le téléchargement de la nouvelle
+cd /opt/mars_c2 && git pull origin main
+docker compose rm -sf collector ingest taches               # conteneurs des scripts seulement ; API, interface et base restent
+docker image prune -af                                      # l'ancienne image des scripts part ; celles en service restent
+df -h /                                                     # environ 200 Mo nécessaires
+docker compose pull collector ingest taches
+docker compose up -d --no-build collector ingest taches
+```
+
+La collecte s'interrompt quelques minutes (minutes de flux coupé, sans effet sur les règles).
 
 **Revenir à une version précédente** : `MARS_TAG=<empreinte> docker compose pull` puis
 `MARS_TAG=<empreinte> docker compose up -d --no-build` (ou inscrire `MARS_TAG` dans le `.env` du serveur).

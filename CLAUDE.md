@@ -37,8 +37,9 @@ TrAISformer ensuite ; **CircleNet** (xView3) gardé en repli et en comparaison.
 **Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu (**faites**, alertes WATCHLIST et
 IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (lot A, calendrier des
 passages Sentinel 1 et 2, **fait** ; lot B, VIIRS chaque nuit par travailleurs éphémères, **fait** ; lot C, analyse
-Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1 et C2 faits, pas encore essayés sur une vraie
-instance** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
+Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1 et C2 faits ; essais des 11 et 12/10 refusés par
+Scaleway avant création (image GPU), corrigés le 12/10 ; Sentinel arrêté (`scenes_max_par_jour: 0`) jusqu'à
+`taches.py sentinel-diagnostic` au vert** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
 
 **Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
 plutôt qu'affirmer (une règle silencieuse est prouvée par un test par injection) ; respecter la physique du
@@ -410,6 +411,29 @@ indicateur, `/api/metrics`. Éprouvé de bout en bout sur la base de test avec d
 **pas encore sur un vrai GPU** (CUDA 11.3 de l'image sur L4, mémoire, poids dans l'image : à trancher au premier
 essai, `taches.py sentinel-analyser <id>`).
 
+**Corrections après les essais des 11 et 12/10/2026** (règles 2026.10.24, aucune migration ; seule l'image
+`mars_c2-scripts` change) :
+* **Plafond des travailleurs** : seuls comptent ceux dont une instance a été créée (`scw_server_id`) ; les sept refus de
+  Scaleway en 0,1 s (lancements Sentinel 10 à 16) avaient épuisé le plafond et privé la nuit VIIRS du 12/10 ; place
+  réservée à VIIRS (1 travailleur, 60 min) tant que sa nuit n'a pas eu son travailleur ; échec de lancement Sentinel :
+  sélection automatique suspendue jusqu'au lendemain (motif dans `task_runs` et l'indicateur), passage jamais bloqué.
+* **Image GPU** : résolution sur volume bloc (`sbs_snapshot` accepté, taille lue dans l'API Block Storage si la fiche
+  la donne nulle, hypothèse la plus probable de l'échec), un message par cause ; DEV1-M inchangées. Clés Copernicus
+  vérifiées par une lecture réelle avant tout appel à Scaleway. `taches.py sentinel-diagnostic` (lecture seule, fiche
+  brute de l'image, quota, droits, réseau privé).
+* **Garde fou des images** : `tests/test_images.py` (modules locaux copiés par chaque Dockerfile, bibliothèques
+  chargées au démarrage déclarées) et `scripts/verifier_images.sh` (images construites démarrées sur le Mac, API
+  jusqu'à `/api/health`), étape de `docs/deploiement.md`.
+* **Coupures AIS** (observation) : route déclarée suivie 60 min (un point toutes les 10 min, recherche par clé de
+  cellule) : sortie de couverture si elle quitte la zone fiable ; points de disparition collectifs (3 navires sans lien,
+  maille de 0,2 × 0,1 degré, même jour) : coupures déclassées en faible ; comptés à part dans le rapport de mesures.
+  Mesuré sur une copie réelle du 11/10 (Manche et Bretagne, 1 752 navires en route, 146 635 positions, vraie zone
+  fiable de 1 395 cellules, lues sur le serveur) : avant, 85 coupures retenues dont 43 élevées (le serveur en voyait 88
+  dont 45) ; route suivie, 22 sorties de plus, 63 retenues ; points collectifs, 13 points dont le premier, 19 navires
+  en 50,35 N 0,9 O (île de Wight), 47 coupures déclassées : 55 faibles, 2 moyennes, 6 élevées. **Coût** : la projection
+  ajoute 0,01 s ; le cycle lent venait d'ailleurs : PostgreSQL recalculait le bord des données en mer (union du trait
+  de côte) pour chaque silence ; sous requêtes `MATERIALIZED`, `find_gaps` passe de 68 s à 0,7 s, mêmes silences.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -419,13 +443,13 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 133 réussis, 18 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 17 sans
+`python -m pytest tests` : 147 réussis, 25 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 24 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 150 réussis, 1 ignoré (zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 171 réussis, 1 ignoré (plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
-création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `npx knip` et `npm run typecheck` pour
+création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
 ## 11. Pièges connus
@@ -482,7 +506,7 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * **Identifiant de prise de vue Sentinel 1** : réattribué à l'exécution (le plan et le catalogue diffèrent de
   quelques unités) ; rapprocher plan et catalogue par satellite et orbite absolue.
 * Sous zsh, une variable de boucle nommée `path` écrase le `PATH` (plus aucune commande trouvée).
-* Depuis le 07/10/2026, l'application qui exécute Claude Code n'a plus accès au dossier Documents (protection de
+* Du 07 au 09/10/2026, l'application qui exécute Claude Code n'avait plus accès au dossier Documents (protection de
   macOS, « Operation not permitted », même hors bac à sable) : ni le `.venv` du dépôt, ni `data/`, ni Git (le
   worktree pointe vers `.git` du dépôt principal). Contournement : environnement Python et clone du dépôt dans le
   dossier temporaire, `npm ci` dans le worktree. Rétablir : Réglages Système, Confidentialité et sécurité, Fichiers
@@ -539,5 +563,16 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   (droit BlockStorageFullAccess) ; volumes enregistrés en base dès la création.
 * Le catalogue STAC `sentinel-1-grd` ne renvoie que la version COG des produits (`IW_GRDH_1S-COG`, fichiers
   `-cog.tiff`) ; le produit d'origine reste trouvable par OData (`S3Path`).
+* **Plafond des travailleurs** : ne compter que les instances vraiment créées ; un refus de Scaleway avant création
+  (image, quota) répété toutes les 30 minutes épuisait le plafond quotidien et privait VIIRS de sa nuit (12/10/2026).
+* **Image GPU sur volume bloc** : la fiche de l'API Instances d'une image `instance_sbs` peut donner une taille nulle
+  pour son volume racine (instantané bloc) : la lire dans l'API Block Storage, comme la ligne de commande Scaleway.
+* Le dossier temporaire de Claude Code est purgé par le système au bout de quelques jours (le 12/10/2026 : clone Git
+  du dépôt corrompu, environnement Python vidé) : repartir d'un clone neuf ; Documents est de nouveau accessible, le
+  `.venv` du dépôt sert aux tests.
+* Les tests passent depuis le dépôt même si une image ne copie pas un module (cas de `backend/sentinel.py`, 11/10) :
+  `tests/test_images.py` et `scripts/verifier_images.sh` avant chaque publication.
+* PostgreSQL 12 et plus déplie une sous requête `WITH` utilisée une fois : une géométrie lourde (union du trait de
+  côte) y est recalculée pour chaque ligne. La marquer `MATERIALIZED` (cas de `find_gaps`, 68 s ramenées à 0,7 s).
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.

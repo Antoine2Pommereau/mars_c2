@@ -9,6 +9,7 @@ Règles : rendez vous (RENDEZVOUS), coupure AIS (AIS_GAP), navire d'une liste de
 (WATCHLIST), changement d'identité (IDENTITY_CHANGE). Les fonctions de décision des deux dernières, et la mesure des
 coupures du flux, sont pures et couvertes par tests/test_rules.py.
 """
+import math
 import re
 import statistics
 from datetime import datetime, timedelta, timezone
@@ -279,7 +280,7 @@ WITH p AS (
     WHERE ts >= $1::timestamptz AND ts < $2::timestamptz
     WINDOW w AS (PARTITION BY vessel_id ORDER BY ts)
 ),
-gaps AS (
+gaps AS MATERIALIZED (
     SELECT p.*, coalesce(p.next_ts, $2::timestamptz) - p.ts AS duration,
            -- Position estimée à l'estime : $13 minutes après le dernier message, ou $14 sans réapparition
            CASE WHEN p.cog_deg IS NULL THEN NULL
@@ -291,14 +292,16 @@ gaps AS (
       AND coalesce(p.sog_kn, 0) >= $4::float8
       AND p.prior_n >= $12::int
 ),
+-- MATERIALIZED : sinon PostgreSQL déplie ces sous requêtes et recalcule le bord en mer (union du trait de côte) pour
+-- chaque silence : 68 s au lieu de 0,7 s sur 147 000 positions réelles du 11/10/2026, mêmes 139 silences (12/10/2026).
 -- Couverture des données de chaque journée : union des zones collectées (à défaut, rectangle de l'import). Son bord
 -- n'est une sortie possible qu'en mer : les portions de bord qui passent sur la terre sont retirées.
-area AS (
+area AS MATERIALIZED (
     SELECT d.day, coalesce(d.coverage, ST_MakeEnvelope(d.lon_min, d.lat_min, d.lon_max, d.lat_max, 4326)) AS g
     FROM ais_days d
     WHERE d.day BETWEEN ($1::timestamptz AT TIME ZONE 'UTC')::date AND ($2::timestamptz AT TIME ZONE 'UTC')::date
 ),
-edge AS (
+edge AS MATERIALIZED (
     SELECT a.day, a.g AS area,
            coalesce(ST_Difference(ST_Boundary(a.g),
                                   (SELECT ST_Union(l.geom::geometry) FROM land l
@@ -316,7 +319,16 @@ SELECT g.vessel_id, v.mmsi, v.name, v.ship_type, v.length_m, v.ais_class, g.prio
        (g.proj IS NULL OR (
             EXISTS (SELECT 1 FROM reception_cells r2
                     WHERE r2.cx = floor(ST_X(g.proj) / $5::float8)::int AND r2.cy = floor(ST_Y(g.proj) / $6::float8)::int)
-            AND ST_Within(g.proj, e.area) AND NOT ST_DWithin(g.proj, e.sea_edge, $9::float8))) AS projection_couverte
+            AND ST_Within(g.proj, e.area) AND NOT ST_DWithin(g.proj, e.sea_edge, $9::float8))) AS projection_couverte,
+       -- Route déclarée (dernier cap, dernière vitesse) échantillonnée toutes les $16 minutes jusqu'à $15 minutes :
+       -- couverte si chaque point reste dans une cellule de la zone fiable (recherche par clé de cellule, sans géométrie)
+       (g.cog_deg IS NULL OR $15::int <= 0 OR NOT EXISTS (
+            SELECT 1 FROM generate_series($16::int, $15::int, $16::int) AS m(t),
+                 LATERAL (SELECT ST_Project(g.geom, g.sog_kn * 0.514444 * 60 * m.t, radians(g.cog_deg))::geometry AS q) qq
+            WHERE NOT EXISTS (SELECT 1 FROM reception_cells r3
+                              WHERE r3.cx = floor(ST_X(qq.q) / $5::float8)::int AND r3.cy = floor(ST_Y(qq.q) / $6::float8)::int)
+       )) AS route_couverte,
+       g.cog_deg AS cog_deg
 FROM gaps g
 JOIN vessels v ON v.id = g.vessel_id
 JOIN reception_cells rc
@@ -381,7 +393,46 @@ async def find_gaps(c, day_start, day_end, rules: dict):
     return await c.fetch(AIS_GAP_SQL, day_start, day_end, g["min_gap_min"], g["min_speed_kn"],
                          rc["cell_deg_lon"], rc["cell_deg_lat"], g["ais_classes"], g["excluded_ship_types"],
                          g["edge_margin_deg"], g["min_coast_km"] * 1000.0, g["prior_window_min"],
-                         g["min_prior_messages"], g["projection_min"], g["projection_open_min"])
+                         g["min_prior_messages"], g["projection_min"], g["projection_open_min"],
+                         int(g.get("route_horizon_min", 0)), max(1, int(g.get("route_pas_min", 10))))
+
+
+def _cell(lon: float, lat: float, size: list) -> tuple[int, int]:
+    return math.floor(lon / size[0]), math.floor(lat / size[1])
+
+
+def collective_points(rows: list, g: dict) -> dict:
+    """Points de disparition collectifs : cellules (`disparition_cellule_deg`) où, le même jour (UTC), au moins
+    `disparition_min_navires` navires sans lien se sont tus (silences détectés, sorties de couverture comprises). Deux
+    navires qui se taisent à moins de `partner_radius_m` et 30 minutes l'un de l'autre comptent pour un (ils peuvent
+    être liés : rendez vous, convoi). Une limite de réception (récepteurs côtiers, AISStream qui cesse de transmettre
+    un navire engagé sur un rail) fait taire des navires sans lien au même endroit ; un navire sombre, non.
+    Retourne {(cx, cy, jour): nombre de navires sans lien}."""
+    size, need = g["disparition_cellule_deg"], g["disparition_min_navires"]
+    groups: dict[tuple, list] = {}
+    for x in rows:
+        groups.setdefault((*_cell(x["lon"], x["lat"], size), x["t_last"].astimezone(timezone.utc).date()), []).append(x)
+    out = {}
+    for key, xs in groups.items():
+        clusters: list[list] = []
+        for x in sorted(xs, key=lambda r: r["t_last"]):
+            for cl in clusters:
+                if any(abs((x["t_last"] - y["t_last"]).total_seconds()) <= 1800
+                       and _hav(x["lon"], x["lat"], y["lon"], y["lat"]) <= g["partner_radius_m"] for y in cl):
+                    cl.append(x)
+                    break
+            else:
+                clusters.append([x])
+        n = len({min(r["vessel_id"] for r in cl) for cl in clusters})
+        if n >= need:
+            out[key] = n
+    return out
+
+
+def _hav(lon1, lat1, lon2, lat2) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 2 * 6371000 * math.asin(math.sqrt(h))
 
 
 async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
@@ -391,10 +442,16 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
     g = rules["ais_gap"]
     rows = await find_gaps(c, day_start, day_end, rules)
     outage = await feed_outage(c, day_start, day_end, rules["continu"]["flux_min_ratio"])
-    items, with_partner, exits, outages = [], 0, 0, 0
+    items, with_partner, exits, outages, route_exits, downgraded = [], 0, 0, 0, 0, 0
+    collective = collective_points(rows, g)
     for x in rows:
         if not x["projection_couverte"]:
             exits += 1   # cap et vitesse menaient hors de la zone fiable : sortie de couverture probable
+            continue
+        if not x["route_couverte"]:
+            # La route déclarée quitte la zone fiable dans l'horizon : la disparition a lieu dans la zone, mais la suite
+            # de la route n'est pas couverte (cas du rail ouest au sud de l'île de Wight, 11/10/2026)
+            route_exits += 1
             continue
         open_gap = x["t_next"] is None
         t_end = day_end if open_gap else x["t_next"]
@@ -461,6 +518,13 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
             severity = "elevee"
         else:
             severity = "moyenne"
+        point = (*_cell(x["lon"], x["lat"], g["disparition_cellule_deg"]), x["t_last"].astimezone(timezone.utc).date())
+        if point in collective:
+            # Déclassée, pas exclue : un navire sombre pourrait se cacher derrière une limite de réception
+            severity = "faible"
+            downgraded += 1
+            context.insert(0, f"Point de disparition collectif : {collective[point]} navires sans lien se sont tus dans "
+                              "cette zone le même jour : limite de réception probable, indice faible")
         details = {
             "navire": {"vessel_id": x["vessel_id"], "mmsi": x["mmsi"], "name": x["name"], "ship_type": x["ship_type"],
                        "length_m": _finite(x["length_m"]), "classe_ais": x["ais_class"]},
@@ -487,13 +551,19 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
             context.append(f"Flux AIS interrompu {round(lost)} min pendant le silence : durée effective "
                            f"{round(x['duration_min'] - lost)} min")
         details["flux_interrompu_min"] = round(lost)
+        details["disparition_collective"] = collective.get(point)
         event_time = x["t_last"] + timedelta(minutes=g["min_gap_min"])
         items.append({"key": f"{x['vessel_id']}:{stamp(x['t_last'])}", "severity": severity,
                       "event_time": event_time, "lon": x["lon"], "lat": x["lat"], "details": details,
                       "vessels": [x["vessel_id"]] + [p["vessel_id"] for p in partners]})
 
     counts = {"silences_detectes": len(rows), "exclus_sortie_de_couverture": exits,
-              "exclus_coupure_du_flux": outages, "coupures_retenues": len(items),
+              "exclus_route_hors_zone": route_exits, "exclus_coupure_du_flux": outages, "coupures_retenues": len(items),
+              "coupures_declassees_disparition_collective": downgraded,
+              "points_de_disparition_collectifs": len(collective),
+              "points_collectifs": [{"lon": round((k[0] + 0.5) * g["disparition_cellule_deg"][0], 3),
+                                     "lat": round((k[1] + 0.5) * g["disparition_cellule_deg"][1], 3), "jour": str(k[2]),
+                                     "navires": n} for k, n in sorted(collective.items(), key=lambda kv: -kv[1])[:20]],
               "avec_partenaire_possible": with_partner, "minutes_de_flux_coupe": len(outage)}
     if g.get("mode", "alertes") == "observation":
         # Seuils encore danois : les épisodes sont comptés et décrits pour la recalibration, aucune alerte n'est créée,

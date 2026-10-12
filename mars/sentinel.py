@@ -187,6 +187,34 @@ def signed_urls(scene: dict, now: datetime | None = None) -> dict:
                          now=now) for pol in ("vv", "vh")}
 
 
+def check_cdse(session, url: str) -> str | None:
+    """Clés S3 de Copernicus valides ? Une lecture réelle de 16 octets d'une image signée par le serveur (aucun coût,
+    aucune écriture). Retourne None si la lecture réussit, sinon le motif."""
+    try:
+        r = session.get(url, headers={"Range": "bytes=0-15", **HEADERS}, timeout=30, stream=True)
+    except Exception as e:
+        return f"Copernicus injoignable ({type(e).__name__})"
+    code = r.status_code
+    r.close()
+    if code in (200, 206):
+        return None
+    if code in (401, 403):
+        return (f"clés Copernicus refusées (HTTP {code}) : CDSE_ACCESS_KEY ou CDSE_SECRET_KEY invalides ou périmées "
+                "(https://eodata-s3keysmanager.dataspace.copernicus.eu)")
+    return f"lecture d'essai refusée par Copernicus (HTTP {code})"
+
+
+def launch_failures_today(conn, now: datetime) -> list[int]:
+    """Passages dont l'analyse a échoué aujourd'hui au lancement, sans instance créée (refus de Scaleway, image
+    introuvable, clés) : la sélection automatique les laisse jusqu'au cycle quotidien suivant, sans les bloquer pour
+    autant (l'index unique ignore les analyses en échec)."""
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return [r[0] for r in conn.execute(
+        """SELECT DISTINCT a.pass_id FROM analyses a LEFT JOIN travailleurs t ON t.id = a.travailleur_id
+           WHERE a.source = 'sentinel1' AND a.status = 'failed' AND a.requested_at >= %s AND t.scw_server_id IS NULL""",
+        (day,)).fetchall()]
+
+
 # Sélection des passages (base)
 
 def interest_points(conn, pass_id: int, rules: dict) -> list[dict]:
@@ -263,6 +291,8 @@ def plan(conn, session, rules: dict, now: datetime, pass_id: int | None = None) 
                                  AND a.status <> 'failed')
                ORDER BY sp.acquired_at""",
             (now - timedelta(hours=s["passages_recents_h"]), now)).fetchall()
+        failed = set(launch_failures_today(conn, now))
+        rows = [r for r in rows if r[0] not in failed]
     boxes = regions_boxes()
     box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
     out, waiting, skipped = [], [], 0
@@ -313,6 +343,10 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     if motif:
         return {"refus": motif, "scenes_demandees": asked}
     import psycopg
+    urls = {sc["id"]: signed_urls(sc, now) for ps in selected for sc in ps["scenes"]}
+    motif = check_cdse(session, next(iter(urls.values()))["vv"])          # avant tout appel à Scaleway
+    if motif:
+        return {"refus": motif}
     analyses, tasks = [], []
     try:
         with conn.transaction():
@@ -321,18 +355,18 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                 motifs = sorted({pt["motif"] for pt in ps["points"]}) or ["demande"]
                 aid = conn.execute(
                     """INSERT INTO analyses (pass_id, aoi, mode, status, model_version, source, scenes, declenchement,
-                                             cout_estime_eur)
+                                             cout_estime_eur, requested_at)
                        VALUES (%s, ST_MakeEnvelope(%s, %s, %s, %s, 4326)::geography, 'full', 'pending', %s, 'sentinel1',
-                               %s, %s, %s) RETURNING id""",
+                               %s, %s, %s, %s) RETURNING id""",
                     (ps["pass_id"], *env, "allenai/vessel-detection-sentinels fafc6c3",
                      json.dumps([{k: sc[k] for k in ("id", "debut", "fin", "orbite", "satellite", "emprise", "octets")}
                                  for sc in ps["scenes"]]),
                      json.dumps({"motifs": motifs, "points": ps["points"]}, default=str),
-                     round(estimate * len(ps["scenes"]) / n, 3))).fetchone()[0]
+                     round(estimate * len(ps["scenes"]) / n, 3), now)).fetchone()[0]
                 analyses.append(aid)
                 for sc in ps["scenes"]:
                     tasks.append({"analyse": aid, "id": sc["id"], "debut": sc["debut"], "fin": sc["fin"],
-                                  "orbite": sc["orbite"], "satellite": sc["satellite"], **signed_urls(sc, now)})
+                                  "orbite": sc["orbite"], "satellite": sc["satellite"], **urls[sc["id"]]})
     except psycopg.errors.UniqueViolation:
         return {"en_cours": "passage déjà en analyse (lancement concurrent)"}
     params = {"scenes": tasks, "regions": regions_boxes(), "confiance": s["confiance"], "nms_m": s["nms_m"],
@@ -340,8 +374,10 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     try:
         r = travailleurs.launch(conn, scw, rules, "sentinel", params, {}, now=now, log=log)
     except Exception as e:
-        conn.execute("UPDATE analyses SET status = 'failed', error = %s, completed_at = now() WHERE id = ANY(%s)",
-                     (f"lancement du travailleur : {e}"[:1000], analyses))
+        w = conn.execute("SELECT id FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= %s ORDER BY id DESC LIMIT 1",
+                         (now - timedelta(minutes=5),)).fetchone()
+        conn.execute("UPDATE analyses SET status = 'failed', error = %s, completed_at = now(), travailleur_id = %s "
+                     "WHERE id = ANY(%s)", (f"lancement du travailleur : {e}"[:1000], w and w[0], analyses))
         raise
     if "travailleur" not in r:
         conn.execute("UPDATE analyses SET status = 'failed', error = %s, completed_at = now() WHERE id = ANY(%s)",

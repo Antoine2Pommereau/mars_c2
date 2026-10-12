@@ -14,7 +14,8 @@ from mars import sentinel as S
 from mars.config import ROOT, load_rules
 from mars.travailleurs import Scaleway
 
-RULES = load_rules()
+VERSIONNEES = load_rules()          # scenes_max_par_jour : 0 versionné (Sentinel arrêté jusqu'au diagnostic au vert)
+RULES = {**VERSIONNEES, "sentinel": {**VERSIONNEES["sentinel"], "scenes_max_par_jour": 2}}
 SR = RULES["sentinel"]
 URL = os.environ.get("MARS_TEST_DATABASE_URL")
 
@@ -170,21 +171,72 @@ def test_gpu_worker_is_powered_off_deleted_and_its_block_volume_removed():
     assert steps == 2                                    # extinction, suppression (volume encore attaché), volume
 
 
-def test_sbs_image_is_resolved_from_the_block_catalogue():
-    class Api:
-        headers = {}
+class SbsImageApi:
+    """Catalogue et fiche d'une image GPU sur volume bloc. `root` : volume racine de la fiche de l'API Instances ;
+    `snapshot` : réponse de l'API Block Storage pour l'instantané (None : 404)."""
+    headers = {}
 
-        def request(self, _method, url, **_kw):
-            if "/marketplace/" in url:
-                assert "type=instance_sbs" in url and "zone=fr-par-2" in url
-                return _Resp(200, {"local_images": [{"id": "gpuos", "arch": "x86_64", "type": "instance_sbs",
-                                                     "compatible_commercial_types": ["L4-1-24G"]}]})
-            return _Resp(200, {"image": {"id": "gpuos", "name": "Ubuntu Noble GPU OS 13", "arch": "x86_64",
-                                         "root_volume": {"id": "snap", "volume_type": "sbs_snapshot", "size": 20_000_000_000}}})
-    img = Scaleway("cle", "p", session=Api(), protected=set()).resolve_image(
+    def __init__(self, root, snapshot=None, arch="x86_64"):
+        self.root, self.snapshot, self.arch, self.calls = root, snapshot, arch, []
+
+    def request(self, _method, url, **_kw):
+        self.calls.append(url)
+        if "/marketplace/" in url:
+            assert "type=instance_sbs" in url and "zone=fr-par-2" in url
+            return _Resp(200, {"local_images": [{"id": "gpuos", "arch": "x86_64", "type": "instance_sbs",
+                                                 "compatible_commercial_types": ["L4-1-24G"]}]})
+        if "/block/v1alpha1/zones/fr-par-2/snapshots/" in url:
+            return _Resp(404) if self.snapshot is None else _Resp(200, self.snapshot)
+        return _Resp(200, {"image": {"id": "gpuos", "name": "Ubuntu Noble GPU OS 13", "arch": self.arch,
+                                     "root_volume": self.root}})
+
+
+def _gpu(api):
+    return Scaleway("cle", "p", session=api, protected=set()).resolve_image(
         "fr-par-2", "ubuntu_noble_gpu_os_13_nvidia", "L4-1-24G", "x86_64", "sbs_volume")
+
+
+def test_sbs_image_is_resolved_from_the_block_catalogue():
+    img = _gpu(SbsImageApi({"id": "snap", "volume_type": "sbs_snapshot", "size": 20_000_000_000}))
+    assert img.pop("fiche")["id"] == "gpuos"
     assert img == {"id": "gpuos", "name": "Ubuntu Noble GPU OS 13", "arch": "x86_64", "root_type": "sbs_volume",
                    "root_size": 20_000_000_000}
+
+
+def test_sbs_image_without_size_in_its_card_reads_the_block_snapshot():
+    """Cas probable des 11 et 12/10/2026 : la fiche de l'API Instances donne une taille nulle pour l'instantané bloc."""
+    api = SbsImageApi({"id": "snap", "volume_type": "sbs_snapshot", "size": 0}, snapshot={"id": "snap", "size": 15_000_000_000})
+    assert _gpu(api)["root_size"] == 15_000_000_000
+    assert any("/block/v1alpha1/zones/fr-par-2/snapshots/snap" in u for u in api.calls)
+
+
+@pytest.mark.parametrize("root, snapshot, arch, motif", [
+    ({}, None, "x86_64", "sans volume racine"),
+    ({"id": "snap", "volume_type": "sbs_snapshot", "size": 0}, None, "x86_64", "taille du volume racine inconnue"),
+    ({"id": "snap", "volume_type": "l_ssd", "size": 10}, None, "x86_64", "instantané bloc attendu"),
+    ({"id": "snap", "volume_type": "sbs_snapshot", "size": 10}, None, "arm64", "architecture arm64"),
+])
+def test_sbs_image_refusals_name_their_cause(root, snapshot, arch, motif):
+    from mars.travailleurs import ScalewayError
+    with pytest.raises(ScalewayError, match=motif):
+        _gpu(SbsImageApi(root, snapshot, arch))
+
+
+def test_local_disk_check_is_unchanged_for_cpu_workers():
+    """Les DEV1-M (disque local) gardent la vérification stricte : une image dont la racine est un instantané bloc,
+    ou sans taille, est refusée."""
+    from mars.travailleurs import ScalewayError
+
+    class Api(SbsImageApi):
+        def request(self, _method, url, **_kw):
+            if "/marketplace/" in url:
+                return _Resp(200, {"local_images": [{"id": "u", "arch": "x86_64", "type": "instance_local",
+                                                     "compatible_commercial_types": ["DEV1-M"]}]})
+            return _Resp(200, {"image": {"id": "u", "arch": "x86_64", "root_volume": self.root}})
+    for root, motif in (({"id": "s", "volume_type": "sbs_snapshot", "size": 10}, "disque local attendu"),
+                        ({"id": "s", "volume_type": "l_ssd", "size": 0}, "taille du volume racine absente")):
+        with pytest.raises(ScalewayError, match=motif):
+            Scaleway("cle", "p", session=Api(root), protected=set()).resolve_image("fr-par-1", "ubuntu_noble", "DEV1-M")
 
 
 # Chaîne complète sur la base de test
@@ -192,8 +244,20 @@ def test_sbs_image_is_resolved_from_the_block_catalogue():
 class FakeStac:
     """Faux catalogue Copernicus : les scènes données, quel que soit le passage demandé."""
 
-    def __init__(self, scenes):
-        self.scenes, self.calls = scenes, 0
+    def __init__(self, scenes, cdse=206):
+        self.scenes, self.calls, self.cdse, self.lectures = scenes, 0, cdse, []
+
+    def get(self, url, **_kw):
+        """Lecture d'essai des clés Copernicus (16 octets d'une image signée)."""
+        self.lectures.append(url)
+        code = self.cdse
+
+        class R:
+            status_code = code
+
+            def close(self):
+                pass
+        return R()
 
     def post(self, _url, **_kw):
         self.calls += 1
@@ -359,4 +423,85 @@ def test_daily_cap_refuses_clearly(conn, monkeypatch):
                       "emprise": SQUARE}])
     r = sentinel.launch(conn, None, RULES, now, stac)
     assert r["refus"].startswith("plafond de 2 scènes par jour : 2 déjà analysée(s)")
+    assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0
+
+
+def _scene(t0, sid="S1C_IW_GRDH_1SDV_A_COG"):
+    return {"id": sid, "debut": t0.isoformat(), "fin": (t0 + timedelta(seconds=25)).isoformat(), "emprise": SQUARE}
+
+
+def test_copernicus_keys_are_checked_before_any_scaleway_call(conn, monkeypatch):
+    from mars import sentinel, travailleurs
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    pid, _ids, t0 = _setup(conn, now)
+    monkeypatch.setenv("CDSE_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_SECRET_KEY", "s")
+    monkeypatch.setattr(travailleurs, "launch", lambda *_a, **_k: pytest.fail("Scaleway appelé avec des clés refusées"))
+    stac = FakeStac([_scene(t0)], cdse=403)
+    r = sentinel.launch(conn, None, RULES, now, stac)
+    assert r["refus"].startswith("clés Copernicus refusées (HTTP 403)")
+    assert stac.lectures and stac.lectures[0].startswith("https://eodata.dataspace.copernicus.eu/")
+    assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0
+
+
+def test_launch_failure_without_instance_waits_a_day_without_blocking_the_pass(conn, monkeypatch):
+    """Échec de lancement sans instance (image refusée par Scaleway) : le passage n'est plus proposé le jour même,
+    il l'est le lendemain, et l'analyse en échec ne l'empêche pas d'être relancé (index unique sur les analyses
+    non échouées)."""
+    from mars import sentinel, travailleurs
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    pid, _ids, t0 = _setup(conn, now)
+    monkeypatch.setenv("CDSE_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_SECRET_KEY", "s")
+    stac = FakeStac([_scene(t0)])
+
+    def refused(c, *_a, **_k):
+        c.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, etat, fini_le, "
+                  "detruit_le) VALUES ('sentinel', 'L4-1-24G', 'fr-par-2', 'x', '{}', 'echec', now(), now())")
+        raise travailleurs.ScalewayError("image e6d1b7f4 introuvable ou sans volume racine")
+    monkeypatch.setattr(travailleurs, "launch", refused)
+    with pytest.raises(travailleurs.ScalewayError):
+        sentinel.launch(conn, None, RULES, now, stac)
+    status, tid = conn.execute("SELECT status, travailleur_id FROM analyses WHERE pass_id = %s", (pid,)).fetchone()
+    assert status == "failed" and tid is not None
+    assert sentinel.launch_failures_today(conn, now) == [pid]
+    assert sentinel.plan(conn, stac, RULES, now + timedelta(minutes=30))["passages"] == []      # pas le jour même
+    tomorrow = now + timedelta(hours=21)                                                      # passage encore récent
+    assert [x["pass_id"] for x in sentinel.plan(conn, stac, RULES, tomorrow)["passages"]] == [pid]
+
+    def ok(c, *_a, **_k):
+        return {"travailleur": c.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, "
+                                         "verrou, scw_server_id) VALUES ('sentinel', 'L4-1-24G', 'fr-par-2', 'x', '{}', "
+                                         "'sentinel', 'srv-gpu') RETURNING id").fetchone()[0]}
+    monkeypatch.setattr(travailleurs, "launch", ok)
+    r = sentinel.launch(conn, None, RULES, tomorrow, stac)
+    assert r["scenes"] == 1
+    assert conn.execute("SELECT array_agg(status ORDER BY id) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == [
+        "failed", "running"]
+
+
+def test_automatic_loop_waits_until_tomorrow_after_a_failure_today(conn, monkeypatch):
+    import sys
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import taches
+    conn.execute("DELETE FROM task_runs WHERE task = 'sentinel'")
+    conn.execute("INSERT INTO task_runs (task, run_day, status, details) VALUES ('sentinel', %s, 'echec', %s)",
+                 (datetime.now(timezone.utc).date(), json.dumps({"erreur": "image e6d1b7f4 introuvable"})))
+    monkeypatch.setattr("mars.sentinel.launch", lambda *_a, **_k: pytest.fail("nouvel essai le jour même"))
+    assert taches.launch_sentinel(conn, auto=True) == {"passages": 0, "suspendu_jusqu_au_lendemain": "image e6d1b7f4 introuvable"}
+    conn.execute("DELETE FROM task_runs WHERE task = 'sentinel'")
+    assert taches.sentinel_suspended(conn) is None
+
+
+def test_versioned_rules_keep_sentinel_stopped(conn, monkeypatch):
+    """Valeur versionnée (12/10/2026) : 0 scène par jour ; refus clair, aucune analyse, aucun appel à Scaleway."""
+    from mars import sentinel, travailleurs
+    assert VERSIONNEES["sentinel"]["scenes_max_par_jour"] == 0
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    pid, _ids, t0 = _setup(conn, now)
+    monkeypatch.setenv("CDSE_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_SECRET_KEY", "s")
+    monkeypatch.setattr(travailleurs, "launch", lambda *_a, **_k: pytest.fail("Scaleway appelé alors que Sentinel est arrêté"))
+    r = sentinel.launch(conn, None, VERSIONNEES, now, FakeStac([_scene(t0)]))
+    assert r["refus"].startswith("plafond de 0 scènes par jour")
     assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0

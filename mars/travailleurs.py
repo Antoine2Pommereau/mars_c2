@@ -116,10 +116,17 @@ class Scaleway:
     def resolve_image(self, zone: str, label: str, commercial_type: str, arch: str = "x86_64",
                       volume: str = "l_ssd") -> dict:
         """Image de démarrage : catalogue Scaleway (libellé, zone, type d'instance, architecture, type de stockage),
-        puis fiche de l'image dans l'API Instance pour son volume racine. `volume` : « l_ssd » (disque local, instances
-        CPU) ou « sbs_volume » (stockage bloc, seul proposé sur les GPU L4 ; image de type instance_sbs, volume racine
-        tiré d'un instantané bloc). Retourne {"id", "name", "arch", "root_type", "root_size"}, `root_type` étant le
-        type du volume de l'instance ; ScalewayError si rien ne convient."""
+        puis fiche de l'image dans l'API Instances pour son volume racine. Retourne {"id", "name", "arch", "root_type",
+        "root_size", "fiche"} (`root_type` : type du volume de l'instance ; `fiche` : réponse brute de l'API, pour le
+        diagnostic) ; ScalewayError avec le motif précis sinon.
+
+        * Disque local (« l_ssd », instances CPU) : volume racine de l'image local, taille donnée par la fiche. Inchangé
+          depuis le premier essai réel (08/10/2026).
+        * Volume bloc (« sbs_volume », seul stockage des GPU L4 ; image du catalogue de type « instance_sbs ») : le
+          volume racine de l'image est un instantané du stockage bloc (« sbs_snapshot ») ; si la fiche de l'API
+          Instances n'en donne pas la taille, elle est lue dans l'API Block Storage (instantané), comme le fait la
+          ligne de commande Scaleway. HYPOTHÈSE à confirmer par `taches.py sentinel-diagnostic` (aucune clé au moment
+          de l'écriture) : c'est la taille nulle qui faisait refuser l'image GPU les 11 et 12/10/2026."""
         kind = "instance_sbs" if volume == "sbs_volume" else "instance_local"
         d = self._req("GET", f"/marketplace/v2/local-images?image_label={label}&zone={zone}&type={kind}")
         found = [i for i in (d.get("local_images", []) if d is not GONE else [])
@@ -127,17 +134,40 @@ class Scaleway:
                  and i.get("type", "instance_local") == kind]
         if not found:
             what = "en stockage bloc" if volume == "sbs_volume" else "sur disque local"
-            raise ScalewayError(f"aucune image « {label} » {arch} {what} pour {commercial_type} en {zone}")
-        img = self._req("GET", f"/instance/v1/zones/{zone}/images/{found[0]['id']}")
-        img = None if img is GONE else img.get("image")
-        root = (img or {}).get("root_volume") or {}
-        if not img or img.get("arch") != arch or not root.get("id") or not root.get("size"):
-            raise ScalewayError(f"image {found[0]['id']} ({label}) introuvable ou sans volume racine")
-        expected = ("sbs_snapshot", "sbs_volume") if volume == "sbs_volume" else ("l_ssd",)
-        if root.get("volume_type") not in expected:
-            raise ScalewayError(f"image {img['id']} : volume racine {root.get('volume_type')}, attendu {' ou '.join(expected)}")
+            raise ScalewayError(f"aucune image « {label} » {arch} {what} pour {commercial_type} en {zone} au catalogue")
+        iid = found[0]["id"]
+        img = self._req("GET", f"/instance/v1/zones/{zone}/images/{iid}")
+        if img is GONE or not (img or {}).get("image"):
+            raise ScalewayError(f"image {iid} ({label}) du catalogue introuvable dans l'API Instances en {zone}")
+        img = img["image"]
+        root = img.get("root_volume") or {}
+        if img.get("arch") != arch:
+            raise ScalewayError(f"image {iid} ({label}) : architecture {img.get('arch')}, {arch} attendue")
+        if not root.get("id"):
+            raise ScalewayError(f"image {iid} ({label}) sans volume racine dans sa fiche : {_short(img)}")
+        if volume != "sbs_volume":
+            if root.get("volume_type") != "l_ssd":
+                raise ScalewayError(f"image {img['id']} : volume racine {root.get('volume_type')}, disque local attendu")
+            if not root.get("size"):
+                raise ScalewayError(f"image {iid} ({label}) : taille du volume racine absente de sa fiche")
+            size = int(root["size"])
+        else:
+            if root.get("volume_type") not in ("sbs_snapshot", "sbs_volume", None):
+                raise ScalewayError(f"image {iid} : volume racine {root.get('volume_type')}, instantané bloc attendu")
+            size = int(root.get("size") or 0) or self.block_snapshot_size(zone, root["id"])
+            if not size:
+                raise ScalewayError(f"image {iid} ({label}) : taille du volume racine inconnue (fiche de l'image et "
+                                    f"instantané bloc {root['id']}) : {_short(img)}")
         return {"id": img["id"], "name": img.get("name"), "arch": img["arch"], "root_type": volume,
-                "root_size": int(root["size"])}
+                "root_size": size, "fiche": img}
+
+    def block_snapshot_size(self, zone: str, snapshot_id: str) -> int:
+        """Taille d'un instantané du stockage bloc (API Block Storage), 0 si illisible."""
+        try:
+            d = self._req("GET", f"/block/v1alpha1/zones/{zone}/snapshots/{snapshot_id}")
+        except ScalewayError:
+            return 0
+        return 0 if d is GONE or not d else int(d.get("size") or 0)
 
     def create(self, zone: str, name: str, commercial_type: str, image: dict, disque_go: int, tags: list) -> dict:
         """Crée l'instance éteinte à partir de l'image : le volume racine (index 0) n'est décrit que par sa taille et son
@@ -300,6 +330,11 @@ class Scaleway:
 
 # Décisions pures
 
+def _short(d: dict, n: int = 400) -> str:
+    """Fiche brute abrégée pour un message d'erreur (le diagnostic, lui, l'affiche entière)."""
+    return json.dumps(d, ensure_ascii=False, default=str)[:n]
+
+
 def type_params(rules: dict, tache: str) -> dict:
     p = rules["travailleurs"]
     t = dict(p["types"][tache])
@@ -307,14 +342,23 @@ def type_params(rules: dict, tache: str) -> dict:
     return t
 
 
-def quota(rules: dict, today: list[dict], now: datetime) -> str | None:
-    """Motif de refus si un plafond quotidien est atteint (travailleurs créés aujourd'hui : cree_le, fini_le)."""
+def quota(rules: dict, today: list[dict], now: datetime, tache: str = "viirs") -> str | None:
+    """Motif de refus si un plafond quotidien est atteint pour lancer un travailleur `tache`. `today` : travailleurs
+    du jour dont une instance a vraiment été créée chez Scaleway (cree_le, fini_le, tache) ; un lancement refusé avant
+    toute création (image introuvable, quota, clés) ne coûte rien et ne compte pas. Place réservée : tant que la nuit
+    VIIRS du jour n'a pas eu son travailleur, les autres tâches laissent `reserve_viirs` travailleurs et minutes."""
     p = rules["travailleurs"]
-    if len(today) >= p["max_par_jour"]:
-        return f"plafond de {p['max_par_jour']} travailleurs par jour atteint"
+    res = p.get("reserve_viirs", {})
+    keep_n = keep_min = 0
+    if tache != "viirs" and not any(w.get("tache") == "viirs" for w in today):
+        keep_n, keep_min = res.get("travailleurs", 0), res.get("minutes", 0)
+    if len(today) >= p["max_par_jour"] - keep_n:
+        reserve = f", dont {keep_n} réservé à la nuit VIIRS" if keep_n else ""
+        return f"plafond de {p['max_par_jour']} travailleurs par jour atteint{reserve}"
     minutes = sum(((w["fini_le"] or now) - w["cree_le"]).total_seconds() / 60 for w in today)
-    if minutes >= p["max_minutes_par_jour"]:
-        return f"plafond de {p['max_minutes_par_jour']} minutes par jour atteint ({minutes:.0f} min)"
+    if minutes >= p["max_minutes_par_jour"] - keep_min:
+        reserve = f", dont {keep_min} réservées à la nuit VIIRS" if keep_min else ""
+        return f"plafond de {p['max_minutes_par_jour']} minutes par jour atteint ({minutes:.0f} min{reserve})"
     return None
 
 
@@ -418,9 +462,12 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
     détruit l'instance (garde de Scaleway.destroy) et clos la ligne."""
     now = now or datetime.now(timezone.utc)
     p, t = rules["travailleurs"], type_params(rules, tache)
-    today = [dict(zip(("cree_le", "fini_le"), r)) for r in conn.execute(
-        "SELECT cree_le, fini_le FROM travailleurs WHERE cree_le >= %s", (now.replace(hour=0, minute=0, second=0, microsecond=0),)).fetchall()]
-    refus = quota(rules, today, now)
+    # Seuls comptent les travailleurs dont une instance a été créée chez Scaleway (scw_server_id renseigné dès la
+    # création) : un lancement refusé avant (image, quota, clés) ne coûte rien et n'entame pas le plafond
+    today = [dict(zip(("cree_le", "fini_le", "tache"), r)) for r in conn.execute(
+        "SELECT cree_le, fini_le, tache FROM travailleurs WHERE cree_le >= %s AND scw_server_id IS NOT NULL",
+        (now.replace(hour=0, minute=0, second=0, microsecond=0),)).fetchall()]
+    refus = quota(rules, today, now, tache)
     if refus:
         return {"refus": refus}
     ip, pn = os.environ.get("MARS_IP_PRIVEE"), os.environ.get("SCW_PRIVATE_NETWORK_ID")
