@@ -10,20 +10,29 @@ VIIRS (`docs/travailleurs_viirs.md`) : le serveur décide et reçoit, un travail
 ```
 conteneur taches (serveur, fr-par-1)                    instance GPU éphémère L4-1-24G (fr-par-2)
   toutes les 30 min : passages Sentinel 1 récents ─API─▶ créée (image Ubuntu GPU OS, volume bloc), réseau privé
-  avec un point d'intérêt (catalogue STAC, métadonnées)   cloud-init : script, tâche, adresses signées
+  avec un point d'intérêt (catalogue STAC, métadonnées)   cloud-init : script et jeton seulement (ni scène ni clé)
   plafond de scènes, budget du mois                       docker pull de l'image d'AI2 (5 Go), --gpus all
-  adresses de lecture signées (clés S3 du serveur)        téléchargement VV et VH (1 Go par scène), détection
+  lecture de 16 octets avec la paire des travailleurs     POST …/etat {"etat":"tache"} (jeton, réseau privé) :
+  nginx :8090 (réseau privé) ──────────────────────────▶ tâche et clés dédiées, remises une seule fois
+                                                          téléchargement VV et VH en S3, signature par en tête
+                                                          (1 Go par scène), détection
                                                           vignettes radar, mesures, fichiers effacés
   nginx :8090 (réseau privé) ◀────────────────────────── POST /api/travailleurs/<id>/resultats (jeton)
   détections, vignettes sur R2, fusion AIS, alertes
   instance éteinte, supprimée, volume bloc supprimé
 ```
 
-* **Le serveur ne télécharge jamais d'image** : il lit le catalogue STAC de Copernicus Data Space (métadonnées), signe
-  des adresses de lecture valables 3 heures avec ses clés S3 (`CDSE_ACCESS_KEY`, `CDSE_SECRET_KEY`, jamais transmises
-  au travailleur), et reçoit des détections et des vignettes (20 Ko chacune au plus).
-* Code : `mars/sentinel.py` (sélection, garde fous, adresses, résultats, fusion, alertes), `travailleurs/sentinel.py`
-  (script du travailleur), `backend/sentinel.py` (API), `mars/travailleurs.py` (orchestrateur commun), migration 25.
+* **Le serveur ne télécharge jamais d'image** : il lit le catalogue STAC de Copernicus Data Space (métadonnées) et
+  reçoit des détections et des vignettes (20 Ko chacune au plus). Le travailleur lit lui même les images en S3.
+* **Deux paires de clés S3** (corrigé le 14/10/2026, voir « Copernicus refuse les adresses présignées ») :
+  * celle du serveur (`CDSE_ACCESS_KEY`, `CDSE_SECRET_KEY`) ne quitte jamais le serveur ; elle ne sert qu'au diagnostic ;
+  * celle des travailleurs (`CDSE_TRAVAILLEUR_ACCESS_KEY`, `CDSE_TRAVAILLEUR_SECRET_KEY`, expiration dans
+    `CDSE_TRAVAILLEUR_EXPIRENT_LE`), créée à part pour être révoquée seule. Elle n'est **jamais** dans le cloud-init,
+    ni en base, ni dans un journal : l'API la lit dans le `.env` et la remet au travailleur avec sa tâche, par le
+    réseau privé, une seule fois et sur présentation de son jeton.
+* Code : `mars/sentinel.py` (sélection, garde fous, résultats, fusion, alertes), `travailleurs/sentinel.py`
+  (script du travailleur), `backend/sentinel.py` (API), `backend/travailleurs.py` (remise de la tâche),
+  `mars/r2_signature.py` (signature AWS version 4), `mars/travailleurs.py` (orchestrateur commun), migration 25.
 
 ## Faits vérifiés (sources primaires, 11/10/2026)
 
@@ -65,9 +74,9 @@ sélection automatique et la commande manuelle).
 | Plafond commun | seuls comptent les travailleurs dont une instance a été créée chez Scaleway : un lancement refusé avant (image, quota, clés) ne coûte rien et ne compte pas (les 11 et 12/10/2026, sept refus de Scaleway en 0,1 s avaient épuisé le plafond et privé la nuit VIIRS de son travailleur) |
 | Place réservée à VIIRS | tant que la nuit VIIRS du jour n'a pas eu son travailleur, Sentinel laisse 1 travailleur et 60 minutes (`travailleurs.reserve_viirs`) |
 | Échec de lancement | même jour, mêmes passages : pas de nouvel essai toutes les 30 minutes ; la sélection automatique attend le lendemain (`task_runs`, tâche `sentinel`, motif affiché dans l'indicateur « Satellites ») ; l'analyse en échec ne bloque pas son passage (l'index unique ignore les analyses en échec) |
-| Clés Copernicus | vérifiées par une lecture réelle de 16 octets d'une image avant toute analyse et avant tout appel à Scaleway |
+| Clés Copernicus | paire des travailleurs vérifiée (expiration, puis lecture réelle de 16 octets d'une image, signature par en tête) avant toute analyse et avant tout appel à Scaleway |
 | Volume bloc | enregistré en base dès la création ; instance éteinte puis supprimée (jamais `terminate`, qui laisserait le volume, facturé) ; volume supprimé ensuite, retenté chaque minute jusqu'au bout |
-| Adresses de lecture | signées par le serveur, valables 3 heures ; aucune clé sur le travailleur |
+| Remise de la tâche | scènes et paire dédiée remises par l'API, sur le réseau privé, à la demande du travailleur (`POST /api/travailleurs/<id>/etat` avec `{"etat": "tache"}`, jeton) ; une seule fois (`mesures.tache_remise_le`, vérifiée et posée dans la même requête : 409 ensuite) ; 503 sans marquer la remise si la paire manque au `.env` ; la remise est journalisée sans les clés |
 
 ## Fusion avec l'AIS et alertes
 
@@ -139,7 +148,10 @@ La durée réelle (démarrage d'une image GPU, téléchargement de 5 Go) n'est p
 3. **Réseau privé** : rien à faire, il est régional ; le même `SCW_PRIVATE_NETWORK_ID` sert en fr-par-2.
 4. **Copernicus Data Space** : compte gratuit sur https://dataspace.copernicus.eu, puis clés S3 sur
    https://eodata-s3keysmanager.dataspace.copernicus.eu (Add Credentials ; date d'expiration au choix, la clé secrète
-   n'est montrée qu'une fois). Dans le `.env` du serveur : `CDSE_ACCESS_KEY` et `CDSE_SECRET_KEY`.
+   n'est montrée qu'une fois). **Deux paires** : l'une pour le serveur (`CDSE_ACCESS_KEY`, `CDSE_SECRET_KEY`), l'autre
+   dédiée aux travailleurs (`CDSE_TRAVAILLEUR_ACCESS_KEY`, `CDSE_TRAVAILLEUR_SECRET_KEY`), avec sa date d'expiration
+   dans `CDSE_TRAVAILLEUR_EXPIRENT_LE=AAAA-MM-JJ`. Le `.env` est lu par l'API (qui remet la paire dédiée) et par
+   `taches` : redémarrer les deux après un changement de clés.
 5. Migration 25, images, puis le premier essai réel ci dessous.
 
 ## Image GPU sur volume bloc (corrigé le 12/10/2026, confirmé le 13/10/2026)
@@ -157,6 +169,33 @@ DEV1-M (disque local) juge selon quatre conditions confondues dans un seul messa
 Le chemin Block Storage `v1alpha1` (celui de la ligne de commande ; une `v1` existe aussi) répond. Reste à voir au
 premier essai : le nom du quota GPU dans l'API IAM (lisible ou non avec la clé du serveur).
 
+## Copernicus refuse les adresses présignées (constat du 14/10/2026)
+
+Conception initiale : le serveur signait des adresses de lecture valables 3 heures (signature dans la requête,
+`X-Amz-Signature`), et le travailleur n'avait aucune clé. Test sur le serveur, le 14/10/2026, même objet de la scène
+`S1D_..._005015_0097A4_7746_COG`, mêmes clés :
+
+```python
+s3 = boto3.client("s3", endpoint_url="https://eodata.dataspace.copernicus.eu", region_name="default",
+                  aws_access_key_id=CLE, aws_secret_access_key=SECRET)
+s3.get_object(Bucket="eodata", Key=CLE_OBJET, Range="bytes=0-15")            # 1. en tête : lecture OK
+requests.get(s3.generate_presigned_url("get_object", Params={"Bucket": "eodata", "Key": CLE_OBJET}))  # 2. 403 InvalidAccessKeyId
+requests.get(signed_urls(...)[0])                                            # 3. MARS C2 : 403 InvalidAccessKeyId
+```
+
+Les clés et notre signature sont bonnes (la signature de MARS C2 est identique à celle de botocore, testé) :
+`eodata.dataspace.copernicus.eu` n'accepte que l'authentification par en tête. Le principe « adresses signées par le
+serveur » est abandonné : le travailleur reçoit une paire de clés dédiée et signe lui même chaque lecture par en tête
+(bibliothèque standard, Python 3.8 de l'image d'AI2 ; GDAL ou rasterio y parviendraient aussi avec `AWS_S3_ENDPOINT`,
+`AWS_VIRTUAL_HOSTING=FALSE`, `AWS_HTTPS=YES`, `AWS_REGION=default`). Garde fous :
+* paire distincte de celle du serveur, révocable seule, expiration surveillée par le diagnostic ;
+* jamais dans le cloud-init (le fichier de tâche n'y contient que l'adresse de retour, le jeton, le script et
+  `tache_par_le_reseau`), ni en base (`travailleurs.parametres` garde les scènes, sans clé), ni dans un journal ;
+* remise par l'API, seul service joignable par le réseau privé, une fois et au seul travailleur qui présente son
+  jeton ; nginx (port 8090) relaie déjà la route `etat`, l'image web ne change donc pas ;
+* les clés restent en mémoire dans le script du travailleur, qui est détruit à la fin.
+Couvert par `tests/test_cles_travailleur.py`.
+
 ## Diagnostic avant tout essai (lecture seule)
 
 ```bash
@@ -164,7 +203,8 @@ docker compose exec taches python scripts/taches.py sentinel-diagnostic
 ```
 
 Aucune création, aucun coût : des lectures sur les API Scaleway et 16 octets d'une image Copernicus. Une ligne par
-point, dans l'ordre du lancement : clés Copernicus (présentes, puis valides par une lecture réelle), clés Scaleway et
+point, dans l'ordre du lancement : les deux paires de clés Copernicus (présentes, valides par une vraie lecture de
+16 octets signée par en tête, expiration), clés Scaleway et
 réseau privé dans le `.env`, API Instances en fr-par-2, **image GPU résolue avec sa fiche brute affichée**, disponibilité
 annoncée du L4-1-24G en fr-par-2, quota du L4 (API IAM ; « à vérifier » si la clé limitée au projet ne peut pas le lire),
 stockage bloc (lecture), ensembles de droits de la politique de la clé (si lisibles), réseau privé (régional, donc
@@ -173,8 +213,10 @@ contrôler dans la console) ; le plafond de scènes est donné pour information.
 une réponse paginée (100 types par page, les GPU au delà de la première) : toutes les pages sont lues, et la réponse
 brute s'affiche si le type reste introuvable. Expiration des clés Copernicus : illisible avec les seules clés S3 (le
 gestionnaire de clés demande une connexion au compte) ; la reporter dans le `.env` à la création
-(`CDSE_CLES_EXPIRENT_LE=AAAA-MM-JJ`) pour que le diagnostic la compare à la date du jour (moins de 14 jours : à
-vérifier ; dépassée : manque). Un refus de Copernicus donne son code S3 (`InvalidAccessKeyId`, `SignatureDoesNotMatch`…). Code de sortie non nul s'il manque quelque
+(`CDSE_TRAVAILLEUR_EXPIRENT_LE`, et `CDSE_CLES_EXPIRENT_LE` pour la paire du serveur) pour que le diagnostic la compare
+à la date du jour (moins de 14 jours : à vérifier ; dépassée : manque ; non renseignée : à vérifier pour la paire des
+travailleurs, qui est surveillée, simple information pour celle du serveur). Une paire des travailleurs expirée
+arrête aussi tout lancement, avant Scaleway. Un refus de Copernicus donne son code S3 (`InvalidAccessKeyId`, `SignatureDoesNotMatch`…). Code de sortie non nul s'il manque quelque
 chose.
 
 ## Premier essai réel (passage choisi à la main)

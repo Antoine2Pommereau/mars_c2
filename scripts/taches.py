@@ -192,7 +192,8 @@ def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False) -> dic
             return {"passages": 0, "suspendu_jusqu_au_lendemain": motif}
     rules = load_rules()
     scw = travailleurs.Scaleway.from_env()
-    missing = [k for k in ("CDSE_ACCESS_KEY", "CDSE_SECRET_KEY") if not os.environ.get(k)]
+    # Paire de clés Copernicus dédiée aux travailleurs (remise par le réseau privé) ; celle du serveur n'y sert pas
+    missing = [k for k in ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY") if not os.environ.get(k)]
     if scw is None or missing:
         raise travailleurs.RefusLancement("clés absentes du .env : " + ", ".join(
             (["SCW_SECRET_KEY, SCW_PROJECT_ID"] if scw is None else []) + missing))
@@ -312,7 +313,7 @@ def loop(conn):
         # plafond ou du budget est consigné dans task_runs, sans trace d'erreur)
         if time.time() - last_sentinel >= 60 * load_rules()["sentinel"]["intervalle_min"]:
             last_sentinel = time.time()
-            if os.environ.get("CDSE_ACCESS_KEY") and os.environ.get("SCW_SECRET_KEY"):
+            if os.environ.get("CDSE_TRAVAILLEUR_ACCESS_KEY") and os.environ.get("SCW_SECRET_KEY"):
                 run(conn, "sentinel", lambda: launch_sentinel(conn, auto=True), quiet=True)
         for task, (fn, every, hour) in tasks(conn).items():
             if due(conn, task, datetime.now(timezone.utc), every, hour):

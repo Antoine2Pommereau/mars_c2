@@ -25,14 +25,22 @@ def _get(scw, path: str):
 
 
 def copernicus(session, now: datetime) -> list[tuple[str, str, str]]:
-    """Clés S3 présentes, puis valides : lecture réelle de 16 octets de l'image VV d'une scène récente."""
+    """Deux paires de clés S3 : celle du serveur (ne le quitte jamais) et celle dédiée aux travailleurs (remise par le
+    réseau privé avec la tâche). Pour chacune : présence, date d'expiration (reportée dans le .env), puis lecture réelle
+    de 16 octets de l'image VV d'une scène récente, signature par en tête (Copernicus refuse les adresses présignées,
+    14/10/2026)."""
     from mars import sentinel
-    out = []
-    missing = [k for k in ("CDSE_ACCESS_KEY", "CDSE_SECRET_KEY") if not os.environ.get(k)]
-    if missing:
-        return [(MANQUE, "Clés Copernicus", f"absentes du .env : {', '.join(missing)}")]
-    out.append((PRET, "Clés Copernicus", "présentes dans le .env"))
-    out.append(_expiry(os.environ.get("CDSE_CLES_EXPIRENT_LE"), now))
+    out, pairs = [], []
+    for pair, required in ((sentinel.SERVEUR, False), (sentinel.TRAVAILLEUR, True)):
+        missing = [pair[k] for k in ("cle", "secret") if not os.environ.get(pair[k])]
+        if missing:
+            out.append((MANQUE, f"Clés Copernicus {pair['nom']}", f"absentes du .env : {', '.join(missing)}"))
+            continue
+        out.append((PRET, f"Clés Copernicus {pair['nom']}", "présentes dans le .env"))
+        out.append(_expiry(pair, now, required))
+        pairs.append(pair)
+    if not pairs:
+        return out
     try:
         r = session.post(sentinel.STAC, headers=sentinel.HEADERS, timeout=60, json={
             "collections": ["sentinel-1-grd"], "bbox": [-6.8, 47.3, -3.0, 49.6], "limit": 5,
@@ -41,25 +49,31 @@ def copernicus(session, now: datetime) -> list[tuple[str, str, str]]:
         scenes = [s for s in (sentinel.scene_from_item(f) for f in r.json().get("features", [])) if s]
     except Exception as e:
         return out + [(MANQUE, "Catalogue Copernicus", f"injoignable : {type(e).__name__} {str(e)[:160]}")]
-    if not scenes:
-        return out + [(A_VERIFIER, "Clés Copernicus valides", "aucune scène IW sur la Bretagne depuis 4 jours pour l'essai")]
-    motif = sentinel.check_cdse(session, sentinel.signed_urls(scenes[0], now)["vv"])
-    out.append((MANQUE, "Clés Copernicus valides", motif) if motif else
-               (PRET, "Clés Copernicus valides", f"16 octets lus de {scenes[0]['id']} (image VV)"))
+    for pair in pairs:
+        rubrique = f"Clés Copernicus {pair['nom']} valides"
+        if not scenes:
+            out.append((A_VERIFIER, rubrique, "aucune scène IW sur la Bretagne depuis 4 jours pour l'essai"))
+            continue
+        motif = sentinel.check_cdse(session, scenes[0]["vv"], pair)
+        out.append((MANQUE, rubrique, motif) if motif else
+                   (PRET, rubrique, f"16 octets lus de {scenes[0]['id']} (image VV, signature par en tête)"))
     return out
 
 
-def _expiry(value: str | None, now: datetime) -> tuple[str, str, str]:
-    """Date d'expiration des clés S3 de Copernicus. Elle n'est pas lisible avec les seules clés (le gestionnaire de clés
-    demande une connexion au compte) : on la reporte dans le .env à la création (CDSE_CLES_EXPIRENT_LE=AAAA-MM-JJ)."""
-    rubrique = "Expiration des clés Copernicus"
+def _expiry(pair: dict, now: datetime, required: bool = False) -> tuple[str, str, str]:
+    """Date d'expiration d'une paire de clés S3 de Copernicus. Elle n'est pas lisible avec les seules clés (le
+    gestionnaire de clés demande une connexion au compte) : on la reporte dans le .env à la création (AAAA-MM-JJ).
+    `required` : pour la paire des travailleurs, dont la surveillance est demandée, une date absente est à vérifier."""
+    rubrique, var = f"Expiration des clés {pair['nom']}", pair["expire"]
+    value = os.environ.get(var)
     if not value:
-        return (INFO, rubrique, "non renseignée : CDSE_CLES_EXPIRENT_LE=AAAA-MM-JJ dans le .env, date choisie sur "
-                                "https://eodata-s3keysmanager.dataspace.copernicus.eu")
+        return (A_VERIFIER if required else INFO, rubrique,
+                f"non renseignée : {var}=AAAA-MM-JJ dans le .env, date choisie sur "
+                "https://eodata-s3keysmanager.dataspace.copernicus.eu")
     try:
         day = datetime.strptime(value.strip(), "%Y-%m-%d").date()
     except ValueError:
-        return (A_VERIFIER, rubrique, f"CDSE_CLES_EXPIRENT_LE illisible ({value!r}) : format AAAA-MM-JJ attendu")
+        return (A_VERIFIER, rubrique, f"{var} illisible ({value!r}) : format AAAA-MM-JJ attendu")
     left = (day - now.date()).days
     shown = day.strftime("%d/%m/%Y")
     if left < 0:

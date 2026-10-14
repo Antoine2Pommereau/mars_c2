@@ -128,7 +128,7 @@ mars_c2/
     satellites.py                    calendrier des passages Sentinel 1 et 2 (catalogue, plans de l'ESA, couverture)
     travailleurs.py, viirs.py        orchestrateur des travailleurs éphémères ; granules VIIRS, appariement, alertes
   travailleurs/viirs.py              script du travailleur VIIRS (exécuté dans l'image publique d'allenai)
-  mars/sentinel.py                   Sentinel 1 : sélection des passages, garde fous, adresses signées, fusion, alertes
+  mars/sentinel.py                   Sentinel 1 : sélection des passages, garde fous, clés de lecture, fusion, alertes
   mars/evaluation.py                 détection satellite évaluable ou non (zone de réception fiable), VIIRS et Sentinel
   travailleurs/sentinel.py           script du travailleur GPU (image publique d'AI2, Python 3.8)
   .github/workflows/                 nettoyage du registre GitHub (trois dernières versions par image)
@@ -400,8 +400,8 @@ plus), progression affichée par section.
 **Étape 3, lot C, C1 et C2 (11/10/2026)** (migration 25, règles 2026.10.23, `docs/sentinel.md`) : travailleur GPU
 L4-1-24G en fr-par-2 (réseau privé régional, image Ubuntu GPU OS sur volume bloc, supprimé explicitement : jamais
 `terminate`), image publique d'AI2 épinglée (`sha-fafc6c3`, 5 Go) avec un script maison qui appelle sa chaîne (son
-serveur intégré est incohérent à cette version) ; scènes COG lues par adresses S3 signées par le serveur (clés CDSE
-jamais transmises) ; sélection des passages sur corridor avec navire des listes ou alerte VIIRS moyenne au moins,
+serveur intégré est incohérent à cette version) ; scènes COG lues en S3 par le travailleur, signature par en tête,
+avec une paire de clés dédiée remise par le réseau privé (corrigé le 14/10/2026, voir les pièges) ; sélection des passages sur corridor avec navire des listes ou alerte VIIRS moyenne au moins,
 scènes utiles seulement, une session GPU ; plafond de 2 scènes par jour et budget de 6 € par mois ; fusion existante
 réutilisée sans scipy ni pyproj dans l'image des scripts (mêmes résultats, testé) ; éoliennes, échos fixes,
 évaluation commune avec VIIRS ; alertes DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH (longueur au delà de 40 m
@@ -449,6 +449,12 @@ essai, `taches.py sentinel-analyser <id>`).
   vrais silences seulement. Copie du 11/10 : arrêt simulé de 20 min, résultat identique à sans arrêt (63 retenues, 6
   élevées) ; 140 min, mêmes élevées, 7 coupures dont le début tombait dans le trou écartées (choix délibéré).
 
+**Clés Copernicus dédiées aux travailleurs (14/10/2026)** (règles 2026.10.26, aucune migration ; images backend et
+scripts, web inchangée) : Copernicus refuse les adresses présignées (piège ci dessous) ; le travailleur Sentinel
+demande sa tâche au démarrage (`tache_par_le_reseau`) et reçoit scènes et paire `CDSE_TRAVAILLEUR_*` une seule fois,
+sur jeton, par le réseau privé ; il lit les images COG en S3 avec signature par en tête. `sentinel-diagnostic` lit
+16 octets avec chacune des deux paires et surveille l'expiration de la paire dédiée. `scenes_max_par_jour` reste à 0.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -458,11 +464,11 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 150 réussis, 27 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 26 sans
+`python -m pytest tests` : 153 réussis, 29 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 28 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 176 réussis, 1 ignoré (trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 181 réussis, 1 ignoré (remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -592,7 +598,17 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   (arrêt de 20 min : une coupure élevée fabriquée, un point collectif perdu, avant correction).
 * La disponibilité des types d'instance (`/products/servers/availability`) est paginée, 100 types par page : les GPU ne
   sont pas sur la première (« illisible (HTTP 200) » au diagnostic du 13/10/2026). Lire toutes les pages.
-* L'expiration des clés S3 de Copernicus n'est pas lisible avec ces clés : `CDSE_CLES_EXPIRENT_LE` dans le `.env`.
+* L'expiration des clés S3 de Copernicus n'est pas lisible avec ces clés : `CDSE_CLES_EXPIRENT_LE` et
+  `CDSE_TRAVAILLEUR_EXPIRENT_LE` dans le `.env`.
+* **Copernicus refuse les adresses présignées** (test du 14/10/2026 sur le serveur, même objet, mêmes clés) :
+  `get_object` de boto3 (signature par en tête) lit ; l'adresse présignée de boto3 et celle de MARS C2 donnent
+  toutes deux 403 InvalidAccessKeyId. Ce n'est ni la clé ni notre signature : `eodata.dataspace.copernicus.eu`
+  n'accepte que l'en tête `Authorization`. Le travailleur Sentinel lit donc lui même, avec une paire dédiée
+  (`CDSE_TRAVAILLEUR_*`) que l'API lui remet une seule fois, sur jeton, par le réseau privé (route `etat`,
+  `{"etat": "tache"}`), jamais dans le cloud-init, en base ni dans un journal ; la paire du serveur ne le quitte
+  jamais. Test à trois lignes et garde fous : `docs/sentinel.md`.
+* L'image d'AI2 (`vessel-detection-sentinels`) tourne en Python 3.8 : le script du travailleur reste en
+  bibliothèque standard (signature AWS version 4 écrite à la main, identique à botocore, testé).
 * PostgreSQL 12 et plus déplie une sous requête `WITH` utilisée une fois : une géométrie lourde (union du trait de
   côte) y est recalculée pour chaque ligne. La marquer `MATERIALIZED` (cas de `find_gaps`, 68 s ramenées à 0,7 s).
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à

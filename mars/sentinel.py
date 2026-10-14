@@ -1,9 +1,11 @@
 """Sentinel 1 (étape 3, lot C) : choix des passages à analyser, travailleur GPU, fusion avec l'AIS et alertes.
 
-Le serveur ne télécharge jamais d'image : il lit des métadonnées (catalogue STAC de Copernicus Data Space), signe des
-adresses de lecture temporaires (clés S3 de Copernicus dans le .env du serveur, jamais transmises au travailleur), et
-reçoit des détections et des vignettes (quelques kilooctets chacune). Le travailleur (travailleurs/sentinel.py), sur
-une instance GPU éphémère, télécharge les images VV et VH de chaque scène et lance le modèle d'AI2.
+Le serveur ne télécharge jamais d'image : il lit des métadonnées (catalogue STAC de Copernicus Data Space) et reçoit
+des détections et des vignettes (quelques kilooctets chacune). Le travailleur (travailleurs/sentinel.py), sur une
+instance GPU éphémère, lit lui même les images VV et VH de chaque scène dans le stockage S3 de Copernicus, signature
+par en tête, avec une paire de clés qui lui est dédiée (CDSE_TRAVAILLEUR_*), remise par le réseau privé au moment où
+il récupère sa tâche, jamais dans le cloud-init, un journal ou la base ; la paire du serveur (CDSE_ACCESS_KEY) ne
+quitte jamais le serveur. Copernicus refuse les adresses présignées (14/10/2026).
 
 Chaîne :
 1. Sélection sobre (plan) : un passage Sentinel 1 en mode IW, acquis depuis moins de `passages_recents_h`, est analysé
@@ -33,7 +35,6 @@ STAC = "https://stac.dataspace.copernicus.eu/v1/search"
 S3_HOST = "eodata.dataspace.copernicus.eu"
 HEADERS = {"User-Agent": "mars-c2 (surveillance maritime, projet personnel)"}
 INCLINAISON_DEG = 98.18          # orbite héliosynchrone de Sentinel 1
-URL_VALIDITE_S = 3 * 3600        # adresses de lecture valables 3 heures (démarrage, image d'analyse, scènes)
 SEVERITES = ["faible", "moyenne", "elevee", "critique"]
 
 
@@ -147,7 +148,7 @@ def pick_scenes(scenes: list[dict], points: list[dict], margin_m: float) -> list
     return sorted(out, key=lambda sc: (-len(sc["points"]), sc["debut"]))
 
 
-# Catalogue (métadonnées seulement) et adresses de lecture
+# Catalogue (métadonnées seulement) et clés de lecture
 
 def s3_path(href: str) -> str:
     """« s3://eodata/Sentinel-1/… » devient « /eodata/Sentinel-1/… » (chemin de l'adresse S3)."""
@@ -177,22 +178,43 @@ def stac_scenes(session, satellite: str, t0: datetime, t1: datetime, bbox: tuple
     return [s for s in (scene_from_item(f) for f in r.json().get("features", [])) if s and s["satellite"] == satellite]
 
 
-def signed_urls(scene: dict, now: datetime | None = None) -> dict:
-    """Adresses de lecture des images VV et VH, signées avec les clés S3 de Copernicus du serveur, valables
-    URL_VALIDITE_S secondes ; le travailleur ne reçoit jamais les clés."""
-    from mars.r2_signature import presign
-    key, secret = os.environ.get("CDSE_ACCESS_KEY"), os.environ.get("CDSE_SECRET_KEY")
-    if not key or not secret:
-        raise RuntimeError("clés CDSE_ACCESS_KEY et CDSE_SECRET_KEY absentes du .env")
-    return {pol: presign("GET", S3_HOST, s3_path(scene[pol]), key, secret, region="default", expires=URL_VALIDITE_S,
-                         now=now) for pol in ("vv", "vh")}
+# Deux paires de clés S3 de Copernicus. Copernicus Data Space refuse l'authentification par la requête (adresse
+# présignée : 403 InvalidAccessKeyId même avec des clés valides, test du 14/10/2026) : le travailleur lit donc les images
+# lui même, signature par en tête, avec une paire qui lui est dédiée, remise par le réseau privé au moment où il
+# récupère sa tâche (backend/travailleurs.py) ; la paire du serveur ne quitte jamais le serveur.
+SERVEUR = {"nom": "du serveur", "cle": "CDSE_ACCESS_KEY", "secret": "CDSE_SECRET_KEY", "expire": "CDSE_CLES_EXPIRENT_LE"}
+TRAVAILLEUR = {"nom": "dédiées aux travailleurs", "cle": "CDSE_TRAVAILLEUR_ACCESS_KEY",
+               "secret": "CDSE_TRAVAILLEUR_SECRET_KEY", "expire": "CDSE_TRAVAILLEUR_EXPIRENT_LE"}
 
 
-def check_cdse(session, url: str) -> str | None:
-    """Clés S3 de Copernicus valides ? Une lecture réelle de 16 octets d'une image signée par le serveur (aucun coût,
-    aucune écriture). Retourne None si la lecture réussit, sinon le motif."""
+def pair_keys(pair: dict) -> tuple[str, str] | None:
+    key, secret = os.environ.get(pair["cle"]), os.environ.get(pair["secret"])
+    return (key.strip(), secret.strip()) if key and secret else None
+
+
+def pair_expired(pair: dict, now: datetime) -> str | None:
+    """Motif si la date d'expiration reportée dans le .env est passée (rien si elle n'est pas renseignée)."""
+    value = (os.environ.get(pair["expire"]) or "").strip()
     try:
-        r = session.get(url, headers={"Range": "bytes=0-15", **HEADERS}, timeout=30, stream=True)
+        day = datetime.strptime(value, "%Y-%m-%d").date() if value else None
+    except ValueError:
+        return None
+    if day and day < now.date():
+        return f"clés Copernicus {pair['nom']} expirées le {day:%d/%m/%Y} ({pair['expire']}) : les régénérer"
+    return None
+
+
+def check_cdse(session, href: str, pair: dict = TRAVAILLEUR) -> str | None:
+    """Clés S3 de Copernicus valides ? Lecture réelle de 16 octets d'une image (`href` en s3://eodata/…), signature par
+    en tête (seule acceptée par Copernicus). Aucun coût, aucune écriture. None si la lecture réussit, sinon le motif."""
+    from mars.r2_signature import signed_headers
+    keys = pair_keys(pair)
+    if not keys:
+        return f"clés Copernicus {pair['nom']} absentes du .env ({pair['cle']}, {pair['secret']})"
+    path = s3_path(href)
+    try:
+        r = session.get(f"https://{S3_HOST}{path}", stream=True, timeout=30,
+                        headers={"Range": "bytes=0-15", **HEADERS, **signed_headers("GET", S3_HOST, path, *keys)})
     except Exception as e:
         return f"Copernicus injoignable ({type(e).__name__})"
     code = r.status_code
@@ -210,8 +232,8 @@ def check_cdse(session, url: str) -> str | None:
         pass
     r.close()
     if code in (401, 403):
-        return (f"clés Copernicus refusées (HTTP {code}{detail}) : CDSE_ACCESS_KEY ou CDSE_SECRET_KEY invalides ou "
-                "périmées (https://eodata-s3keysmanager.dataspace.copernicus.eu)")
+        return (f"clés Copernicus {pair['nom']} refusées (HTTP {code}{detail}) : {pair['cle']} ou {pair['secret']} "
+                "invalides ou périmées (https://eodata-s3keysmanager.dataspace.copernicus.eu)")
     return f"lecture d'essai refusée par Copernicus (HTTP {code}{detail})"
 
 
@@ -329,7 +351,7 @@ def plan(conn, session, rules: dict, now: datetime, pass_id: int | None = None) 
 
 def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None = None, log=print) -> dict:
     """Une session GPU pour les passages à analyser : plafond de scènes et budget vérifiés, une analyse par passage
-    (index unique : jamais deux fois le même passage), adresses de lecture signées, travailleur lancé. Retourne le
+    (index unique : jamais deux fois le même passage), clés des travailleurs vérifiées, travailleur lancé. Retourne le
     résumé ; {"refus": motif} si un garde fou l'interdit."""
     from mars import travailleurs
     from mars.viirs import regions_boxes
@@ -354,8 +376,9 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     if motif:
         return {"refus": motif, "scenes_demandees": asked}
     import psycopg
-    urls = {sc["id"]: signed_urls(sc, now) for ps in selected for sc in ps["scenes"]}
-    motif = check_cdse(session, next(iter(urls.values()))["vv"])          # avant tout appel à Scaleway
+    # Paire dédiée aux travailleurs : présente, non expirée, et acceptée par Copernicus (lecture réelle de 16 octets),
+    # avant tout appel à Scaleway
+    motif = pair_expired(TRAVAILLEUR, now) or check_cdse(session, selected[0]["scenes"][0]["vv"], TRAVAILLEUR)
     if motif:
         return {"refus": motif}
     analyses, tasks = [], []
@@ -377,7 +400,7 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                 analyses.append(aid)
                 for sc in ps["scenes"]:
                     tasks.append({"analyse": aid, "id": sc["id"], "debut": sc["debut"], "fin": sc["fin"],
-                                  "orbite": sc["orbite"], "satellite": sc["satellite"], **urls[sc["id"]]})
+                                  "orbite": sc["orbite"], "satellite": sc["satellite"], "vv": sc["vv"], "vh": sc["vh"]})
     except psycopg.errors.UniqueViolation:
         return {"en_cours": "passage déjà en analyse (lancement concurrent)"}
     params = {"scenes": tasks, "regions": regions_boxes(), "confiance": s["confiance"], "nms_m": s["nms_m"],

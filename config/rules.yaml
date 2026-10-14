@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.25"
+version: "2026.10.26"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -285,3 +285,6 @@ travailleurs:
       image: ghcr.io/allenai/vessel-detection-sentinels@sha256:43880082de543afe25770de07f4b5f888f18a368f11bc32b5ecc90ae54fa487e
       script: travailleurs/sentinel.py
       docker_opts: "--gpus all --shm-size=16g"
+      # Tâche remise par le réseau privé (route etat, {"etat": "tache"}), une seule fois, avec la paire de clés
+      # Copernicus dédiée aux travailleurs : Copernicus refuse les adresses présignées (14/10/2026)
+      tache_par_le_reseau: true

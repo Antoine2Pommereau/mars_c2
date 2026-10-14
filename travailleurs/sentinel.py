@@ -2,12 +2,16 @@
 
 Exécuté sur une instance GPU éphémère (NVIDIA L4), dans l'image publique ghcr.io/allenai/vessel-detection-sentinels
 (modèle et chaîne d'AI2, licence Apache 2.0, code dans /home/vessel_detection/src). Le serveur de MARS C2 transmet ce
-fichier et la tâche par cloud-init (mars/travailleurs.py) ; ce script n'utilise que la bibliothèque standard et ce que
+fichier par cloud-init (mars/travailleurs.py), et la tâche par le réseau privé ; ce script n'utilise que la bibliothèque standard et ce que
 l'image contient déjà (torch, GDAL, numpy, Pillow).
 
-Pour chaque scène (produit GRD en mode IW, tranche de 25 s) : téléchargement des images VV et VH par des adresses de
-lecture signées par le serveur (le travailleur ne reçoit aucune clé), fichier vérifié (code HTTP, signature TIFF,
-taille), puis chaîne d'AI2 appelée directement (prepare_scenes, puis detect_vessels avec sa signature réelle : le
+Tâche remise par le réseau privé (route etat du serveur, {"etat": "tache"}, une seule fois, jeton de l'exécution),
+avec la paire de clés S3 de Copernicus dédiée aux travailleurs : jamais dans le cloud-init, jamais affichée ni
+journalisée, gardée en mémoire seulement. Copernicus refuse les adresses présignées (14/10/2026) : chaque image est lue
+avec une signature par en tête (AWS version 4, bibliothèque standard).
+
+Pour chaque scène (produit GRD en mode IW, tranche de 25 s) : téléchargement des images VV et VH (s3://eodata/…),
+fichier vérifié (code HTTP, signature TIFF, taille), puis chaîne d'AI2 appelée directement (prepare_scenes, puis detect_vessels avec sa signature réelle : le
 serveur intégré à l'image, main.py, lui passe des arguments qu'elle n'accepte pas à cette version). Pour chaque
 détection dans nos régions : position, score, longueur, largeur, cap (classe la plus probable), vitesse, pêche,
 contraste local mesuré sur l'image VV d'origine, et une vignette radar PNG d'environ 3 km de côté (VV en décibels,
@@ -24,6 +28,8 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
 import math
@@ -35,7 +41,9 @@ import tempfile
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 SRC = "/home/vessel_detection/src"
 sys.path.insert(0, SRC)
@@ -60,8 +68,8 @@ def rss_mo() -> float:
 
 def check_download(status: int, content_type: str, first: bytes, size: int | None = None):
     if status in (401, 403):
-        raise Arret(f"accès refusé par Copernicus (HTTP {status}) : adresse signée expirée, ou clés S3 du serveur "
-                    "(CDSE_ACCESS_KEY, CDSE_SECRET_KEY) invalides ou périmées")
+        raise Arret(f"accès refusé par Copernicus (HTTP {status}) : clés dédiées aux travailleurs "
+                    "(CDSE_TRAVAILLEUR_ACCESS_KEY, CDSE_TRAVAILLEUR_SECRET_KEY) invalides ou périmées")
     if status != 200 or not first.startswith(TIFF):
         raise FichierInvalide(f"réponse inattendue : HTTP {status}, type {content_type or 'inconnu'}, "
                               f"premiers octets {first[:60]!r}")
@@ -69,8 +77,70 @@ def check_download(status: int, content_type: str, first: bytes, size: int | Non
         raise FichierInvalide(f"image tronquée : {size} octets (au moins {TAILLE_MIN} attendus)")
 
 
+# Clés S3 remises avec la tâche : en mémoire seulement (jamais dans la tâche, un fichier ou la sortie)
+_S3: dict = {}
+EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+def _hmac(key: bytes, msg: str) -> bytes:
+    return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+
+def s3_headers(host: str, path: str, access_key: str, secret_key: str, region: str = "default",
+               now: datetime | None = None) -> dict:
+    """En têtes d'une lecture S3 signée par en tête (AWS version 4, corps vide), comme mars/r2_signature.signed_headers
+    côté serveur (vérifiés tous deux contre botocore, tests/test_cles_travailleur.py)."""
+    now = now or datetime.now(timezone.utc)
+    amz_date, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
+    scope = day + "/" + region + "/s3/aws4_request"
+    names = "host;x-amz-content-sha256;x-amz-date"
+    canonical = "\n".join(["GET", urllib.parse.quote(path, safe="/-_.~"), "",
+                           "host:" + host + "\nx-amz-content-sha256:" + EMPTY_SHA256 + "\nx-amz-date:" + amz_date + "\n",
+                           names, EMPTY_SHA256])
+    to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(canonical.encode()).hexdigest()])
+    key = _hmac(_hmac(_hmac(_hmac(("AWS4" + secret_key).encode(), day), region), "s3"), "aws4_request")
+    sig = hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest()
+    return {"Authorization": "AWS4-HMAC-SHA256 Credential=" + access_key + "/" + scope + ", SignedHeaders=" + names
+            + ", Signature=" + sig, "x-amz-date": amz_date, "x-amz-content-sha256": EMPTY_SHA256}
+
+
+def _request_for(href: str) -> urllib.request.Request:
+    """Requête de lecture d'une image : s3://eodata/… avec les clés remises (signature par en tête), sinon adresse
+    https:// telle quelle (essais)."""
+    headers = {"User-Agent": "mars-c2-travailleur"}
+    if href.startswith("s3://"):
+        if not _S3.get("access_key"):
+            raise Arret("aucune clé S3 remise avec la tâche : lecture des images impossible")
+        host, path = _S3.get("endpoint", "eodata.dataspace.copernicus.eu"), "/" + href[len("s3://"):]
+        headers.update(s3_headers(host, path, _S3["access_key"], _S3["secret_key"], _S3.get("region", "default")))
+        return urllib.request.Request("https://" + host + urllib.parse.quote(path, safe="/-_.~"), headers=headers)
+    return urllib.request.Request(href, headers=headers)
+
+
+def fetch_task(task: dict) -> dict:
+    """Tâche remise par le réseau privé, une seule fois : paramètres et clés S3. Les clés vont dans _S3, pas dans la
+    tâche renvoyée. Trois essais en cas d'erreur réseau ; un refus (403 jeton, 409 déjà remise, 503 clés absentes du
+    serveur) arrête le travailleur avec son motif."""
+    data = json.dumps({"etat": "tache"}).encode()
+    for k in range(3):
+        try:
+            req = urllib.request.Request(task["retour"] + "/etat", data=data, method="POST",
+                                         headers={"Authorization": "Bearer " + task["jeton"],
+                                                  "Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                body = json.loads(r.read().decode())
+            _S3.update((body.pop("identifiants", None) or {}).get("s3") or {})
+            return {**body, "retour": task["retour"], "jeton": task["jeton"]}
+        except urllib.error.HTTPError as e:
+            raise Arret("tâche refusée par le serveur (HTTP " + str(e.code) + ") : " + e.read(300).decode("utf-8", "replace"))
+        except Exception as e:
+            print("tâche non reçue (" + type(e).__name__ + "), nouvel essai", flush=True)
+            time.sleep(10 * (k + 1))
+    raise Arret("tâche non reçue du serveur après trois essais (réseau privé)")
+
+
 def download(url: str, dest: str) -> int:
-    req = urllib.request.Request(url, headers={"User-Agent": "mars-c2-travailleur"})
+    req = _request_for(url)
     try:
         r = urllib.request.urlopen(req, timeout=300)
     except urllib.error.HTTPError as e:
@@ -355,6 +425,8 @@ def main():
     task = json.load(open(os.environ.get("MARS_TACHE", "/mars/tache.json")))
     send(task, "/etat", {"etat": "demarre"})
     try:
+        if task.get("tache_par_le_reseau"):
+            task = fetch_task(task)
         result = run(task)
     except Exception as e:
         result = {"scenes": [], "erreur": f"{type(e).__name__}: {e}"[:1000], "mesures": {"rss_max_mo": rss_mo()}}

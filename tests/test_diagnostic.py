@@ -33,16 +33,21 @@ class Resp:
 
 
 class Copernicus:
-    def __init__(self, read=206):
-        self.read, self.gets = read, []
+    """Faux Copernicus : catalogue, et lecture S3 signée par en tête ; `refused` : clés d'accès refusées en 403."""
+
+    def __init__(self, refused=()):
+        self.refused, self.gets = set(refused), []
 
     def post(self, _url, **_kw):
         return Resp(200, {"features": [ITEM]})
 
-    def get(self, url, **_kw):
-        self.gets.append(url)
-        r = Resp(self.read)
-        if self.read == 403:
+    def get(self, url, headers=None, **_kw):
+        auth = (headers or {}).get("Authorization", "")
+        assert "?" not in url and auth.startswith("AWS4-HMAC-SHA256 Credential="), "signature par en tête attendue"
+        key = auth.split("Credential=", 1)[1].split("/", 1)[0]
+        self.gets.append((url, key))
+        r = Resp(403 if key in self.refused else 206)
+        if key in self.refused:
             r.text = "<?xml version='1.0'?><Error><Code>InvalidAccessKeyId</Code><Message>expired</Message></Error>"
         return r
 
@@ -84,7 +89,8 @@ class ScalewayApi:
 
 
 def _env(monkeypatch):
-    for k, v in {"CDSE_ACCESS_KEY": "k", "CDSE_SECRET_KEY": "s", "SCW_PRIVATE_NETWORK_ID": "pn",
+    for k, v in {"CDSE_ACCESS_KEY": "KSERVEUR", "CDSE_SECRET_KEY": "s", "CDSE_TRAVAILLEUR_ACCESS_KEY": "KTRAVAILLEUR",
+                 "CDSE_TRAVAILLEUR_SECRET_KEY": "s2", "CDSE_TRAVAILLEUR_EXPIRENT_LE": "2027-01-31", "SCW_PRIVATE_NETWORK_ID": "pn",
                  "MARS_IP_PRIVEE": "172.16.8.2", "SCW_ACCESS_KEY": "SCWACCESS"}.items():
         monkeypatch.setenv(k, v)
 
@@ -100,7 +106,8 @@ def test_everything_ready(monkeypatch):
     rules = {**RULES, "sentinel": {**RULES["sentinel"], "scenes_max_par_jour": 2}}
     lines, shown = _run(ScalewayApi(), rules=rules)
     assert all(s in (D.PRET, D.INFO) for s, _d in lines.values()), lines
-    assert "16 octets lus de S1C_IW_GRDH_1SDV_20261010T180430" in lines["Clés Copernicus valides"][1]
+    for nom in ("du serveur", "dédiées aux travailleurs"):
+        assert "16 octets lus de S1C_IW_GRDH_1SDV_20261010T180430" in lines[f"Clés Copernicus {nom} valides"][1]
     assert lines["Image GPU"][1].startswith("Ubuntu Noble GPU OS 13 (gpuos), volume racine de 20 Go")
     assert any('"sbs_snapshot"' in x for x in shown)                       # fiche brute affichée
     assert "Tout est prêt" in D.report(list((s, r, d) for r, (s, d) in lines.items()))
@@ -121,17 +128,20 @@ def test_missing_and_unreadable_points_are_named(monkeypatch):
     assert lines["Stockage bloc"][0] == D.MANQUE and "BlockStorageFullAccess" in lines["Stockage bloc"][1]
     assert lines["Quota L4-1-24G"][0] == D.A_VERIFIER and lines["Droits de la clé"][0] == D.A_VERIFIER
     assert lines["Plafond de scènes"][0] == D.INFO and "Sentinel arrêté" in lines["Plafond de scènes"][1]
-    assert lines["Clés Copernicus valides"][0] == D.PRET
+    assert lines["Clés Copernicus dédiées aux travailleurs valides"][0] == D.PRET
 
 
 def test_copernicus_is_checked_first_and_refused_keys_are_reported(monkeypatch):
     _env(monkeypatch)
-    lines, _ = _run(ScalewayApi(), Copernicus(read=403))
-    assert lines["Clés Copernicus valides"][0] == D.MANQUE
-    assert "HTTP 403, code InvalidAccessKeyId" in lines["Clés Copernicus valides"][1]
-    monkeypatch.delenv("CDSE_SECRET_KEY")
+    cop = Copernicus(refused={"KTRAVAILLEUR"})
+    lines, _ = _run(ScalewayApi(), cop)
+    assert {k for _u, k in cop.gets} == {"KSERVEUR", "KTRAVAILLEUR"}                 # deux vraies lectures
+    assert lines["Clés Copernicus du serveur valides"][0] == D.PRET
+    assert lines["Clés Copernicus dédiées aux travailleurs valides"][0] == D.MANQUE
+    assert "HTTP 403, code InvalidAccessKeyId" in lines["Clés Copernicus dédiées aux travailleurs valides"][1]
+    monkeypatch.delenv("CDSE_TRAVAILLEUR_SECRET_KEY")
     lines, _ = _run(ScalewayApi())
-    assert lines["Clés Copernicus"] == (D.MANQUE, "absentes du .env : CDSE_SECRET_KEY")
+    assert lines["Clés Copernicus dédiées aux travailleurs"] == (D.MANQUE, "absentes du .env : CDSE_TRAVAILLEUR_SECRET_KEY")
 
 
 def test_availability_is_read_across_pages(monkeypatch):
@@ -154,9 +164,12 @@ def test_key_expiry_when_reported_in_env(monkeypatch):
                                 ("2026-10-20", D.A_VERIFIER, "encore 8 jour(s)"),
                                 ("2027-01-31", D.PRET, "valables jusqu'au 31/01/2027"),
                                 ("31/01/2027", D.A_VERIFIER, "format AAAA-MM-JJ attendu")):
-        monkeypatch.setenv("CDSE_CLES_EXPIRENT_LE", value)
+        monkeypatch.setenv("CDSE_TRAVAILLEUR_EXPIRENT_LE", value)
         lines, _ = _run(ScalewayApi())
-        assert lines["Expiration des clés Copernicus"][0] == status and text in lines["Expiration des clés Copernicus"][1]
-    monkeypatch.delenv("CDSE_CLES_EXPIRENT_LE")
+        rub = "Expiration des clés dédiées aux travailleurs"
+        assert lines[rub][0] == status and text in lines[rub][1]
+    # Non renseignée : à vérifier pour la paire des travailleurs (surveillance demandée), information pour le serveur
+    monkeypatch.delenv("CDSE_TRAVAILLEUR_EXPIRENT_LE")
     lines, _ = _run(ScalewayApi())
-    assert lines["Expiration des clés Copernicus"][0] == D.INFO
+    assert lines["Expiration des clés dédiées aux travailleurs"][0] == D.A_VERIFIER
+    assert lines["Expiration des clés du serveur"][0] == D.INFO

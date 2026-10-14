@@ -257,10 +257,14 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
 5. **Vérifier** sans attendre 06:30 : procédure d'essai ci dessous.
 6. **Sentinel 1 (lot C, `docs/sentinel.md`)** : quota GPU L4-1-24G (identité du compte validée), droit
    **BlockStorageFullAccess** ajouté à la politique de l'application (les L4 n'ont que des volumes bloc, supprimés
-   explicitement), clés S3 de Copernicus Data Space dans le `.env` (`CDSE_ACCESS_KEY`, `CDSE_SECRET_KEY`, obtenues sur
-   https://eodata-s3keysmanager.dataspace.copernicus.eu ; leur date d'expiration, choisie à la création, dans
-   `CDSE_CLES_EXPIRENT_LE=AAAA-MM-JJ`, que `taches.py sentinel-diagnostic` surveille). Le réseau privé est régional : le travailleur GPU en fr-par-2
-   rejoint le serveur en fr-par-1 sans autre réglage. Migration 25 (`db/init/25_sentinel.sql`). Sans clés CDSE, rien
+   explicitement), deux paires de clés S3 de Copernicus Data Space dans le `.env`, obtenues sur
+   https://eodata-s3keysmanager.dataspace.copernicus.eu : celle du serveur (`CDSE_ACCESS_KEY`, `CDSE_SECRET_KEY`,
+   `CDSE_CLES_EXPIRENT_LE`), qui ne le quitte jamais, et celle des travailleurs (`CDSE_TRAVAILLEUR_ACCESS_KEY`,
+   `CDSE_TRAVAILLEUR_SECRET_KEY`, `CDSE_TRAVAILLEUR_EXPIRENT_LE=AAAA-MM-JJ`), que l'API remet à chaque travailleur par
+   le réseau privé (Copernicus refuse les adresses présignées, `docs/sentinel.md`) ; `taches.py sentinel-diagnostic`
+   lit 16 octets avec chacune et surveille l'expiration. Après un changement de clés :
+   `docker compose up -d backend taches` (les deux lisent le `.env`). Le réseau privé est régional : le travailleur GPU en fr-par-2
+   rejoint le serveur en fr-par-1 sans autre réglage. Migration 25 (`db/init/25_sentinel.sql`). Sans la paire des travailleurs, rien
    n'est lancé ; premier essai sur un passage choisi à la main : `taches.py sentinel-analyser <id>` (procédure dans
    `docs/sentinel.md`).
 

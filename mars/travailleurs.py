@@ -500,7 +500,14 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
         conn.execute("UPDATE travailleurs SET volumes_bloc = %s WHERE id = %s", (ids, wid))
     block: list[str] = []
     try:
-        task = {**parametres, "retour": f"{retour.rstrip('/')}/{wid}", "jeton": token, "script": t["script"]}
+        task = {"retour": f"{retour.rstrip('/')}/{wid}", "jeton": token, "script": t["script"]}
+        if t.get("tache_par_le_reseau"):
+            # La tâche (et, pour Sentinel, la paire de clés Copernicus dédiée aux travailleurs) est remise une seule
+            # fois par le réseau privé, au travailleur qui présente le jeton (backend/travailleurs.py) : rien de
+            # secret dans le cloud-init, ni dans un journal, ni en base
+            task["tache_par_le_reseau"] = True
+        else:
+            task = {**parametres, **task}
         script = (ROOT / t["script"]).read_text()
         r = provision(scw, zone, f"mars-travailleur-{wid}", t, [TAG, f"run-{wid}", f"tache-{tache}"], pn,
                       lambda mac: cloud_init(script, task, env, t["image"], mac, t.get("docker_opts", "")),

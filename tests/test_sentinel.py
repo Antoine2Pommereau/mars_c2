@@ -75,18 +75,21 @@ def test_scenes_are_kept_only_when_they_cover_a_point_of_interest():
     assert S.pick_scenes(scenes, pts[1:], 1_000) == []
 
 
-def test_signed_urls_never_carry_the_secret(monkeypatch):
-    monkeypatch.setenv("CDSE_ACCESS_KEY", "CLEPUBLIQUE")
-    monkeypatch.setenv("CDSE_SECRET_KEY", "secretdecopernicus")
-    sc = {"vv": "s3://eodata/Sentinel-1/SAR/IW_GRDH_1S-COG/2026/10/10/X_COG.SAFE/measurement/s1c-iw-grd-vv-1-cog.tiff",
-          "vh": "s3://eodata/Sentinel-1/SAR/IW_GRDH_1S-COG/2026/10/10/X_COG.SAFE/measurement/s1c-iw-grd-vh-1-cog.tiff"}
-    urls = S.signed_urls(sc, now=datetime(2026, 10, 11, 12, tzinfo=timezone.utc))
-    assert urls["vv"].startswith("https://eodata.dataspace.copernicus.eu/eodata/Sentinel-1/SAR/")
-    assert "secretdecopernicus" not in urls["vv"] + urls["vh"]
-    assert "%2Fdefault%2Fs3%2Faws4_request" in urls["vv"] and "X-Amz-Expires=10800" in urls["vv"]
-    monkeypatch.delenv("CDSE_SECRET_KEY")
-    with pytest.raises(RuntimeError, match="CDSE_SECRET_KEY"):
-        S.signed_urls(sc)
+def test_copernicus_read_is_signed_in_headers_never_in_the_address(monkeypatch):
+    """Copernicus refuse les adresses présignées (14/10/2026) : la lecture d'essai signe par en tête, avec la paire
+    demandée ; l'adresse ne porte aucune signature."""
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "CLETRAVAILLEUR")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "secretdutravailleur")
+    stac = FakeStac([])
+    href = "s3://eodata/Sentinel-1/SAR/IW_GRDH_1S-COG/2026/10/10/X_COG.SAFE/measurement/s1c-iw-grd-vv-1-cog.tiff"
+    assert S.check_cdse(stac, href, S.TRAVAILLEUR) is None
+    url, headers = stac.lectures[0], stac.entetes[0]
+    assert url == "https://eodata.dataspace.copernicus.eu/eodata/Sentinel-1/SAR/IW_GRDH_1S-COG/2026/10/10/X_COG.SAFE/measurement/s1c-iw-grd-vv-1-cog.tiff"
+    assert "X-Amz-Signature" not in url and "?" not in url
+    assert headers["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=CLETRAVAILLEUR/")
+    assert headers["Range"] == "bytes=0-15" and "secretdutravailleur" not in json.dumps(headers)
+    monkeypatch.delenv("CDSE_TRAVAILLEUR_SECRET_KEY")
+    assert "CDSE_TRAVAILLEUR_SECRET_KEY" in S.check_cdse(stac, href, S.TRAVAILLEUR)
 
 
 def test_catalogue_item_becomes_a_scene():
@@ -99,7 +102,7 @@ def test_catalogue_item_becomes_a_scene():
 
 def test_worker_checks_its_downloads_and_reads_headings():
     w = _worker()
-    with pytest.raises(w.Arret, match="adresse signée expirée"):
+    with pytest.raises(w.Arret, match="clés dédiées aux travailleurs"):
         w.check_download(403, "application/xml", b"<Error>")
     with pytest.raises(w.FichierInvalide, match="réponse inattendue"):
         w.check_download(200, "text/html", b"<html>")
@@ -245,11 +248,12 @@ class FakeStac:
     """Faux catalogue Copernicus : les scènes données, quel que soit le passage demandé."""
 
     def __init__(self, scenes, cdse=206):
-        self.scenes, self.calls, self.cdse, self.lectures = scenes, 0, cdse, []
+        self.scenes, self.calls, self.cdse, self.lectures, self.entetes = scenes, 0, cdse, [], []
 
-    def get(self, url, **_kw):
-        """Lecture d'essai des clés Copernicus (16 octets d'une image signée)."""
+    def get(self, url, headers=None, **_kw):
+        """Lecture d'essai des clés Copernicus (16 octets d'une image, signature par en tête)."""
         self.lectures.append(url)
+        self.entetes.append(headers or {})
         code = self.cdse
 
         class R:
@@ -348,8 +352,8 @@ def test_selection_launch_and_results_end_to_end(conn, monkeypatch):
     assert [s["id"] for s in p["passages"][0]["scenes"]] == ["S1C_IW_GRDH_1SDV_A_COG"]
     assert p["passages"][0]["points"][0]["motif"] == "corridor_liste"
 
-    monkeypatch.setenv("CDSE_ACCESS_KEY", "k")
-    monkeypatch.setenv("CDSE_SECRET_KEY", "s")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
     launched = []
 
     def fake_launch(c, _scw, _rules, tache, params, env, **_kw):
@@ -362,8 +366,9 @@ def test_selection_launch_and_results_end_to_end(conn, monkeypatch):
     r = sentinel.launch(conn, None, RULES, now, stac)
     assert r["scenes"] == 1 and r["scenes_ecartees_par_le_plafond"] == 0
     tache, params, env = launched[0]
-    assert tache == "sentinel" and env == {} and "s3://" not in json.dumps(params)    # adresses signées, aucune clé
-    assert params["scenes"][0]["vv"].startswith("https://eodata.dataspace.copernicus.eu/")
+    assert tache == "sentinel" and env == {}                                          # aucune clé transmise ici
+    assert "\"k\"" not in json.dumps(params) and "\"s\"" not in json.dumps(params)     # ni dans la tâche
+    assert params["scenes"][0]["vv"].startswith("s3://eodata/")                        # chemins S3, lus par le travailleur
     aid = r["analyses"][0]
     # Le même passage n'est plus proposé ; un second lancement ne trouve rien
     assert sentinel.plan(conn, stac, RULES, now)["passages"] == []
@@ -417,8 +422,8 @@ def test_daily_cap_refuses_clearly(conn, monkeypatch):
                  (conn.execute("INSERT INTO sar_passes (product_name, acquired_at, mission, satellite) VALUES "
                                "('S1C_OR9998', %s, 'S1', 'S1C') RETURNING id", (t0 - timedelta(days=1),)).fetchone()[0],
                   now - timedelta(hours=1)))
-    monkeypatch.setenv("CDSE_ACCESS_KEY", "k")
-    monkeypatch.setenv("CDSE_SECRET_KEY", "s")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
     stac = FakeStac([{"id": "S1C_A", "debut": t0.isoformat(), "fin": (t0 + timedelta(seconds=25)).isoformat(),
                       "emprise": SQUARE}])
     r = sentinel.launch(conn, None, RULES, now, stac)
@@ -434,12 +439,12 @@ def test_copernicus_keys_are_checked_before_any_scaleway_call(conn, monkeypatch)
     from mars import sentinel, travailleurs
     now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
     pid, _ids, t0 = _setup(conn, now)
-    monkeypatch.setenv("CDSE_ACCESS_KEY", "k")
-    monkeypatch.setenv("CDSE_SECRET_KEY", "s")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
     monkeypatch.setattr(travailleurs, "launch", lambda *_a, **_k: pytest.fail("Scaleway appelé avec des clés refusées"))
     stac = FakeStac([_scene(t0)], cdse=403)
     r = sentinel.launch(conn, None, RULES, now, stac)
-    assert r["refus"].startswith("clés Copernicus refusées (HTTP 403)")
+    assert r["refus"].startswith("clés Copernicus dédiées aux travailleurs refusées (HTTP 403)")
     assert stac.lectures and stac.lectures[0].startswith("https://eodata.dataspace.copernicus.eu/")
     assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0
 
@@ -451,8 +456,8 @@ def test_launch_failure_without_instance_waits_a_day_without_blocking_the_pass(c
     from mars import sentinel, travailleurs
     now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
     pid, _ids, t0 = _setup(conn, now)
-    monkeypatch.setenv("CDSE_ACCESS_KEY", "k")
-    monkeypatch.setenv("CDSE_SECRET_KEY", "s")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
     stac = FakeStac([_scene(t0)])
 
     def refused(c, *_a, **_k):
@@ -499,8 +504,8 @@ def test_versioned_rules_keep_sentinel_stopped(conn, monkeypatch):
     assert VERSIONNEES["sentinel"]["scenes_max_par_jour"] == 0
     now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
     pid, _ids, t0 = _setup(conn, now)
-    monkeypatch.setenv("CDSE_ACCESS_KEY", "k")
-    monkeypatch.setenv("CDSE_SECRET_KEY", "s")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
     monkeypatch.setattr(travailleurs, "launch", lambda *_a, **_k: pytest.fail("Scaleway appelé alors que Sentinel est arrêté"))
     r = sentinel.launch(conn, None, VERSIONNEES, now, FakeStac([_scene(t0)]))
     assert r["refus"].startswith("plafond de 0 scènes par jour")

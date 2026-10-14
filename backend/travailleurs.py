@@ -7,6 +7,8 @@
 """
 import hashlib
 import hmac
+import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -42,14 +44,53 @@ async def _check(c, wid: int, authorization: str | None, states=("cree", "demarr
     return w
 
 
+log = logging.getLogger("mars.travailleurs")
+
+# Clés remises par le réseau privé avec la tâche, par type de travailleur (lues dans le .env du serveur, jamais en base) :
+# Copernicus refuse les adresses présignées (14/10/2026), le travailleur Sentinel lit donc les images S3 lui même, avec
+# une paire qui lui est dédiée ; la paire du serveur (CDSE_ACCESS_KEY) ne quitte jamais le serveur
+IDENTIFIANTS = {"sentinel": ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY")}
+S3_COPERNICUS = "eodata.dataspace.copernicus.eu"
+
+
 @router.post("/api/travailleurs/{wid}/etat")
 async def worker_state(request: Request, wid: int, authorization: str | None = Header(None)):
     """Signe de vie : « reseau » (le script de démarrage a joint le serveur sur le réseau privé), puis « demarre »
-    (le script d'analyse commence). Le premier fixe demarre_le : le délai de démarrage est tenu."""
+    (le script d'analyse commence). Le premier fixe demarre_le : le délai de démarrage est tenu.
+
+    « tache » : remise de la tâche par le réseau privé (types `tache_par_le_reseau`, config/rules.yaml), même route
+    pour ne pas changer le relais nginx (web/nginx.conf, port 8090 : etat, resultats, journal). Une seule fois, au
+    travailleur qui présente le jeton de l'exécution ; avec la paire de clés dédiée de son type."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     async with request.app.state.pool.acquire() as c:
         await _check(c, wid, authorization)
+        if isinstance(body, dict) and body.get("etat") == "tache":
+            return await _deliver_task(c, wid)
         await c.execute("UPDATE travailleurs SET etat = 'demarre', demarre_le = coalesce(demarre_le, now()) WHERE id = $1", wid)
     return {"ok": True}
+
+
+async def _deliver_task(c, wid: int) -> dict:
+    """Tâche du travailleur (paramètres en base, sans secret) et, pour son type, la paire de clés lue dans le .env.
+    La remise est notée dans `mesures` (tache_remise_le) dans la même requête que sa vérification : une seconde demande
+    reçoit 409, même concurrente. Les clés ne sont ni écrites en base ni journalisées."""
+    tache = await c.fetchval("SELECT tache FROM travailleurs WHERE id = $1", wid)
+    names, creds = IDENTIFIANTS.get(tache), None
+    if names:
+        key, secret = ((os.environ.get(n) or "").strip() for n in names)
+        if not key or not secret:                       # rien n'est marqué remis : la demande peut être refaite
+            raise HTTPException(503, f"clés absentes du .env du serveur ({names[0]}, {names[1]})")
+        creds = {"endpoint": S3_COPERNICUS, "region": "default", "access_key": key, "secret_key": secret}
+    row = await c.fetchrow(
+        "UPDATE travailleurs SET mesures = coalesce(mesures, '{}'::jsonb) || jsonb_build_object('tache_remise_le', now()) "
+        "WHERE id = $1 AND NOT (coalesce(mesures, '{}'::jsonb) ? 'tache_remise_le') RETURNING parametres", wid)
+    if row is None:
+        raise HTTPException(409, "Tâche déjà remise")
+    log.warning("travailleur %s : tâche remise par le réseau privé%s", wid, " avec sa paire de clés" if creds else "")
+    return {**(row["parametres"] or {}), **({"identifiants": {"s3": creds}} if creds else {})}
 
 
 JOURNAL_MAX = 200_000
