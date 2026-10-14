@@ -448,12 +448,13 @@ Dockerfile, bibliothèques déclarées), à chaque `pytest`.
 ```zsh
 R=ghcr.io/antoine2pommereau
 TAG=$(git rev-parse --short HEAD)
-for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
-  docker tag "${R}/${i}:latest" "${R}/${i}:${TAG}"
-  docker push "${R}/${i}:latest"
-  docker push "${R}/${i}:${TAG}"
+scripts/verifier_images.sh && for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
+  docker tag "${R}/${i}:latest" "${R}/${i}:${TAG}" && docker push "${R}/${i}:latest" && docker push "${R}/${i}:${TAG}" || break
 done
 ```
+
+La vérification et la publication sont enchaînées par `&&` : une ligne `ÉCHEC` empêche tout envoi, et un envoi en
+échec arrête la boucle.
 
 Ne publier que les images qui changent est possible (retirer les autres de la liste), mais pas nécessaire : une
 couche déjà sur le registre n'est pas renvoyée.
@@ -499,10 +500,9 @@ parties modifiées, et la configuration (`config/rules.yaml`) est lue depuis le 
 cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git checkout main && git pull origin main
 touch .env
 DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.yml -f docker-compose.serveur.yml --profile direct build collector
-scripts/verifier_images.sh scripts
 R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
-docker tag "${R}/mars_c2-scripts:latest" "${R}/mars_c2-scripts:${TAG}"
-docker push "${R}/mars_c2-scripts:latest" && docker push "${R}/mars_c2-scripts:${TAG}"
+scripts/verifier_images.sh scripts && docker tag "${R}/mars_c2-scripts:latest" "${R}/mars_c2-scripts:${TAG}" \
+  && docker push "${R}/mars_c2-scripts:latest" && docker push "${R}/mars_c2-scripts:${TAG}"
 ```
 
 ```bash

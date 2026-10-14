@@ -611,5 +611,9 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   bibliothèque standard (signature AWS version 4 écrite à la main, identique à botocore, testé).
 * PostgreSQL 12 et plus déplie une sous requête `WITH` utilisée une fois : une géométrie lourde (union du trait de
   côte) y est recalculée pour chaque ligne. La marquer `MATERIALIZED` (cas de `find_gaps`, 68 s ramenées à 0,7 s).
+* `scripts/verifier_images.sh` : l'image PostGIS initialise sa base par un serveur temporaire qui n'ouvre que la
+  socket locale ; `pg_isready` sans `-h` le croit prêt et l'API se connecte pendant son arrêt (faux échec,
+  ConnectionRefused). Attendre en TCP (`pg_isready -h 127.0.0.1`). La publication s'enchaîne par `&&` après la
+  vérification.
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.

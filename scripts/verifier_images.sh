@@ -37,12 +37,17 @@ verifier_backend() {
   local image="$R/mars_c2-backend:$TAG"
   docker image inspect "$image" >/dev/null 2>&1 || echec "$image absente : la construire d'abord"
   docker network create "$RESEAU" >/dev/null
-  docker run -d --name "$BASE" --network "$RESEAU" -e POSTGRES_DB=mars -e POSTGRES_USER=mars \
-    -e POSTGRES_PASSWORD=mars postgis/postgis:16-3.4 >/dev/null
-  for _ in $(seq 1 60); do
-    docker exec "$BASE" pg_isready -U mars -d mars >/dev/null 2>&1 && break
+  docker run -d --name "$BASE" --platform "$PLATEFORME" --network "$RESEAU" -e POSTGRES_DB=mars \
+    -e POSTGRES_USER=mars -e POSTGRES_PASSWORD=mars postgis/postgis:16-3.4 >/dev/null
+  # Attente en TCP (-h 127.0.0.1) : pendant l'initialisation, l'image PostGIS démarre une base temporaire qui n'ouvre
+  # que la socket locale, puis l'arrête. pg_isready sans -h la voyait prête, et l'API se connectait pendant cet arrêt
+  # (ConnectionRefused, faux échec). La base définitive est la seule à écouter en TCP.
+  local prete=""
+  for _ in $(seq 1 90); do
+    if docker exec "$BASE" pg_isready -h 127.0.0.1 -U mars -d mars >/dev/null 2>&1; then prete=1; break; fi
     sleep 2
   done
+  [ -n "$prete" ] || { docker logs --tail 30 "$BASE"; echec "backend : la base de vérification ne répond pas en TCP après 3 minutes"; }
   docker run -d --name "$API" --platform "$PLATEFORME" --network "$RESEAU" -p 18765:8000 \
     -e DATABASE_URL="postgresql://mars:mars@$BASE:5432/mars" "$image" >/dev/null
   for _ in $(seq 1 90); do                   # émulation amd64 sur le Mac : démarrage lent
