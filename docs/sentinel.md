@@ -169,6 +169,18 @@ DEV1-M (disque local) juge selon quatre conditions confondues dans un seul messa
 Le chemin Block Storage `v1alpha1` (celui de la ligne de commande ; une `v1` existe aussi) répond. Reste à voir au
 premier essai : le nom du quota GPU dans l'API IAM (lisible ou non avec la clé du serveur).
 
+**Premier essai réel, 14/10/2026, passage 110 (travailleur 19)** : instance L4 créée, puis refusée à la relecture
+(« volume de démarrage de 0 Go, plus petit que l'image (20 Go) »). Même cause que pour l'image : pour un volume bloc
+(`sbs_volume`), l'API Instances renvoie `server.volumes["0"].size` à 0, la taille étant gérée par l'API Block Storage.
+Désormais, la vérification d'après création (`boot_problem`) lit la taille du volume bloc dans
+`/block/v1alpha1/zones/<zone>/volumes/<id>` ; si elle reste illisible, elle ne refuse pas sur la taille seule (image,
+démarrage local, présence et type du volume restent contrôlés). Les volumes locaux des DEV1-M gardent le contrôle
+d'origine. Testé avec la forme réelle des réponses (`tests/test_sentinel.py`). Coût de l'essai : 0,013 € (minimum
+facturé). Destruction : travailleur marqué détruit 0,4 s après l'échec, ce qui n'arrive que si Scaleway a accepté la
+suppression de l'instance et de chaque volume bloc (ou les dit déjà absents) ; le journal de l'essai ne nommait pas
+les volumes : il les nomme désormais (`volumes_bloc_supprimes`), et le diagnostic relit chaque volume enregistré dans
+l'API Block Storage pour le confirmer.
+
 ## Copernicus refuse les adresses présignées (constat du 14/10/2026)
 
 Conception initiale : le serveur signait des adresses de lecture valables 3 heures (signature dans la requête,
@@ -208,7 +220,9 @@ point, dans l'ordre du lancement : les deux paires de clés Copernicus (présent
 réseau privé dans le `.env`, API Instances en fr-par-2, **image GPU résolue avec sa fiche brute affichée**, disponibilité
 annoncée du L4-1-24G en fr-par-2, quota du L4 (API IAM ; « à vérifier » si la clé limitée au projet ne peut pas le lire),
 stockage bloc (lecture), ensembles de droits de la politique de la clé (si lisibles), réseau privé (régional, donc
-rattachable depuis fr-par-2). Chaque ligne dit PRÊT, MANQUE (à corriger) ou À VÉRIFIER (illisible avec cette clé : à
+rattachable depuis fr-par-2), puis lecture d'un volume bloc par l'API Block Storage (taille) et relecture des volumes
+bloc enregistrés pour les travailleurs Sentinel des 30 derniers jours (absents : supprimés ; encore présents : facturés,
+MANQUE). Chaque ligne dit PRÊT, MANQUE (à corriger) ou À VÉRIFIER (illisible avec cette clé : à
 contrôler dans la console) ; le plafond de scènes est donné pour information. La disponibilité du type d'instance est
 une réponse paginée (100 types par page, les GPU au delà de la première) : toutes les pages sont lues, et la réponse
 brute s'affiche si le type reste introuvable. Expiration des clés Copernicus : illisible avec les seules clés S3 (le

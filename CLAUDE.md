@@ -464,11 +464,11 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 153 réussis, 29 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 28 sans
+`python -m pytest tests` : 157 réussis, 30 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 29 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 181 réussis, 1 ignoré (remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 186 réussis, 1 ignoré (volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -579,6 +579,9 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * **Image d'AI2 pour Sentinel** (`sha-fafc6c3`) : Ubuntu 20.04, donc **Python 3.8** (pas de `str | None` hors
   annotations différées, pas de fusion de dictionnaires par `|`) ; son `main.py` passe à `detect_vessels` des arguments
   qu'elle n'accepte pas : appeler `prepare_scenes` puis `detect_vessels` (16 arguments) directement.
+* **Taille d'un volume bloc** : l'API Instances renvoie `size` 0 pour un volume `sbs_volume` (et pour l'instantané
+  `sbs_snapshot` de l'image) ; la taille se lit dans l'API Block Storage. Premier essai réel du 14/10/2026 (passage
+  110, travailleur 19) refusé pour « 0 Go » ; `boot_problem` la lit désormais là, sans refus si elle reste illisible.
 * **GPU L4 chez Scaleway** : pas de disque local, volume bloc (`sbs_volume`, image de type `instance_sbs`) ; `terminate`
   laisse le volume bloc (facturé) : extinction, suppression de l'instance, puis du volume par l'API Block Storage
   (droit BlockStorageFullAccess) ; volumes enregistrés en base dès la création.

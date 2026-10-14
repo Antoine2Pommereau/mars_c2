@@ -162,6 +162,20 @@ class Scaleway:
         return {"id": img["id"], "name": img.get("name"), "arch": img["arch"], "root_type": volume,
                 "root_size": size, "fiche": img}
 
+    def block_volume(self, zone: str, volume_id: str):
+        """Fiche d'un volume bloc (API Block Storage) ; None s'il n'existe pas (404). ScalewayError sinon."""
+        d = self._req("GET", f"/block/v1alpha1/zones/{zone}/volumes/{volume_id}")
+        return None if d is GONE else d
+
+    def block_volume_size(self, zone: str, volume_id: str) -> int:
+        """Taille d'un volume bloc lue dans l'API Block Storage (l'API Instances renvoie 0 pour un volume « sbs_volume »,
+        constaté au premier essai réel du 14/10/2026), 0 si illisible."""
+        try:
+            d = self.block_volume(zone, volume_id)
+        except ScalewayError:
+            return 0
+        return int((d or {}).get("size") or 0)
+
     def block_snapshot_size(self, zone: str, snapshot_id: str) -> int:
         """Taille d'un instantané du stockage bloc (API Block Storage), 0 si illisible."""
         try:
@@ -243,6 +257,8 @@ class Scaleway:
         if s is None:
             return {**out, "etat": "introuvable"}
         root = (s.get("volumes") or {}).get("0") or {}
+        if root.get("volume_type") == "sbs_volume" and root.get("id"):
+            root = {**root, "size": self.block_volume_size(zone, root["id"]) or root.get("size")}
         out.update({"etat": s.get("state"), "detail_etat": s.get("state_detail"), "type": s.get("commercial_type"),
                     "image": (s.get("image") or {}).get("name"), "image_id": (s.get("image") or {}).get("id"),
                     "demarrage": s.get("boot_type"),
@@ -403,9 +419,14 @@ def cloud_init(script: str, tache: dict, env: dict, image: str, mac: str, docker
             + "runcmd:\n  - [bash, /mars/demarrage.sh]\n")
 
 
-def boot_problem(server: dict | None, image: dict) -> str | None:
+def boot_problem(server: dict | None, image: dict, block_size=None) -> str | None:
     """Motif si l'instance relue ne démarrera pas sur l'image attendue, sinon None : image de l'instance, démarrage
-    sur disque local, volume racine présent, du type de l'image, au moins aussi grand que son volume racine."""
+    sur disque local, volume racine présent, du type de l'image, au moins aussi grand que son volume racine.
+
+    Volume bloc (« sbs_volume », GPU L4) : l'API Instances renvoie une taille 0, la taille étant gérée par l'API Block
+    Storage (premier essai réel du 14/10/2026, instance refusée pour « 0 Go »). Elle y est lue par `block_size(id)` ;
+    si elle reste illisible, pas de refus sur la taille seule (les autres contrôles tiennent). Disque local (DEV1-M) :
+    taille de la fiche de l'instance, contrôle inchangé."""
     if not server:
         return "instance introuvable après sa création"
     if (server.get("image") or {}).get("id") != image["id"]:
@@ -417,8 +438,13 @@ def boot_problem(server: dict | None, image: dict) -> str | None:
         return "aucun volume de démarrage"
     if root.get("volume_type") != image["root_type"]:
         return f"volume de démarrage {root.get('volume_type')}, attendu {image['root_type']}"
-    if int(root.get("size") or 0) < image["root_size"]:
-        return f"volume de démarrage de {int(root.get('size') or 0) / 1e9:.0f} Go, plus petit que l'image ({image['root_size'] / 1e9:.0f} Go)"
+    size = int(root.get("size") or 0)
+    if root.get("volume_type") == "sbs_volume":
+        size = (block_size(root["id"]) if block_size and root.get("id") else 0) or size
+        if not size:
+            return None
+    if size < image["root_size"]:
+        return f"volume de démarrage de {size / 1e9:.0f} Go, plus petit que l'image ({image['root_size'] / 1e9:.0f} Go)"
     return None
 
 
@@ -441,7 +467,7 @@ def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, privat
         raise ScalewayError(f"instance créée dans l'état « {s.get('state')} » au lieu de « stopped »")
     # Relecture : l'instance doit démarrer sur le disque local copié de l'image attendue (sinon « UEFI Interactive
     # Shell » à la console : aucun système amorçable, constaté au premier essai réel)
-    motif = boot_problem(scw.server(zone, s["id"]), image)
+    motif = boot_problem(scw.server(zone, s["id"]), image, lambda vid: scw.block_volume_size(zone, vid))
     if motif:
         raise ScalewayError(f"volume de démarrage incorrect : {motif}")
     nic = scw.attach_private_network(zone, s["id"], private_network_id, sleep=sleep)
@@ -539,6 +565,8 @@ def _journal(conn, w: dict, rules: dict):
     mesures = {**(w["mesures"] or {}), "minutes_instance": round(minutes, 1), "cout_estime_eur": euros}
     conn.execute("UPDATE travailleurs SET mesures = %s WHERE id = %s", (json.dumps(mesures), w["id"]))
     details = {"travailleur": w["id"], "type": w["commercial_type"], "etat": w["etat"], "erreur": w["erreur"], **mesures}
+    if w.get("volumes_bloc"):
+        details["volumes_bloc_supprimes"] = list(w["volumes_bloc"])        # journalisé une fois l'instance détruite
     conn.execute(
         "INSERT INTO task_runs (task, run_day, started_at, finished_at, status, details) VALUES (%s, %s, %s, now(), %s, %s)",
         (f"travailleur_{w['tache']}", w["cree_le"].date(), w["cree_le"], "ok" if w["etat"] == "termine" else "echec",

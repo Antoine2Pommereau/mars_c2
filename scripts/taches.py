@@ -393,7 +393,11 @@ def main():
     elif a.commande == "sentinel-diagnostic":            # lecture seule : Copernicus, puis Scaleway
         import requests
         from mars import diagnostic, travailleurs
-        lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env())
+        # Volumes bloc enregistrés des travailleurs Sentinel récents : chacun doit avoir été supprimé
+        recorded = conn.execute("SELECT id, volumes_bloc FROM travailleurs WHERE tache = 'sentinel' AND "
+                                "cardinality(volumes_bloc) > 0 AND cree_le > now() - interval '30 days' "
+                                "ORDER BY id").fetchall()
+        lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env(), recorded=recorded)
         print(diagnostic.report(lines))
         sys.exit(1 if any(s == diagnostic.MANQUE for s, _r, _d in lines) else 0)
     elif a.commande in ("sentinel", "sentinel-analyser"):

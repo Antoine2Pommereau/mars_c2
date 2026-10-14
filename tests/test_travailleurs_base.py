@@ -427,3 +427,15 @@ def test_a_sentinel_trial_before_the_viirs_night_is_not_refused(conn):
     _with_instance(conn, "sentinel", 1)                                         # deux sessions GPU déjà ce jour
     assert "travailleur" in T.launch(conn, FakeScw(), RULES, "sentinel", {"scenes": []}, {}, sleep=lambda _s: None)
     conn.execute("UPDATE travailleurs SET detruit_le = now() WHERE detruit_le IS NULL")     # verrous libérés
+
+
+def test_destruction_journal_names_the_deleted_block_volumes(conn):
+    """Le journal d'un travailleur GPU détruit dit quels volumes bloc ont été supprimés (vérification après le premier
+    essai réel du 14/10/2026, dont le journal ne les nommait pas)."""
+    wid = conn.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, etat, volumes_bloc, fini_le) "
+                       "VALUES ('sentinel', 'L4-1-24G', 'fr-par-2', 'h', 'echec', ARRAY['blk-19'], now()) "
+                       "RETURNING id").fetchone()[0]
+    T.supervise(conn, None, RULES, {}, log=lambda _m: None)
+    details = conn.execute("SELECT details FROM task_runs WHERE task = 'travailleur_sentinel' "
+                           "AND (details->>'travailleur')::int = %s", (wid,)).fetchone()[0]
+    assert details["volumes_bloc_supprimes"] == ["blk-19"]

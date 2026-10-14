@@ -427,6 +427,9 @@ def test_boot_problems_are_named():
     assert "rescue" in boot_problem({**ok, "boot_type": "rescue"}, img)
     assert "aucun volume" in boot_problem({**ok, "volumes": {}}, img)
     assert "plus petit" in boot_problem({**ok, "volumes": {"0": {"volume_type": "l_ssd", "size": 1_000_000}}}, img)
+    # Disque local (DEV1-M) : la taille de l'API Instances fait foi, l'API Block Storage n'est jamais consultée
+    assert "0 Go" in boot_problem({**ok, "volumes": {"0": {"volume_type": "l_ssd", "size": 0}}}, img,
+                                  lambda _v: 1 / 0)
 
 
 # Destruction : séquence de Scaleway selon l'état (essai réel du 08/10 : suppression refusée sur une instance éteinte

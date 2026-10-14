@@ -510,3 +510,79 @@ def test_versioned_rules_keep_sentinel_stopped(conn, monkeypatch):
     r = sentinel.launch(conn, None, VERSIONNEES, now, FakeStac([_scene(t0)]))
     assert r["refus"].startswith("plafond de 0 scènes par jour")
     assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0
+
+
+class GpuLaunchApi:
+    """Lancement d'un L4 avec la vraie forme des réponses (premier essai réel du 14/10/2026, passage 110) : fiche de
+    l'image avec un volume racine « sbs_snapshot » de taille 0, instance relue avec server.volumes["0"] de type
+    « sbs_volume » et de taille 0 ; la taille n'existe que dans l'API Block Storage. `block` : réponse pour le volume
+    (None : 404, illisible)."""
+    headers = {}
+
+    def __init__(self, block):
+        self.block, self.calls, self.state = block, [], "stopped"
+
+    def request(self, method, url, **_kw):
+        path = url.replace("https://api.scaleway.com", "").split("?")[0]
+        self.calls.append((method, path))
+        srv = {"id": "gpu", "name": "mars-travailleur-19", "project": "p", "state": self.state, "boot_type": "local",
+               "commercial_type": "L4-1-24G", "image": {"id": "gpuos", "name": "Ubuntu Noble GPU OS 13"},
+               "volumes": {"0": {"id": "blk", "volume_type": "sbs_volume", "size": 0, "state": "available",
+                                 "zone": "fr-par-2"}}}
+        if "/marketplace/" in path:
+            return _Resp(200, {"local_images": [{"id": "gpuos", "arch": "x86_64", "type": "instance_sbs",
+                                                 "compatible_commercial_types": ["L4-1-24G"]}]})
+        if path == "/instance/v1/zones/fr-par-2/images/gpuos":
+            return _Resp(200, {"image": {"id": "gpuos", "name": "Ubuntu Noble GPU OS 13", "arch": "x86_64",
+                                         "root_volume": {"id": "snap", "volume_type": "sbs_snapshot", "size": 0}}})
+        if path == "/block/v1alpha1/zones/fr-par-2/snapshots/snap":
+            return _Resp(200, {"id": "snap", "size": 20_000_000_000})
+        if path == "/block/v1alpha1/zones/fr-par-2/volumes/blk":
+            return _Resp(404) if self.block is None else _Resp(200, self.block)
+        if method == "POST" and path == "/instance/v1/zones/fr-par-2/servers":
+            return _Resp(201, {"server": srv})
+        if method == "GET" and path == "/instance/v1/zones/fr-par-2/servers/gpu":
+            return _Resp(200, {"server": srv})
+        if path.endswith("/private_nics"):
+            return _Resp(201, {"private_nic": {"id": "nic", "state": "available", "mac_address": "02:00:00:00:00:19",
+                                               "private_network_id": "pn"}})
+        if path.endswith("/cloud-init"):
+            return _Resp(204)
+        if path.endswith("/action"):
+            self.state = "running"
+            return _Resp(202, {})
+        raise AssertionError(f"appel inattendu {method} {path}")
+
+
+def _launch_gpu(api):
+    from mars.config import load_rules
+    from mars.travailleurs import provision, type_params
+    t = type_params(load_rules(), "sentinel")
+    return provision(Scaleway("cle", "p", session=api, protected=set()), "fr-par-2", "mars-travailleur-19", t,
+                     ["mars-c2-travailleur"], "pn", lambda _mac: "x", sleep=lambda _s: None)
+
+
+def test_gpu_boot_volume_size_is_read_from_block_storage():
+    """Taille 0 dans l'API Instances, 20 Go dans l'API Block Storage : l'instance démarre (refusée le 14/10/2026)."""
+    api = GpuLaunchApi({"id": "blk", "size": 20_000_000_000, "status": "in_use", "type": "sbs_5k"})
+    assert _launch_gpu(api)["server_id"] == "gpu"
+    assert ("GET", "/block/v1alpha1/zones/fr-par-2/volumes/blk") in api.calls
+    assert ("POST", "/instance/v1/zones/fr-par-2/servers/gpu/action") in api.calls
+
+
+def test_gpu_boot_volume_unreadable_size_is_not_a_refusal_but_a_small_one_is():
+    from mars.travailleurs import ScalewayError
+    assert _launch_gpu(GpuLaunchApi(None))["server_id"] == "gpu"          # illisible : pas de refus sur la taille seule
+    with pytest.raises(ScalewayError, match="volume de démarrage de 5 Go, plus petit que l'image \\(20 Go\\)"):
+        _launch_gpu(GpuLaunchApi({"id": "blk", "size": 5_000_000_000}))
+
+
+def test_gpu_boot_other_checks_still_hold():
+    from mars.travailleurs import boot_problem
+    img = {"id": "gpuos", "name": "GPU OS", "root_type": "sbs_volume", "root_size": 20_000_000_000}
+    srv = {"image": {"id": "gpuos"}, "boot_type": "local",
+           "volumes": {"0": {"id": "blk", "volume_type": "sbs_volume", "size": 0}}}
+    assert boot_problem(srv, img, lambda _v: 0) is None
+    assert "image de l'instance autre" in boot_problem({**srv, "image": {"id": "autre"}}, img, lambda _v: 0)
+    assert "aucun volume" in boot_problem({**srv, "volumes": {}}, img, lambda _v: 0)
+    assert "attendu sbs_volume" in boot_problem({**srv, "volumes": {"0": {"id": "x", "volume_type": "l_ssd"}}}, img)

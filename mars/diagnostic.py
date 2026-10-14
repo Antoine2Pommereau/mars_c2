@@ -212,6 +212,41 @@ def _rights(scw, zone: str) -> list[tuple[str, str, str]]:
                   (PRET, "Droits de la clé", ", ".join(DROITS))]
 
 
+def block_volumes(scw, rules: dict, recorded: list | None = None) -> list[tuple[str, str, str]]:
+    """Volumes bloc par l'API Block Storage. L'API Instances donne une taille 0 pour un volume « sbs_volume » (premier
+    essai réel du 14/10/2026) : la vérification du lancement lit la taille ici. `recorded` : [(travailleur, [volumes])]
+    enregistrés en base pour les travailleurs Sentinel récents ; chacun doit être supprimé (404 à la relecture), sinon il
+    est facturé."""
+    from mars.travailleurs import type_params
+    if scw is None:
+        return []
+    t = type_params(rules, "sentinel")
+    zone = t.get("zone", rules["travailleurs"]["zone"])
+    out, rubrique = [], "Lecture d'un volume bloc"
+    code, body = _get(scw, f"/block/v1alpha1/zones/{zone}/volumes?project_id={scw.project}&page_size=1")
+    vols = body.get("volumes", []) if code == 200 and isinstance(body, dict) else []
+    if vols:
+        c2, v = _get(scw, f"/block/v1alpha1/zones/{zone}/volumes/{vols[0]['id']}")
+        size = int(v.get("size") or 0) if c2 == 200 and isinstance(v, dict) else 0
+        out.append((PRET, rubrique, f"volume {vols[0]['id']} : {size / 1e9:.0f} Go lus par l'API Block Storage") if size
+                   else (A_VERIFIER, rubrique, f"taille illisible (HTTP {c2}) : le lancement ne refusera pas sur la "
+                                               "taille seule"))
+    elif code == 200:
+        out.append((PRET, rubrique, f"aucun volume bloc en {zone} ; route de lecture autorisée (taille lue au lancement)"))
+    for wid, ids in recorded or []:
+        for vid in ids or []:
+            c2, v = _get(scw, f"/block/v1alpha1/zones/{zone}/volumes/{vid}")
+            r = f"Volume bloc du travailleur {wid}"
+            if c2 == 404:
+                out.append((PRET, r, f"{vid} supprimé (absent de l'API Block Storage)"))
+            elif c2 == 200 and isinstance(v, dict):
+                out.append((MANQUE, r, f"{vid} encore présent ({int(v.get('size') or 0) / 1e9:.0f} Go, état "
+                                       f"{v.get('status')}) : facturé, à supprimer dans la console"))
+            else:
+                out.append((A_VERIFIER, r, f"{vid} illisible (HTTP {c2})"))
+    return out
+
+
 def config(rules: dict) -> list[tuple[str, str, str]]:
     s = rules["sentinel"]
     if s["scenes_max_par_jour"] <= 0:
@@ -220,10 +255,12 @@ def config(rules: dict) -> list[tuple[str, str, str]]:
     return [(INFO, "Plafond de scènes", f"{s['scenes_max_par_jour']} par jour, budget {s['budget_mensuel_eur']} €")]
 
 
-def run(rules: dict, session, scw, now: datetime | None = None, show=print) -> list[tuple[str, str, str]]:
+def run(rules: dict, session, scw, now: datetime | None = None, show=print,
+        recorded: list | None = None) -> list[tuple[str, str, str]]:
     now = now or datetime.now(timezone.utc)
     lines = copernicus(session, now)
     lines += scaleway(scw, rules, show)
+    lines += block_volumes(scw, rules, recorded)
     lines += config(rules)
     return lines
 

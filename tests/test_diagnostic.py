@@ -173,3 +173,26 @@ def test_key_expiry_when_reported_in_env(monkeypatch):
     lines, _ = _run(ScalewayApi())
     assert lines["Expiration des clés dédiées aux travailleurs"][0] == D.A_VERIFIER
     assert lines["Expiration des clés du serveur"][0] == D.INFO
+
+
+def test_block_volumes_are_read_through_block_storage(monkeypatch):
+    """Premier essai réel du 14/10/2026 : l'API Instances donne une taille 0 pour un volume bloc. Le diagnostic lit un
+    volume par l'API Block Storage, et relit ceux enregistrés pour les travailleurs Sentinel (supprimés : 404)."""
+    _env(monkeypatch)
+    lines, _ = _run(ScalewayApi())
+    assert lines["Lecture d'un volume bloc"][0] == D.PRET and "aucun volume bloc" in lines["Lecture d'un volume bloc"][1]
+    api = ScalewayApi(**{"/block/v1alpha1/zones/fr-par-2/volumes": (200, {"volumes": [{"id": "v1"}]}),
+                         "/block/v1alpha1/zones/fr-par-2/volumes/v1": (200, {"id": "v1", "size": 20_000_000_000}),
+                         "/block/v1alpha1/zones/fr-par-2/volumes/reste": (200, {"id": "reste", "size": 20_000_000_000,
+                                                                                "status": "available"})})
+    shown = []
+    out = D.run(RULES, Copernicus(), Scaleway("cle", "p", session=api, protected=set()), NOW, shown.append,
+                recorded=[(19, ["parti"]), (20, ["reste"])])
+    lines = {r: (s, d) for s, r, d in out}
+    assert lines["Lecture d'un volume bloc"] == (D.PRET, "volume v1 : 20 Go lus par l'API Block Storage")
+    assert lines["Volume bloc du travailleur 19"] == (D.PRET, "parti supprimé (absent de l'API Block Storage)")
+    assert lines["Volume bloc du travailleur 20"][0] == D.MANQUE and "facturé" in lines["Volume bloc du travailleur 20"][1]
+    api = ScalewayApi(**{"/block/v1alpha1/zones/fr-par-2/volumes": (200, {"volumes": [{"id": "v1"}]}),
+                         "/block/v1alpha1/zones/fr-par-2/volumes/v1": (200, {"id": "v1", "size": 0})})
+    lines, _ = _run(api)
+    assert lines["Lecture d'un volume bloc"][0] == D.A_VERIFIER
