@@ -45,8 +45,12 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-SRC = "/home/vessel_detection/src"
-sys.path.insert(0, SRC)
+# Le code d'AI2 importe tout sous la forme src.* (src.data.retrieve, src.models…) : c'est la racine
+# /home/vessel_detection qui doit être sur sys.path, pas .../src (second essai réel du 14/10/2026 : « No module named
+# 'src' » ; le main.py de l'image, qui importe data.image, échoue de la même façon)
+AI2 = "/home/vessel_detection"
+SRC = f"{AI2}/src"
+sys.path.insert(0, AI2)
 DETECTEUR = f"{SRC}/model_artifacts/frcnn_cmp2/3dff445"
 ATTRIBUTS = f"{SRC}/model_artifacts/attr/c34aa37"
 TIFF = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")        # TIFF et BigTIFF, petit ou grand boutiste
@@ -280,9 +284,21 @@ def vignette(radar: Radar, lon: float, lat: float, km: float, legend: dict) -> t
     return buf.getvalue(), geo
 
 
+def ai2():
+    """Chaîne d'AI2 (prepare_scenes, detect_vessels), importée sous la forme src.*. Un import en échec est une cause
+    commune à toutes les scènes : arrêt avant tout téléchargement."""
+    try:
+        from src.data.image import prepare_scenes
+        from src.inference.pipeline import detect_vessels
+    except Exception as e:
+        raise Arret(f"chaîne d'AI2 non importable ({type(e).__name__}: {e})")
+    return prepare_scenes, detect_vessels
+
+
 def preflight(force_cpu: bool = False):
-    """GPU disponible et poids des modèles présents dans l'image (sinon, arrêt avec la cause)."""
+    """Chaîne d'AI2 importable, poids des modèles présents dans l'image, GPU disponible (sinon, arrêt avec la cause)."""
     import torch
+    ai2()
     for d in (DETECTEUR, ATTRIBUTS):
         w = os.path.join(d, "best.pth")
         if not os.path.exists(w) or os.path.getsize(w) < POIDS_MIN:
@@ -301,8 +317,7 @@ def preflight(force_cpu: bool = False):
 
 def analyse(scene: dict, task: dict, device, tmp: str, local: bool) -> dict:
     import torch
-    from data.image import prepare_scenes
-    from inference.pipeline import detect_vessels
+    prepare_scenes, detect_vessels = ai2()
     scene_id = scene["id"] if scene["id"].endswith(".SAFE") else scene["id"] + ".SAFE"
     raw = os.path.join(tmp, "raw")
     mdir = os.path.join(raw, scene_id, "measurement")
@@ -328,8 +343,11 @@ def analyse(scene: dict, task: dict, device, tmp: str, local: bool) -> dict:
     os.makedirs(out, exist_ok=True)
     cat_path, base_path = os.path.join(scratch, scene_id + "_cat.npy"), os.path.join(scratch, scene_id + "_base.tif")
     prepare_scenes(raw, scratch, scene_id, None, None, "sentinel1", cat_path, base_path, device, DETECTEUR, ATTRIBUTS)
+    # nms_thresh : annoncé float mais utilisé en division entière par la grille de la chaîne d'AI2 (range) ; un décimal
+    # la fait échouer (« 'float' object cannot be interpreted as an integer », essai dans l'image du 15/10/2026)
     detect_vessels(DETECTEUR, ATTRIBUTS, raw, scene_id, cat_path, base_path, out, 2048, 400, 20,
-                   float(task.get("confiance", 0.9)), float(task.get("nms_m", 10)), False, device, "sentinel1", False)
+                   float(task.get("confiance", 0.9)), int(round(float(task.get("nms_m", 10)))), False, device,
+                   "sentinel1", None)
     r["analyse_s"] = round(time.time() - t, 1)
     if device.type == "cuda":
         r["gpu_max_mo"] = round(torch.cuda.max_memory_allocated() / 2 ** 20)
@@ -395,6 +413,10 @@ def run(task: dict, local: bool = False) -> dict:
                                          "telecharge_mo": round(octets, 1), **gpu}}
     if stop:
         result["erreur"] = stop
+    elif out and all(sc.get("erreur") for sc in out):
+        # Aucune scène n'a abouti : l'exécution est un échec, avec le motif de la première (essai du 14/10/2026, fini
+        # en « code 0 » et compté comme terminé alors que son unique scène avait échoué)
+        result["erreur"] = f"aucune scène analysée sur {len(out)} : {out[0]['erreur']}"[:500]
     return result
 
 

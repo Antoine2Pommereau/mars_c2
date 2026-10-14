@@ -8,8 +8,13 @@
 #   scripts : chaque point d'entrée (taches, collecte, ingestion, listes, masques, mesures) s'importe, et
 #             taches.py --help répond ;
 #   web     : nginx démarre et sert la page.
+# Facultatif, jamais par défaut (image publique d'AI2 de 5 Go, téléchargée au besoin) :
+#   ai2         : le script du travailleur Sentinel importe la chaîne d'AI2 dans la vraie image épinglée
+#                 (config/rules.yaml), en linux/amd64, sans GPU (une minute) ;
+#   ai2-complet : analyse complète sur CPU d'une scène synthétique, quatre cibles à retrouver (environ 7 minutes).
+#   Ajouté après le second essai réel du 14/10/2026 (« No module named 'src' »).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web]   (sans argument : les trois)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -97,12 +102,36 @@ verifier_web() {
   echec "web : la page n'est pas servie"
 }
 
+verifier_ai2() {
+  local mode=$1 image
+  image=$(grep -o 'ghcr.io/allenai/vessel-detection-sentinels@sha256:[0-9a-f]*' config/rules.yaml | head -1)
+  [ -n "$image" ] || echec "ai2 : image d'AI2 introuvable dans config/rules.yaml"
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    echo "        téléchargement de l'image d'AI2 (5 Go) : $image"
+    docker pull -q --platform "$PLATEFORME" "$image" >/dev/null || echec "ai2 : image $image non téléchargée"
+  fi
+  # Lancé comme sur le travailleur (travailleurs/demarrage.sh) : script monté en lecture seule dans /mars
+  local sortie code=0
+  sortie=$(mktemp)
+  docker run --rm --platform "$PLATEFORME" --shm-size=2g -v "$PWD/travailleurs:/mars:ro" --entrypoint python3 \
+    "$image" /mars/essai_ai2.py $mode >"$sortie" 2>&1 || code=$?
+  grep -E '^(OK|ÉCHEC|        )' "$sortie" || true
+  if [ "$code" -ne 0 ]; then
+    grep -vE 'Warning|warn\(' "$sortie" | tail -30
+    rm -f "$sortie"
+    echec "ai2 : essai du script du travailleur Sentinel en échec (code $code, trace ci dessus)"
+  fi
+  rm -f "$sortie"
+}
+
 for cible in "${CIBLES[@]}"; do
   case "$cible" in
     backend) verifier_backend ;;
     scripts) verifier_scripts ;;
     web)     verifier_web ;;
-    *)       echec "cible inconnue : $cible (backend, scripts ou web)" ;;
+    ai2)     verifier_ai2 --imports ;;
+    ai2-complet) verifier_ai2 "" ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2 ou ai2-complet)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."

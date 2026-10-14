@@ -233,6 +233,28 @@ travailleurs, qui est surveillée, simple information pour celle du serveur). Un
 arrête aussi tout lancement, avant Scaleway. Un refus de Copernicus donne son code S3 (`InvalidAccessKeyId`, `SignatureDoesNotMatch`…). Code de sortie non nul s'il manque quelque
 chose.
 
+## Second essai réel (14/10/2026, travailleur 20, passage 110, analyse 94)
+
+Tout a fonctionné jusqu'à l'analyse : instance L4 démarrée, réseau privé de fr-par-2 vers fr-par-1 joint, tâche et
+clés remises, image d'AI2 téléchargée en 113 s, GPU vu (NVIDIA L4, 22 563 Mo, CUDA 11.7, torch 1.13.1+cu117),
+préparation en 1,9 s, mémoire 1 437 Mo. Échec à l'import de la chaîne d'AI2 : « No module named 'src' ». Le code
+d'AI2 importe tout en `src.*` (`src.data.retrieve`, `src.models`…) ; le script mettait `/home/vessel_detection/src`
+sur `sys.path` et importait `data.image`. Corrigé : racine `/home/vessel_detection` sur `sys.path`, imports en
+`src.*`, faits dès la vérification préalable (un import cassé arrête le travailleur avant tout téléchargement).
+
+Le script est désormais éprouvé dans la vraie image épinglée, sur le Mac, en linux/amd64, sans GPU
+(`travailleurs/essai_ai2.py`, par `scripts/verifier_images.sh ai2` ou `ai2-complet`). Le premier essai complet a
+révélé un second défaut : `nms_thresh`, annoncé décimal, sert à une division entière dans la grille d'AI2 (« 'float'
+object cannot be interpreted as an integer ») ; il est passé en entier. Analyse complète d'une scène synthétique de
+2 560 pixels de côté (mer de l'Iroise, quatre navires injectés, images VV et VH en entiers 16 bits avec points
+d'appui) : 4 cibles sur 4 retrouvées à 3, 8, 20 et 22 m, scores de 0,89 à 0,96, vignettes de 18 Ko, 296 s et
+2,8 Go de mémoire sur CPU émulé. L'ancien script, dans le même essai, échoue avec l'erreur exacte du travailleur 20.
+
+Le travailleur avait fini en « code 0 » et l'exécution était comptée « terminée » alors que son unique scène avait
+échoué : quand aucune scène n'aboutit, le script déclare l'erreur (« aucune scène analysée sur N : motif »), et le
+serveur classe de lui même un tel résultat en échec (`failure`, pour un script plus ancien) ; le motif apparaît dans
+l'indicateur « Satellites ».
+
 ## Premier essai réel (passage choisi à la main)
 
 Seulement quand `sentinel-diagnostic` est entièrement au vert (aucune ligne MANQUE, et les lignes « à vérifier »

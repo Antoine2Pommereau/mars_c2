@@ -586,3 +586,46 @@ def test_gpu_boot_other_checks_still_hold():
     assert "image de l'instance autre" in boot_problem({**srv, "image": {"id": "autre"}}, img, lambda _v: 0)
     assert "aucun volume" in boot_problem({**srv, "volumes": {}}, img, lambda _v: 0)
     assert "attendu sbs_volume" in boot_problem({**srv, "volumes": {"0": {"id": "x", "volume_type": "l_ssd"}}}, img)
+
+
+def _scene_resultat(k):
+    return {"analyse": 94, "id": f"S1C_{k}", "debut": "2026-10-14T17:29:00Z", "fin": "2026-10-14T17:29:25Z"}
+
+
+def test_worker_with_no_scene_analysed_reports_a_failure(monkeypatch):
+    """Second essai réel du 14/10/2026 : l'unique scène échoue (ModuleNotFoundError) et le travailleur finit en
+    « code 0 », compté comme terminé. Aucune scène aboutie : erreur déclarée, avec le motif."""
+    w = _worker()
+    monkeypatch.setattr(w, "preflight", lambda **_kw: (None, {"gpu": "NVIDIA L4"}))
+
+    def boom(scene, *_a):
+        if scene["id"] == "S1C_ok":
+            return {**scene, "detections": []}
+        raise ValueError("lecture impossible")
+    monkeypatch.setattr(w, "analyse", boom)
+    res = w.run({"scenes": [_scene_resultat(1), _scene_resultat(2)]})
+    assert res["erreur"] == "aucune scène analysée sur 2 : ValueError: lecture impossible"
+    assert "erreur" not in w.run({"scenes": [_scene_resultat(1), _scene_resultat("ok")]})          # une scène aboutie : pas d'échec
+
+
+def test_server_classifies_a_result_without_any_analysed_scene_as_a_failure():
+    from mars.travailleurs import failure
+    old = {"scenes": [{**_scene_resultat(1), "erreur": "ModuleNotFoundError: No module named 'src'"}], "mesures": {}}
+    assert failure(old) == "aucune scène analysée sur 1 : ModuleNotFoundError: No module named 'src'"
+    assert failure({"scenes": [], "erreur": "GPU absent"}) == "GPU absent"
+    assert failure({"scenes": [old["scenes"][0], _scene_resultat(2)]}) is None
+    assert failure({"granules": [{"erreur": "x"}]}) is None                          # VIIRS : règle inchangée
+
+
+def test_worker_imports_the_ai2_chain_as_src_modules():
+    """Le code d'AI2 importe tout en src.* : racine /home/vessel_detection sur sys.path, jamais .../src, et aucun import
+    « data. » ou « inference. » sans le préfixe (second essai réel du 14/10/2026). L'import réel dans l'image est
+    éprouvé par scripts/verifier_images.sh ai2."""
+    import re
+    src = (ROOT / "travailleurs" / "sentinel.py").read_text()
+    assert 'sys.path.insert(0, AI2)' in src and 'AI2 = "/home/vessel_detection"' in src
+    assert "sys.path.insert(0, SRC)" not in src
+    imports = re.findall(r"^\s*from (\S+) import", src, re.M)
+    assert not [m for m in imports if m.split(".")[0] in ("data", "inference", "models", "utils")], imports
+    assert {"src.data.image", "src.inference.pipeline"} <= set(imports)
+    assert "int(round(float(task.get(\"nms_m\"" in src                  # seuil entier pour la grille d'AI2

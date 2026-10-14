@@ -352,6 +352,17 @@ def _short(d: dict, n: int = 400) -> str:
     return json.dumps(d, ensure_ascii=False, default=str)[:n]
 
 
+def failure(res: dict) -> str | None:
+    """Motif d'échec d'un résultat de travailleur : son erreur déclarée, ou, s'il avait des scènes à traiter et qu'aucune
+    n'a abouti, celle de la première (un script plus ancien ne le déclarait pas : essai Sentinel du 14/10/2026)."""
+    if res.get("erreur"):
+        return res["erreur"]
+    scenes = res.get("scenes") or []
+    if scenes and all(sc.get("erreur") for sc in scenes):
+        return f"aucune scène analysée sur {len(scenes)} : {scenes[0]['erreur']}"
+    return None
+
+
 def type_params(rules: dict, tache: str) -> dict:
     p = rules["travailleurs"]
     t = dict(p["types"][tache])
@@ -598,7 +609,7 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
                     summary = handlers[w["tache"]](conn, w)
                     # Le travailleur peut s'être arrêté de lui même (données inaccessibles, licence…) : ce qu'il a
                     # traité est gardé, l'exécution est en échec avec son motif
-                    motif = (w["resultat"] or {}).get("erreur")
+                    motif = failure(w["resultat"] or {})
                     conn.execute("UPDATE travailleurs SET etat = %s, erreur = %s, fini_le = now(), resultat = NULL, "
                                  "mesures = mesures || %s WHERE id = %s",
                                  ("echec" if motif else "termine", motif and f"travailleur : {motif}"[:1000],

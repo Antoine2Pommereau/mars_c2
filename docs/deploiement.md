@@ -436,7 +436,12 @@ passaient depuis le dépôt. Le script démarre chaque image comme le serveur le
 
 ```zsh
 scripts/verifier_images.sh                     # les trois ; ou seulement celles qui changent : scripts/verifier_images.sh scripts
+scripts/verifier_images.sh ai2                 # facultatif : script du travailleur Sentinel dans l'image d'AI2 (5 Go)
+scripts/verifier_images.sh ai2-complet         # facultatif : analyse complète sur CPU d'une scène synthétique (5 min)
 ```
+
+À lancer avant tout essai réel quand `travailleurs/sentinel.py` change : `OK chaîne d'AI2 importée`, et pour
+`ai2-complet`, `OK analyse complète sur CPU : 4 cibles sur 4 retrouvées`.
 
 Ce qu'on doit lire : une ligne `OK` par image (`backend : l'API démarre et /api/health répond`, `scripts : points
 d'entrée chargés`, `web : nginx sert la page`), puis `Publication possible`. Une ligne `ÉCHEC` arrête tout, avec le
