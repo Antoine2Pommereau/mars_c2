@@ -3,7 +3,8 @@
 # lentes ou en erreur, décision prise une fois la trace complète), transform (filtre des données sensibles) et
 # file_storage (file d'attente sur disque) n'existent pas dans la distribution de base (docs/opentelemetry.md).
 #
-# Entrées : services du serveur par le réseau Docker (http://otel:4318) et 127.0.0.1:4318 sur l'hôte ; interface
+# Entrées : services du serveur par le réseau Docker (http://otel:4318) et 127.0.0.1:4318 sur l'hôte ; Grafana en
+# gRPC (otel:4317, réseau Docker seulement) ; interface
 # web par nginx (port 8080, /otel/v1/traces) ; travailleurs par nginx sur le réseau privé (port 8090, jeton vérifié
 # par l'API). Le collecteur n'écoute jamais sur une adresse publique.
 # Échantillonnage (seuils dans ce seul fichier) : tâches, collecte, ingestion et travailleurs à 100 % ; requêtes de
@@ -20,6 +21,9 @@ extensions:
 receivers:
   otlp:
     protocols:
+      # gRPC : Grafana seulement (son traceur n'exporte qu'en gRPC), sur le réseau Docker ; port non publié
+      grpc:
+        endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
         max_request_body_size: 4194304          # 4 Mo : un lot d'un travailleur, jamais plus

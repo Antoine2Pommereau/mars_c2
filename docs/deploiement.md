@@ -611,6 +611,20 @@ free -m                                                    # marge de mémoire d
 `recus` doit croître d'une ligne à l'autre ; `refuses` rester stable ; chaque tâche a un `trace_id` ; toutes les
 versions sont égales à l'empreinte publiée (indicateur « Version » vert dans la barre d'état).
 
+## Vue d'ensemble de Grafana (page d'accueil)
+
+Provisionnement seulement : aucune image à reconstruire ni à télécharger.
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose up -d grafana        # recrée Grafana : nouvelle page d'accueil et traces de Grafana (variables changées)
+docker compose restart otel         # relit otel/collecteur.yaml : récepteur gRPC des traces de Grafana
+```
+
+`docker compose restart grafana` ne suffit pas ici : il garde les anciennes variables d'environnement (page
+d'accueil, envoi des traces). Un lot qui ne touche que `grafana/provisioning` se déploie, lui, par
+`git pull && docker compose restart grafana`.
+
 ## Vérifier
 
 ```bash

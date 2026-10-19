@@ -96,7 +96,7 @@ Espace libre, taille de la base (`pg_database_size`), de la table des positions 
 `signes_de_vie` : collecte (dernier fichier écrit, relevé par taches), ingestion (dernier passage réussi et attente du
 plus ancien fichier, écrite par l'ingestion), taches.
 
-## Les cinq tableaux (six depuis l'étape D2, avec « Traces »)
+## Les tableaux (sept : la vue d'ensemble, les cinq de l'étape D, et « Traces » de l'étape D2)
 
 | Tableau | Contenu |
 |---|---|
@@ -111,6 +111,57 @@ d'ingestion, mesures, journal des tâches. Le registre d'ingestion ne garde que 
 archivées en sortent) : « Messages par minute » est donc limité à 48 h ; « Positions conservées par minute » et
 « Coupures du flux » couvrent 30 jours. L'incident du 18/10 y apparaît comme une coupure de 21,1 h (essai sur un
 historique synthétique de 30 jours).
+
+## Vue d'ensemble, page d'accueil de Grafana
+
+Tableau « Vue d'ensemble » (`mars-vue-ensemble`), ouvert d'office à la connexion
+(`GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`, docker-compose.serveur.yml) :
+
+* **six tuiles** : Collecte, Ingestion, Disque, Tâches, Satellites, Traces. Chaque requête calcule son niveau avec les
+  seuils des alertes, lus dans `parametres_supervision` (recopiés de `config/supervision.env` par taches) : rouge au
+  seuil de l'alerte, orange avant (moitié du délai pour la collecte et l'ingestion, 10 points au dessus du seuil pour
+  le disque, un échec sur 24 h pour les tâches, un travailleur en échec sur 24 h pour les satellites, plus de 100
+  lots en attente pour les traces), vert sinon, gris sans mesure. Valeur courte : fichier il y a N min, retard N min,
+  espace libre, échecs sur 24 h, dernière nuit VIIRS, spans reçus en 1 h. Un clic ouvre le tableau détaillé ;
+* **Dernières traces de bout en bout** : les 20 dernières analyses satellites tracées (travailleurs VIIRS et
+  Sentinel 1), date, durée totale (création à destruction de l'instance), statut, motif ; la colonne Trace ouvre la
+  trace dans Tempo, chronologie et vue Gantt des spans. Sans analyse : « aucune analyse satellite tracée depuis le
+  déploiement ». Une trace n'est gardée que 72 h : au delà, la ligne reste et le lien ne trouve plus rien.
+
+Grafana est lui même tracé (étape D2) : il envoie ses spans au collecteur en gRPC (`otel:4317`, réseau Docker
+seulement), échantillonnés comme l'API ; l'affichage d'un tableau et chacune de ses requêtes apparaissent sous le
+service `grafana` dans Tempo. Mesuré au repos le 19/10/2026 (Mac, émulation) : environ 330 spans par minute
+(évaluation des règles d'alerte chaque minute, sessions), soit environ 480 000 par jour reçus, dix fois le reste du
+système ; le collecteur en garde environ 10 %, plus les erreurs et les requêtes lentes : de l'ordre de 50 000 par
+jour, quelques Mo dans Tempo. S'il fallait alléger : `GF_TRACING_OPENTELEMETRY_SAMPLER_TYPE: probabilistic` et
+`SAMPLER_PARAM: "0.1"` (mais les requêtes lentes ou en erreur ne seraient plus toutes gardées).
+
+## Trace de démonstration à la demande
+
+```bash
+docker compose exec taches python scripts/taches.py viirs
+```
+
+La commande cherche les granules des trois dernières nuits terminées qui ne sont ni traitées ni en cours, puis confie
+celles qui restent à un travailleur éphémère (DEV1-M, facturée à l'heure entamée : environ 0,02 € HT).
+
+* **Une nuit reste à traiter** (entre 06:00 UTC, fin de la nuit, et 06:30, passage automatique ; ou une nuit
+  manquée) : trace complète en 10 à 15 minutes, du lancement à la destruction (étapes Scaleway, démarrage, 12
+  granules, renvoi, traitement des résultats, alertes).
+* **Toutes les nuits sont traitées** (cas habituel dans la journée) : rien n'est lancé, la commande répond
+  `{"nuits": …, "granules": 0}` ; sa trace ne contient que la recherche des granules auprès de la NASA (CMR), sans
+  travailleur, et n'apparaît donc pas dans « Dernières traces de bout en bout ».
+
+Pour une analyse Sentinel 1 choisie à la main : `taches.py sentinel-analyser ID` (GPU facturé à la minute, plafond
+et budget appliqués, `docs/sentinel.md`).
+
+Où la retrouver :
+* **Vue d'ensemble**, panneau « Dernières traces de bout en bout » : la ligne apparaît dès le lancement (statut
+  « créée », puis « en cours », « résultats reçus », « terminée ») ; clic sur la colonne Trace ;
+* **Traces**, panneau « Analyses satellites » (`{ name = "travailleur.lancement" }`), ou « Tâches » pour la seule
+  commande (`commande viirs`) ;
+* en ligne de commande : `docker compose exec taches python scripts/taches.py travailleurs` affiche l'identifiant de
+  trace de chaque travailleur ; à coller dans Explorer, source Tempo, requête TraceQL.
 
 ## Durée des requêtes
 

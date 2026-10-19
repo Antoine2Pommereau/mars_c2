@@ -1,7 +1,7 @@
 """Tableaux Grafana de MARS C2, écrits en code : ce script produit les fichiers JSON de
 grafana/provisioning/dashboards/mars (relus par Grafana au démarrage, jamais modifiés à la main).
 
-    python grafana/generer.py          # régénère les six tableaux ; tests/test_supervision.py vérifie qu'ils sont à jour
+    python grafana/generer.py          # régénère les sept tableaux ; tests/test_supervision.py vérifie qu'ils sont à jour
 
 Sobres et sombres, aux couleurs de MARS C2 : séries en gris et en bleu du signal système, la couleur n'est donnée qu'à
 ce qui demande l'attention (seuil franchi, échec, alerte). Requêtes sur des tables de statistiques et de mesures,
@@ -19,6 +19,7 @@ TEMPO = {"type": "tempo", "uid": "tempo"}
 
 
 def lien_trace(colonne: str = "${__value.raw}") -> str:
+    # Exploration Tempo sur l'identifiant de la trace : Grafana l'ouvre directement en vue Gantt (chronologie des spans)
     """Adresse de l'exploration Tempo pour un identifiant de trace (lien d'une cellule de tableau)."""
     pane = {"a": {"datasource": "tempo", "queries": [{"refId": "A", "datasource": TEMPO, "queryType": "traceql",
                                                          "query": "__TRACE__"}], "range": {"from": "now-3d", "to": "now"}}}
@@ -26,6 +27,7 @@ def lien_trace(colonne: str = "${__value.raw}") -> str:
             ).replace("__TRACE__", colonne)
 
 NEUTRE, CLAIR, SIGNAL = "#7c8b97", "#c2ccd3", "#4fb6c8"
+VERT, GRIS = "#3f8f62", "#4c5a66"                 # tuiles de la vue d'ensemble : vert éteint, gris sans mesure
 ROUGE, ORANGE, SOMBRE = "#ef6461", "#f0a84b", "#e85bc7"
 NUANCES = [SIGNAL, CLAIR, NEUTRE, "#5a6b78", "#9fb3c1", "#3f6b78"]
 TYPES = {"WATCHLIST": "#b48cf2", "IDENTITY_CHANGE": "#5fd3a5", "RENDEZVOUS": "#f0a84b", "AIS_GAP": "#ef6461",
@@ -101,11 +103,12 @@ class Tableau:
                      "tooltip": {"mode": "multi", "sort": "desc"}}, overrides)
 
     def table(self, titre: str, sql: str, w: int = 24, h: int = 8, description: str = "", etats: dict | None = None,
-              colonne_etat: str | None = None, unites: dict | None = None, trace: str | None = None):
+              colonne_etat: str | None = None, unites: dict | None = None, trace: str | None = None,
+              vide: str | None = None):
         overrides = []
         if trace:                                   # colonne de l'identifiant de trace : lien vers Tempo
             overrides.append({"matcher": {"id": "byName", "options": trace}, "properties": [
-                {"id": "links", "value": [{"title": "Ouvrir la trace dans Tempo", "url": lien_trace()}]},
+                {"id": "links", "value": [{"title": "Ouvrir la trace dans Tempo (vue Gantt)", "url": lien_trace()}]},
                 {"id": "custom.width", "value": 120}]})
         if etats and colonne_etat:
             overrides.append({"matcher": {"id": "byName", "options": colonne_etat}, "properties": [
@@ -116,8 +119,23 @@ class Tableau:
             overrides.append({"matcher": {"id": "byName", "options": col}, "properties": [{"id": "unit", "value": unite}]})
         self._panel("table", titre, sql, w, h, "table", description,
                     {"custom": {"align": "auto", "cellOptions": {"type": "auto"}}, "color": {"mode": "fixed",
-                                                                                           "fixedColor": CLAIR}},
+                                                                                           "fixedColor": CLAIR},
+                     **({"noValue": vide} if vide else {})},
                     {"showHeader": True, "cellHeight": "sm", "footer": {"show": False}}, overrides)
+
+    def tuile(self, titre: str, sql: str, tableau: str, description: str = ""):
+        """Tuile d'état de la vue d'ensemble. La requête renvoie une ligne : time, metric (texte court affiché) et
+        value (niveau calculé en SQL avec les seuils de parametres_supervision : 0 vert, 1 orange, 2 rouge, -1 sans
+        mesure) ; la couleur suit le niveau, le texte est le nom de la série. Un clic ouvre le tableau détaillé."""
+        d = {"color": {"mode": "thresholds"}, "noValue": "aucune mesure",
+             "thresholds": {"mode": "absolute", "steps": [{"value": None, "color": GRIS}, {"value": 0, "color": VERT},
+                                                          {"value": 1, "color": ORANGE}, {"value": 2, "color": ROUGE}]},
+             "links": [{"title": f"Ouvrir le tableau {tableau}", "url": f"/d/{TABLEAUX_UID[tableau]}?${{__url_time_range}}"}]}
+        self._panel("stat", titre, sql, 4, 5, "time_series", description, d,
+                    {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+                     "colorMode": "background_solid", "graphMode": "none", "textMode": "name",
+                     "justifyMode": "center", "wideLayout": True, "showPercentChange": False,
+                     "text": {"titleSize": 20, "valueSize": 20}})
 
     def tempo(self, titre: str, requete: str, w: int = 12, h: int = 9, description: str = "", spans: bool = False,
               metriques: bool = False, limite: int = 50):
@@ -449,7 +467,109 @@ def traces() -> Tableau:
     return t
 
 
-TABLEAUX = {"direct": direct, "disque": disque, "taches": taches, "satellites": satellites, "alertes": alertes,
+# Vue d'ensemble (page d'accueil de Grafana) : six tuiles d'état aux seuils des alertes, et les dernières analyses
+# satellites tracées de bout en bout
+
+TABLEAUX_UID = {"Direct": "mars-direct", "Disque et base": "mars-disque", "Tâches": "mars-taches",
+                "Satellites": "mars-satellites", "Traces": "mars-traces"}
+
+
+def _seuil(cle: str, defaut: float) -> str:
+    """Seuil de config/supervision.env, recopié par taches dans parametres_supervision (repli : valeur du fichier)."""
+    return f"coalesce((SELECT valeur FROM parametres_supervision WHERE cle = '{cle}'), {defaut})"
+
+
+def _minutes(m: str) -> str:
+    return f"greatest(round({m}), 0)::int || ' min'"
+
+
+TUILE_COLLECTE = f"""SELECT now() AS time,
+      CASE WHEN m IS NULL THEN 'aucun fichier relevé' ELSE 'Fichier il y a ' || {_minutes("m")} END AS metric,
+      CASE WHEN m IS NULL OR m > s THEN 2 WHEN m > s / 2 THEN 1 ELSE 0 END AS value
+    FROM (SELECT ({MINUTES_COLLECTE}) AS m, {_seuil("seuil_collecte_min", 5)} AS s) x"""
+TUILE_INGESTION = f"""SELECT now() AS time,
+      CASE WHEN m IS NULL THEN 'aucun passage relevé' ELSE 'Retard ' || {_minutes("m")} END AS metric,
+      CASE WHEN m IS NULL OR m > s THEN 2 WHEN m > s / 2 THEN 1 ELSE 0 END AS value
+    FROM (SELECT ({MINUTES_INGESTION}) AS m, {_seuil("seuil_ingestion_min", 10)} AS s) x"""
+TUILE_DISQUE = f"""SELECT now() AS time,
+      CASE WHEN pct IS NULL THEN 'aucune mesure'
+           ELSE round(pct)::int || ' % libres, ' || replace(round(go::numeric, 1)::text, '.', ',') || ' Go' END AS metric,
+      CASE WHEN pct IS NULL THEN -1 WHEN pct < s THEN 2 WHEN pct < s + 10 THEN 1 ELSE 0 END AS value
+    FROM (SELECT (SELECT libre_pct FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS pct,
+                 (SELECT libre_octets / 1e9 FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS go,
+                 {_seuil("seuil_disque_pct", 15)} AS s) x"""
+TUILE_TACHES = f"""SELECT now() AS time,
+      CASE n WHEN 0 THEN 'aucun échec sur 24 h' WHEN 1 THEN '1 échec sur 24 h' ELSE n || ' échecs sur 24 h' END AS metric,
+      CASE WHEN suite > 0 THEN 2 WHEN n > 0 THEN 1 ELSE 0 END AS value
+    FROM (SELECT (SELECT count(*) FROM task_runs WHERE status = 'echec' AND NOT (details ? 'refus')
+                  AND started_at > now() - interval '24 hours') AS n,
+                 (SELECT count(*) FROM (SELECT task, array_agg(status ORDER BY started_at DESC) AS st FROM task_runs
+                   WHERE started_at > now() - interval '7 days' AND status <> 'en_cours' AND NOT (details ? 'refus')
+                   GROUP BY task) t
+                  WHERE array_length(st, 1) >= {_seuil("seuil_echecs_successifs", 2)}::int
+                    AND st[1:{_seuil("seuil_echecs_successifs", 2)}::int] <@ ARRAY['echec']) AS suite) x"""
+TUILE_SATELLITES = f"""SELECT now() AS time,
+      CASE WHEN absente THEN 'Nuit du ' || to_char(veille, 'DD/MM') || ' absente'
+           WHEN nuit IS NULL THEN 'aucune nuit VIIRS traitée'
+           ELSE 'Nuit du ' || to_char(nuit, 'DD/MM') || ' traitée' END AS metric,
+      CASE WHEN absente THEN 2 WHEN nuit IS NULL THEN -1 WHEN echec THEN 1 ELSE 0 END AS value
+    FROM (SELECT (SELECT max(nuit) FROM viirs_granules WHERE traite_le IS NOT NULL) AS nuit,
+                 (now() AT TIME ZONE 'UTC')::date - 1 AS veille,
+                 extract(hour FROM now() AT TIME ZONE 'UTC') >= {_seuil("seuil_heure_nuit_viirs", 8)}
+                   AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1
+                                   AND traite_le IS NOT NULL) AS absente,
+                 EXISTS (SELECT 1 FROM travailleurs WHERE etat = 'echec' AND cree_le > now() - interval '24 hours')
+                   AS echec) x"""
+TUILE_TRACES = f"""SELECT now() AS time,
+      CASE WHEN NOT mesure THEN 'aucune mesure du collecteur'
+           ELSE replace(to_char(coalesce(recus, 0), 'FM999,999,990'), ',', ' ') || ' spans en 1 h' END AS metric,
+      CASE WHEN NOT mesure THEN -1
+           WHEN NOT joignable OR coalesce(muet, 1e9) > {_seuil("seuil_collecteur_muet_min", 15)} OR refus > 0 THEN 2
+           WHEN coalesce(file, 0) > 100 THEN 1 ELSE 0 END AS value
+    FROM (SELECT EXISTS (SELECT 1 FROM mesures_otel WHERE mesure_le > now() - interval '30 minutes') AS mesure,
+                 coalesce((SELECT joignable FROM mesures_otel ORDER BY mesure_le DESC LIMIT 1), false) AS joignable,
+                 (SELECT file_attente FROM mesures_otel ORDER BY mesure_le DESC LIMIT 1) AS file,
+                 (SELECT sum(greatest(recus - prec, 0)) FROM (SELECT mesure_le, recus,
+                         lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel
+                         WHERE mesure_le > now() - interval '61 minutes') d
+                   WHERE mesure_le > now() - interval '1 hour') AS recus,
+                 ({MINUTES_SANS_SPAN}) AS muet,
+                 ({REFUS_15_MIN}) AS refus) x"""
+DERNIERES_ANALYSES = """SELECT cree_le AS "Lancée le", CASE tache WHEN 'viirs' THEN 'VIIRS' WHEN 'sentinel' THEN 'Sentinel 1'
+           ELSE tache END AS "Analyse",
+           round(extract(epoch FROM coalesce(detruit_le, now()) - cree_le) / 60)::int || ' min' AS "Durée totale",
+           etat AS "Statut", left(coalesce(erreur, '·'), 140) AS "Motif", trace_id AS "Trace"
+    FROM travailleurs WHERE trace_id IS NOT NULL ORDER BY cree_le DESC LIMIT 20"""
+
+
+def vue_ensemble() -> Tableau:
+    t = Tableau("mars-vue-ensemble", "Vue d'ensemble", "État de la plateforme en un coup d'œil, et les dernières "
+                "analyses satellites tracées de bout en bout", de="now-24h")
+    t.tuile("Collecte", TUILE_COLLECTE, "Direct",
+            "Dernier fichier Parquet écrit. Rouge au seuil de l'alerte (SEUIL_COLLECTE_MIN), orange à sa moitié.")
+    t.tuile("Ingestion", TUILE_INGESTION, "Direct",
+            "Retard de l'ingestion. Rouge au seuil de l'alerte (SEUIL_INGESTION_MIN), orange à sa moitié.")
+    t.tuile("Disque", TUILE_DISQUE, "Disque et base",
+            "Espace libre. Rouge sous le seuil de l'alerte (SEUIL_DISQUE_LIBRE_PCT), orange jusqu'à 10 points au dessus.")
+    t.tuile("Tâches", TUILE_TACHES, "Tâches",
+            "Échecs des tâches sur 24 h (refus attendus exclus). Rouge si une tâche échoue ECHECS_SUCCESSIFS fois de "
+            "suite (alerte), orange dès un échec.")
+    t.tuile("Satellites", TUILE_SATELLITES, "Satellites",
+            "Dernière nuit VIIRS traitée. Rouge si la nuit précédente manque après HEURE_NUIT_VIIRS (alerte), orange si "
+            "un travailleur a échoué en 24 h.")
+    t.tuile("Traces", TUILE_TRACES, "Traces",
+            "Spans reçus par le collecteur en 1 h. Rouge s'il est muet depuis SEUIL_COLLECTEUR_MUET_MIN, injoignable "
+            "ou s'il refuse des spans (alertes), orange si sa file d'attente dépasse 100 lots.")
+    t.table("Dernières traces de bout en bout", DERNIERES_ANALYSES, h=11,
+            description="Analyses satellites (travailleurs VIIRS et Sentinel 1) : une trace chacune, du lancement à la "
+                        "destruction. Le lien de la colonne Trace ouvre la vue Gantt dans Tempo (72 h gardées).",
+            etats={"echec": ("échec", ROUGE), "termine": ("terminée", NEUTRE), "resultats": ("résultats reçus", SIGNAL),
+                   "demarre": ("en cours", SIGNAL), "cree": ("créée", SIGNAL), "demande": ("demandée", SIGNAL)},
+            colonne_etat="Statut", trace="Trace", vide="aucune analyse satellite tracée depuis le déploiement")
+    return t
+
+
+TABLEAUX = {"vue_ensemble": vue_ensemble, "direct": direct, "disque": disque, "taches": taches, "satellites": satellites, "alertes": alertes,
             "traces": traces}
 
 

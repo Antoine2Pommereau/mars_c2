@@ -1,0 +1,685 @@
+{
+ "uid": "mars-vue-ensemble",
+ "title": "Vue d'ensemble",
+ "description": "État de la plateforme en un coup d'œil, et les dernières analyses satellites tracées de bout en bout",
+ "tags": [
+  "mars-c2"
+ ],
+ "timezone": "utc",
+ "editable": false,
+ "graphTooltip": 1,
+ "schemaVersion": 41,
+ "version": 1,
+ "refresh": "1m",
+ "time": {
+  "from": "now-24h",
+  "to": "now"
+ },
+ "timepicker": {
+  "refresh_intervals": [
+   "1m",
+   "5m",
+   "15m",
+   "1h"
+  ]
+ },
+ "links": [
+  {
+   "title": "Tableaux MARS C2",
+   "type": "dashboards",
+   "tags": [
+    "mars-c2"
+   ],
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": true
+  }
+ ],
+ "panels": [
+  {
+   "id": 1,
+   "type": "stat",
+   "title": "Collecte",
+   "description": "Dernier fichier Parquet écrit. Rouge au seuil de l'alerte (SEUIL_COLLECTE_MIN), orange à sa moitié.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT now() AS time, CASE WHEN m IS NULL THEN 'aucun fichier relevé' ELSE 'Fichier il y a ' || greatest(round(m), 0)::int || ' min' END AS metric, CASE WHEN m IS NULL OR m > s THEN 2 WHEN m > s / 2 THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT extract(epoch FROM now() - dernier_le) / 60 AS minutes FROM signes_de_vie WHERE service = 'collecte') AS m, coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_collecte_min'), 5) AS s) x"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#4c5a66"
+       },
+       {
+        "value": 0,
+        "color": "#3f8f62"
+       },
+       {
+        "value": 1,
+        "color": "#f0a84b"
+       },
+       {
+        "value": 2,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "links": [
+      {
+       "title": "Ouvrir le tableau Direct",
+       "url": "/d/mars-direct?${__url_time_range}"
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background_solid",
+    "graphMode": "none",
+    "textMode": "name",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 20,
+     "valueSize": 20
+    }
+   }
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Ingestion",
+   "description": "Retard de l'ingestion. Rouge au seuil de l'alerte (SEUIL_INGESTION_MIN), orange à sa moitié.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT now() AS time, CASE WHEN m IS NULL THEN 'aucun passage relevé' ELSE 'Retard ' || greatest(round(m), 0)::int || ' min' END AS metric, CASE WHEN m IS NULL OR m > s THEN 2 WHEN m > s / 2 THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT greatest(extract(epoch FROM now() - dernier_le), coalesce((detail->>'retard_s')::float8, 0)) / 60 AS minutes FROM signes_de_vie WHERE service = 'ingestion') AS m, coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_ingestion_min'), 10) AS s) x"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#4c5a66"
+       },
+       {
+        "value": 0,
+        "color": "#3f8f62"
+       },
+       {
+        "value": 1,
+        "color": "#f0a84b"
+       },
+       {
+        "value": 2,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "links": [
+      {
+       "title": "Ouvrir le tableau Direct",
+       "url": "/d/mars-direct?${__url_time_range}"
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background_solid",
+    "graphMode": "none",
+    "textMode": "name",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 20,
+     "valueSize": 20
+    }
+   }
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "Disque",
+   "description": "Espace libre. Rouge sous le seuil de l'alerte (SEUIL_DISQUE_LIBRE_PCT), orange jusqu'à 10 points au dessus.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT now() AS time, CASE WHEN pct IS NULL THEN 'aucune mesure' ELSE round(pct)::int || ' % libres, ' || replace(round(go::numeric, 1)::text, '.', ',') || ' Go' END AS metric, CASE WHEN pct IS NULL THEN -1 WHEN pct < s THEN 2 WHEN pct < s + 10 THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT libre_pct FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS pct, (SELECT libre_octets / 1e9 FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS go, coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_disque_pct'), 15) AS s) x"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#4c5a66"
+       },
+       {
+        "value": 0,
+        "color": "#3f8f62"
+       },
+       {
+        "value": 1,
+        "color": "#f0a84b"
+       },
+       {
+        "value": 2,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "links": [
+      {
+       "title": "Ouvrir le tableau Disque et base",
+       "url": "/d/mars-disque?${__url_time_range}"
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background_solid",
+    "graphMode": "none",
+    "textMode": "name",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 20,
+     "valueSize": 20
+    }
+   }
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Tâches",
+   "description": "Échecs des tâches sur 24 h (refus attendus exclus). Rouge si une tâche échoue ECHECS_SUCCESSIFS fois de suite (alerte), orange dès un échec.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT now() AS time, CASE n WHEN 0 THEN 'aucun échec sur 24 h' WHEN 1 THEN '1 échec sur 24 h' ELSE n || ' échecs sur 24 h' END AS metric, CASE WHEN suite > 0 THEN 2 WHEN n > 0 THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT count(*) FROM task_runs WHERE status = 'echec' AND NOT (details ? 'refus') AND started_at > now() - interval '24 hours') AS n, (SELECT count(*) FROM (SELECT task, array_agg(status ORDER BY started_at DESC) AS st FROM task_runs WHERE started_at > now() - interval '7 days' AND status <> 'en_cours' AND NOT (details ? 'refus') GROUP BY task) t WHERE array_length(st, 1) >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int AND st[1:coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int] <@ ARRAY['echec']) AS suite) x"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#4c5a66"
+       },
+       {
+        "value": 0,
+        "color": "#3f8f62"
+       },
+       {
+        "value": 1,
+        "color": "#f0a84b"
+       },
+       {
+        "value": 2,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "links": [
+      {
+       "title": "Ouvrir le tableau Tâches",
+       "url": "/d/mars-taches?${__url_time_range}"
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background_solid",
+    "graphMode": "none",
+    "textMode": "name",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 20,
+     "valueSize": 20
+    }
+   }
+  },
+  {
+   "id": 5,
+   "type": "stat",
+   "title": "Satellites",
+   "description": "Dernière nuit VIIRS traitée. Rouge si la nuit précédente manque après HEURE_NUIT_VIIRS (alerte), orange si un travailleur a échoué en 24 h.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT now() AS time, CASE WHEN absente THEN 'Nuit du ' || to_char(veille, 'DD/MM') || ' absente' WHEN nuit IS NULL THEN 'aucune nuit VIIRS traitée' ELSE 'Nuit du ' || to_char(nuit, 'DD/MM') || ' traitée' END AS metric, CASE WHEN absente THEN 2 WHEN nuit IS NULL THEN -1 WHEN echec THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT max(nuit) FROM viirs_granules WHERE traite_le IS NOT NULL) AS nuit, (now() AT TIME ZONE 'UTC')::date - 1 AS veille, extract(hour FROM now() AT TIME ZONE 'UTC') >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_heure_nuit_viirs'), 8) AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1 AND traite_le IS NOT NULL) AS absente, EXISTS (SELECT 1 FROM travailleurs WHERE etat = 'echec' AND cree_le > now() - interval '24 hours') AS echec) x"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#4c5a66"
+       },
+       {
+        "value": 0,
+        "color": "#3f8f62"
+       },
+       {
+        "value": 1,
+        "color": "#f0a84b"
+       },
+       {
+        "value": 2,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "links": [
+      {
+       "title": "Ouvrir le tableau Satellites",
+       "url": "/d/mars-satellites?${__url_time_range}"
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background_solid",
+    "graphMode": "none",
+    "textMode": "name",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 20,
+     "valueSize": 20
+    }
+   }
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "Traces",
+   "description": "Spans reçus par le collecteur en 1 h. Rouge s'il est muet depuis SEUIL_COLLECTEUR_MUET_MIN, injoignable ou s'il refuse des spans (alertes), orange si sa file d'attente dépasse 100 lots.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT now() AS time, CASE WHEN NOT mesure THEN 'aucune mesure du collecteur' ELSE replace(to_char(coalesce(recus, 0), 'FM999,999,990'), ',', ' ') || ' spans en 1 h' END AS metric, CASE WHEN NOT mesure THEN -1 WHEN NOT joignable OR coalesce(muet, 1e9) > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_collecteur_muet_min'), 15) OR refus > 0 THEN 2 WHEN coalesce(file, 0) > 100 THEN 1 ELSE 0 END AS value FROM (SELECT EXISTS (SELECT 1 FROM mesures_otel WHERE mesure_le > now() - interval '30 minutes') AS mesure, coalesce((SELECT joignable FROM mesures_otel ORDER BY mesure_le DESC LIMIT 1), false) AS joignable, (SELECT file_attente FROM mesures_otel ORDER BY mesure_le DESC LIMIT 1) AS file, (SELECT sum(greatest(recus - prec, 0)) FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '61 minutes') d WHERE mesure_le > now() - interval '1 hour') AS recus, (SELECT extract(epoch FROM now() - max(mesure_le) FILTER (WHERE recus > prec)) / 60 AS minutes FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '1 day') x WHERE EXISTS (SELECT 1 FROM mesures_otel WHERE mesure_le > now() - interval '30 minutes')) AS muet, (SELECT coalesce(sum(greatest(refuses - prec, 0)), 0) AS refus FROM (SELECT mesure_le, refuses, lag(refuses) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '16 minutes') x WHERE mesure_le > now() - interval '15 minutes') AS refus) x"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#4c5a66"
+       },
+       {
+        "value": 0,
+        "color": "#3f8f62"
+       },
+       {
+        "value": 1,
+        "color": "#f0a84b"
+       },
+       {
+        "value": 2,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "links": [
+      {
+       "title": "Ouvrir le tableau Traces",
+       "url": "/d/mars-traces?${__url_time_range}"
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background_solid",
+    "graphMode": "none",
+    "textMode": "name",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 20,
+     "valueSize": 20
+    }
+   }
+  },
+  {
+   "id": 7,
+   "type": "table",
+   "title": "Dernières traces de bout en bout",
+   "description": "Analyses satellites (travailleurs VIIRS et Sentinel 1) : une trace chacune, du lancement à la destruction. Le lien de la colonne Trace ouvre la vue Gantt dans Tempo (72 h gardées).",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 5,
+    "w": 24,
+    "h": 11
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT cree_le AS \"Lancée le\", CASE tache WHEN 'viirs' THEN 'VIIRS' WHEN 'sentinel' THEN 'Sentinel 1' ELSE tache END AS \"Analyse\", round(extract(epoch FROM coalesce(detruit_le, now()) - cree_le) / 60)::int || ' min' AS \"Durée totale\", etat AS \"Statut\", left(coalesce(erreur, '·'), 140) AS \"Motif\", trace_id AS \"Trace\" FROM travailleurs WHERE trace_id IS NOT NULL ORDER BY cree_le DESC LIMIT 20"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     },
+     "noValue": "aucune analyse satellite tracée depuis le déploiement"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Trace"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Ouvrir la trace dans Tempo (vue Gantt)",
+          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+         }
+        ]
+       },
+       {
+        "id": "custom.width",
+        "value": 120
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Statut"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "echec": {
+            "text": "échec",
+            "color": "#ef6461",
+            "index": 0
+           },
+           "termine": {
+            "text": "terminée",
+            "color": "#7c8b97",
+            "index": 1
+           },
+           "resultats": {
+            "text": "résultats reçus",
+            "color": "#4fb6c8",
+            "index": 2
+           },
+           "demarre": {
+            "text": "en cours",
+            "color": "#4fb6c8",
+            "index": 3
+           },
+           "cree": {
+            "text": "créée",
+            "color": "#4fb6c8",
+            "index": 4
+           },
+           "demande": {
+            "text": "demandée",
+            "color": "#4fb6c8",
+            "index": 5
+           }
+          }
+         }
+        ]
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ }
+}

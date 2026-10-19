@@ -60,6 +60,7 @@ Un jeton faux reçoit 403 (éprouvé par `scripts/verifier_images.sh traces`).
 | `mars-taches` | `tache <nom>` (par construction, `run()`), `commande <nom>` (registre `COMMANDES`), `taches.minute` et ses `etape …`, `regles.<étape>`, `archivage.dossier`, `purge.jour`, `sauvegarde.*`, `listes.*`, `passages.*`, `R2 <opération>`, `ntfy.envoi`, `travailleur.*`, `scaleway.*`, `viirs.*`, `sentinel.*` |
 | `mars-travailleur` | `demarrage.<étape>` et `travailleur.demarrage` (script bash), `travailleur.<tâche>`, remise de la tâche, chaque téléchargement, chaque granule ou scène, inférence, vignettes, renvoi des résultats |
 | `mars-web` | une requête de l'interface vers l'API (méthode, chemin réduit à son gabarit, code, durée) |
+| `grafana` | Grafana lui même (OTLP gRPC, `otel:4317`) : affichage des tableaux, requêtes, évaluation des règles ; environ 330 spans par minute au repos, 10 % gardés hors erreurs et lenteurs |
 
 **Appels externes** : AISStream (websockets), Copernicus STAC et S3, ESA, NASA CMR et LANCE, Scaleway, OpenSanctions,
 GitHub (requests, tracés d'office avec `peer.service`) ; R2 (boto3, un span par opération) ; VesselFinder (httpx) ;

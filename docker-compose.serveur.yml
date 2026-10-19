@@ -87,7 +87,8 @@ services:
       GF_USERS_DEFAULT_THEME: dark
       GF_USERS_DEFAULT_LANGUAGE: fr-FR
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/mars/direct.json
+      # Page d'accueil : la vue d'ensemble (six tuiles d'état, dernières analyses tracées)
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/mars/vue_ensemble.json
       # Dates à la française (17/06/2024), en UTC comme le reste de MARS C2
       GF_DATE_FORMATS_USE_BROWSER_LOCALE: "false"
       GF_DATE_FORMATS_FULL_DATE: DD/MM/YYYY HH:mm:ss
@@ -105,6 +106,13 @@ services:
       GF_NEWS_NEWS_FEED_ENABLED: "false"
       GF_PLUGINS_PREINSTALL_DISABLED: "true"
       GOMEMLIMIT: 200MiB             # sous la limite de 256 Mo : le ramasse miettes de Go travaille avant
+      # Traces de Grafana lui même (étape D2) : affichage des tableaux, requêtes, évaluation des règles d'alerte, vers
+      # le collecteur en gRPC ; échantillonnées comme l'API (erreurs, plus de 1 s, 10 % du reste)
+      GF_TRACING_OPENTELEMETRY_OTLP_ADDRESS: otel:4317
+      GF_TRACING_OPENTELEMETRY_OTLP_PROPAGATION: w3c
+      GF_TRACING_OPENTELEMETRY_SAMPLER_TYPE: const
+      GF_TRACING_OPENTELEMETRY_SAMPLER_PARAM: "1"
+      GF_TRACING_OPENTELEMETRY_CUSTOM_ATTRIBUTES: service.namespace:mars-c2
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana

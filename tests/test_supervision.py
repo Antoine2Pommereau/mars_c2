@@ -340,8 +340,8 @@ def test_alert_rules_cover_every_case():
 def test_dashboards_are_generated_and_written_without_dashes():
     gen = _module("generer", ROOT / "grafana" / "generer.py")
     files = gen.generer()
-    assert set(files) == {"direct.json", "disque.json", "taches.json", "satellites.json", "alertes.json",
-                          "traces.json"}
+    assert set(files) == {"vue_ensemble.json", "direct.json", "disque.json", "taches.json", "satellites.json",
+                          "alertes.json", "traces.json"}
     for name, text in files.items():
         assert (gen.OUT / name).read_text() == text, f"{name} à régénérer : python grafana/generer.py"
         d = json.loads(text)
@@ -355,6 +355,31 @@ def test_dashboards_are_generated_and_written_without_dashes():
                     continue
                 assert "positions " not in t["rawSql"].replace("positions_octets", "") or "FROM positions" \
                     not in t["rawSql"], f"{p['title']} lit la table des positions"
+
+
+def test_overview_is_home_with_six_tiles_on_alert_thresholds():
+    gen = _module("generer", ROOT / "grafana" / "generer.py")
+    d = json.loads(gen.generer()["vue_ensemble.json"])
+    tuiles = [p for p in d["panels"] if p["type"] == "stat"]
+    assert [p["title"] for p in tuiles] == ["Collecte", "Ingestion", "Disque", "Tâches", "Satellites", "Traces"]
+    uids = {json.loads(t)["uid"] for t in gen.generer().values()}
+    seuils = {"Collecte": "seuil_collecte_min", "Ingestion": "seuil_ingestion_min", "Disque": "seuil_disque_pct",
+              "Tâches": "seuil_echecs_successifs", "Satellites": "seuil_heure_nuit_viirs",
+              "Traces": "seuil_collecteur_muet_min"}
+    for p in tuiles:
+        sql = p["targets"][0]["rawSql"]
+        assert f"cle = '{seuils[p['title']]}'" in sql, p["title"]          # seuils de config/supervision.env
+        assert " AS metric" in sql and " AS value" in sql and p["options"]["textMode"] == "name"
+        lien = p["fieldConfig"]["defaults"]["links"][0]["url"]
+        assert lien.split("?")[0].removeprefix("/d/") in uids, lien      # un clic mène au tableau détaillé
+    (table,) = [p for p in d["panels"] if p["type"] == "table"]
+    assert table["fieldConfig"]["defaults"]["noValue"] == "aucune analyse satellite tracée depuis le déploiement"
+    assert "trace_id IS NOT NULL" in table["targets"][0]["rawSql"]
+    assert any(o["matcher"]["options"] == "Trace" for o in table["fieldConfig"]["overrides"])
+    compose = (ROOT / "docker-compose.serveur.yml").read_text()
+    assert "HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/mars/vue_ensemble.json" in compose
+    assert "GF_TRACING_OPENTELEMETRY_OTLP_ADDRESS: otel:4317" in compose      # Grafana tracé lui même
+    assert '"127.0.0.1:4317' not in compose and ":4317:4317" not in compose   # gRPC jamais publié
 
 
 def test_grafana_macros_are_expanded_like_grafana():

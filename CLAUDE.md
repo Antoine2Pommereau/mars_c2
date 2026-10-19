@@ -529,6 +529,13 @@ spans par jour, moins de 30 Mo de traces à 72 h ; collecteur 110 à 200 Mo, Tem
 mémoire de la DEV1-S ne suffit plus (passer en DEV1-M) et le disque tombe sous l'alerte des 15 % à l'équilibre
 (agrandir à 20 Go)**, docs/deploiement.md.
 
+**Vue d'ensemble de Grafana (19/10/2026)** (provisionnement seulement, aucune image) : tableau « Vue d'ensemble »,
+page d'accueil de Grafana : six tuiles (Collecte, Ingestion, Disque, Tâches, Satellites, Traces) dont la requête
+calcule le niveau avec les seuils des alertes (`parametres_supervision`) et donne une valeur courte, un clic vers le
+tableau détaillé ; « Dernières traces de bout en bout » (analyses satellites, lien vers la vue Gantt de Tempo).
+Grafana est tracé lui même (OTLP gRPC vers `otel:4317`, réseau Docker seulement). Trace de démonstration :
+`docs/supervision.md`.
+
 ## 10. Tests
 
 `python -m pytest tests` : 192 réussis, 35 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 34 sans
@@ -717,5 +724,9 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   écrire `[.]`. Tempo 3 a changé sa configuration (plus d'ingester ni de compactor : `live_store`, `backend_worker`,
   `backend_scheduler`) ; la conservation se règle dans `backend_worker` et `backend_scheduler`. Une commande nouvelle
   de `taches.py` se déclare par `@commande` (sinon refusée par l'analyse des arguments, et le test le signale).
+* Grafana : une tuile colorée selon un seuil lu en base se fait en SQL (colonnes `metric`, texte affiché, et `value`,
+  niveau 0, 1 ou 2, format time_series, `textMode: name`) ; les seuils d'un panneau sont fixes. Le texte « aucune
+  donnée » d'un tableau (`noValue`) s'applique aussi à chaque cellule vide : remplir les cellules en SQL. Une variable
+  d'environnement de Grafana changée demande `docker compose up -d grafana` (`restart` garde l'ancienne).
 * Construire les images sur le Mac par `docker build` (docs/deploiement.md) : la surcouche du serveur exige ses
   secrets (`:?`), Compose refuse alors toute commande sans eux.
