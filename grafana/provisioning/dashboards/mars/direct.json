@@ -318,6 +318,144 @@
   },
   {
    "id": 5,
+   "type": "stat",
+   "title": "Minutes absentes des statistiques",
+   "description": "Garde du lot C5, toutes les 10 minutes : minutes des dernières 24 h présentes dans les positions mais absentes de stats_minute (le 18/10/2026, 31 h manquaient). Au delà de 10, reconstruction automatique ; une reconstruction en échec part sur le téléphone.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT (detail->>'minutes_manquantes')::int AS minutes FROM signes_de_vie WHERE service = 'statistiques'"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       },
+       {
+        "value": 11,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "Reconstructions des statistiques, 7 jours",
+   "description": "Reconstructions automatiques ou lancées à la main (commande de reconstruction de taches, voir docs/supervision.md) ; le détail est dans task_runs.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 4,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT count(*) AS reconstructions FROM task_runs WHERE task = 'stats_reconstruction' AND started_at > now() - interval '7 days'"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       },
+       {
+        "value": 1,
+        "color": "#f0a84b"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 7,
    "type": "timeseries",
    "title": "Messages par minute",
    "description": "Positions lues par minute de collecte (registre d'ingestion : les deux derniers jours, les journées archivées en sortent).",
@@ -326,7 +464,7 @@
     "uid": "mars"
    },
    "gridPos": {
-    "x": 0,
+    "x": 12,
     "y": 4,
     "w": 12,
     "h": 8
@@ -384,7 +522,7 @@
    }
   },
   {
-   "id": 6,
+   "id": 8,
    "type": "timeseries",
    "title": "Positions conservées par minute",
    "description": "Après allègement (un point par minute en route, toutes les dix minutes à l'arrêt). Un creux à zéro est une coupure du flux, comme le 18/10/2026.",
@@ -393,8 +531,8 @@
     "uid": "mars"
    },
    "gridPos": {
-    "x": 12,
-    "y": 4,
+    "x": 0,
+    "y": 12,
     "w": 12,
     "h": 8
    },
@@ -451,7 +589,7 @@
    }
   },
   {
-   "id": 7,
+   "id": 9,
    "type": "timeseries",
    "title": "Positions par heure et par région",
    "description": "",
@@ -460,7 +598,7 @@
     "uid": "mars"
    },
    "gridPos": {
-    "x": 0,
+    "x": 12,
     "y": 12,
     "w": 12,
     "h": 8
@@ -579,7 +717,7 @@
    }
   },
   {
-   "id": 8,
+   "id": 10,
    "type": "table",
    "title": "Coupures du flux",
    "description": "Minutes sous 20 % de la médiane de la période (définition de la frise de l'interface), trois minutes au moins.",
@@ -588,8 +726,8 @@
     "uid": "mars"
    },
    "gridPos": {
-    "x": 12,
-    "y": 12,
+    "x": 0,
+    "y": 20,
     "w": 12,
     "h": 8
    },

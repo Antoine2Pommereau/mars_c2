@@ -62,7 +62,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT coalesce(sum((mesures->>'cout_estime_eur')::float8), 0) AS cout FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())"
+     "rawSql": "SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())"
     }
    ],
    "fieldConfig": {
@@ -127,7 +127,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT 100 * coalesce(sum((mesures->>'cout_estime_eur')::float8), 0) / nullif((SELECT valeur FROM parametres_supervision WHERE cle = 'budget_sentinel_eur'), 0) AS part FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())"
+     "rawSql": "SELECT 100 * coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) / nullif((SELECT valeur FROM parametres_supervision WHERE cle = 'budget_sentinel_eur'), 0) AS part FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())"
     }
    ],
    "fieldConfig": {
@@ -200,7 +200,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT coalesce(sum((mesures->>'cout_estime_eur')::float8), 0) AS cout FROM travailleurs WHERE tache = 'viirs' AND cree_le >= date_trunc('month', now())"
+     "rawSql": "SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs WHERE tache = 'viirs' AND cree_le >= date_trunc('month', now())"
     }
    ],
    "fieldConfig": {
@@ -660,7 +660,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT id AS \"N°\", tache AS \"Tâche\", etat AS \"État\", commercial_type AS \"Type\", cree_le AS \"Créé le\", extract(epoch FROM coalesce(detruit_le, now()) - cree_le) AS \"Durée\", coalesce(mesures->>'rss_max_mo', mesures->'mesures_travailleur'->>'rss_max_mo')::float8 AS \"Mémoire (Mo)\", (mesures->>'cout_estime_eur')::float8 AS \"Coût\", left(erreur, 160) AS \"Motif d'échec\", trace_id AS \"Trace\" FROM travailleurs WHERE $__timeFilter(cree_le) ORDER BY id DESC LIMIT 100"
+     "rawSql": "SELECT id AS \"N°\", tache AS \"Tâche\", etat AS \"État\", commercial_type AS \"Type\", cree_le AS \"Créé le\", extract(epoch FROM coalesce(detruit_le, now()) - cree_le) AS \"Durée\", coalesce(mesures->>'rss_max_mo', mesures->'mesures_travailleur'->>'rss_max_mo')::float8 AS \"Mémoire (Mo)\", cout_prevu_eur AS \"Coût prévu\", coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8) AS \"Coût réel\", CASE facturation WHEN 'minute' THEN 'à la minute' WHEN 'heure_entamee' THEN 'heure entamée' END AS \"Facturation\", left(erreur, 160) AS \"Motif d'échec\", trace_id AS \"Trace\" FROM travailleurs WHERE $__timeFilter(cree_le) ORDER BY id DESC LIMIT 100"
     }
    ],
    "fieldConfig": {
@@ -752,7 +752,19 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "Coût"
+       "options": "Coût prévu"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "currencyEUR"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Coût réel"
       },
       "properties": [
        {

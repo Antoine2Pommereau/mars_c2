@@ -135,8 +135,8 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
 
 
 def types_calcul(scw, rules: dict) -> list[tuple[str, str, str]]:
-    """Chaque type de la liste de calcul Sentinel (GPU, secours, repli sur processeur), dans l'ordre d'essai :
-    disponibilité annoncée et prix du catalogue Scaleway, comparé au prix de config/rules.yaml (coût estimé). Une
+    """Chaque type de la liste de calcul Sentinel (GPU, secours, processeurs), dans l'ordre de la liste : mode de
+    facturation, disponibilité annoncée et prix du catalogue Scaleway, comparé au prix de config/rules.yaml (coût estimé). Une
     rupture de stock n'est pas un manque : l'analyse attend et réessaie (lot C3)."""
     from mars.travailleurs import type_params, variantes
     dispo, cat, out = {}, {}, []
@@ -152,7 +152,8 @@ def types_calcul(scw, rules: dict) -> list[tuple[str, str, str]]:
         etat = dispo[zone].get(ctype, "absent du catalogue")
         prix = (cat[zone].get(ctype) or {}).get("hourly_price")
         ecart = prix is not None and abs(prix - t["prix_heure"]) > 0.05 * t["prix_heure"]
-        texte = (f"{'GPU' if v['calcul'] == 'gpu' else 'processeur (repli)'}, {etat}, "
+        mode = "à la minute" if t["facturation"] == "minute" else "à l'heure entamée"
+        texte = (f"{'GPU' if v['calcul'] == 'gpu' else 'processeur'} facturé {mode}, {etat}, "
                  + (f"{prix:.4f} €/h au catalogue" if prix is not None else "prix inconnu").replace(".", ",")
                  + (f", {t['prix_heure']} €/h dans config/rules.yaml : à mettre à jour".replace(".", ",") if ecart else ""))
         statut = PRET if etat == "available" and not ecart else A_VERIFIER

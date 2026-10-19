@@ -66,12 +66,13 @@ class ScalewayApi:
                 "arch": "x86_64", "root_volume": {"id": "snap", "volume_type": "sbs_snapshot", "size": 0}}}),
             "/block/v1alpha1/zones/fr-par-2/snapshots/snap": (200, {"id": "snap", "size": 20_000_000_000}),
             "/instance/v1/zones/fr-par-2/products/servers/availability": (200, {"servers": {
-                k: {"availability": "available"} for k in ("L4-1-24G", "L40S-1-48G", "RENDER-S", "GP1-S")}}),
+                k: {"availability": "available"} for k in ("L4-1-24G", "L40S-1-48G", "RENDER-S", "GP1-S", "POP2-8C-32G")}}),
             "/instance/v1/zones/fr-par-1/products/servers/availability": (200, {"servers": {
                 "L4-1-24G": {"availability": "available"}}}),
             "/instance/v1/zones/fr-par-2/products/servers": (200, {"servers": {
                 "L4-1-24G": {"hourly_price": 0.7875}, "L40S-1-48G": {"hourly_price": 1.469916},
-                "RENDER-S": {"hourly_price": 1.221}, "GP1-S": {"hourly_price": 0.19074}}}),
+                "RENDER-S": {"hourly_price": 1.221}, "GP1-S": {"hourly_price": 0.19074},
+                "POP2-8C-32G": {"hourly_price": 0.29}}}),
             "/instance/v1/zones/fr-par-1/products/servers": (200, {"servers": {"L4-1-24G": {"hourly_price": 0.7875}}}),
             "/account/v3/projects/p": (200, {"organization_id": "org"}),
             "/iam/v1alpha1/quota": (200, {"quota": [{"name": "instances_l4_1_24g", "limits": [{"zone": "fr-par-2", "limit": 1}]}]}),
@@ -143,9 +144,10 @@ def test_every_calculation_type_shows_its_stock_and_price(monkeypatch):
     lines, _ = _run(ScalewayApi())
     types = {r: v for r, v in lines.items() if r.startswith("Type ")}
     assert list(types) == ["Type 1 : L4-1-24G en fr-par-2", "Type 2 : L4-1-24G en fr-par-1",
-                           "Type 3 : L40S-1-48G en fr-par-2", "Type 4 : GP1-S en fr-par-2"]
-    assert types["Type 1 : L4-1-24G en fr-par-2"] == (D.PRET, "GPU, available, 0,7875 €/h au catalogue")
-    assert types["Type 4 : GP1-S en fr-par-2"][1].startswith("processeur (repli), available")
+                           "Type 3 : L40S-1-48G en fr-par-2", "Type 4 : GP1-S en fr-par-2",
+                           "Type 5 : POP2-8C-32G en fr-par-2"]
+    assert types["Type 1 : L4-1-24G en fr-par-2"] == (D.PRET, "GPU facturé à la minute, available, 0,7875 €/h au catalogue")
+    assert types["Type 4 : GP1-S en fr-par-2"][1].startswith("processeur facturé à l'heure entamée, available")
     api = ScalewayApi(**{"/instance/v1/zones/fr-par-2/products/servers/availability": (200, {"servers": {
         "L4-1-24G": {"availability": "shortage"}, "L40S-1-48G": {"availability": "scarce"}, "GP1-S": {"availability": "available"}}}),
         "/instance/v1/zones/fr-par-2/products/servers": (200, {"servers": {"L4-1-24G": {"hourly_price": 0.99},
@@ -156,7 +158,7 @@ def test_every_calculation_type_shows_its_stock_and_price(monkeypatch):
     assert lines["Type 2 : L4-1-24G en fr-par-1"][0] == D.PRET
     api = ScalewayApi(**{"/instance/v1/zones/fr-par-1/products/servers/availability": (200, {"servers": {}})})
     lines, _ = _run(api)
-    assert lines["Type 2 : L4-1-24G en fr-par-1"] == (D.MANQUE, "GPU, absent du catalogue, 0,7875 €/h au catalogue")
+    assert lines["Type 2 : L4-1-24G en fr-par-1"] == (D.MANQUE, "GPU facturé à la minute, absent du catalogue, 0,7875 €/h au catalogue")
 
 
 def test_copernicus_is_checked_first_and_refused_keys_are_reported(monkeypatch):

@@ -191,6 +191,17 @@ def direct() -> Tableau:
               "'taches'", "m", ((None, NEUTRE), (3, ROUGE)), w=6, decimales=1,
               description="Minutes depuis le dernier tour de la boucle des tâches (mesures, règles, alertes de "
                           "secours).")
+    t.chiffre("Minutes absentes des statistiques",
+              "SELECT (detail->>'minutes_manquantes')::int AS minutes FROM signes_de_vie WHERE service = 'statistiques'",
+              "none", ((None, NEUTRE), (11, ROUGE)), w=6,
+              description="Garde du lot C5, toutes les 10 minutes : minutes des dernières 24 h présentes dans les "
+                          "positions mais absentes de stats_minute (le 18/10/2026, 31 h manquaient). Au delà de 10, "
+                          "reconstruction automatique ; une reconstruction en échec part sur le téléphone.")
+    t.chiffre("Reconstructions des statistiques, 7 jours",
+              "SELECT count(*) AS reconstructions FROM task_runs WHERE task = 'stats_reconstruction' "
+              "AND started_at > now() - interval '7 days'", "none", ((None, NEUTRE), (1, ORANGE)), w=6,
+              description="Reconstructions automatiques ou lancées à la main (commande de reconstruction de taches, "
+                          "voir docs/supervision.md) ; le détail est dans task_runs.")
     t.courbe("Messages par minute",
              """SELECT $__timeGroupAlias(t, '1m', 0), sum(n) AS "messages" FROM (
                   SELECT to_timestamp(split_part(folder, 'date=', 2) || ' ' || left(name, 6), 'YYYY-MM-DD HH24MISS')
@@ -322,16 +333,16 @@ def satellites() -> Tableau:
     t = Tableau("mars-satellites", "Satellites", "Nuits VIIRS, travailleurs éphémères, coût du mois, passages Sentinel",
                 de="now-30d")
     t.chiffre("Coût Sentinel du mois",
-              """SELECT coalesce(sum((mesures->>'cout_estime_eur')::float8), 0) AS cout FROM travailleurs
+              """SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs
                  WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())""", "currencyEUR", decimales=2)
     t.chiffre("Part du budget Sentinel",
-              """SELECT 100 * coalesce(sum((mesures->>'cout_estime_eur')::float8), 0) /
+              """SELECT 100 * coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) /
                         nullif((SELECT valeur FROM parametres_supervision WHERE cle = 'budget_sentinel_eur'), 0)
                         AS part FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())""",
               "percent", ((None, NEUTRE), (80, ORANGE), (100, ROUGE)), decimales=0,
               description="Coût estimé du mois rapporté au budget de config/rules.yaml (sentinel.budget_mensuel_eur).")
     t.chiffre("Coût VIIRS du mois",
-              """SELECT coalesce(sum((mesures->>'cout_estime_eur')::float8), 0) AS cout FROM travailleurs
+              """SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs
                  WHERE tache = 'viirs' AND cree_le >= date_trunc('month', now())""", "currencyEUR", decimales=2)
     t.chiffre("Dernière nuit VIIRS traitée",
               "SELECT extract(epoch FROM now() - max(traite_le)) / 3600 AS heures FROM viirs_granules", "h",
@@ -363,12 +374,15 @@ def satellites() -> Tableau:
                       extract(epoch FROM coalesce(detruit_le, now()) - cree_le) AS "Durée",
                       coalesce(mesures->>'rss_max_mo', mesures->'mesures_travailleur'->>'rss_max_mo')::float8
                           AS "Mémoire (Mo)",
-                      (mesures->>'cout_estime_eur')::float8 AS "Coût",
+                      cout_prevu_eur AS "Coût prévu",
+                      coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8) AS "Coût réel",
+                      CASE facturation WHEN 'minute' THEN 'à la minute' WHEN 'heure_entamee' THEN 'heure entamée'
+                      END AS "Facturation",
                       left(erreur, 160) AS "Motif d'échec", trace_id AS "Trace"
                FROM travailleurs WHERE $__timeFilter(cree_le) ORDER BY id DESC LIMIT 100""",
             h=9, etats={"echec": ("échec", ROUGE), "termine": ("terminé", NEUTRE),
                         "gpu_inutilisable": ("GPU inutilisable", ROUGE)}, colonne_etat="État",
-            unites={"Durée": "s", "Coût": "currencyEUR"}, trace="Trace")
+            unites={"Durée": "s", "Coût prévu": "currencyEUR", "Coût réel": "currencyEUR"}, trace="Trace")
     t.section("Analyses Sentinel 1 (lot C3)")
     t.chiffre("En attente d'un GPU",
               "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu'",

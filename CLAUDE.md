@@ -573,9 +573,24 @@ l'analyse), filet sur une instance arrêtée d'elle même ; budget sur le coût 
 `SENTINEL_CALCUL_ESSAI=cpu` pour la seule commande manuelle (repli GP1-S immédiat) ; sondages de Scaleway en un seul
 span d'attente. Analyse 96 remise en échec (passage 149 relançable à la main).
 
+**Lot C5, statistiques sans trou et processeur en premier (19/10/2026)** (migration 30, règles 2026.10.29,
+`docs/supervision.md` et `docs/sentinel.md`) : trou de `stats_minute` du 17/10 22:46 au 19/10 06:00 (31 h), positions
+intactes : les statistiques n'étaient tenues qu'à la fin d'un cycle des règles (en échec pendant le disque plein) et
+sur 3 h, les positions chargées en retard jamais comptées. Désormais étape à part avant les règles, fichiers chargés en
+retard recomptés (`stats_suivi`), garde toutes les 10 min (plus de 10 minutes absentes sur 24 h : reconstruction,
+`task_runs` `stats_reconstruction`, alerte Grafana), commandes `stats-reconstruire DEBUT FIN` (idempotente),
+`stats-trous`, `sentinel-flux ID`, `viirs-reevaluer DEBUT FIN`. Premier essai Sentinel 1 abouti (analyse 97, GP1-S,
+1,7 % de la scène lue, 119 s d'inférence par fenêtre, 6 min 15 s, 0,19 €). Point de déclenchement d'un navire des
+listes en mer seulement (2 km de la côte, ou mouillage hors port ; « à quai, invisible au radar »). Processeur en
+premier : 4 fenêtres au plus sur GP1-S (POP2-8C-32G en secours), au delà GPU, en rupture de GPU processeur par lots ;
+durée de vie calculée (5 + 3 par fenêtre + 15 min) ; `SENTINEL_CALCUL_ESSAI=gpu`. Facturation par type (minute pour
+L4 et L40S, heure entamée sinon : essai 26 facturé 1,23 € pour 0,28 € estimés), coût réel à la destruction, garde des
+types horaires de plus de 0,50 €/h jamais éprouvés.
+
 ## 10. Tests
 
-`python -m pytest tests` : 227 réussis, 46 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 45 sans
+`python -m pytest tests` (lot C5 : 235 réussis, 52 ignorés sans base ; 286 réussis, 1 ignoré avec la base de test) :
+227 réussis, 46 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 45 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base

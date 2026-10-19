@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.28"
+version: "2026.10.29"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -213,6 +213,13 @@ sentinel:
   viirs_gravite_min: moyenne
   viirs_fenetre_h: 24           # alerte VIIRS de moins de 24 heures avant le passage
   interet_rayon_m: 10000        # une scène est retenue si elle couvre un point d'intérêt à 10 km près
+  # Lot C5 : point de déclenchement d'un navire des listes en mer seulement. À quai ou dans un bassin portuaire, un
+  # navire se confond au radar avec les quais et les autres coques (essai du 19/10/2026 : VICTOR ANDRYUKHIN dans les
+  # bassins nord de Marseille). Retenu à plus de 2 km de la côte (masque des terres), ou au mouillage hors port (zone
+  # de mouillage connue à 1 km près, à 800 m au moins de la côte) ; sinon écarté, « à quai, invisible au radar »
+  point_cote_min_km: 2
+  point_mouillage_m: 1000
+  point_mouillage_cote_min_m: 800
   passages_recents_h: 36        # passages examinés : acquis depuis moins de 36 heures
   attente_publication_h: 12     # scène pas encore au catalogue : nouvel essai au cycle suivant, jusqu'à 12 heures
   intervalle_min: 30            # examen des passages toutes les 30 minutes
@@ -233,12 +240,20 @@ sentinel:
   fenetre_marge_m: 2000
   fenetre_cote_min_m: 16000
   minutes_par_fenetre_gpu: 2    # lecture partielle et analyse d'une fenêtre de 24 km sur GPU (estimation)
-  minutes_fixes_cpu: 10         # démarrage d'une instance CPU, Docker, image d'analyse (5 Go)
-  minutes_par_fenetre_cpu: 12   # analyse d'une fenêtre sur 8 processeurs (mesure en émulation, borne haute)
+  # Processeur recalibré sur l'essai réel du 19/10/2026 (GP1-S, analyse 97) : création et démarrage, Docker 30 s,
+  # image d'analyse 1 min 39 s ; une fenêtre de 2 770 × 2 740 pixels lue en 1,1 s et analysée en 119 s sur 8
+  # processeurs ; 6 min 15 s de la création à la destruction
+  minutes_fixes_cpu: 5          # démarrage, Docker et image d'analyse (environ 4 min mesurées)
+  minutes_par_fenetre_cpu: 3    # 2 min mesurées par fenêtre, plus marge
+  cpu_marge_min: 15             # durée de vie d'un travailleur sur processeur : fixes + 3 min par fenêtre + 15 min
+  # Lot C5, processeur en premier : un passage de 4 fenêtres au plus va d'emblée sur processeur (GP1-S, puis POP2 si
+  # le GP1-S manque), sans essayer de GPU ; au delà (ou scène entière), GPU dans l'ordre de la liste, et en rupture
+  # de GPU après repli_cpu_apres_h, fenêtres sur processeur par lots de 4
+  fenetres_max_cpu: 4
   # Rupture de stock des GPU (essai du 16/10/2026 : 412 out_of_stock au démarrage d'un L4-1-24G) : l'analyse attend en
   # « attente_gpu » et un nouvel essai a lieu à chaque cycle (intervalle_min), tant que la scène reste utile
   fenetre_utile_h: 24           # après l'acquisition ; au delà, analyse abandonnée et alerte ntfy
-  repli_cpu_apres_h: 3          # sans GPU de la liste au bout de 3 h d'attente : fenêtres analysées sur processeur
+  repli_cpu_apres_h: 3          # grand passage sans GPU au bout de 3 h d'attente : processeur par lots de 4 fenêtres
   # Modèle d'AI2 (paramètres de sa chaîne)
   confiance: 0.9
   nms_m: 10
@@ -274,7 +289,14 @@ travailleurs:
   reserve_viirs:           # place gardée à la nuit VIIRS tant qu'elle n'a pas eu son travailleur du jour
     travailleurs: 1
     minutes: 60            # une heure : DEV1-M facturée à l'heure entamée, une nuit dure 6 à 10 minutes
-  facturation_min_min: 60  # instances CPU facturées à l'heure, une heure au moins
+  # Mode de facturation par type (page des tarifs de Scaleway) : « minute » (GPU L4 et L40S) ou « heure_entamee »
+  # (instances CPU DEV1, GP1, POP2, et le RENDER-S : toute heure commencée est due, même pour un échec au démarrage ;
+  # essai 26 du 19/10/2026, RENDER-S facturé 1,23 € pour 0,28 € estimés). Utilisé par l'estimation, le budget du mois,
+  # le coût réel de chaque travailleur et Grafana
+  facturation: heure_entamee
+  # Garde de dépense : un type facturé à l'heure entamée et plus cher que 0,50 € de l'heure n'est jamais lancé sans
+  # avoir été éprouvé (aucun travailleur abouti sur ce type) ; il faut alors SENTINEL_CALCUL_ESSAI explicite
+  prix_max_essai_eur: 0.50
   incompatibilite_jours: 7  # lot C4 : type au GPU inutilisable (nvidia-smi, NVML) jamais essayé pendant 7 jours
   types:
     viirs:
@@ -292,8 +314,8 @@ travailleurs:
       volume: sbs_volume             # les L4 n'ont pas de disque local : volume bloc, supprimé explicitement
       arch: x86_64
       disque_go: 60                  # image d'analyse (5 Go compressés, environ 15 installée), scènes, fichiers de travail
-      prix_heure: 0.7875             # euros hors taxes, facturé à la minute
-      facturation_min_min: 1
+      prix_heure: 0.7875             # euros hors taxes
+      facturation: minute
       # Image publique d'AI2 (étiquette sha-fafc6c3, commit du 04/01/2024, 5,0 Go compressés en 18 couches, dont
       # 291 Mo pour le code et les poids des modèles), épinglée par empreinte ; script maison qui appelle sa chaîne
       # (prepare_scenes, detect_vessels) : le serveur intégré de l'image est incohérent à cette version
@@ -316,19 +338,27 @@ travailleurs:
         # 26) : docker run --gpus en échec en 5 s, code 125, « failed to initialize NVML: Driver Not Loaded ». L'image
         # « Ubuntu Noble GPU OS 13 » charge les modules noyau ouverts de NVIDIA, qui ne gèrent que Turing et plus
         # récent : aucun Pascal ne peut servir. Pas remplacé (aucun autre GPU compatible dans la région fr-par).
-      # Repli sur processeur après repli_cpu_apres_h sans GPU (fenêtres seules) : GP1-S, 8 processeurs et 32 Go
-      # (modèle et deux fenêtres en mémoire, avec marge), disque local de 300 Go, 0,19 €/h, « available » en fr-par-1 et
-      # fr-par-2 le 19/10/2026, quand POP2-8C-32G (0,29 €/h) était « scarce » et demande un volume bloc
+      # Calcul sur processeur (fenêtres seules), dans l'ordre : GP1-S, 8 processeurs et 32 Go (modèle et deux fenêtres
+      # en mémoire, avec marge), disque local de 300 Go, 0,19 €/h, « available » en fr-par-1 et fr-par-2 le 19/10/2026 ;
+      # POP2-8C-32G (0,29 €/h, volume bloc), en secours si le GP1-S est en rupture. Durée de vie calculée au lancement
+      # selon le nombre de fenêtres (section sentinel : minutes_fixes_cpu, minutes_par_fenetre_cpu, cpu_marge_min)
       repli_cpu:
-        commercial_type: GP1-S
-        zone: fr-par-2
-        image_label: ubuntu_noble
-        volume: l_ssd
-        disque_go: 60
-        prix_heure: 0.1907
-        facturation_min_min: 60
-        duree_max_min: 150             # sur processeur, environ 12 min par fenêtre (mesure en émulation) : 45 ne suffit pas
-        docker_opts: "--shm-size=16g"
+        - commercial_type: GP1-S
+          zone: fr-par-2
+          image_label: ubuntu_noble
+          volume: l_ssd
+          disque_go: 60
+          prix_heure: 0.1907
+          facturation: heure_entamee
+          docker_opts: "--shm-size=16g"
+        - commercial_type: POP2-8C-32G
+          zone: fr-par-2
+          image_label: ubuntu_noble
+          volume: sbs_volume
+          disque_go: 60
+          prix_heure: 0.29
+          facturation: heure_entamee
+          docker_opts: "--shm-size=16g"
       # Tâche remise par le réseau privé (route etat, {"etat": "tache"}), une seule fois, avec la paire de clés
       # Copernicus dédiée aux travailleurs : Copernicus refuse les adresses présignées (14/10/2026)
       tache_par_le_reseau: true

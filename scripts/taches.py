@@ -292,7 +292,6 @@ def rules_cycle(lists_only: bool = False) -> dict:
     seulement les règles qui dépendent des listes (navires des listes, gravité des changements d'identité)."""
     import asyncio
     import asyncpg
-    from mars.frise import refresh_stats
     from mars.rules import run_continuous, run_identity, run_watchlist
 
     async def go():
@@ -311,14 +310,74 @@ def rules_cycle(lists_only: bool = False) -> dict:
             p = rules["continu"]
             return {"watchlist": await run_watchlist(c, now - timedelta(hours=p["fenetre_h"]), now, rules),
                     "identite": await run_identity(c, now - timedelta(hours=p["identite_fenetre_h"]), now, rules)}
-        out = await run_continuous(c, now, rules)
-        t = time.perf_counter()
-        with traces.span("regles.frise"):
-            out["frise"] = await refresh_stats(c, now)  # statistiques de la frise (densité, coupures du flux)
-        out.setdefault("durees_s", {})["frise"] = round(time.perf_counter() - t, 2)
-        return out
+        return await run_continuous(c, now, rules)
 
     return asyncio.run(go())
+
+
+def _asyncpg(fn):
+    """Exécute `fn(c)` sur une connexion asyncpg dédiée (statistiques de la frise)."""
+    import asyncio
+    import asyncpg
+
+    async def go():
+        c = await asyncpg.connect(database_url())
+        try:
+            return await fn(c)
+        finally:
+            await c.close()
+    return asyncio.run(go())
+
+
+def stats_cycle() -> dict:
+    """Statistiques de la frise (densité, coupures du flux), étape distincte des règles depuis le lot C5 : pendant
+    l'incident du 18/10/2026, les règles échouaient (disque plein) et les statistiques, calculées à la fin de leur
+    cycle, n'étaient plus tenues ; les positions chargées en retard à la reprise, plus vieilles que la fenêtre de 3 h,
+    n'ont jamais été comptées (stats_minute vide du 17/10 22:46 au 19/10 06:00 UTC). Les fichiers chargés en retard
+    sont désormais recomptés, quelle que soit leur heure (mars/frise.py, refresh_stats)."""
+    from mars.frise import refresh_stats
+    return _asyncpg(lambda c: refresh_stats(c, datetime.now(timezone.utc)))
+
+
+def stats_reconstruire(debut: datetime, fin: datetime) -> dict:
+    from mars.frise import reconstruire
+    return _asyncpg(lambda c: reconstruire(c, debut, fin))
+
+
+STATS_GARDE_H = 24
+STATS_GARDE_SEUIL = 10                    # minutes manquantes au delà desquelles la reconstruction part seule
+
+
+def stats_garde(conn, secours) -> dict:
+    """Garde contre un trou des statistiques, toutes les 10 minutes : minutes des dernières 24 h présentes dans les
+    positions mais absentes de stats_minute (la minute en cours, pas encore comptée, est exclue). Au delà de 10, ces
+    minutes sont reconstruites (task_runs « stats_reconstruction ») ; un échec part sur le téléphone par l'alerte Grafana,
+    ou par ntfy directement si Grafana ne répond pas. Le nombre est publié dans signes_de_vie (service statistiques) pour Grafana."""
+    from mars.frise import minutes_manquantes, plages
+    now = datetime.now(timezone.utc)
+    fin = now.replace(second=0, microsecond=0) - timedelta(minutes=2)
+    manque = _asyncpg(lambda c: minutes_manquantes(c, now - timedelta(hours=STATS_GARDE_H), fin))
+    out = {"minutes_manquantes": len(manque), "plages": len(plages(manque))}
+    traces.attributs(**{f"stats.{k}": v for k, v in out.items()})
+    if len(manque) > STATS_GARDE_SEUIL:
+        def reparer():
+            r = {"minutes_manquantes": len(manque), "debut": manque[0].isoformat(), "fin": manque[-1].isoformat()}
+            for a, b in plages(manque):
+                for k, v in stats_reconstruire(a, b).items():
+                    r[k] = r.get(k, 0) + v
+            return r
+        res = run(conn, "stats_reconstruction", reparer)
+        out["reconstruction"] = res if res is not None else "echec"
+        # Échec : Grafana prévient (règle « Statistiques de la frise non reconstruites ») ; s'il ne répond pas, taches
+        # envoie lui même l'alerte sur le téléphone
+        if res is None and secours.ntfy is not None and not supervision.grafana_repond():
+            secours.ntfy.envoyer("MARS C2 : statistiques de la frise", f"{len(manque)} minutes absentes de stats_minute "
+                                 "sur 24 h, reconstruction en échec (task_runs stats_reconstruction)")
+        if res is not None:                       # nombre publié après réparation
+            out["minutes_manquantes"] = len(_asyncpg(lambda c: minutes_manquantes(
+                c, now - timedelta(hours=STATS_GARDE_H), fin)))
+    supervision.signe(conn, "statistiques", now, out)
+    return out
 
 
 def loop(conn):
@@ -359,8 +418,11 @@ def minute(conn, secours, last: dict):
             step(lambda: archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log), "disque")
             step(lambda: supervision.mesurer(conn, LIVE), "mesures du disque")
             step(lambda: supervision.parametres(conn, load_rules()), "paramètres de supervision")
+            step(lambda: stats_garde(conn, secours), "garde des statistiques")
         if time.time() - last["rules"] >= 60 * load_rules()["continu"]["intervalle_min"]:
             last["rules"] = time.time()
+            # statistiques d'abord, indépendantes des règles : un cycle des règles en échec ne les arrête plus
+            step(stats_cycle, "statistiques de la frise")
             step(lambda: run(conn, "regles", rules_cycle, quiet=True), "règles")
         # Sentinel 1 : passages examinés toutes les 30 minutes (rien n'est lancé sans point d'intérêt ; un refus du
         # plafond ou du budget est consigné dans task_runs, sans trace d'erreur)
@@ -552,10 +614,76 @@ def _detruire_travailleurs(conn, _a):
                  "erreur = coalesce(erreur, 'arrêt d''urgence') WHERE detruit_le IS NULL AND etat NOT IN ('termine', 'echec')")
 
 
+def _instant(texte: str) -> datetime:
+    t = datetime.fromisoformat(texte)
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+@commande("stats-reconstruire")                      # statistiques de la frise recalculées depuis les positions
+def _stats_reconstruire(conn, a):
+    if len(a.args) != 2:
+        raise SystemExit("Préciser le début et la fin (UTC) : taches.py stats-reconstruire 2026-10-17T22:00 "
+                         "2026-10-19T07:00")
+    debut, fin = (_instant(x) for x in a.args)
+    res = run(conn, "stats_reconstruction", lambda: {"debut": debut.isoformat(), "fin": fin.isoformat(),
+                                                     **stats_reconstruire(debut, fin)}, parent=traces.traceparent())
+    if res is None:
+        sys.exit(1)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+@commande("stats-trous")                             # lecture seule : trous de stats_minute
+def _stats_trous(conn, a):
+    depuis = _instant(a.args[0]) if a.args else datetime.now(timezone.utc) - timedelta(days=30)
+    rows = conn.execute(
+        """SELECT minute AS a, nxt AS b, nxt - minute AS duree FROM (
+               SELECT minute, lead(minute) OVER (ORDER BY minute) AS nxt FROM stats_minute WHERE minute >= %s) s
+           WHERE nxt - minute > interval '5 minutes' ORDER BY duree DESC""", (depuis,)).fetchall()
+    traces.attributs(**{"stats.trous": len(rows)})
+    print(f"{len(rows)} trou(s) de plus de 5 min dans stats_minute depuis le {depuis:%d/%m/%Y %H:%M} UTC")
+    for a_, b, d in rows[:30]:
+        n = conn.execute("SELECT count(*) FROM positions WHERE ts > %s AND ts < %s", (a_, b)).fetchone()[0]
+        print(f"  {a_:%d/%m/%Y %H:%M} à {b:%d/%m/%Y %H:%M}  {d}  {n} positions dans le trou")
+
+
 @commande("viirs-reevaluer")                         # règles VIIRS en vigueur appliquées aux détections en base
-def _viirs_reevaluer(conn, _a):
+def _viirs_reevaluer(conn, a):
+    """Sans argument : toutes les détections ; avec DEBUT [FIN] (UTC), celles de la période, et le décompte des
+    détections non évaluables pour coupure du flux avant et après (après une reconstruction des statistiques)."""
     from mars import viirs
-    print(json.dumps(viirs.reevaluate(conn, load_rules()), ensure_ascii=False, indent=2, default=str))
+    from mars.evaluation import MOTIF_COUPURE
+    debut = _instant(a.args[0]) if a.args else None
+    fin = _instant(a.args[1]) if len(a.args) > 1 else datetime.now(timezone.utc)
+
+    def compte():
+        return dict(conn.execute(
+            "SELECT CASE WHEN non_evaluable = %s THEN 'coupure_du_flux' WHEN non_evaluable IS NOT NULL THEN 'autre_motif' "
+            "ELSE 'evaluable_ou_ecartee' END, count(*) FROM viirs_detections WHERE ts >= %s AND ts < %s GROUP BY 1",
+            (MOTIF_COUPURE, debut or datetime(2000, 1, 1, tzinfo=timezone.utc), fin)).fetchall())
+    avant = compte()
+    coupees = [r[0] for r in conn.execute("SELECT id FROM viirs_detections WHERE non_evaluable = %s AND ts >= %s "
+                                          "AND ts < %s", (MOTIF_COUPURE, debut or datetime(2000, 1, 1, tzinfo=timezone.utc),
+                                                           fin)).fetchall()]
+    res = viirs.reevaluate(conn, load_rules(), debut)
+    devenues = conn.execute("SELECT count(*) FROM viirs_detections WHERE id = ANY(%s) AND non_evaluable IS NULL",
+                            (coupees,)).fetchone()[0]
+    res |= {"periode_avant": avant, "periode_apres": compte(), "coupure_puis_evaluees": devenues}
+    traces.attributs(**{"viirs.coupure_puis_evaluees": devenues, "viirs.coupure_avant": len(coupees)})
+    print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
+
+
+@commande("sentinel-flux")                           # drapeau flux_coupe d'une analyse recalculé (statistiques réparées)
+def _sentinel_flux(conn, a):
+    from mars import sentinel
+    if not a.args:
+        raise SystemExit("Préciser l'analyse : taches.py sentinel-flux 97")
+    for aid in a.args:
+        r = sentinel.recalculer_flux(conn, int(aid), load_rules())
+        traces.attributs(**{"sentinel.analyse": int(aid), "sentinel.redevenues_evaluables": len(r["redevenues_evaluables"])})
+        print(json.dumps(r, ensure_ascii=False, indent=2, default=str))
+        if r["redevenues_evaluables"]:
+            print(f"{len(r['redevenues_evaluables'])} détection(s) redevenue(s) évaluable(s), sans alerte : examiner "
+                  "leur fiche, ou relancer l'analyse du passage")
 
 
 @commande("sentinel-diagnostic")                     # lecture seule : Copernicus, puis Scaleway
@@ -604,11 +732,15 @@ def _sentinel_candidats(conn, a):
     if not rows:
         print("Aucun passage Sentinel 1 acquis dans les 36 dernières heures ne couvre un navire des listes")
     for r in rows:
-        cout = f"{r['cout_gpu_eur']:.2f} €".replace(".", ",") if r["cout_gpu_eur"] is not None else "rien à analyser"
+        cout = f", environ {r['cout_estime_eur']:.2f} €".replace(".", ",") if r["cout_estime_eur"] is not None else ""
         print(f"passage {r['passage']:>6}  {r['acquis_le']:%d/%m/%Y %H:%M} UTC  {r['satellite']}  "
-              f"{r['navires_des_listes']} navire(s) des listes, {r['points']} point(s), {r['scenes']} scène(s), "
+              f"{r['navires_des_listes']} navire(s) des listes, {r['points']} point(s) en mer, {r['scenes']} scène(s), "
               f"{r['fenetres']} fenêtre(s) ({r['km2']} km²), environ {r['octets_estimes'] / 1e6:.0f} Mo lus sur "
-              f"{r['octets_scenes'] / 1e6:.0f} Mo, {cout} sur L4")
+              f"{r['octets_scenes'] / 1e6:.0f} Mo ; calcul prévu : {r['calcul_prevu']}{cout}")
+        for e in r["points_ecartes"]:
+            cote = f"{e['distance_cote_m']} m de la côte" if e.get("distance_cote_m") is not None else "côte inconnue"
+            print(f"         écarté : {e.get('navire') or e.get('vessel_id')} ({e['lat']:.4f}, {e['lon']:.4f}, {cote}) : "
+                  f"{e['ecarte']}")
 
 
 commande("sentinel")(_sentinel(False))

@@ -473,11 +473,105 @@ pas touchés. Motif enregistré dans l'analyse et dans la trace : « essai forc�
 7. Relever : `analyses.octets_lus` et `timings` (durée par fenêtre sur processeur, pour ajuster
    `minutes_par_fenetre_cpu`), coût et durée dans `task_runs` (`travailleur_sentinel`).
 
+## Lot C5 : premier essai réel abouti, sélection en mer, processeur en premier (19/10/2026)
+
+### Mesures de l'essai (passage 149, analyse 97, travailleur 27, GP1-S forcé sur processeur)
+
+Trace `83549be17f1b3ca51383ee94ab973fd6`.
+
+| Mesure | Valeur |
+|---|---|
+| Octets lus | 20,0 Mo sur 1 194 Mo de la scène (1,7 %) |
+| Lecture de la fenêtre | 1,1 s |
+| Inférence | 119 s pour une fenêtre de 2 770 × 2 740 pixels, sur 8 processeurs |
+| Démarrage | Docker 30 s, image d'analyse 1 min 39 s |
+| Durée totale | 6 min 15 s de la création à la destruction |
+| Coût | 0,19 € HT (une heure entamée de GP1-S) |
+| Écart de longueur | MSC MERAVIGLIA (détection 9502) : 324 × 52 m au radar pour environ 315 × 43 m réels, soit 9 m (3 %) de plus en longueur |
+
+La seconde détection était masquée « terre ». Le navire des listes qui avait déclenché le passage, VICTOR ANDRYUKHIN
+(4058), était à quai dans les bassins nord du Grand Port de Marseille : invisible au radar, l'analyse ne pouvait rien
+en dire (d'où la sélection en mer ci dessous). L'analyse portait `flux_coupe: true` à cause du trou de `stats_minute`
+du 17/10 22:46 au 19/10 06:00 (`docs/supervision.md`, « Statistiques de la frise ») : après reconstruction,
+`taches.py sentinel-flux 97` recalcule le drapeau.
+
+**Recalibration** (règles 2026.10.29) : `minutes_par_fenetre_cpu` de 12 à 3 (119 s mesurés, plus marge),
+`minutes_fixes_cpu` de 10 à 5. La durée de vie d'un travailleur sur processeur n'est plus fixe (150 min) : elle est
+calculée au lancement, `minutes_fixes_cpu + 3 min par fenêtre + cpu_marge_min` (15), soit 23 min pour une fenêtre et
+32 min pour quatre, enregistrée dans `travailleurs.duree_max_min` et appliquée par la surveillance.
+
+### Sélection : point de déclenchement en mer seulement
+
+Un point « navire des listes » (dans un corridor ou dans l'emprise) n'est retenu qu'à plus de `point_cote_min_km`
+(2 km) de la côte, masque des terres existant, ou au mouillage hors port (zone de mouillage connue à
+`point_mouillage_m` près, 1 km, et à `point_mouillage_cote_min_m`, 800 m, de la côte au moins). Sinon il est écarté
+avec le motif « à quai, invisible au radar ». Un passage sans point retenu n'est pas analysé ; à la main, la commande
+refuse avec le nom des navires écartés. `sentinel-candidats` affiche les points écartés, leur distance à la côte et
+leur motif. Les points d'alerte VIIRS ne sont pas filtrés. Essais : bassins nord de Marseille à 92 m de la côte et
+port de Brest à 281 m écartés ; point au large et mouillage de la rade de Brest à 1,8 km de la côte gardés.
+
+### Choix du calcul : processeur en premier
+
+| Passage | Calcul | Motif enregistré (analyse et trace) |
+|---|---|---|
+| 4 fenêtres au plus (`fenetres_max_cpu`), aucune scène entière | GP1-S d'emblée, POP2-8C-32G si le GP1-S est en rupture, sinon attente | « petit passage : processeur » |
+| Au delà, ou scène entière | GPU dans l'ordre (L4 fr-par-2, L4 fr-par-1, L40S) | « grand passage : GPU » |
+| Grand passage, GPU en rupture depuis `repli_cpu_apres_h` (3 h) | GPU d'abord, puis processeur par lots de 4 fenêtres | « GPU en rupture : processeur par lots » |
+| `SENTINEL_CALCUL_ESSAI=cpu` ou `gpu` (commande manuelle) | ce calcul seulement | « essai forcé sur processeur » ou « essai forcé sur GPU » |
+
+Lots : chaque fenêtre porte un identifiant ; le travailleur ne reçoit que les fenêtres pas encore faites
+(`analyses.fenetres_faites`). Après un lot, l'analyse repart en « attente_gpu » et le lot suivant part au cycle
+suivant (30 min) ; la fusion avec l'AIS et les alertes n'ont lieu qu'une fois toutes les fenêtres analysées (sinon
+les échos fixes seraient comptés à chaque lot). `SENTINEL_CALCUL_ESSAI=gpu` permet d'éprouver le L4 quand il revient,
+sans repli sur processeur.
+
+### Facturation et garde de dépense (point 9)
+
+L'essai 26 (RENDER-S) a été facturé 1,23 € par Scaleway pour 0,28 € estimés : le RENDER-S, comme les GP1 et les POP2,
+est facturé à l'heure entamée ; le L4 et le L40S à la minute. `config/rules.yaml` porte désormais le mode de
+facturation de chaque type (`facturation: minute` ou `heure_entamee`, défaut `heure_entamee`) ; l'estimation, le
+budget du mois, le coût réel et Grafana l'utilisent.
+
+| Type | Zone | Prix HT | Facturation | Coût d'un échec au démarrage (5 min) |
+|---|---|---|---|---|
+| L4-1-24G | fr-par-2, fr-par-1 | 0,7875 €/h | à la minute | 0,07 € |
+| L40S-1-48G | fr-par-2 | 1,4699 €/h | à la minute | 0,12 € |
+| GP1-S | fr-par-2 | 0,1907 €/h | heure entamée | 0,19 € |
+| POP2-8C-32G | fr-par-2 | 0,29 €/h | heure entamée | 0,29 € |
+| RENDER-S (retiré) | fr-par-2 | 1,221 €/h | heure entamée | 1,22 € (1,23 € facturés à l'essai 26) |
+| DEV1-M (VIIRS) | fr-par-1 | 0,0202 €/h | heure entamée | 0,02 € |
+
+Coût réel de chaque travailleur, calculé à sa destruction (création à destruction, selon le mode du type) :
+`travailleurs.cout_reel_eur` et `task_runs` (`travailleur_sentinel`), à côté du coût prévu au lancement
+(`travailleurs.cout_prevu_eur`) ; span `travailleur.cout` avec l'écart. Le travailleur 26 porte les 1,23 € facturés
+(migration 30). Garde : un type facturé à l'heure entamée et plus cher que `prix_max_essai_eur` (0,50 €/h) n'est
+jamais lancé tant qu'aucun travailleur n'a abouti sur lui ; il faut alors `SENTINEL_CALCUL_ESSAI` explicite. Aucun type
+de la liste actuelle n'est concerné ; le RENDER-S l'aurait été.
+
+### Budget mensuel attendu
+
+Hypothèse : 2 scènes par jour au plus (`scenes_max_par_jour: 2`), 1 à 2 fenêtres en moyenne, donc presque toujours
+un petit passage sur GP1-S. Une session dure 9 à 11 min (5 min fixes et 3 min par fenêtre) mais coûte une heure
+entamée, 0,19 €. Les deux scènes d'un même passage partent dans une seule session.
+
+| Sessions | Coût par jour | Coût par mois (30 jours) |
+|---|---|---|
+| 1 par jour (les deux scènes dans le même passage) | 0,19 € | 5,7 € |
+| 2 par jour (deux passages distincts) | 0,38 € | 11,4 € |
+| Pour comparaison, 1 par jour sur L4 (12 + 2 × 1,5 min) | 0,20 € | 5,9 € |
+
+Le processeur ne coûte pas moins que le L4 par session (l'heure entamée efface l'avantage de prix) : il est choisi
+pour sa disponibilité (L4 et L40S en rupture toute la journée du 19/10, GP1-S toujours disponible). **6 € par mois
+suffisent pour une session par jour en moyenne (31 sessions)** ; au delà, la garde du budget refuse proprement les
+sessions de fin de mois. Pour deux passages par jour tout le mois, il faut 12 €.
+
 ## Limites
 
 * Aucune analyse aboutie sur une vraie instance GPU à ce jour (essai 20 : GPU vu, import corrigé depuis) ; la
   lecture par fenêtres est éprouvée dans la vraie image d'AI2 contre un faux S3, pas encore contre Copernicus (aucune
-  clé sur le Mac) ; le repli GP1-S n'est pas encore essayé chez Scaleway (essai forcé ci dessus).
+  clé sur le Mac) ; le GP1-S a abouti le 19/10/2026 (analyse 97), le POP2-8C-32G jamais encore essayé.
+* Une analyse par lots encore inachevée au bout de `fenetre_utile_h` (24 h) est abandonnée sans fusion des fenêtres
+  déjà faites (à 4 fenêtres toutes les 30 min, 12 fenêtres demandent 1 h 30 : cas improbable).
 * Aucun GPU Pascal ne peut servir avec l'image GPU de Scaleway (modules noyau ouverts de NVIDIA, Turing et plus récent) :
   RENDER-S retiré le 19/10/2026 ; quand L4 et L40S sont en rupture, seul le repli sur processeur reste.
 * Sentinel 2 (optique) n'est pas dans cette livraison ; le registre des preuves l'attend (`sentinel2`).

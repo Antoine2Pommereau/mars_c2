@@ -513,7 +513,8 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
         raise Arret(f"image VV illisible chez Copernicus : {gdal.GetLastErrorMsg()[:200]}")
     r["image_px"] = [vv.RasterXSize, vv.RasterYSize]
     dets, octets, t_lecture, t_analyse, ecartees = [], 0, 0.0, 0.0, 0
-    for k, f in enumerate(scene["fenetres"]):
+    for j, f in enumerate(scene["fenetres"]):
+        k = f.get("id", j)              # identifiant donné par le serveur (lots sur processeur, lot C5)
         base = scene["id"].replace(".SAFE", "")
         sid = f"{base}_F{k}.SAFE"
         mdir = os.path.join(tmp, "raw_f" + str(k), sid, "measurement")

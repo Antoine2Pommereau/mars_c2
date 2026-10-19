@@ -730,6 +730,30 @@ docker compose restart grafana
 docker compose exec taches python scripts/taches.py sentinel-diagnostic
 ```
 
+## Statistiques sans trou, Sentinel 1 processeur en premier (lot C5, docs/sentinel.md et docs/supervision.md)
+
+Migration 30 (`db/init/30_stats_processeur.sql` : `stats_suivi`, `analyses.fenetres_faites`, durée de vie, mode de
+facturation, coûts prévu et réel des travailleurs, 1,23 € facturés reportés sur le travailleur 26) ; règles
+2026.10.29. Images qui changent : scripts (taches : statistiques, garde, commandes, stratégie de calcul ; script du
+travailleur Sentinel déposé par cloud-init) et API (modules partagés `mars/`). Interface inchangée. Grafana : deux
+tuiles dans Direct, colonnes de coût dans Satellites, une règle d'alerte (redémarrage).
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/30_stats_processeur.sql
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf backend && docker image prune -af
+docker compose pull backend && docker compose up -d --no-build backend
+docker compose restart grafana
+docker compose exec taches python scripts/taches.py stats-reconstruire 2026-10-17T22:00 2026-10-19T07:00
+docker compose exec taches python scripts/taches.py sentinel-flux 97
+docker compose exec taches python scripts/taches.py viirs-reevaluer 2026-10-17T22:00 2026-10-19T07:00
+docker compose exec taches python scripts/taches.py stats-trous 2026-10-06
+docker compose exec taches python scripts/taches.py sentinel-candidats 72
+docker compose exec taches python scripts/taches.py sentinel-diagnostic
+```
+
 ## Vérifier
 
 ```bash

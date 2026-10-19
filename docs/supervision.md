@@ -168,6 +168,54 @@ en erreur). Sur le Mac, historique synthétique de 30 jours (42 000 minutes de f
 mesures, 865 alertes, 2 900 détections VIIRS) : 86 mesures, la plus longue 0,087 s (positions conservées par minute
 sur 30 jours). À refaire sur le serveur après déploiement.
 
+## Statistiques de la frise (lot C5)
+
+**Constat** : `stats_minute` n'avait aucune ligne du 17/10 22:46 au 19/10 06:00 UTC (31 h 14 min), alors que la table
+des positions en contenait 10 000 à 12 000 par heure. `stats_10min` et `stats_10min_region` avaient le même trou. Le
+trou n'existait que dans les statistiques : la frise montrait une fausse coupure de 31 h, l'analyse Sentinel 97 et les
+détections VIIRS de la période étaient jugées « flux coupé ».
+
+**Cause** : les statistiques n'étaient calculées qu'à la fin d'un cycle des règles (`rules_cycle`), et seulement sur
+les 3 dernières heures. Pendant l'incident du disque plein du 18/10, les cycles des règles échouaient : plus rien
+n'était compté. À la reprise, l'ingestion a rattrapé son retard, mais les positions chargées en retard étaient déjà
+plus vieilles que la fenêtre de 3 h : elles ne l'ont jamais été.
+
+**Correction** :
+* Les statistiques sont une étape à part de la boucle de taches, avant les règles, toutes les 5 minutes : un cycle
+  des règles en échec ne les arrête plus.
+* Chaque passage relit le registre d'ingestion depuis le précédent (`stats_suivi`, migration 30) : un fichier chargé
+  en retard, quelle que soit son heure, fait recompter l'heure qui précède son écriture.
+* Garde toutes les 10 minutes : minutes des dernières 24 h présentes dans les positions mais absentes de
+  `stats_minute`. Au delà de 10, reconstruction automatique de ces minutes (`task_runs`, tâche
+  `stats_reconstruction`) ; en échec, alerte Grafana « Statistiques de la frise non reconstruites », ou ntfy direct si
+  Grafana ne répond pas. Le nombre de minutes absentes est publié dans `signes_de_vie` (service `statistiques`) et
+  affiché dans le tableau Direct, avec le nombre de reconstructions sur 7 jours.
+
+**Reconstruction à la main** (tracée, idempotente : une ligne déjà juste n'est pas réécrite, un second passage
+n'écrit rien) :
+
+```bash
+docker compose exec taches python scripts/taches.py stats-reconstruire 2026-10-17T22:00 2026-10-19T07:00
+docker compose exec taches python scripts/taches.py stats-trous 2026-10-06   # trous de plus de 5 min, positions dedans
+```
+
+Bornes en UTC, alignées sur les tranches de 10 minutes ; `stats-trous` donne pour chaque trou le nombre de positions
+qu'il contient : un vrai arrêt de la collecte en a zéro, un trou des statistiques en a des milliers. Mesure sur la
+copie réelle (159 000 positions sur 27 h) : 1 020 minutes reconstruites en 2,7 s, second passage en 1,2 s sans aucune
+écriture, garde de 24 h en 0,05 s.
+
+**Effets du trou à réparer après reconstruction** :
+* Sentinel : `taches.py sentinel-flux 97` recalcule `flux_coupe` de chaque scène (même définition que VIIRS : au
+  moins 3 minutes sous 20 % de la médiane, à 10 minutes près du passage, lue dans `stats_minute`) et réévalue les
+  détections non évaluables pour cette seule raison.
+* VIIRS : `taches.py viirs-reevaluer 2026-10-17T22:00 2026-10-19T07:00` réévalue les détections de la période et
+  affiche combien passent de « coupure du flux » à évaluées (`coupure_puis_evaluees`).
+* Coupures AIS (en observation) : la règle mesure le flux directement dans les positions, pas dans `stats_minute` :
+  le trou des statistiques ne l'a pas touchée. Pendant l'incident, en revanche, les cycles des règles échouaient ; les
+  cycles suivants ne voient que leur fenêtre de 24 h, les silences du 17 et du 18/10 ne sont jamais repris (sans
+  conséquence : aucune alerte en mode observation).
+* Frise : la fausse coupure de 31 h disparaît dès la reconstruction (l'interface lit `stats_minute`).
+
 ## Limites
 
 * Le gel réel est éprouvé dans Docker (`scripts/verifier_images.sh sante`) avec un processus figé simulé, pas avec un

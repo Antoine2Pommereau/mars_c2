@@ -30,7 +30,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from mars import traces
-from mars.evaluation import critere, motif_non_evaluable
+from mars.evaluation import MOTIF_COUPURE, critere, motif_non_evaluable
 
 STAC = "https://stac.dataspace.copernicus.eu/v1/search"
 S3_HOST = "eodata.dataspace.copernicus.eu"
@@ -251,7 +251,38 @@ def launch_failures_today(conn, now: datetime) -> list[int]:
 
 # Sélection des passages (base)
 
-def interest_points(conn, pass_id: int, rules: dict) -> list[dict]:
+MOTIF_A_QUAI = "à quai, invisible au radar"
+
+
+def en_mer(conn, points: list[dict], rules: dict) -> tuple[list[dict], list[dict]]:
+    """Points d'un navire des listes retenus seulement en mer (lot C5) : à quai ou dans un bassin portuaire, un navire
+    se confond au radar avec les quais et les autres coques (essai du 19/10/2026, VICTOR ANDRYUKHIN dans les bassins
+    nord de Marseille : l'analyse ne pouvait rien en dire). Retenu à plus de `point_cote_min_km` de la côte, ou au
+    mouillage hors port (zone de mouillage connue à `point_mouillage_m` près et au moins `point_mouillage_cote_min_m`
+    de la côte) ; sinon écarté avec son motif. Les autres points (alertes VIIRS) sont gardés tels quels."""
+    s = rules["sentinel"]
+    kept, dropped = [], []
+    for pt in points:
+        if pt.get("motif") not in ("corridor_liste", "navire_liste"):
+            kept.append(pt)
+            continue
+        cote, mouillage = conn.execute(
+            """SELECT (SELECT min(ST_Distance(l.geom, x.g)) FROM land l WHERE ST_DWithin(l.geom, x.g, %(r)s)),
+                      EXISTS (SELECT 1 FROM stationary_zones z WHERE ST_DWithin(z.geom, x.g, %(m)s))
+               FROM (SELECT ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326)::geography AS g) x""",
+            {"r": s["point_cote_min_km"] * 1000.0, "m": float(s["point_mouillage_m"]), "lon": pt["lon"],
+             "lat": pt["lat"]}).fetchone()
+        pt = {**pt, "distance_cote_m": None if cote is None else round(cote)}
+        if cote is None:
+            kept.append({**pt, "en_mer": f"à plus de {s['point_cote_min_km']} km de la côte"})
+        elif mouillage and cote >= s["point_mouillage_cote_min_m"]:
+            kept.append({**pt, "en_mer": "au mouillage hors port"})
+        else:
+            dropped.append({**pt, "ecarte": MOTIF_A_QUAI})
+    return kept, dropped
+
+
+def interest_points(conn, pass_id: int, rules: dict, ecartes: list | None = None) -> list[dict]:
     """Points d'intérêt dans l'emprise d'un passage : navires des listes à moins de `corridor_m` d'une infrastructure,
     à `liste_fenetre_min` près de l'acquisition ; alertes DARK_SHIP VIIRS ouvertes, assez graves, récentes."""
     s = rules["sentinel"]
@@ -284,30 +315,37 @@ def interest_points(conn, pass_id: int, rules: dict) -> list[dict]:
                         "infrastructure_nom": infra_name, "lon": lon, "lat": lat})
         else:
             out.append({"motif": "alerte_viirs", "alerte": ref, "gravite": label, "lon": lon, "lat": lat})
+    out, dropped = en_mer(conn, out, rules)
+    if ecartes is not None:
+        ecartes += dropped
     return out
 
 
-def points_liste(conn, pass_id: int, rules: dict) -> list[dict]:
+def points_liste(conn, pass_id: int, rules: dict, ecartes: list | None = None) -> list[dict]:
     """Navires des listes dans l'emprise d'un passage, à `liste_fenetre_min` près de l'acquisition, corridor ou non :
     points d'un passage choisi à la main (essai réel), pour n'analyser que leurs fenêtres."""
     s = rules["sentinel"]
     rows = conn.execute(
-        """SELECT DISTINCT ON (p.vessel_id) p.vessel_id, ST_X(p.geom::geometry), ST_Y(p.geom::geometry)
+        """SELECT DISTINCT ON (p.vessel_id) p.vessel_id, ST_X(p.geom::geometry), ST_Y(p.geom::geometry), v.name
            FROM sar_passes sp
            JOIN positions p ON p.ts BETWEEN sp.acquired_at - make_interval(mins => %(f)s)
                                        AND coalesce(sp.ended_at, sp.acquired_at) + make_interval(mins => %(f)s)
                            AND ST_Intersects(p.geom::geometry, sp.footprint::geometry)
            JOIN vessel_watch w ON w.vessel_id = p.vessel_id AND w.level <> 'autre_risque'
+           JOIN vessels v ON v.id = p.vessel_id
            WHERE sp.id = %(id)s
            ORDER BY p.vessel_id, abs(extract(epoch FROM p.ts - sp.acquired_at))""",
         {"id": pass_id, "f": s["liste_fenetre_min"]}).fetchall()
-    return [{"motif": "navire_liste", "vessel_id": v, "lon": lon, "lat": lat} for v, lon, lat in rows]
+    out, dropped = en_mer(conn, [{"motif": "navire_liste", "vessel_id": v, "navire": nom, "lon": lon, "lat": lat}
+                                 for v, lon, lat, nom in rows], rules)
+    if ecartes is not None:
+        ecartes += dropped
+    return out
 
 
 def candidats_essai(conn, session, rules: dict, now: datetime, heures: int = 36) -> list[dict]:
     """Passages Sentinel 1 récents qui couvrent un navire des listes (essai réel) : points, scènes, fenêtres, part des
     images lue et coût estimés, sans rien lancer ni écrire."""
-    from mars import travailleurs
     from mars.viirs import regions_boxes
     s = rules["sentinel"]
     boxes = regions_boxes()
@@ -322,18 +360,26 @@ def candidats_essai(conn, session, rules: dict, now: datetime, heures: int = 36)
                                  AND a.status <> 'failed')
                ORDER BY acquired_at DESC LIMIT 10""", (now - timedelta(hours=heures), now)).fetchall()
         for pid, sat, t0, t1, n_listes in rows:
-            points = interest_points(conn, pid, rules) or points_liste(conn, pid, rules)
-            scenes = stac_scenes(session, sat or "", t0 - timedelta(minutes=2), (t1 or t0) + timedelta(minutes=2), box)
+            ecartes: list[dict] = []
+            points = interest_points(conn, pid, rules, ecartes) or points_liste(conn, pid, rules, ecartes)
+            vus, uniques = set(), []
+            for e in ecartes:                       # un navire écarté par les deux recherches n'est montré qu'une fois
+                if e.get("vessel_id") not in vus:
+                    vus.add(e.get("vessel_id"))
+                    uniques.append(e)
+            scenes = stac_scenes(session, sat or "", t0 - timedelta(minutes=2), (t1 or t0) + timedelta(minutes=2),
+                                 box) if points else []
             chosen = pick_scenes(scenes, points, s["interet_rayon_m"]) if points else []
             fen = [(sc, fenetres(sc["emprise"], sc["points"], s)) for sc in chosen]
             n_fen = sum(len(f) for _sc, f in fen)
             octets = sum(part_de_scene(f, sc["emprise"]) * sc["octets"] for sc, f in fen if f)
-            t = travailleurs.type_params(rules, "sentinel")
+            calculs, motif = strategie(n_fen, 0, s, now, now) if n_fen else ((), "rien à analyser")
             out.append({"passage": pid, "satellite": sat, "acquis_le": t0, "navires_des_listes": n_listes,
                         "points": len(points), "scenes": len(chosen), "fenetres": n_fen,
                         "km2": sum(x["km2"] for _sc, f in fen for x in f), "octets_estimes": int(octets),
-                        "octets_scenes": sum(sc["octets"] for sc in chosen),
-                        "cout_gpu_eur": cout_calcul(n_fen, 0, s, t, "gpu") if n_fen else None})
+                        "octets_scenes": sum(sc["octets"] for sc in chosen), "points_ecartes": uniques,
+                        "calcul_prevu": motif,
+                        "cout_estime_eur": estimation(rules, s, n_fen, 0, calculs[0]) if n_fen else None})
         sp.set_attribute("sentinel.candidats", len(out))
     return out
 
@@ -349,7 +395,7 @@ def usage(conn, now: datetime) -> tuple[int, float]:
     # Coût réel de chaque travailleur Sentinel du mois (journal, une fois détruit : un GPU inutilisable compte, une
     # rupture de stock vaut 0), plus le coût estimé des analyses dont le travailleur tourne encore (lot C4)
     spent = conn.execute(
-        """SELECT coalesce((SELECT sum((mesures->>'cout_estime_eur')::float8) FROM travailleurs
+        """SELECT coalesce((SELECT sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)) FROM travailleurs
                             WHERE tache = 'sentinel' AND cree_le >= %(m)s AND detruit_le IS NOT NULL), 0)
                 + coalesce((SELECT sum(a.cout_estime_eur) FROM analyses a JOIN travailleurs t ON t.id = a.travailleur_id
                             WHERE a.source = 'sentinel1' AND t.detruit_le IS NULL AND t.cree_le >= %(m)s), 0)""",
@@ -382,11 +428,14 @@ def plan(conn, session, rules: dict, now: datetime, pass_id: int | None = None) 
         rows = [r for r in rows if r[0] not in failed]
     boxes = regions_boxes()
     box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-    out, waiting, skipped = [], [], 0
+    out, waiting, skipped, ecartes_par = [], [], 0, {}
     for pid, sat, t0, t1, _statut, _mode in rows:
-        points = interest_points(conn, pid, rules)
+        ecartes: list[dict] = []
+        points = interest_points(conn, pid, rules, ecartes)
+        if ecartes:
+            ecartes_par[pid] = ecartes
         if pass_id is None and not points:
-            skipped += 1
+            skipped += 1                          # aucun point, ou seulement des navires à quai : pas d'analyse
             continue
         scenes = stac_scenes(session, sat or "", t0 - timedelta(minutes=2),
                              (t1 or t0) + timedelta(minutes=2), box)
@@ -396,14 +445,21 @@ def plan(conn, session, rules: dict, now: datetime, pass_id: int | None = None) 
             continue
         if pass_id is not None and not points:
             # Passage choisi à la main : navires des listes dans l'emprise (fenêtres), sinon scènes entières
-            points = points_liste(conn, pid, rules)
+            points = points_liste(conn, pid, rules, ecartes)
+            if ecartes:
+                ecartes_par[pid] = ecartes
+        if pass_id is not None and not points and ecartes:
+            noms = ", ".join(str(e.get("navire") or e.get("vessel_id")) for e in ecartes)
+            return {"refus": f"passage {pid} : aucun point en mer, navire(s) des listes {MOTIF_A_QUAI} ({noms})",
+                    "points_ecartes": ecartes}
         if pass_id is not None and not points:
             chosen = [{**sc, "points": []} for sc in sorted(scenes, key=lambda sc: sc["debut"])]
         else:
             chosen = pick_scenes(scenes, points, s["interet_rayon_m"])
         if chosen:
             out.append({"pass_id": pid, "satellite": sat, "acquired_at": t0, "scenes": chosen, "points": points})
-    return {"passages": out, "en_attente_de_publication": waiting, "sans_interet": skipped}
+    return {"passages": out, "en_attente_de_publication": waiting, "sans_interet": skipped,
+            "points_ecartes": ecartes_par}
 
 
 # Fenêtres utiles (lot C3) : seules ces zones des images sont lues et analysées
@@ -462,49 +518,79 @@ def part_de_scene(fen: list[dict], emprise: dict) -> float:
 def cout_calcul(n_fenetres: int, n_scenes_entieres: int, s: dict, t: dict, calcul: str) -> float:
     """Coût estimé d'une session selon le type réellement lancé (GPU ou processeur) et le nombre de fenêtres : partie
     fixe, puis par fenêtre (ou par scène entière, analyse manuelle sans point d'intérêt, GPU seulement)."""
-    from mars.travailleurs import cost
+    from mars.travailleurs import cost, granularite_min
     if calcul == "cpu":
         minutes = s["minutes_fixes_cpu"] + n_fenetres * s["minutes_par_fenetre_cpu"]
     else:
         minutes = (s["minutes_fixes"] + n_fenetres * s["minutes_par_fenetre_gpu"]
                    + n_scenes_entieres * s["minutes_par_scene"])
-    return cost(minutes, t["prix_heure"], t["facturation_min_min"])
+    return cost(minutes, t["prix_heure"], granularite_min(t))
 
 
-def candidats(scw, rules: dict, attente_depuis: datetime, now: datetime, cpu_possible: bool = True,
-              incompatibles: dict | None = None, force_cpu: bool = False) -> tuple[list, dict]:
-    """Types à essayer, dans l'ordre de config/rules.yaml : GPU dont le stock n'est pas épuisé (disponibilité lue avant
-    toute création, API Instances), puis le repli sur processeur si l'attente dépasse repli_cpu_apres_h. Retourne
-    (variantes, disponibilités par « type zone »). Sans client Scaleway (essais), disponibilité inconnue : on essaie."""
+def duree_cpu(n_fenetres: int, s: dict) -> int:
+    """Durée de vie d'un travailleur sur processeur, d'après l'essai réel du 19/10/2026 : démarrage, Docker et image,
+    3 min par fenêtre, plus marge (au lieu de 150 min fixes)."""
+    return int(s["minutes_fixes_cpu"] + n_fenetres * s["minutes_par_fenetre_cpu"] + s["cpu_marge_min"])
+
+
+MOTIF_PETIT, MOTIF_GRAND, MOTIF_LOTS = ("petit passage : processeur", "grand passage : GPU",
+                                        "GPU en rupture : processeur par lots")
+
+
+def strategie(n_fen: int, n_full: int, s: dict, attente_depuis: datetime, now: datetime,
+              force: str | None = None) -> tuple[tuple[str, ...], str]:
+    """Choix du calcul (lot C5, processeur en premier) : (calculs à essayer dans l'ordre, motif). Petit passage
+    (fenetres_max_cpu fenêtres au plus, aucune scène entière) : processeur d'emblée, sans essayer de GPU. Au delà :
+    GPU ; en rupture de GPU depuis repli_cpu_apres_h, processeur par lots de fenetres_max_cpu fenêtres. Une scène
+    entière ne va jamais sur processeur. `force` (SENTINEL_CALCUL_ESSAI, commande manuelle) : cpu ou gpu seulement."""
+    if force == "cpu":
+        return ("cpu",), "essai forcé sur processeur (SENTINEL_CALCUL_ESSAI=cpu, commande manuelle) : fenêtres seules"
+    if force == "gpu":
+        return ("gpu",), "essai forcé sur GPU (SENTINEL_CALCUL_ESSAI=gpu, commande manuelle)"
+    if n_full == 0 and 0 < n_fen <= s["fenetres_max_cpu"]:
+        return ("cpu",), MOTIF_PETIT
+    if n_full == 0 and now - attente_depuis >= timedelta(hours=s["repli_cpu_apres_h"]):
+        return ("gpu", "lots"), MOTIF_LOTS
+    return ("gpu",), MOTIF_GRAND
+
+
+def candidats(scw, rules: dict, calculs: tuple[str, ...] = ("gpu",), incompatibles: dict | None = None,
+              eprouves: set | None = None, essai_explicite: bool = False) -> tuple[list, dict]:
+    """Types à essayer : ceux des `calculs` demandés (gpu, puis cpu pour « lots » ou « cpu »), dans l'ordre de
+    config/rules.yaml, dont le stock n'est pas épuisé (disponibilité lue avant toute création, API Instances).
+    Retourne (variantes, disponibilités par « type zone »). Sans client Scaleway (essais), disponibilité inconnue : on
+    essaie. Garde de dépense (lot C5) : un type facturé à l'heure entamée et plus cher que prix_max_essai_eur n'est
+    jamais lancé tant qu'aucun travailleur n'a abouti sur lui (`eprouves`), sauf essai explicite."""
     from mars import travailleurs
-    s, base = rules["sentinel"], rules["travailleurs"]
+    base = rules["travailleurs"]
     dispo, par_zone = {}, {}
+    voulus = ["cpu" if c == "lots" else c for c in calculs]
     out = []
-    for v in travailleurs.variantes(rules, "sentinel"):
-        t = travailleurs.type_params(rules, "sentinel", v)
-        zone = t.get("zone", base["zone"])
-        if scw is not None and zone not in par_zone and (t["commercial_type"], zone) not in (incompatibles or {}):
-            with traces.span("sentinel.disponibilite", **{"scaleway.zone": zone}) as sp:
-                try:
-                    par_zone[zone] = scw.availability(zone)
-                except Exception as e:
-                    sp.record_exception(e)
-                    par_zone[zone] = {}
-        cle = f"{t['commercial_type']} {zone}"
-        fin = (incompatibles or {}).get((t["commercial_type"], zone))
-        if fin is not None:                     # lot C4 : GPU inutilisable constaté, type sauté jusqu'à la fin du marquage
-            dispo[cle] = f"incompatible jusqu'au {fin:%d/%m/%Y %H:%M}"
-            continue
-        if force_cpu and v["calcul"] != "cpu":  # essai forcé sur processeur (commande manuelle)
-            continue
-        etat = (par_zone.get(zone) or {}).get(t["commercial_type"], "inconnue")
-        dispo[cle] = etat
-        if etat == "shortage":
-            continue
-        if v["calcul"] == "cpu" and not force_cpu and (
-                not cpu_possible or now - attente_depuis < timedelta(hours=s["repli_cpu_apres_h"])):
-            continue
-        out.append(v)
+    toutes = travailleurs.variantes(rules, "sentinel")
+    for calc in voulus:
+        for v in (x for x in toutes if x["calcul"] == calc):
+            t = travailleurs.type_params(rules, "sentinel", v)
+            zone = t.get("zone", base["zone"])
+            cle = f"{t['commercial_type']} {zone}"
+            fin = (incompatibles or {}).get((t["commercial_type"], zone))
+            if fin is not None:                 # lot C4 : GPU inutilisable constaté, type sauté jusqu'à la fin du marquage
+                dispo[cle] = f"incompatible jusqu'au {fin:%d/%m/%Y %H:%M}"
+                continue
+            motif = travailleurs.garde_essai(rules, t, eprouves, essai_explicite)
+            if motif:
+                dispo[cle] = motif
+                continue
+            if scw is not None and zone not in par_zone:
+                with traces.span("sentinel.disponibilite", **{"scaleway.zone": zone}) as sp:
+                    try:
+                        par_zone[zone] = scw.availability(zone)
+                    except Exception as e:
+                        sp.record_exception(e)
+                        par_zone[zone] = {}
+            etat = (par_zone.get(zone) or {}).get(t["commercial_type"], "inconnue")
+            dispo[cle] = etat
+            if etat != "shortage":
+                out.append(v)
     return out, dispo
 
 
@@ -536,10 +622,11 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     après repli_cpu_apres_h). Rupture de stock : analyses en « attente_gpu », nouvel essai au cycle suivant. Retourne le
     résumé ; {"refus": motif} si un garde fou l'interdit."""
     s = dict(rules["sentinel"])
-    # Essai forcé sur processeur (lot C4) : commande manuelle seulement, fenêtres seules ; la boucle n'est pas touchée
-    s["_force_cpu"] = pass_id is not None and (os.environ.get("SENTINEL_CALCUL_ESSAI") or "").strip().lower() == "cpu"
-    if s["_force_cpu"]:
-        traces.attributs(**{"sentinel.calcul_force": "cpu"})
+    # Essai forcé (lot C4 pour cpu, lot C5 pour gpu) : commande manuelle seulement ; la boucle n'est pas touchée
+    force = (os.environ.get("SENTINEL_CALCUL_ESSAI") or "").strip().lower() if pass_id is not None else ""
+    s["_force"] = force if force in ("cpu", "gpu") else None
+    if s["_force"]:
+        traces.attributs(**{"sentinel.calcul_force": s["_force"]})
     essai = os.environ.get("SENTINEL_PLAFOND_ESSAI")
     if pass_id is not None and essai:
         # Essai réel à la main : plafond relevé pour cette commande seulement (rien n'est écrit dans config/rules.yaml)
@@ -575,18 +662,18 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
         for ps in selected:
             for sc in ps["scenes"]:
                 sc["fenetres"] = fenetres(sc["emprise"], sc.get("points") or [], s) if sc.get("points") else []
+                for k, f in enumerate(sc["fenetres"]):
+                    f["id"] = k                 # lots sur processeur : fenêtres faites suivies par identifiant
         n_fen = sum(len(sc["fenetres"]) for ps in selected for sc in ps["scenes"])
         n_full = sum(1 for ps in selected for sc in ps["scenes"] if not sc["fenetres"])
         sp.set_attributes({"sentinel.fenetres": n_fen, "sentinel.scenes_entieres": n_full,
                            "sentinel.fenetres_km2": sum(f["km2"] for ps in selected for sc in ps["scenes"]
                                                         for f in sc["fenetres"])})
-    from mars import travailleurs
-    if s["_force_cpu"] and n_full:
+    if s["_force"] == "cpu" and n_full:
         return {"refus": "essai forcé sur processeur : aucune fenêtre pour ce passage (aucun navire des listes ni point "
                          "d'intérêt), une scène entière n'est jamais analysée sur processeur"}
-    calc = travailleurs.variantes(rules, "sentinel")[-1] if s["_force_cpu"] else {}
-    estimate = cout_calcul(n_fen, n_full, s, travailleurs.type_params(rules, "sentinel", calc or None),
-                           "cpu" if s["_force_cpu"] else "gpu")
+    calculs, _m = strategie(n_fen, n_full, s, now, now, s["_force"])
+    estimate = estimation(rules, s, n_fen, n_full, calculs[0])
     motif = guard(n or asked, scenes_today, spent, estimate, s)       # aucune place : le plafond est le motif
     if motif:
         return {"refus": motif, "scenes_demandees": asked}
@@ -622,6 +709,21 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
             "fenetres": n_fen, "abandonnees": abandon, "en_attente_de_publication": p["en_attente_de_publication"]}
 
 
+def estimation(rules: dict, s: dict, n_fen: int, n_full: int, calcul: str) -> float:
+    """Coût estimé avec le premier type du calcul choisi (processeur : un lot de fenetres_max_cpu fenêtres au plus)."""
+    from mars import travailleurs
+    v = next(x for x in travailleurs.variantes(rules, "sentinel") if x["calcul"] == calcul)
+    t = travailleurs.type_params(rules, "sentinel", v)
+    if calcul == "cpu":
+        return cout_calcul(min(n_fen, s["fenetres_max_cpu"]), 0, s, t, "cpu")
+    return cout_calcul(n_fen, n_full, s, t, "gpu")
+
+
+def restantes(fenetres_scene: list[dict], faites: list) -> list[dict]:
+    """Fenêtres d'une scène pas encore analysées (lots sur processeur)."""
+    return [f for k, f in enumerate(fenetres_scene) if f.get("id", k) not in set(faites or [])]
+
+
 def _reprendre(conn, scw, rules: dict, s: dict, now: datetime, attente: list, log) -> dict:
     """Nouvel essai pour les analyses en attente d'un GPU : même tâche, nouveau choix du type."""
     analyses = [(aid, scenes or []) for aid, scenes, _d, _m in attente]
@@ -633,38 +735,58 @@ def _reprendre(conn, scw, rules: dict, s: dict, now: datetime, attente: list, lo
 
 def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, attente_depuis: datetime,
               spent: float, log) -> dict:
-    """Choisit le type de calcul et lance le travailleur. Chaque décision est un span de la trace de l'analyse :
-    disponibilités, type retenu et raison, rupture de stock, mise en attente."""
+    """Choisit le calcul (strategie : processeur en premier pour un petit passage, GPU pour un grand, processeur par
+    lots en rupture de GPU) et lance le travailleur. Chaque décision est un span de la trace de l'analyse :
+    disponibilités, type retenu et motif, rupture de stock, garde de dépense, mise en attente."""
     from mars import travailleurs
     from mars.viirs import regions_boxes
     ids = [a for a, _ in analyses]
+    faites = dict(conn.execute("SELECT id, fenetres_faites FROM analyses WHERE id = ANY(%s)", (ids,)).fetchall())
     tasks = [{"analyse": aid, **{k: sc.get(k) for k in ("id", "debut", "fin", "orbite", "satellite", "vv", "vh")},
-              "fenetres": sc.get("fenetres") or []} for aid, scs in analyses for sc in scs]
+              "fenetres": restantes(sc.get("fenetres") or [], (faites.get(aid) or {}).get(sc.get("id"))),
+              "entiere": not sc.get("fenetres")} for aid, scs in analyses for sc in scs]
+    tasks = [t for t in tasks if t["entiere"] or t["fenetres"]]
     n_fen = sum(len(t["fenetres"]) for t in tasks)
-    n_full = sum(1 for t in tasks if not t["fenetres"])
-    params = {"scenes": tasks, "regions": regions_boxes(), "confiance": s["confiance"], "nms_m": s["nms_m"],
-              "vignette_km": s["vignette_km"]}
-    force = bool(s.get("_force_cpu"))
+    n_full = sum(1 for t in tasks if t["entiere"])
+    force = s.get("_force")
+    calculs, motif_strategie = strategie(n_fen, n_full, s, attente_depuis, now, force)
     with traces.span("sentinel.choix_calcul", **{"sentinel.analyses": len(ids), "sentinel.fenetres": n_fen,
                                                  "sentinel.attente_min": round((now - attente_depuis).total_seconds() / 60),
-                                                 "sentinel.calcul_force": "cpu" if force else None}) as sp:
-        cands, dispo = candidats(scw, rules, attente_depuis, now, cpu_possible=n_full == 0,
-                                 incompatibles=travailleurs.incompatibles(conn), force_cpu=force)
+                                                 "sentinel.calcul_force": force,
+                                                 "sentinel.strategie": motif_strategie}) as sp:
+        eprouves = travailleurs.eprouves(conn, "sentinel")
+        cands, dispo = candidats(scw, rules, calculs, travailleurs.incompatibles(conn), eprouves, bool(force))
         sp.set_attributes({(f"incompatible.{k}" if str(v).startswith("incompatible") else f"dispo.{k}"): v
                            for k, v in dispo.items()})
         essais = []
         for v in cands:
             t = travailleurs.type_params(rules, "sentinel", v)
             zone = t.get("zone", rules["travailleurs"]["zone"])
-            est = cout_calcul(n_fen, n_full, s, t, v["calcul"])
+            lot = tasks
+            if v["calcul"] == "cpu":
+                # Processeur : fenêtres seules, au plus fenetres_max_cpu par session (lots en rupture de GPU)
+                lot, reste = [], s["fenetres_max_cpu"]
+                for tk in tasks:
+                    if reste > 0 and tk["fenetres"]:
+                        lot.append({**tk, "fenetres": tk["fenetres"][:reste]})
+                        reste -= len(lot[-1]["fenetres"])
+            n_lot = sum(len(tk["fenetres"]) for tk in lot)
+            est = cout_calcul(n_lot, 0 if v["calcul"] == "cpu" else n_full, s, t, v["calcul"])
             if spent + est > s["budget_mensuel_eur"]:
                 essais.append(f"{t['commercial_type']} : budget mensuel dépassé ({est:.2f} € estimés)".replace(".", ","))
                 continue
+            variante = {**v, "cout_prevu_eur": est}
+            if v["calcul"] == "cpu":
+                variante["duree_max_min"] = duree_cpu(n_lot, s)
+            params = {"scenes": [{k: x for k, x in tk.items() if k != "entiere"} for tk in lot],
+                      "regions": regions_boxes(), "confiance": s["confiance"], "nms_m": s["nms_m"],
+                      "vignette_km": s["vignette_km"], "force_cpu": v["calcul"] == "cpu"}
             with traces.span("sentinel.essai_type", **{"sentinel.type": t["commercial_type"], "scaleway.zone": zone,
-                                                       "sentinel.calcul": v["calcul"], "sentinel.cout_estime": est}) as se:
+                                                       "sentinel.calcul": v["calcul"], "sentinel.cout_estime": est,
+                                                       "sentinel.fenetres_lot": n_lot}) as se:
                 try:
-                    r = travailleurs.launch(conn, scw, rules, "sentinel", {**params, "force_cpu": v["calcul"] == "cpu"},
-                                            {}, now=now, log=log, variante=v)
+                    r = travailleurs.launch(conn, scw, rules, "sentinel", params, {}, now=now, log=log,
+                                            variante=variante)
                 except Exception as e:
                     w = conn.execute("SELECT id FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= %s "
                                      "ORDER BY id DESC LIMIT 1", (now - timedelta(minutes=5),)).fetchone()
@@ -680,25 +802,30 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
                 conn.execute("UPDATE analyses SET status = 'failed', error = %s, completed_at = now() WHERE id = ANY(%s)",
                              (r.get("refus") or f"travailleur occupé ({r.get('occupe')})", ids))
                 return r
-            if v["calcul"] == "cpu" and force:
-                motif = "essai forcé sur processeur (SENTINEL_CALCUL_ESSAI=cpu, commande manuelle) : fenêtres seules"
+            if force:
+                motif = motif_strategie
+            elif v["calcul"] == "cpu" and "lots" in calculs:
+                motif = (f"{MOTIF_LOTS} : aucun GPU de la liste depuis "
+                         f"{(now - attente_depuis).total_seconds() / 3600:.1f} h, lot de {n_lot} fenêtre(s) sur {n_fen}")
             elif v["calcul"] == "cpu":
-                motif = (f"aucun GPU de la liste disponible depuis {(now - attente_depuis).total_seconds() / 3600:.1f} h "
-                         f"(repli après {s['repli_cpu_apres_h']} h) : fenêtres analysées sur processeur")
+                motif = f"{MOTIF_PETIT} ({n_fen} fenêtre(s))"
             else:
-                motif = "premier GPU disponible de la liste" + (f" ({' ; '.join(essais)})" if essais else "")
+                motif = MOTIF_GRAND
+            if essais:
+                motif += f" ({' ; '.join(essais)})"
             sp.set_attributes({"sentinel.calcul": v["calcul"], "sentinel.type": t["commercial_type"],
-                               "sentinel.motif": motif})
+                               "sentinel.motif": motif[:300]})
             conn.execute(
                 "UPDATE analyses SET status = 'running', travailleur_id = %s, calcul = %s, calcul_type = %s, "
                 "calcul_motif = %s, essais_calcul = essais_calcul + 1, prochain_essai = NULL, "
                 "cout_estime_eur = %s / greatest(%s, 1) WHERE id = ANY(%s)",
-                (r["travailleur"], v["calcul"], f"{t['commercial_type']} {zone}", motif, est, len(ids), ids))
+                (r["travailleur"], v["calcul"], f"{t['commercial_type']} {zone}", motif[:1000], est, len(ids), ids))
             return {**r, "calcul": v["calcul"], "type": t["commercial_type"], "zone": zone, "motif": motif,
-                    "cout_estime_eur": est}
+                    "cout_estime_eur": est, "fenetres_lot": n_lot}
         # Aucun type n'a pu être lancé : attente, nouvel essai au cycle suivant (pas un échec)
         attente = [f"{k} : {'épuisé' if d == 'shortage' else d}" for k, d in dispo.items()] + essais
-        motif = "GPU indisponible chez Scaleway (" + " ; ".join(attente) + ")"
+        quoi = "processeur" if calculs == ("cpu",) else "GPU"
+        motif = f"{motif_strategie}, {quoi} indisponible chez Scaleway (" + " ; ".join(attente) + ")"
         prochain = now + timedelta(minutes=s["intervalle_min"])
         sp.set_attributes({"sentinel.calcul": "attente", "sentinel.motif": motif[:300]})
         conn.execute("UPDATE analyses SET status = 'attente_gpu', attente_depuis = coalesce(attente_depuis, %s), "
@@ -756,21 +883,45 @@ def ingest(conn, w: dict, rules: dict) -> dict:
                 out["detections"] += 1
                 if d.get("vignette"):
                     images.append((did[0], d["vignette"], d.get("vignette_geo"), t_scene, sc["id"]))
+        # Lots sur processeur (lot C5) : fenêtres faites ajoutées ; s'il en reste, l'analyse repart en attente pour le
+        # lot suivant, et la fusion n'a lieu qu'une fois toutes les fenêtres analysées (sinon les échos fixes
+        # seraient comptés à chaque lot)
+        prev = conn.execute("SELECT fenetres, fenetres_faites, timings, octets_lus FROM analyses WHERE id = %s",
+                            (aid,)).fetchone()
+        prevues, faites = (prev[0] or {}) if prev else {}, dict((prev[1] or {}) if prev else {})
+        for sc in scenes:
+            if sc.get("fenetres"):
+                recues = {f.get("index") for f in sc["fenetres"] if f.get("index") is not None}
+            else:                                     # scène analysée sans détail par fenêtre : toutes faites
+                recues = {f.get("id", k) for k, f in enumerate(prevues.get(sc["id"]) or [])}
+            faites[sc["id"]] = sorted(set(faites.get(sc["id"], [])) | recues)
+        reste = sum(len(restantes(fs, faites.get(sid))) for sid, fs in prevues.items())
+        mes = dict((prev[2] or {}) if prev and isinstance(prev[2], dict) else {})
+        for sc in scenes:                             # fenêtres : taille, octets, durées, détections, motif d'échec
+            m = {k: sc.get(k) for k in ("telecharge_s", "telecharge_mo", "analyse_s", "gpu_max_mo", "erreur",
+                                         "octets_lus", "ecartees_marge", "image_px")}
+            if sc.get("fenetres"):
+                m["fenetres"] = (mes.get(sc["id"]) or {}).get("fenetres", []) + [
+                    {k: f.get(k) for k in ("index", "srcwin", "octets", "lecture_s", "analyse_s", "detections",
+                                           "ecartees_marge", "erreur")} for f in sc["fenetres"]]
+            mes[sc["id"]] = m
+        octets = (sum(int(sc.get("octets_lus") or 0) for sc in scenes) + int((prev[3] or 0) if prev else 0)) or None
+        if reste and not errors:
+            fait = sum(len(v) for v in faites.values())
+            conn.execute("UPDATE analyses SET status = 'attente_gpu', fenetres_faites = %s, timings = %s, octets_lus = %s, "
+                         "prochain_essai = NULL, calcul_motif = %s WHERE id = %s",
+                         (json.dumps(faites), json.dumps(mes), octets,
+                          f"{MOTIF_LOTS} : {fait} fenêtre(s) faite(s), {reste} restante(s), lot suivant au prochain "
+                          "cycle", aid))
+            traces.attributs(**{"sentinel.lot_fenetres_faites": fait, "sentinel.lot_fenetres_restantes": reste})
+            continue
         with traces.span("sentinel.fusion_et_alertes", **{"sentinel.analyse": aid, "sentinel.scenes": len(scenes)}) as sp:
             summary = fuse_analysis(conn, aid, rules) if any(not sc.get("erreur") for sc in scenes) else {}
             sp.set_attributes({f"sentinel.{k}": v for k, v in summary.items() if isinstance(v, (int, float))})
         for k in ("appariees", "alertes_dark_ship", "alertes_non_confirme", "alertes_incoherence", "non_evaluables",
                   "echos_fixes"):
             out[k] += summary.get(k, 0)
-        mes = {sc["id"]: {k: sc.get(k) for k in ("telecharge_s", "telecharge_mo", "analyse_s", "gpu_max_mo", "erreur",
-                                                  "octets_lus", "ecartees_marge", "image_px")}
-               for sc in scenes}
-        for sc in scenes:                             # fenêtres : taille, octets, durées, détections, motif d'échec
-            if sc.get("fenetres"):
-                mes[sc["id"]]["fenetres"] = [{k: f.get(k) for k in ("srcwin", "octets", "lecture_s", "analyse_s",
-                                                                     "detections", "ecartees_marge", "erreur")}
-                                             for f in sc["fenetres"]]
-        octets = sum(int(sc.get("octets_lus") or 0) for sc in scenes) or None
+        conn.execute("UPDATE analyses SET fenetres_faites = %s WHERE id = %s", (json.dumps(faites), aid))
         status = "done" if len(errors) < len(scenes) else "failed"
         conn.execute("UPDATE analyses SET status = %s, completed_at = now(), summary = %s, timings = %s, error = %s, "
                      "octets_lus = %s WHERE id = %s", (status, json.dumps(summary, default=str), json.dumps(mes),
@@ -866,10 +1017,7 @@ def fuse_analysis(conn, aid: int, rules: dict) -> dict:
         fixed = _fixed_points(conn, bbox, t0, rules)
         det_f, _alerts, n_ais, extras = fuse(det, pos, pd.Timestamp(t0), bbox, rules_f, heading, fixed)
         n_fixed = _record_fixed(conn, det_f, extras["fixed_hits"], t0)
-        counts = dict(conn.execute("SELECT minute, positions FROM stats_minute WHERE minute BETWEEN %s AND %s",
-                                   (t0 - timedelta(hours=3), t0 + timedelta(hours=1))).fetchall())
-        from mars.viirs import feed_cut
-        cut = feed_cut(counts, t0, rules["continu"]["flux_min_ratio"], rules["viirs"]["coupure_marge_min"])
+        cut = flux_coupe(conn, t0, rules)
         r = _screen_and_alert(conn, aid, scene, t0, sc, det_f, extras, cut, cells, heading, rules)
         out["appariees"] += int(det_f.matched_vessel_id.notna().sum()) if len(det_f) else 0
         out["echos_fixes"] += n_fixed
@@ -878,6 +1026,48 @@ def fuse_analysis(conn, aid: int, rules: dict) -> dict:
         out["scenes"][scene] = {"detections": len(det_f), "navires_ais": n_ais, "direction_de_vol_deg": heading,
                                 "decalages": extras["offsets"], "flux_coupe": cut, "emprise": foot is not None}
     out["critere_evaluation"] = critere(cells)
+    return out
+
+
+def flux_coupe(conn, t0: datetime, rules: dict) -> bool:
+    """Flux AIS coupé à l'instant du passage, lu dans stats_minute (3 h avant, 1 h après) : même définition que VIIRS
+    (mars/viirs.py, feed_cut). Une minute absente de stats_minute compte pour zéro : un trou des statistiques (18/10/2026)
+    se lit comme une coupure, d'où la garde et la reconstruction du lot C5."""
+    from mars.viirs import feed_cut
+    counts = dict(conn.execute("SELECT minute, positions FROM stats_minute WHERE minute BETWEEN %s AND %s",
+                               (t0 - timedelta(hours=3), t0 + timedelta(hours=1))).fetchall())
+    return feed_cut(counts, t0, rules["continu"]["flux_min_ratio"], rules["viirs"]["coupure_marge_min"])
+
+
+def recalculer_flux(conn, aid: int, rules: dict) -> dict:
+    """Après une reconstruction des statistiques : drapeau flux_coupe de chaque scène recalculé, et détections jugées
+    non évaluables pour la seule coupure du flux réévaluées. Une détection redevenue évaluable n'a pas d'alerte : elle
+    est comptée et signalée (relancer la fusion de l'analyse pour la créer)."""
+    row = conn.execute("SELECT summary FROM analyses WHERE id = %s AND source = 'sentinel1'", (aid,)).fetchone()
+    if row is None:
+        raise ValueError(f"analyse Sentinel 1 {aid} introuvable")
+    summary = row[0] or {}
+    v, out = rules["viirs"], {"analyse": aid, "scenes": {}, "detections_reevaluees": 0, "redevenues_evaluables": []}
+    cells = conn.execute("SELECT EXISTS (SELECT 1 FROM reception_cells)").fetchone()[0]
+    for scene, t0 in conn.execute("SELECT scene, min(ts) FROM detections WHERE analysis_id = %s AND scene IS NOT NULL "
+                                  "GROUP BY 1", (aid,)).fetchall():
+        cut = flux_coupe(conn, t0, rules)
+        avant = (summary.get("scenes") or {}).get(scene, {}).get("flux_coupe")
+        out["scenes"][scene] = {"avant": avant, "apres": cut}
+        summary.setdefault("scenes", {}).setdefault(scene, {})["flux_coupe"] = cut
+        for did, inside, around in conn.execute(
+                """SELECT d.id, EXISTS (SELECT 1 FROM reception_cells c WHERE ST_Intersects(c.geom, d.geom)),
+                          d.ais_navires_rayon FROM detections d
+                   WHERE d.analysis_id = %s AND d.scene = %s AND d.non_evaluable = %s""",
+                (aid, scene, MOTIF_COUPURE)).fetchall():
+            motif = motif_non_evaluable(cut, cells, inside, around, v)
+            out["detections_reevaluees"] += 1
+            conn.execute("UPDATE detections SET non_evaluable = %s, mask_reason = %s WHERE id = %s",
+                         (motif, "non_evaluable" if motif else None, did))
+            if motif is None:
+                out["redevenues_evaluables"].append(did)
+    summary["flux_recalcule_le"] = datetime.now(timezone.utc).isoformat()
+    conn.execute("UPDATE analyses SET summary = %s WHERE id = %s", (json.dumps(summary, default=str), aid))
     return out
 
 

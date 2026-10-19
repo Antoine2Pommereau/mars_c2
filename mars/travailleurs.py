@@ -407,8 +407,36 @@ def type_params(rules: dict, tache: str, variante: dict | None = None) -> dict:
     p = rules["travailleurs"]
     t = {k: v for k, v in p["types"][tache].items() if k not in ("secours", "repli_cpu")}
     t.update(variante or {})
-    t.setdefault("facturation_min_min", p["facturation_min_min"])
+    t.setdefault("facturation", p["facturation"])
     return t
+
+
+FACTURATION = {"minute": 1, "heure_entamee": 60}
+
+
+def granularite_min(t: dict) -> int:
+    """Granularité de facturation d'un type (lot C5) : « minute » (L4, L40S) ou « heure_entamee » (GP1-S, POP2,
+    DEV1, RENDER-S : une heure entamée est due en entier, même pour un échec au démarrage)."""
+    return FACTURATION[t["facturation"]]
+
+
+def eprouves(conn, tache: str) -> set:
+    """Types (commercial_type, zone) sur lesquels au moins un travailleur a abouti."""
+    return {tuple(r) for r in conn.execute("SELECT DISTINCT commercial_type, zone FROM travailleurs WHERE tache = %s "
+                                           "AND etat = 'termine'", (tache,)).fetchall()}
+
+
+def garde_essai(rules: dict, t: dict, eprouves_: set | None, explicite: bool) -> str | None:
+    """Garde de dépense (lot C5, essai 26 : RENDER-S facturé 1,23 € pour 0,28 € estimés) : un type facturé à l'heure
+    entamée plus cher que prix_max_essai_eur n'est lancé qu'une fois éprouvé (un travailleur abouti), ou sur essai
+    explicite (SENTINEL_CALCUL_ESSAI). Retourne le motif du refus, ou None."""
+    plafond = rules["travailleurs"]["prix_max_essai_eur"]
+    if explicite or t["facturation"] != "heure_entamee" or t["prix_heure"] <= plafond:
+        return None
+    if (t["commercial_type"], t.get("zone", rules["travailleurs"]["zone"])) in (eprouves_ or set()):
+        return None
+    return (f"non éprouvé, facturé à l'heure entamée ({t['prix_heure']:.2f} €/h, au delà de {plafond:.2f} €) : "
+            "SENTINEL_CALCUL_ESSAI requis").replace(".", ",")
 
 
 def quota(rules: dict, today: list[dict], now: datetime, tache: str = "viirs") -> str | None:
@@ -589,9 +617,11 @@ def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante=
         with conn.transaction():
             wid = conn.execute(
                 "INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, verrou, trace_id, "
-                "traceparent) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                "traceparent, duree_max_min, cout_prevu_eur, facturation) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "%s, %s) RETURNING id",
                 (tache, t["commercial_type"], zone, token_hash(token), json.dumps(parametres), tache,
-                 traces.trace_id(), traces.traceparent())).fetchone()[0]
+                 traces.trace_id(), traces.traceparent(), t.get("duree_max_min"), t.get("cout_prevu_eur"),
+                 t["facturation"])).fetchone()[0]
     except psycopg.errors.UniqueViolation:
         busy = conn.execute("SELECT id FROM travailleurs WHERE verrou = %s AND detruit_le IS NULL", (tache,)).fetchone()
         return {"occupe": busy[0] if busy else None}
@@ -646,13 +676,14 @@ def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante=
 
 
 def variantes(rules: dict, tache: str) -> list[dict]:
-    """Variantes d'un type de travailleur, dans l'ordre : type de base, types de secours, repli sur processeur (avec
-    « calcul » : gpu ou cpu, pour Sentinel ; un type sans secours n'a que sa base)."""
+    """Variantes d'un type de travailleur, dans l'ordre : type de base, types de secours, types sur processeur (avec
+    « calcul » : gpu ou cpu, pour Sentinel ; un type sans secours n'a que sa base). `repli_cpu` : une liste depuis le
+    lot C5 (GP1-S, puis POP2-8C-32G en secours), un seul type avant."""
     base = rules["travailleurs"]["types"][tache]
     out = [{"calcul": "gpu" if "--gpus" in base.get("docker_opts", "") else "cpu"}]
     out += [{**v, "calcul": "gpu"} for v in base.get("secours", [])]
-    if base.get("repli_cpu"):
-        out.append({**base["repli_cpu"], "calcul": "cpu"})
+    cpu = base.get("repli_cpu") or []
+    out += [{**v, "calcul": "cpu"} for v in (cpu if isinstance(cpu, list) else [cpu])]
     return out
 
 
@@ -669,10 +700,23 @@ def _journal(conn, w: dict, rules: dict):
     """Résumé d'une exécution dans task_runs (tâche travailleur_<tache>), une fois l'instance détruite. Prix du type
     réellement lancé ; une instance détruite pour rupture de stock n'a jamais tourné : coût nul."""
     t = type_params(rules, w["tache"], variante_de(rules, w["tache"], w.get("commercial_type"), w.get("zone")))
+    if w.get("facturation"):
+        t["facturation"] = w["facturation"]           # mode connu au lancement
     minutes = ((w["detruit_le"] or datetime.now(timezone.utc)) - w["cree_le"]).total_seconds() / 60
-    euros = 0.0 if w.get("rupture_stock") else cost(minutes, t["prix_heure"], t["facturation_min_min"])
-    mesures = {**(w["mesures"] or {}), "minutes_instance": round(minutes, 1), "cout_estime_eur": euros}
-    conn.execute("UPDATE travailleurs SET mesures = %s WHERE id = %s", (json.dumps(mesures), w["id"]))
+    # Coût réel (lot C5) : de la création à la destruction, selon le mode de facturation du type ; une instance
+    # détruite pour rupture de stock n'a jamais démarré, rien n'est facturé
+    euros = 0.0 if w.get("rupture_stock") else cost(minutes, t["prix_heure"], granularite_min(t))
+    prevu = w.get("cout_prevu_eur")
+    mesures = {**(w["mesures"] or {}), "minutes_instance": round(minutes, 1), "cout_estime_eur": euros,
+               "cout_reel_eur": euros, "facturation": t["facturation"], "cout_prevu_eur": prevu}
+    with traces.span("travailleur.cout", parent=w.get("traceparent"),
+                     **{"travailleur.id": w["id"], "travailleur.type": w.get("commercial_type"),
+                        "travailleur.facturation": t["facturation"], "travailleur.minutes": round(minutes, 1),
+                        "travailleur.cout_reel": euros, "travailleur.cout_prevu": prevu,
+                        "travailleur.ecart_cout": None if prevu is None else round(euros - float(prevu), 4)}):
+        pass
+    conn.execute("UPDATE travailleurs SET mesures = %s, cout_reel_eur = %s WHERE id = %s",
+                 (json.dumps(mesures), euros, w["id"]))
     details = {"travailleur": w["id"], "type": w["commercial_type"], "etat": w["etat"], "erreur": w["erreur"], **mesures}
     if w.get("volumes_bloc"):
         details["volumes_bloc_supprimes"] = list(w["volumes_bloc"])        # journalisé une fois l'instance détruite
@@ -688,7 +732,8 @@ def _journal(conn, w: dict, rules: dict):
 
 
 COLS = ("id", "tache", "etat", "commercial_type", "zone", "scw_server_id", "resultat", "mesures", "erreur",
-        "cree_le", "fini_le", "detruit_le", "parametres", "demarre_le", "volumes_bloc", "traceparent", "rupture_stock")
+        "cree_le", "fini_le", "detruit_le", "parametres", "demarre_le", "volumes_bloc", "traceparent", "rupture_stock",
+        "duree_max_min", "cout_prevu_eur", "facturation")
 
 
 def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print, now: datetime | None = None) -> dict:
@@ -706,7 +751,8 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
         zones = {p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values()), *(w["zone"] for w in rows)}
         for zone in sorted(zones):
             vie = max([p["duree_max_min"]] + [type_params(rules, k, v).get("duree_max_min", 0)
-                                              for k in p["types"] for v in variantes(rules, k)])
+                                              for k in p["types"] for v in variantes(rules, k)]
+                      + [w["duree_max_min"] or 0 for w in rows])
             for sid in orphans(scw.tagged(zone), active, now, vie, scw.project, scw.protected):
                 with traces.span("travailleur.orphelin", **{"scaleway.zone": zone}):
                     try:
@@ -729,9 +775,11 @@ def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: d
     span rattaché à la trace du lancement (w["traceparent"]) : une analyse reste une seule trace."""
     tp, attrs = w.get("traceparent"), {"travailleur.id": w["id"], "travailleur.tache": w["tache"]}
     age_min = (now - w["cree_le"]).total_seconds() / 60
-    # Durée de vie du type réellement lancé (repli sur processeur : plus longue, lot C3), sinon celle de tous
-    duree_max = type_params(rules, w["tache"], variante_de(rules, w["tache"], w.get("commercial_type"), w.get("zone"))
-                            ).get("duree_max_min", p["duree_max_min"])
+    # Durée de vie calculée au lancement (processeur : selon le nombre de fenêtres, lot C5), sinon celle du type
+    # réellement lancé, sinon celle de tous
+    duree_max = w.get("duree_max_min") or type_params(
+        rules, w["tache"], variante_de(rules, w["tache"], w.get("commercial_type"), w.get("zone"))
+    ).get("duree_max_min", p["duree_max_min"])
     mesures = w.get("mesures") or {}
     # Lot C4 : fin signalée par le travailleur (script de démarrage), ou instance arrêtée d'elle même : traitée tout de
     # suite (destruction à cette minute même), sans attendre la durée de vie

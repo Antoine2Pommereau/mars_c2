@@ -6,6 +6,7 @@ construite (table reception_cells non vide), elle seule décide (hors zone : non
 critère provisoire : au moins un navire AIS reçu dans un rayon autour de la détection, à l'heure du passage."""
 
 CRITERE_ZONE, CRITERE_RAYON = "zone_de_reception_fiable", "navires_dans_le_rayon"
+MOTIF_COUPURE = "coupure du flux AIS à l'heure du passage"
 
 
 def critere(zone_construite: bool) -> str:
@@ -17,7 +18,7 @@ def motif_non_evaluable(flux_coupe: bool, zone_construite: bool, dans_zone: bool
     """Motif pour lequel la détection n'est pas évaluable, ou None si elle l'est. `regle` : rayon, fenêtre et nombre
     de navires du critère provisoire (couverture_rayon_km, couverture_fenetre_min, couverture_min_navires)."""
     if flux_coupe:
-        return "coupure du flux AIS à l'heure du passage"
+        return MOTIF_COUPURE
     if zone_construite:
         return None if dans_zone else "hors de la zone de réception AIS fiable"
     if (navires_autour or 0) < regle["couverture_min_navires"]:

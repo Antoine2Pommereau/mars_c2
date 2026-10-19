@@ -220,3 +220,29 @@ groups:
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      # Lot C5 : statistiques de la frise reconstruites par la garde de taches (minutes absentes de stats_minute) et
+      # reconstruction en échec ; une alerte par échec (fenêtre de 55 minutes)
+      - uid: mars-stats-reconstruction
+        title: Statistiques de la frise non reconstruites
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {source: grafana}
+        annotations:
+          summary: 'Reconstruction des statistiques de la frise en échec ({{ printf "%.0f" $values.A.Value }} fois) : trou dans stats_minute, voir task_runs stats_reconstruction.'
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: A, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT count(*) AS echecs FROM task_runs WHERE task = 'stats_reconstruction' AND status = 'echec' AND started_at > now() - interval '55 minutes'"}
+          - refId: B
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: B, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT CASE WHEN count(*) > 0 THEN 1 ELSE 0 END AS alerte FROM task_runs WHERE task = 'stats_reconstruction' AND status = 'echec' AND started_at > now() - interval '55 minutes'"}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}

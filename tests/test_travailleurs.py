@@ -6,7 +6,8 @@ from datetime import date, datetime, timedelta, timezone
 import yaml
 
 from mars.config import ROOT
-from mars.travailleurs import TAG, cloud_init, cost, orphans, quota, type_params
+from mars.travailleurs import (TAG, cloud_init, cost, garde_essai, granularite_min, orphans, quota, type_params,
+                               variantes)
 from mars.viirs import (detection_time, granule_key, last_night, match, night_of, pair_granules, position_at,
                         severity)
 
@@ -26,9 +27,23 @@ def test_daily_caps():
 
 def test_cost_is_billed_by_started_hour_on_cpu_and_by_minute_on_gpu():
     viirs, gpu = type_params(RULES, "viirs"), type_params(RULES, "sentinel")
-    assert cost(7, viirs["prix_heure"], viirs["facturation_min_min"]) == 0.0202        # une heure entamée
-    assert cost(61, viirs["prix_heure"], viirs["facturation_min_min"]) == 0.0404
-    assert cost(12, gpu["prix_heure"], gpu["facturation_min_min"]) == round(12 / 60 * 0.7875, 4)
+    assert viirs["facturation"] == "heure_entamee" and gpu["facturation"] == "minute"
+    assert cost(7, viirs["prix_heure"], granularite_min(viirs)) == 0.0202        # une heure entamée
+    assert cost(61, viirs["prix_heure"], granularite_min(viirs)) == 0.0404
+    assert cost(12, gpu["prix_heure"], granularite_min(gpu)) == round(12 / 60 * 0.7875, 4)
+
+
+def test_essai_26_would_have_cost_a_full_hour_and_is_now_guarded():
+    """Essai 26 du 19/10/2026 : RENDER-S, échec au démarrage en quelques minutes, facturé une heure entière (1,23 €)."""
+    render = {**type_params(RULES, "sentinel"), "commercial_type": "RENDER-S", "prix_heure": 1.221,
+              "facturation": "heure_entamee", "zone": "fr-par-2"}
+    assert cost(4, render["prix_heure"], granularite_min(render)) == 1.221
+    assert "SENTINEL_CALCUL_ESSAI requis" in garde_essai(RULES, render, set(), False)
+    assert garde_essai(RULES, render, {("RENDER-S", "fr-par-2")}, False) is None          # éprouvé
+    assert garde_essai(RULES, render, set(), True) is None                                # essai explicite
+    gp1 = type_params(RULES, "sentinel", variantes(RULES, "sentinel")[3])
+    assert garde_essai(RULES, gp1, set(), False) is None                                  # 0,19 € : sous le plafond
+    assert garde_essai(RULES, type_params(RULES, "sentinel"), set(), False) is None        # L4 : à la minute
 
 
 def test_orphans_unknown_or_too_old_instances_are_destroyed():
