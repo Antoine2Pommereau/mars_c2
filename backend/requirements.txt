@@ -8,3 +8,10 @@ scipy
 pyproj
 pyyaml
 requests
+# Traces OpenTelemetry (étape D2) : versions épinglées ensemble
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+opentelemetry-instrumentation-fastapi==0.66b1
+opentelemetry-instrumentation-asyncpg==0.66b1
+opentelemetry-instrumentation-httpx==0.66b1
+opentelemetry-instrumentation-requests==0.66b1

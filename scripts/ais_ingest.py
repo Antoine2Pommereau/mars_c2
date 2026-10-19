@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import psycopg
 
+from mars import traces
 from mars.ais.ingest import Ingestor
 from mars.config import ROOT, database_url, load_env, load_rules
 from mars.supervision import SIGNE_INGESTION, signe, toucher
@@ -55,51 +56,57 @@ def main():
     ap.add_argument("--once", action="store_true")
     args = ap.parse_args()
     load_env()
+    traces.init("mars-ingestion")
 
     ing, recent_only = None, False           # premier passage : tous les dossiers (rattrapage)
     failures, last_logged = 0, {}
     while True:
         toucher(BOUCLE)
-        t = time.time()
-        try:
-            if ing is None:
-                ing = Ingestor(connect(), Path(args.root), load_rules()["ingestion"])
-                print(f"Ingestion depuis {args.root} ; allègement repris pour {ing.seed()} navire(s) vus depuis deux "
-                      "heures", flush=True)
-            totals = ing.run_once(recent_only=recent_only)
-            if totals["fichiers"]:
-                print(show(totals, time.time() - t), flush=True)
-            if args.once:
-                ing.refresh_watch(force=True)
-                break
-            recent_only = True
-            toucher(SIGNE_INGESTION)
-            signe(ing.conn, "ingestion", datetime.now(timezone.utc),
-                  {"fichiers": totals["fichiers"], "retard_s": round(ing.retard_s), "duree_s": round(time.time() - t, 1)})
-            if failures:
-                print(f"Ingestion rétablie après {failures} passage(s) en échec", flush=True)
-            failures = 0
-        except Exception as e:
-            # Incident du 18/10/2026 : DiskFull au rafraîchissement de vessel_watch, l'ingestion plantait et
-            # redémarrait en boucle pendant 21 h. Désormais elle reste en vie, dit clairement pourquoi elle échoue,
-            # attend de plus en plus longtemps (jusqu'à 5 min) et reprend seule ; l'alerte « ingestion en échec »
-            # (Grafana, ou taches en secours) prévient
-            failures += 1
-            motif = describe(e)
-            print(f"{datetime.now(timezone.utc):%d/%m/%Y %H:%M:%S}  ÉCHEC DE L'INGESTION ({failures}) : {motif}",
-                  flush=True)
-            if failures == 1 and not is_disk_full(e):
-                traceback.print_exc()
-            if time.time() - last_logged.get(motif[:60], 0) >= JOURNAL_ERREUR_S:
-                last_logged[motif[:60]] = time.time()
-                record_failure(motif, failures)
-            if ing is not None and ing.conn.closed:
-                ing = None                    # connexion perdue (base redémarrée) : reprise depuis le début
-            if args.once:
-                raise
-            time.sleep(min(args.interval * 2 ** min(failures, 5), 300))
-            continue
-        time.sleep(args.interval)
+        t, pause = time.time(), args.interval
+        # Un span par cycle (racine de sa trace), un span par fichier dans Ingestor.run_once
+        with traces.span("ingestion.cycle", nouvelle_trace=True) as sp:
+            try:
+                if ing is None:
+                    ing = Ingestor(connect(), Path(args.root), load_rules()["ingestion"])
+                    print(f"Ingestion depuis {args.root} ; allègement repris pour {ing.seed()} navire(s) vus depuis deux "
+                          "heures", flush=True)
+                totals = ing.run_once(recent_only=recent_only)
+                sp.set_attributes({f"ingestion.{k}": v for k, v in totals.items() if isinstance(v, (int, float))})
+                sp.set_attribute("ingestion.retard_s", round(ing.retard_s))
+                if totals["fichiers"]:
+                    print(show(totals, time.time() - t), flush=True)
+                if args.once:
+                    ing.refresh_watch(force=True)
+                    break
+                recent_only = True
+                toucher(SIGNE_INGESTION)
+                signe(ing.conn, "ingestion", datetime.now(timezone.utc),
+                      {"fichiers": totals["fichiers"], "retard_s": round(ing.retard_s), "duree_s": round(time.time() - t, 1)})
+                if failures:
+                    print(f"Ingestion rétablie après {failures} passage(s) en échec", flush=True)
+                failures = 0
+            except Exception as e:
+                # Incident du 18/10/2026 : DiskFull au rafraîchissement de vessel_watch, l'ingestion plantait et
+                # redémarrait en boucle pendant 21 h. Désormais elle reste en vie, dit clairement pourquoi elle échoue,
+                # attend de plus en plus longtemps (jusqu'à 5 min) et reprend seule ; l'alerte « ingestion en échec »
+                # (Grafana, ou taches en secours) prévient
+                failures += 1
+                motif = describe(e)
+                sp.record_exception(e)
+                traces.erreur(motif)
+                print(f"{datetime.now(timezone.utc):%d/%m/%Y %H:%M:%S}  ÉCHEC DE L'INGESTION ({failures}) : {motif}",
+                      flush=True)
+                if failures == 1 and not is_disk_full(e):
+                    traceback.print_exc()
+                if time.time() - last_logged.get(motif[:60], 0) >= JOURNAL_ERREUR_S:
+                    last_logged[motif[:60]] = time.time()
+                    record_failure(motif, failures)
+                if ing is not None and ing.conn.closed:
+                    ing = None                    # connexion perdue (base redémarrée) : reprise depuis le début
+                if args.once:
+                    raise
+                pause = min(args.interval * 2 ** min(failures, 5), 300)   # attente hors du span du cycle
+        time.sleep(pause)
 
 
 def is_disk_full(e: Exception) -> bool:

@@ -26,6 +26,8 @@ from pathlib import Path
 # Fichier touché par la collecte après chaque écriture réussie d'un fichier Parquet (mise à jour de la date seule : sans
 # besoin de place, même disque plein). Lu par son contrôle de santé et par taches.
 SIGNE_COLLECTE = ".signe_de_vie_collecte"
+# Empreinte du commit de l'image de la collecte, écrite à son démarrage : taches la recopie dans son signe de vie
+VERSION_COLLECTE = ".version_collecte"
 # Même principe pour l'ingestion, dans son propre conteneur (le dossier de la collecte y est en lecture seule)
 SIGNE_INGESTION = "/tmp/signe_de_vie_ingestion"
 
@@ -41,7 +43,8 @@ def seuil(nom: str, defaut: float) -> float:
 def seuils() -> dict:
     return {"disque_pct": seuil("SEUIL_DISQUE_LIBRE_PCT", 15), "collecte_min": seuil("SEUIL_COLLECTE_MIN", 5),
             "ingestion_min": seuil("SEUIL_INGESTION_MIN", 10), "heure_nuit_viirs": seuil("HEURE_NUIT_VIIRS", 8),
-            "echecs_successifs": seuil("ECHECS_SUCCESSIFS", 2)}
+            "echecs_successifs": seuil("ECHECS_SUCCESSIFS", 2),
+            "collecteur_muet_min": seuil("SEUIL_COLLECTEUR_MUET_MIN", 15)}
 
 
 def toucher(path: Path | str):
@@ -113,13 +116,19 @@ def mesurer(conn, live: Path, disque: str = "/") -> dict:
                  "%(libre_pct)s, %(base_octets)s, %(positions_octets)s, %(ais_live_octets)s, %(ais_live_fichiers)s, "
                  "%(dernier_parquet)s)", m)
     conn.execute("DELETE FROM mesures_disque WHERE mesure_le < now() - interval '365 days'")
+    from mars import traces
+    traces.attributs(**{f"disque.{k}": v for k, v in m.items() if isinstance(v, (int, float))})
     return m
 
 
-def signe(conn, service: str, dernier_le: datetime, detail: dict | None = None):
+def signe(conn, service: str, dernier_le: datetime, detail: dict | None = None, version: str | None = None):
+    """Signe de vie d'un service, avec l'empreinte du commit de son image (`version` ; celle du processus par défaut) :
+    la barre d'état et Grafana montrent si le serveur tourne sur la bonne version."""
+    from mars.traces import version as v
+    detail = {**(detail or {}), "version": version or v()}
     conn.execute("INSERT INTO signes_de_vie (service, dernier_le, detail, mesure_le) VALUES (%s, %s, %s, now()) "
                  "ON CONFLICT (service) DO UPDATE SET dernier_le = EXCLUDED.dernier_le, detail = EXCLUDED.detail, "
-                 "mesure_le = now()", (service, dernier_le, json.dumps(detail or {}, default=str)))
+                 "mesure_le = now()", (service, dernier_le, json.dumps(detail, default=str)))
 
 
 def signe_collecte(live: Path) -> datetime | None:
@@ -130,6 +139,13 @@ def signe_collecte(live: Path) -> datetime | None:
         s = datetime.now(timezone.utc) - timedelta(seconds=a)
         t = s if t is None or s > t else t
     return t
+
+
+def version_collecte(live: Path) -> str | None:
+    try:
+        return (live / VERSION_COLLECTE).read_text().strip()[:40] or None
+    except OSError:
+        return None
 
 
 def parametres(conn, rules: dict):
@@ -158,6 +174,64 @@ def role_grafana(conn) -> bool:
     return True
 
 
+# Collecteur OpenTelemetry (étape D2) : ses propres mesures, lues chaque minute et consignées pour Grafana
+
+OTEL_MESURES = {"recus": ("otelcol_receiver_accepted_spans",),
+                "refuses": ("otelcol_receiver_refused_spans", "otelcol_receiver_failed_spans",
+                            "otelcol_processor_memory_limiter_refused_spans",
+                            "otelcol_processor_tail_sampling_sampling_trace_dropped_too_early",
+                            "otelcol_exporter_enqueue_failed_spans"),
+                "envoyes": ("otelcol_exporter_sent_spans",),
+                "echecs_envoi": ("otelcol_exporter_send_failed_spans",),
+                "file_attente": ("otelcol_exporter_queue_size",),
+                "traces_gardees": ("otelcol_processor_tail_sampling_count_traces_sampled",),
+                "memoire_octets": ("otelcol_process_memory_rss",),
+                "demarre_depuis_s": ("otelcol_process_uptime",)}
+
+
+def lire_mesures_otel(texte: str) -> dict:
+    """Mesures du collecteur (format texte de Prometheus, port 8888) réduites à quelques totaux. Les compteurs portent
+    un suffixe _total selon les versions : les deux formes sont lues. Pour traces_gardees, seules les décisions
+    « échantillonnée » comptent."""
+    out = {k: None for k in OTEL_MESURES}
+    for line in texte.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        head, _, raw = line.rpartition(" ")
+        name, _, labels = head.partition("{")
+        name = name.removesuffix("_total")
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        for k, names in OTEL_MESURES.items():
+            if name in names:
+                if k == "traces_gardees" and 'sampled="true"' not in labels:
+                    continue
+                out[k] = (out[k] or 0) + value
+    return out
+
+
+def mesurer_otel(conn, url: str | None = None, opener=None) -> dict | None:
+    """Relevé du collecteur OpenTelemetry (OTEL_METRIQUES_URL, http://otel:8888/metrics sur le serveur) dans
+    mesures_otel ; collecteur injoignable : ligne « joignable = faux ». Alertes de Grafana : plus aucun span reçu
+    depuis SEUIL_COLLECTEUR_MUET_MIN minutes, ou des spans refusés (mémoire saturée)."""
+    url = url or os.environ.get("OTEL_METRIQUES_URL")
+    if not url:
+        return None
+    try:
+        with (opener or urllib.request.urlopen)(url, timeout=5) as r:
+            m = {"joignable": True, **lire_mesures_otel(r.read().decode("utf-8", "replace"))}
+    except Exception:
+        m = {"joignable": False, **{k: None for k in OTEL_MESURES}}
+    conn.execute("INSERT INTO mesures_otel (joignable, recus, refuses, envoyes, echecs_envoi, file_attente, "
+                 "traces_gardees, memoire_octets, demarre_depuis_s) VALUES (%(joignable)s, %(recus)s, %(refuses)s, "
+                 "%(envoyes)s, %(echecs_envoi)s, %(file_attente)s, %(traces_gardees)s, %(memoire_octets)s, "
+                 "%(demarre_depuis_s)s)", m)
+    conn.execute("DELETE FROM mesures_otel WHERE mesure_le < now() - interval '30 days'")
+    return m
+
+
 # Alertes sur le téléphone
 
 class Ntfy:
@@ -175,6 +249,13 @@ class Ntfy:
         return n if n.sujet else None
 
     def envoyer(self, titre: str, message: str, priorite: str = "high", tags: str = "warning") -> int:
+        from mars import traces                         # appel externe tracé ; ni sujet ni message dans le span
+        with traces.span("ntfy.envoi", **{"peer.service": "ntfy", "ntfy.priorite": priorite}) as sp:
+            code = self._envoyer(titre, message, priorite, tags)
+            sp.set_attribute("http.response.status_code", code)
+            return code
+
+    def _envoyer(self, titre: str, message: str, priorite: str, tags: str) -> int:
         # Les en têtes HTTP sont en latin 1 : le titre passe en UTF 8 par l'encodage RFC 2047 que ntfy décode
         req = urllib.request.Request(f"{self.url}/{self.sujet}", data=message.encode("utf-8"), method="POST",
                                      headers={"Title": _rfc2047(titre), "Priority": priorite, "Tags": tags})

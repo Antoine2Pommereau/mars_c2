@@ -1,13 +1,14 @@
+import { appel } from "./traces";
 import type { FC, Feature, Props } from "./types";
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(`/api${path}`);
+  const r = await appel(`/api${path}`);
   if (!r.ok) throw new Error(`${path} : ${r.status}`);
   return r.json();
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(`/api${path}`, {
+  const r = await appel(`/api${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -83,7 +84,7 @@ export const api = {
   suivis: (region: string | null = null) => get<Props[]>(`/suivis${rg(region, "?")}`),
   suivre: (id: number, author: string) => post<Props>("/suivis", { vessel_id: id, author }),
   nePlusSuivre: async (id: number) => {
-    const r = await fetch(`/api/suivis/${id}`, { method: "DELETE" });
+    const r = await appel(`/api/suivis/${id}`, { method: "DELETE" });
     if (!r.ok) throw new Error(`/suivis/${id} : ${r.status}`);
     return r.json();
   },

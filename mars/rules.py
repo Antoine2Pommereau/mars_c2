@@ -1071,8 +1071,12 @@ async def run_continuous(c, now: datetime, rules: dict) -> dict:
     durees: dict[str, float] = {}
 
     async def step(name, coro):
+        from mars import traces
         t = time.perf_counter()
-        r = await coro
+        with traces.span(f"regles.{name}") as sp:
+            r = await coro
+            if isinstance(r, dict):                     # alertes créées, mises à jour, retirées, épisodes
+                sp.set_attributes({f"regles.{k}": v for k, v in r.items() if isinstance(v, (int, float))})
         durees[name] = round(time.perf_counter() - t, 2)
         return r
     if await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):

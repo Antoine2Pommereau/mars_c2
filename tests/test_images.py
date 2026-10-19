@@ -24,6 +24,8 @@ def _requirements(path: Path) -> set[str]:
         name = re.split(r"[<>=;\s]", line.strip(), maxsplit=1)[0]
         if name and not name.startswith("#"):
             mod = PIP.get(name.lower(), name.lower().replace("-", "_"))
+            if name.lower().startswith("opentelemetry-"):     # paquets du kit : un seul espace de noms
+                mod = "opentelemetry"
             out |= {mod, *BRINGS.get(mod, set())}
     return out
 

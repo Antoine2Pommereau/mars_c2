@@ -1,4 +1,5 @@
 import { L } from "../lib/libelles";
+import { VERSION_INTERFACE } from "../lib/traces";
 
 // Registre des indicateurs de la barre d'état : chaque indicateur lit l'état du direct (/api/ingestion), se classe
 // vert, orange ou rouge, et fournit son détail. Les seuils sont des repères d'exploitation, pas de la calibration.
@@ -136,6 +137,19 @@ export const INDICATEURS: Indicateur[] = [
       if (s1) detail.push([E.coutMois, E.euros(s1.euros_mois ?? 0)]);
       if (ls?.statut === "echec") detail.push([E.lancementSentinel, `${date(ls.le)}${ls.erreur ? ` : ${ls.erreur}` : ""}`]);
       return { niveau, resume: premier ? E.dans(duree(Date.parse(premier.acquired_at) - now)) : L.commun.nd, detail };
+    },
+  },
+  {
+    // Empreinte du commit de chaque image (étape D2) : interface (construite avec elle), API, tâches, ingestion,
+    // collecte (signes de vie). Toutes égales : vert ; une image en retard : orange, avec le détail
+    id: "version", libelle: E.version, etape: null,
+    evaluer: (s) => {
+      const v: Record<string, string> = { interface: VERSION_INTERFACE, ...(s?.versions ?? {}) };
+      if (!s) return { niveau: "gris", resume: VERSION_INTERFACE, detail: [] };
+      const services = ["interface", "api", "taches", "ingestion", "collecte"];
+      const ecarts = services.filter((k) => v[k] && v[k] !== v.interface);
+      return { niveau: ecarts.length ? "orange" : "vert", resume: VERSION_INTERFACE,
+        detail: services.map((k) => [E.services[k] ?? k, v[k] ? `${v[k]}${ecarts.includes(k) ? `, ${E.differente}` : ""}` : L.commun.nd]) };
     },
   },
 ];

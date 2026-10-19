@@ -38,7 +38,7 @@ export default function DetailPanel(p: PanelProps) {
   const passage = usePassage(passageId);
   if (!selection) return null;
 
-  let title = "", color = "#4fb6c8", badge: string | null = null, footer: string | null = null;
+  let title = "", color = "#4fb6c8", badge: string | null = null, footer: string | null = null, trace: string | null = null;
   const ctx: Contexte = { objet: "detection", passTime: p.passTime, plage: p.plage, suivis: p.suivis, vessels: p.vessels,
     alerts: p.alerts, onStatus: p.onStatus, onPickAlert: p.onPickAlert, onPickVessel: p.onPickVessel,
     onPickInfra: p.onPickInfra, onSuivre: p.onSuivre, onRejeu: p.onRejeu, onPickDetection: p.onPickDetection };
@@ -49,6 +49,7 @@ export default function DetailPanel(p: PanelProps) {
     color = typeAlerte(a.type).couleur;
     badge = a.status && a.status !== "nouvelle" ? L.statut[a.status] : null;
     footer = L.fiche.regles(a.rule_version, a.event_time ? utc(a.event_time) : undefined);
+    trace = a.details?.trace_id ?? null;               // trace qui a produit l'alerte (Grafana, Tempo)
   } else if (selection.kind === "vessel") {
     Object.assign(ctx, { objet: "navire", navire: selection.properties, carte: card.data });
     title = selection.properties.name || card.data?.name || L.fiche.navireSansNom;
@@ -94,7 +95,8 @@ export default function DetailPanel(p: PanelProps) {
           {s.rendu(ctx)}
         </details>
       ) : <div key={s.id} className="mt-2">{s.rendu(ctx)}</div>)}
-      {footer && <p className="mt-4 border-t border-hair pt-3 text-[12px] text-muted">{footer}</p>}
+      {footer && <p className="mt-4 border-t border-hair pt-3 text-[12px] text-muted">{footer}
+        {trace && <span className="mt-1 block select-all font-mono text-[10px] opacity-60" title={trace}>{L.fiche.trace(trace)}</span>}</p>}
     </div>
   );
 }

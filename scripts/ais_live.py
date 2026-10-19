@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mars.ais.live import SOURCE, ZONES  # noqa: E402  (zones et origine partagées avec l'ingestion en base)
-from mars.supervision import SIGNE_COLLECTE, toucher  # noqa: E402
+from mars import traces  # noqa: E402
+from mars.supervision import SIGNE_COLLECTE, VERSION_COLLECTE, toucher  # noqa: E402
 
 OUT = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
 URL = "wss://stream.aisstream.io/v0/stream"
@@ -154,18 +155,26 @@ async def collect(api_key):
                 await asyncio.wait_for(stop.wait(), FLUSH_S)
             except asyncio.TimeoutError:
                 pass
-            try:
-                if buf.flush():
-                    toucher(OUT / SIGNE_COLLECTE)
-                print(buf.status(), flush=True)
-            except Exception as e:
-                waiting = len(buf.pos) + len(buf.static)
-                print(f"ÉCHEC D'ÉCRITURE des fichiers Parquet ({type(e).__name__}: {str(e)[:200]}) ; "
-                      f"{waiting} messages gardés en mémoire, nouvel essai dans {FLUSH_S} s", flush=True)
+            # Un span par écriture (chaque minute), racine de sa propre trace
+            with traces.span("collecte.ecriture", nouvelle_trace=True) as sp:
                 try:
-                    toucher(OUT / ECHEC_ECRITURE)
-                except OSError:
-                    pass
+                    n = buf.flush()
+                    sp.set_attributes({"collecte.fichiers": n, "collecte.messages_total": buf.n,
+                                       "collecte.navires": sum(len(v) for v in buf.mmsi.values())})
+                    if n:
+                        toucher(OUT / SIGNE_COLLECTE)
+                    print(buf.status(), flush=True)
+                except Exception as e:
+                    waiting = len(buf.pos) + len(buf.static)
+                    sp.record_exception(e)
+                    sp.set_attribute("collecte.en_attente", waiting)
+                    traces.erreur(f"écriture des fichiers Parquet en échec ({type(e).__name__})")
+                    print(f"ÉCHEC D'ÉCRITURE des fichiers Parquet ({type(e).__name__}: {str(e)[:200]}) ; "
+                          f"{waiting} messages gardés en mémoire, nouvel essai dans {FLUSH_S} s", flush=True)
+                    try:
+                        toucher(OUT / ECHEC_ECRITURE)
+                    except OSError:
+                        pass
 
     async def reader():
         delay = 2
@@ -176,19 +185,31 @@ async def collect(api_key):
         }
         while not stop.is_set():
             try:
-                async with websockets.connect(URL, ping_interval=20, max_size=2**22) as ws:
+                # Appel externe tracé : la connexion et l'abonnement (la clé n'est jamais un attribut)
+                with traces.span("aisstream.connexion", nouvelle_trace=True,
+                                 **{"peer.service": "AISStream", "aisstream.zones": len(ZONES)}):
+                    ws = await websockets.connect(URL, ping_interval=20, max_size=2**22)
                     await ws.send(json.dumps(subscription))   # à envoyer dans les 3 secondes
-                    print("Connecté à AISStream", flush=True)
-                    delay = 2
+                print("Connecté à AISStream", flush=True)
+                delay = 2
+                try:
                     async for raw in ws:
                         msg = json.loads(raw)
                         if "error" in msg:
+                            with traces.span("aisstream.erreur", nouvelle_trace=True, **{"peer.service": "AISStream"}):
+                                traces.erreur(str(msg["error"])[:200])
                             print("Erreur AISStream :", msg["error"], flush=True)
                             break
                         buf.add(msg)
                         if stop.is_set():
                             break
+                finally:
+                    await ws.close()
             except Exception as e:
+                with traces.span("aisstream.coupure", nouvelle_trace=True,
+                                 **{"peer.service": "AISStream", "aisstream.nouvel_essai_s": delay}) as sp:
+                    sp.record_exception(e)
+                    traces.erreur(f"connexion perdue ({e.__class__.__name__})")
                 print(f"Connexion perdue ({e.__class__.__name__}), nouvel essai dans {delay} s", flush=True)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
@@ -265,6 +286,12 @@ def main():
         key = os.environ.get("AISSTREAM_API_KEY")
         if not key:
             raise SystemExit("Définir AISSTREAM_API_KEY")
+        traces.init("mars-collecte")
+        try:
+            OUT.mkdir(parents=True, exist_ok=True)
+            (OUT / VERSION_COLLECTE).write_text(traces.version())    # relevée par taches (signe de vie, version)
+        except OSError:
+            pass
         asyncio.run(collect(key))
     else:
         report()

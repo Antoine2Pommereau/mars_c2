@@ -8,3 +8,7 @@ asyncpg
 requests
 pyshp
 shapely
+# Traces OpenTelemetry (étape D2) : versions épinglées ensemble
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+opentelemetry-instrumentation-requests==0.66b1

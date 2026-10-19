@@ -20,6 +20,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
+from mars import traces
 from mars.ais.live import ZONES
 
 STAC = "https://stac.dataspace.copernicus.eu/v1/search"
@@ -296,31 +297,45 @@ def update(conn, days: int | None = None, now: datetime | None = None, session=N
     out: dict = {"jours": days}
     errors = {}
     for mission in ("S1", "S2"):
-        try:
-            feats = stac_search(session, mission, now - timedelta(days=days), now)
-            passes = group_catalogue(feats, mission)
-            out[f"catalogue_{mission}"] = {"produits": len(feats), "passages": len(passes), **upsert(conn, passes)}
-        except Exception as e:                                # une source en échec n'empêche pas l'autre
-            errors[f"catalogue_{mission}"] = str(e)[:300]
-        try:
-            r = session.get(PLAN_PAGES[mission], headers=HEADERS, timeout=60)
-            r.raise_for_status()
-            plans = current_plans(plan_links(r.text, mission), now)
-            got = []
-            for sat, url in plans:
-                k = session.get(url, headers=HEADERS, timeout=120)
-                k.raise_for_status()
-                got += parse_plan(k.content, sat, mission, now)
-            out[f"plans_{mission}"] = {"fichiers": [u.rsplit("/", 1)[-1] for _, u in plans], "passages": len(got),
-                                       **upsert(conn, got)}
-        except Exception as e:
-            errors[f"plans_{mission}"] = str(e)[:300]
-    out["prevus_retires"] = conn.execute(
-        "DELETE FROM sar_passes s WHERE s.statut = 'prevu' AND s.ended_at < %s "
-        "AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.pass_id = s.id)", (now - timedelta(days=2),)).rowcount
-    conn.execute(COVERAGE, {"france": list(FRANCE), "margin": WATCH_MARGIN_MIN, "since": now - timedelta(days=days + 1)})
+        with traces.span(f"passages.catalogue_{mission}", **{"passages.mission": mission}) as sp:
+            try:
+                feats = stac_search(session, mission, now - timedelta(days=days), now)
+                passes = group_catalogue(feats, mission)
+                out[f"catalogue_{mission}"] = {"produits": len(feats), "passages": len(passes), **upsert(conn, passes)}
+                sp.set_attributes({"passages.produits": len(feats), "passages.passages": len(passes)})
+            except Exception as e:                            # une source en échec n'empêche pas l'autre
+                sp.record_exception(e)
+                traces.erreur(str(e))
+                errors[f"catalogue_{mission}"] = str(e)[:300]
+        with traces.span(f"passages.plans_{mission}", **{"passages.mission": mission}) as sp:
+            _plans(conn, session, mission, now, out, errors, sp)
+    with traces.span("passages.couverture"):
+        out["prevus_retires"] = conn.execute(
+            "DELETE FROM sar_passes s WHERE s.statut = 'prevu' AND s.ended_at < %s "
+            "AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.pass_id = s.id)", (now - timedelta(days=2),)).rowcount
+        conn.execute(COVERAGE, {"france": list(FRANCE), "margin": WATCH_MARGIN_MIN,
+                                "since": now - timedelta(days=days + 1)})
     if errors:
         out["erreurs"] = errors
         if len(errors) == 4:
             raise RuntimeError(f"toutes les sources en échec : {errors}")
     return out
+
+
+def _plans(conn, session, mission: str, now: datetime, out: dict, errors: dict, sp):
+    """Plans d'acquisition de l'ESA d'une mission ; une erreur est notée sans arrêter les autres sources."""
+    try:
+        r = session.get(PLAN_PAGES[mission], headers=HEADERS, timeout=60)
+        r.raise_for_status()
+        plans = current_plans(plan_links(r.text, mission), now)
+        got = []
+        for sat, url in plans:
+            k = session.get(url, headers=HEADERS, timeout=120)
+            k.raise_for_status()
+            got += parse_plan(k.content, sat, mission, now)
+        out[f"plans_{mission}"] = {"fichiers": [u.rsplit("/", 1)[-1] for _, u in plans], "passages": len(got),
+                                   **upsert(conn, got)}
+    except Exception as e:
+        sp.record_exception(e)
+        traces.erreur(str(e))
+        errors[f"plans_{mission}"] = str(e)[:300]

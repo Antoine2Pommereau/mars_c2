@@ -1,0 +1,23 @@
+# Source de données Tempo (étape D2) : traces de tout le système, conservées 72 h (otel/tempo.yaml). Provisionnée en
+# code, non modifiable depuis l'interface. Les liens des tableaux (tâches, travailleurs) ouvrent la trace par son
+# identifiant (uid « tempo »).
+apiVersion: 1
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      search:
+        hide: false
+      nodeGraph:
+        enabled: true
+      traceQuery:
+        timeShiftEnabled: true
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+      streamingEnabled:
+        search: true
+        metrics: true

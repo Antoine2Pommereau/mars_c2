@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from mars import traces
 from mars.ais.live import valid_imo
 from mars.config import ROOT
 
@@ -173,12 +174,15 @@ def fetch(url: str, timeout: float = 120) -> bytes:
 
 def update_opensanctions(conn) -> dict:
     """Téléchargement du jeu maritime d'OpenSanctions (environ 5 Mo, en mémoire) et import s'il a changé."""
-    data = fetch(OS_URL)
-    os_ = load_os(data)
+    with traces.span("listes.telechargement", **{"listes.source": "opensanctions"}):
+        data = fetch(OS_URL)
+    with traces.span("listes.lecture", **{"listes.source": "opensanctions", "listes.octets": len(data)}):
+        os_ = load_os(data)
     if os_.empty:
         raise ValueError("jeu OpenSanctions sans navire : liste précédente conservée")
     rows = os_rows(os_)
-    return {"source": "opensanctions", "octets": len(data), **import_rows(conn, "opensanctions", rows)}
+    with traces.span("listes.import", **{"listes.source": "opensanctions", "listes.navires": len(rows)}):
+        return {"source": "opensanctions", "octets": len(data), **import_rows(conn, "opensanctions", rows)}
 
 
 def update_gur(conn, known_sha: str | None) -> dict:
@@ -189,9 +193,12 @@ def update_gur(conn, known_sha: str | None) -> dict:
     sha = r.json()["sha"]
     if sha == known_sha:
         return {"source": "gur", "version": sha, "inchangee": True}
-    data = fetch(GUR_RAW)
-    gur = load_gur(data)
+    with traces.span("listes.telechargement", **{"listes.source": "gur"}):
+        data = fetch(GUR_RAW)
+    with traces.span("listes.lecture", **{"listes.source": "gur", "listes.octets": len(data)}):
+        gur = load_gur(data)
     if gur.empty:
         raise ValueError("catalogue GUR vide : liste précédente conservée")
     rows = gur_rows(gur)
-    return {"source": "gur", "version": sha, "octets": len(data), **import_rows(conn, "gur", rows)}
+    with traces.span("listes.import", **{"listes.source": "gur", "listes.navires": len(rows)}):
+        return {"source": "gur", "version": sha, "octets": len(data), **import_rows(conn, "gur", rows)}

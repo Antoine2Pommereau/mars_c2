@@ -416,19 +416,25 @@ security find-generic-password -a antoine2pommereau -s ghcr-mars-c2 -w | docker 
 Les trois paquets sont privés : au premier envoi, GitHub les crée privés ; le jeton de lecture du serveur y a accès
 parce qu'ils appartiennent au même compte.
 
-**1. Sur le Mac : construire**, depuis le dépôt à jour (commandes compatibles zsh) :
+**1. Sur le Mac : construire**, depuis le dépôt à jour (commandes compatibles zsh), avec `docker build` directement :
+ni Compose, ni `.env`, ni les secrets du serveur ne sont nécessaires (depuis l'étape D2 ; la surcouche du serveur
+exige `GRAFANA_ADMIN_MOT_DE_PASSE`, `GRAFANA_PG_MOT_DE_PASSE` et `NTFY_SUJET`, qui n'ont rien à faire sur le Mac).
+Chaque image reçoit l'empreinte du commit (`MARS_VERSION`), montrée par l'indicateur « Version » de la barre d'état
+et par Grafana :
 
 ```zsh
 cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git pull origin main
-touch .env                                         # la surcouche lit .env ; un fichier vide suffit pour construire
-DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.yml -f docker-compose.serveur.yml \
-  --profile direct build backend web collector
-R=ghcr.io/antoine2pommereau
-for i in mars_c2-backend mars_c2-web mars_c2-scripts; do docker image inspect "${R}/${i}:latest" --format "${i} {{.Architecture}}"; done
+R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
+docker build --platform linux/amd64 -f backend/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-backend:latest . \
+  && docker build --platform linux/amd64 -f scripts/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-scripts:latest . \
+  && docker build --platform linux/amd64 --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-web:latest web
+for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
+  docker image inspect "${R}/${i}:latest" --format "${i} {{.Architecture}} {{index .Config.Labels \"org.opencontainers.image.revision\"}}"
+done
 ```
 
-Les trois doivent afficher `amd64`. Ces images remplacent sur le Mac celles du même nom : pour retrouver des images
-natives en local, relancer ensuite `docker compose build backend web`.
+Les trois doivent afficher `amd64` et l'empreinte du commit. Ces images remplacent sur le Mac celles du même nom :
+pour retrouver des images natives en local, relancer ensuite `docker compose build backend web`.
 
 **1 bis. Sur le Mac : vérifier les images construites**, avant toute publication. Le 11/10/2026, l'API a planté en
 boucle au démarrage sur le serveur (`backend/sentinel.py` non copié par `backend/Dockerfile`), alors que les tests
@@ -438,7 +444,12 @@ passaient depuis le dépôt. Le script démarre chaque image comme le serveur le
 scripts/verifier_images.sh                     # les trois ; ou seulement celles qui changent : scripts/verifier_images.sh scripts
 scripts/verifier_images.sh ai2                 # facultatif : script du travailleur Sentinel dans l'image d'AI2 (5 Go)
 scripts/verifier_images.sh ai2-complet         # facultatif : analyse complète sur CPU d'une scène synthétique (5 min)
+scripts/verifier_images.sh traces              # trace complète de bout en bout dans Tempo, travailleur simulé compris (3 min)
 ```
+
+`traces` doit afficher `OK traces : trace … de bout en bout dans Tempo (OK 22 spans, services mars-api,
+mars-taches, mars-travailleur) ; jeton faux refusé ; données sensibles filtrées par le collecteur`. À lancer avant
+de publier dès que l'instrumentation, un script de travailleur, nginx ou la configuration du collecteur change.
 
 À lancer avant tout essai réel quand `travailleurs/sentinel.py` change : `OK chaîne d'AI2 importée`, et pour
 `ai2-complet`, `OK analyse complète sur CPU : 4 cibles sur 4 retrouvées`.
@@ -503,9 +514,8 @@ parties modifiées, et la configuration (`config/rules.yaml`) est lue depuis le 
 ```zsh
 # Sur le Mac
 cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git checkout main && git pull origin main
-touch .env
-DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.yml -f docker-compose.serveur.yml --profile direct build collector
 R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
+docker build --platform linux/amd64 -f scripts/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-scripts:latest .
 scripts/verifier_images.sh scripts && docker tag "${R}/mars_c2-scripts:latest" "${R}/mars_c2-scripts:${TAG}" \
   && docker push "${R}/mars_c2-scripts:latest" && docker push "${R}/mars_c2-scripts:${TAG}"
 ```
@@ -563,6 +573,43 @@ docker stats --no-stream grafana                     # mémoire, sous 256 Mo
 docker compose exec db psql -U mars -d mars -c "SELECT service, dernier_le, detail FROM signes_de_vie"
 df -h /                                              # au moins 3 Go libres
 ```
+
+## Traces (étape D2, docs/opentelemetry.md)
+
+Collecteur OpenTelemetry (`otel`) et Grafana Tempo (`tempo`), dans la surcouche du serveur ; rien de nouveau dans le
+`.env`. Le collecteur écoute sur 127.0.0.1:4318 et le réseau Docker ; les travailleurs passent par nginx (port 8090,
+jeton vérifié), l'interface par nginx (port 8080). Tempo n'a aucun port publié : on le consulte dans Grafana (source
+« Tempo », tableau « Traces »), par le tunnel habituel (`-L 3000:localhost:3000`).
+
+Mise en place, une image à la fois (disque juste) :
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/27_traces.sql
+df -h /                                                   # environ 300 Mo nécessaires pour les deux images
+docker compose pull tempo otel && docker compose up -d tempo otel
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf backend web && docker image prune -af
+docker compose pull backend web && docker compose up -d --no-build backend web
+docker compose up -d grafana                              # relit la source Tempo et le tableau Traces
+```
+
+Vérifier :
+
+```bash
+docker compose ps                                          # otel et tempo « running »
+docker compose logs --tail 20 otel tempo                   # aucune ligne d'erreur répétée
+docker compose exec db psql -U mars -d mars -c "SELECT mesure_le, joignable, recus, refuses, file_attente FROM mesures_otel ORDER BY 1 DESC LIMIT 3"
+docker compose exec db psql -U mars -d mars -c "SELECT task, trace_id FROM task_runs ORDER BY started_at DESC LIMIT 3"
+docker compose exec db psql -U mars -d mars -c "SELECT service, detail->>'version' FROM signes_de_vie"
+docker stats --no-stream otel tempo                        # le lendemain : mémoire sur 24 h
+docker run --rm -v mars_c2_tempo_data:/v alpine du -sh /v  # place des traces (72 h gardées)
+free -m                                                    # marge de mémoire du serveur
+```
+
+`recus` doit croître d'une ligne à l'autre ; `refuses` rester stable ; chaque tâche a un `trace_id` ; toutes les
+versions sont égales à l'empreinte publiée (indicateur « Version » vert dans la barre d'état).
 
 ## Vérifier
 
@@ -675,6 +722,18 @@ disque de 8 Go s'est rempli le 18/10/2026 vers 01:00 (incident, docs/supervision
   dans le tableau Disque et base ; leviers, dans l'ordre : `docker image prune -af` et `docker builder prune -af`
   (images et caches sans conteneur), puis l'index spatial de `positions` (23 % de la table, utile aux seules analyses
   radar), puis un disque de 20 Go.
+* **Traces (étape D2)** : images du collecteur (environ 420 Mo décompressés) et de Tempo (environ 137 Mo), plus
+  40 Mo pour les images de l'API et des scripts : environ 0,6 Go ; traces gardées 72 h : moins de 30 Mo. Soit
+  **environ 3,1 Go libres après déploiement, et environ 1,8 Go à l'équilibre**, 12 % de 15 Go : **sous l'alerte des
+  15 %**. Il faut agrandir le volume : 20 Go donneraient environ 6,8 Go libres à l'équilibre (34 %).
+
+**Mémoire du serveur (DEV1-S, 2 Go), estimée le 19/10/2026** (aucune mesure du serveur disponible ici : à confirmer
+par `free -m` et `docker stats --no-stream`). Avant l'étape D2, environ 1,4 à 1,6 Go en régime courant : base 300 à
+400 Mo, API 150, collecte 150, ingestion 200, taches 150 (pics de 300 au cycle des règles et au compactage nocturne),
+Grafana 200 à 215, système et Docker 250. L'étape D2 ajoute environ 250 à 350 Mo réels (collecteur 110 à 160, Tempo
+90 à 180 ; limites Docker de 200 et 320 Mo). Total : environ 1,7 à 1,9 Go en régime courant, au delà de 2 Go aux
+pics : **la marge ne suffit pas, passer en DEV1-M (4 Go)**. Sur DEV1-S, la mémoire d'échange éviterait l'arrêt, au
+prix de lenteurs aux heures de pointe (nuit, cycle des règles).
 
 **R2** :
 * archive : 27,4 octets par position et 22,5 par message statique après compactage (mesuré sur l'archivage de

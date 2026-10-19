@@ -51,6 +51,8 @@ from datetime import datetime, timezone
 AI2 = "/home/vessel_detection"
 SRC = f"{AI2}/src"
 sys.path.insert(0, AI2)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # otel_mini, déposé à côté par cloud-init
+import otel_mini  # noqa: E402
 DETECTEUR = f"{SRC}/model_artifacts/frcnn_cmp2/3dff445"
 ATTRIBUTS = f"{SRC}/model_artifacts/attr/c34aa37"
 TIFF = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")        # TIFF et BigTIFF, petit ou grand boutiste
@@ -121,16 +123,17 @@ def _request_for(href: str) -> urllib.request.Request:
     return urllib.request.Request(href, headers=headers)
 
 
-def fetch_task(task: dict) -> dict:
+def fetch_task(task: dict, traceparent: str | None = None) -> dict:
     """Tâche remise par le réseau privé, une seule fois : paramètres et clés S3. Les clés vont dans _S3, pas dans la
     tâche renvoyée. Trois essais en cas d'erreur réseau ; un refus (403 jeton, 409 déjà remise, 503 clés absentes du
     serveur) arrête le travailleur avec son motif."""
     data = json.dumps({"etat": "tache"}).encode()
     for k in range(3):
         try:
-            req = urllib.request.Request(task["retour"] + "/etat", data=data, method="POST",
-                                         headers={"Authorization": "Bearer " + task["jeton"],
-                                                  "Content-Type": "application/json"})
+            headers = {"Authorization": "Bearer " + task["jeton"], "Content-Type": "application/json"}
+            if traceparent:
+                headers["traceparent"] = traceparent
+            req = urllib.request.Request(task["retour"] + "/etat", data=data, method="POST", headers=headers)
             with urllib.request.urlopen(req, timeout=60) as r:
                 body = json.loads(r.read().decode())
             _S3.update((body.pop("identifiants", None) or {}).get("s3") or {})
@@ -315,7 +318,8 @@ def preflight(force_cpu: bool = False):
                                   "cuda": torch.version.cuda, "torch": torch.__version__}
 
 
-def analyse(scene: dict, task: dict, device, tmp: str, local: bool) -> dict:
+def analyse(scene: dict, task: dict, device, tmp: str, local: bool, tr=None) -> dict:
+    tr = tr or otel_mini.Traceur(None, None, None)
     import torch
     prepare_scenes, detect_vessels = ai2()
     scene_id = scene["id"] if scene["id"].endswith(".SAFE") else scene["id"] + ".SAFE"
@@ -333,7 +337,10 @@ def analyse(scene: dict, task: dict, device, tmp: str, local: bool) -> dict:
         else:
             name = scene[pol].split("?", 1)[0].rsplit("/", 1)[1]
             files[pol] = os.path.join(mdir, name)
-            octets += download(scene[pol], files[pol])
+            with tr.span("sentinel.telechargement", **{"peer.service": "Copernicus", "sentinel.polarisation": pol}) as sd:
+                n = download(scene[pol], files[pol])
+                sd.set(**{"sentinel.octets": n})
+                octets += n
     r["telecharge_s"], r["telecharge_mo"] = round(time.time() - t, 1), round(octets / 1e6, 1)
     t = time.time()
     if device.type == "cuda":
@@ -342,66 +349,80 @@ def analyse(scene: dict, task: dict, device, tmp: str, local: bool) -> dict:
     os.makedirs(scratch, exist_ok=True)
     os.makedirs(out, exist_ok=True)
     cat_path, base_path = os.path.join(scratch, scene_id + "_cat.npy"), os.path.join(scratch, scene_id + "_base.tif")
-    prepare_scenes(raw, scratch, scene_id, None, None, "sentinel1", cat_path, base_path, device, DETECTEUR, ATTRIBUTS)
+    with tr.span("sentinel.preparation_scene"):
+        prepare_scenes(raw, scratch, scene_id, None, None, "sentinel1", cat_path, base_path, device, DETECTEUR, ATTRIBUTS)
     # nms_thresh : annoncé float mais utilisé en division entière par la grille de la chaîne d'AI2 (range) ; un décimal
     # la fait échouer (« 'float' object cannot be interpreted as an integer », essai dans l'image du 15/10/2026)
-    detect_vessels(DETECTEUR, ATTRIBUTS, raw, scene_id, cat_path, base_path, out, 2048, 400, 20,
-                   float(task.get("confiance", 0.9)), int(round(float(task.get("nms_m", 10)))), False, device,
-                   "sentinel1", None)
+    with tr.span("sentinel.inference", **{"sentinel.appareil": device.type}):
+        detect_vessels(DETECTEUR, ATTRIBUTS, raw, scene_id, cat_path, base_path, out, 2048, 400, 20,
+                       float(task.get("confiance", 0.9)), int(round(float(task.get("nms_m", 10)))), False, device,
+                       "sentinel1", None)
     r["analyse_s"] = round(time.time() - t, 1)
     if device.type == "cuda":
         r["gpu_max_mo"] = round(torch.cuda.max_memory_allocated() / 2 ** 20)
-    radar = Radar(files["vv"])
-    dets, hors = [], 0
-    with open(os.path.join(out, "predictions.csv")) as f:
-        for row in csv.DictReader(f):
-            lon, lat = num(row.get("lon")), num(row.get("lat"))
-            if lon is None or lat is None or not in_regions(lon, lat, task["regions"]):
-                hors += 1
-                continue
-            cap, cap_p = heading([num(row.get(f"heading_bucket_{k}")) for k in range(16)])
-            det = {"lon": round(lon, 6), "lat": round(lat, 6), "score": num(row.get("score")),
-                   "longueur_m": num(row.get("vessel_length_m")), "largeur_m": num(row.get("vessel_width_m")),
-                   "cap_deg": cap, "cap_prob": cap_p, "vitesse_kn": num(row.get("vessel_speed_k")),
-                   "peche": num(row.get("is_fishing_vessel"))}
-            try:                                     # une mesure ou une vignette en échec n'empêche pas la détection
-                det["contraste_db"] = contrast_db(radar, lon, lat)
-                png, geo = vignette(radar, lon, lat, float(task.get("vignette_km", 3)),
-                                    {"satellite": scene.get("satellite", "").replace("S1", "Sentinel 1"),
-                                     "date": f"{scene['debut'][8:10]}/{scene['debut'][5:7]}/{scene['debut'][:4]} "
-                                             f"{scene['debut'][11:16]} UTC"})
-                det["vignette"], det["vignette_geo"] = base64.b64encode(png).decode(), geo
-            except Exception as e:
-                det["vignette_erreur"] = f"{type(e).__name__}: {e}"[:200]
-            dets.append(det)
+    with tr.span("sentinel.mesures_et_vignettes") as ms:
+        radar = Radar(files["vv"])
+        dets, hors = [], 0
+        with open(os.path.join(out, "predictions.csv")) as f:
+            for row in csv.DictReader(f):
+                lon, lat = num(row.get("lon")), num(row.get("lat"))
+                if lon is None or lat is None or not in_regions(lon, lat, task["regions"]):
+                    hors += 1
+                    continue
+                cap, cap_p = heading([num(row.get(f"heading_bucket_{k}")) for k in range(16)])
+                det = {"lon": round(lon, 6), "lat": round(lat, 6), "score": num(row.get("score")),
+                       "longueur_m": num(row.get("vessel_length_m")), "largeur_m": num(row.get("vessel_width_m")),
+                       "cap_deg": cap, "cap_prob": cap_p, "vitesse_kn": num(row.get("vessel_speed_k")),
+                       "peche": num(row.get("is_fishing_vessel"))}
+                try:                                     # une mesure ou une vignette en échec n'empêche pas la détection
+                    det["contraste_db"] = contrast_db(radar, lon, lat)
+                    png, geo = vignette(radar, lon, lat, float(task.get("vignette_km", 3)),
+                                        {"satellite": scene.get("satellite", "").replace("S1", "Sentinel 1"),
+                                         "date": f"{scene['debut'][8:10]}/{scene['debut'][5:7]}/{scene['debut'][:4]} "
+                                                 f"{scene['debut'][11:16]} UTC"})
+                    det["vignette"], det["vignette_geo"] = base64.b64encode(png).decode(), geo
+                except Exception as e:
+                    det["vignette_erreur"] = f"{type(e).__name__}: {e}"[:200]
+                dets.append(det)
+        ms.set(**{"sentinel.detections": len(dets), "sentinel.hors_regions": hors})
     r["detections"], r["hors_regions"] = dets, hors
     return r
 
 
-def run(task: dict, local: bool = False) -> dict:
+def run(task: dict, local: bool = False, tr=None) -> dict:
     t0 = time.time()
+    tr = tr or otel_mini.Traceur(None, None, None)
     out, stop, octets = [], None, 0.0
-    try:
-        device, gpu = preflight(force_cpu=bool(task.get("force_cpu")))
-    except Arret as e:
-        return {"scenes": [], "erreur": str(e)[:500], "mesures": {"rss_max_mo": rss_mo()}}
+    with tr.span("sentinel.preparation_gpu") as sp:
+        try:
+            device, gpu = preflight(force_cpu=bool(task.get("force_cpu")))
+            sp.set(**{"sentinel.gpu": gpu.get("gpu"), "sentinel.cuda": gpu.get("cuda")})
+        except Arret as e:
+            sp.erreur(str(e))
+            return {"scenes": [], "erreur": str(e)[:500], "mesures": {"rss_max_mo": rss_mo()}}
     print(json.dumps({"preparation": gpu, "s": round(time.time() - t0, 1)}), flush=True)
     for k, scene in enumerate(task["scenes"]):
         tmp = tempfile.mkdtemp(prefix="scene_", dir=task.get("travail"))
-        try:
-            r = analyse(scene, task, device, tmp, local)
-            octets += r.get("telecharge_mo", 0)
-        except (Arret, FichierInvalide) as e:
-            r = {"analyse": scene["analyse"], "id": scene["id"], "debut": scene["debut"], "fin": scene["fin"],
-                 "erreur": str(e)[:500]}
-            if isinstance(e, Arret) or k == 0:               # cause commune, ou première scène déjà en échec
-                stop = str(e)[:500]
-        except Exception as e:                               # une autre scène en échec n'arrête pas les suivantes
-            r = {"analyse": scene["analyse"], "id": scene["id"], "debut": scene["debut"], "fin": scene["fin"],
-                 "erreur": f"{type(e).__name__}: {e}"[:500]}
-            traceback.print_exc()
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)           # images effacées après chaque scène
+        with tr.span("sentinel.scene", **{"sentinel.index": k, "sentinel.analyse": scene.get("analyse"),
+                                          "sentinel.satellite": scene.get("satellite")}) as sc:
+            try:
+                r = analyse(scene, task, device, tmp, local, tr)
+                octets += r.get("telecharge_mo", 0)
+                sc.set(**{"sentinel.detections": len(r.get("detections", []))})
+            except (Arret, FichierInvalide) as e:
+                r = {"analyse": scene["analyse"], "id": scene["id"], "debut": scene["debut"], "fin": scene["fin"],
+                     "erreur": str(e)[:500]}
+                sc.erreur(r["erreur"])
+                if isinstance(e, Arret) or k == 0:           # cause commune, ou première scène déjà en échec
+                    stop = str(e)[:500]
+            except Exception as e:                           # une autre scène en échec n'arrête pas les suivantes
+                r = {"analyse": scene["analyse"], "id": scene["id"], "debut": scene["debut"], "fin": scene["fin"],
+                     "erreur": f"{type(e).__name__}: {e}"[:500]}
+                sc.exception(e)
+                traceback.print_exc()
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)       # images effacées après chaque scène
+        tr.envoyer()                                         # spans envoyés après chaque scène
         r["rss_max_mo"] = rss_mo()
         out.append(r)
         print(json.dumps({**{x: v for x, v in r.items() if x != "detections"}, "n": len(r.get("detections", []))}),
@@ -420,14 +441,16 @@ def run(task: dict, local: bool = False) -> dict:
     return result
 
 
-def send(task: dict, path: str, body: dict):
-    """Envoi au serveur par le réseau privé, avec quelques nouvelles tentatives (le serveur peut redémarrer)."""
+def send(task: dict, path: str, body: dict, traceparent: str | None = None):
+    """Envoi au serveur par le réseau privé, avec quelques nouvelles tentatives (le serveur peut redémarrer) ; le
+    contexte de trace suit la requête (l'API rejoint la trace du travailleur)."""
     data = json.dumps(body).encode()
+    headers = {"Authorization": f"Bearer {task['jeton']}", "Content-Type": "application/json"}
+    if traceparent:
+        headers["traceparent"] = traceparent
     for k in range(6):
         try:
-            req = urllib.request.Request(f"{task['retour']}{path}", data=data, method="POST",
-                                         headers={"Authorization": f"Bearer {task['jeton']}",
-                                                  "Content-Type": "application/json"})
+            req = urllib.request.Request(f"{task['retour']}{path}", data=data, method="POST", headers=headers)
             with urllib.request.urlopen(req, timeout=60) as r:
                 return r.status
         except urllib.error.HTTPError as e:
@@ -445,14 +468,23 @@ def main():
         print(json.dumps(run(task, local=True)))
         return
     task = json.load(open(os.environ.get("MARS_TACHE", "/mars/tache.json")))
-    send(task, "/etat", {"etat": "demarre"})
-    try:
-        if task.get("tache_par_le_reseau"):
-            task = fetch_task(task)
-        result = run(task)
-    except Exception as e:
-        result = {"scenes": [], "erreur": f"{type(e).__name__}: {e}"[:1000], "mesures": {"rss_max_mo": rss_mo()}}
-    send(task, "/resultats", result)
+    tr = otel_mini.depuis_tache(task, **{"travailleur.tache": "sentinel"})
+    with tr.span("travailleur.sentinel") as racine:
+        with tr.span("travailleur.signal_demarre"):
+            send(task, "/etat", {"etat": "demarre"}, tr.traceparent())
+        try:
+            if task.get("tache_par_le_reseau"):
+                with tr.span("travailleur.remise_tache"):
+                    task = fetch_task(task, tr.traceparent())
+            racine.set(**{"sentinel.scenes": len(task.get("scenes", []))})
+            result = run(task, tr=tr)
+        except Exception as e:
+            result = {"scenes": [], "erreur": f"{type(e).__name__}: {e}"[:1000], "mesures": {"rss_max_mo": rss_mo()}}
+        if result.get("erreur"):
+            racine.erreur(result["erreur"])
+        with tr.span("travailleur.renvoi_resultats") as sr:
+            sr.set(**{"http.response.status_code": send(task, "/resultats", result, tr.traceparent())})
+    tr.envoyer()
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from preuves import ais_near, proof_of
 from regions import dans_region, region_ewkt
@@ -91,6 +91,20 @@ async def _deliver_task(c, wid: int) -> dict:
         raise HTTPException(409, "Tâche déjà remise")
     log.warning("travailleur %s : tâche remise par le réseau privé%s", wid, " avec sa paire de clés" if creds else "")
     return {**(row["parametres"] or {}), **({"identifiants": {"s3": creds}} if creds else {})}
+
+
+# États d'un travailleur dont les spans sont encore acceptés : ses derniers spans partent juste après ses résultats
+TRACES_ETATS = ("cree", "demarre", "resultats", "termine", "echec")
+
+
+@router.get("/api/travailleurs/{wid}/otel", status_code=204)
+async def worker_traces_auth(request: Request, wid: int, authorization: str | None = Header(None)):
+    """Vérification par nginx (auth_request, port 8090) du jeton d'un travailleur avant de relayer ses spans au
+    collecteur OpenTelemetry : même jeton que pour ses résultats, refusé dès que l'instance est détruite. Le collecteur
+    n'écoute jamais sur l'adresse privée lui même. Route non tracée (une vérification par lot de spans)."""
+    async with request.app.state.pool.acquire() as c:
+        await _check(c, wid, authorization, TRACES_ETATS)
+    return Response(status_code=204)
 
 
 JOURNAL_MAX = 200_000

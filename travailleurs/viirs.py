@@ -29,7 +29,9 @@ import time
 import traceback
 
 sys.path.insert(0, "/src")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # otel_mini, déposé à côté par cloud-init
 
+import otel_mini  # noqa: E402
 import requests  # noqa: E402
 
 TIMEOUT_S = 300
@@ -197,36 +199,49 @@ def detect(vvd, dnb_path: str, geo_path: str, tmp: str, boxes: list) -> dict:
             "detections": dets}
 
 
-def run(task: dict, local: bool = False) -> dict:
+def run(task: dict, local: bool = False, tr: "otel_mini.Traceur | None" = None) -> dict:
     t0 = time.time()
-    from pipeline import VIIRSVesselDetection          # code d'allenai (/src)
-    vvd = VIIRSVesselDetection()
+    tr = tr or otel_mini.Traceur(None, None, None)
+    with tr.span("viirs.chargement_modele"):
+        from pipeline import VIIRSVesselDetection      # code d'allenai (/src)
+        vvd = VIIRSVesselDetection()
     token = os.environ.get("EARTHDATA_TOKEN", "")
     out, octets, stop = [], 0, None
     for k, g in enumerate(task["granules"]):
         r = {"dnb": g["dnb"], "satellite": g.get("satellite")}
         t = time.time()
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                if local:
-                    dnb, geo = g["dnb_path"], g["geo_path"]
-                else:
-                    dnb, geo = os.path.join(tmp, "dnb.nc"), os.path.join(tmp, "geo.nc")
-                    octets += download(g["dnb_url"], dnb, token) + download(g["geo_url"], geo, token)
-                r["telecharge_s"] = round(time.time() - t, 1)
-                t1 = time.time()
-                r.update(detect(vvd, dnb, geo, tmp, task["regions"]))
-                r["detection_s"] = round(time.time() - t1, 1)
-        except (DonneesInaccessibles, FichierInvalide) as e:
-            r["erreur"] = str(e)[:500]
-            print(f"granule {g['dnb']} : {e}", flush=True)
-            # Données inaccessibles, ou premier granule déjà en échec : inutile de télécharger les autres
-            if isinstance(e, DonneesInaccessibles) or k == 0:
-                stop = str(e)[:500]
-        except Exception as e:                           # une autre granule en échec n'arrête pas les suivantes
-            r["erreur"] = f"{type(e).__name__}: {e}"[:500]
-            traceback.print_exc()
-        r["rss_max_mo"] = rss_mo()
+        with tr.span("viirs.granule", **{"viirs.index": k, "viirs.satellite": g.get("satellite")}) as sg:
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    if local:
+                        dnb, geo = g["dnb_path"], g["geo_path"]
+                    else:
+                        dnb, geo = os.path.join(tmp, "dnb.nc"), os.path.join(tmp, "geo.nc")
+                        for nom, url, dest in (("dnb", g["dnb_url"], dnb), ("geolocalisation", g["geo_url"], geo)):
+                            with tr.span("viirs.telechargement", **{"peer.service": "NASA", "viirs.fichier": nom}) as sd:
+                                n = download(url, dest, token)
+                                sd.set(**{"viirs.octets": n})
+                                octets += n
+                    r["telecharge_s"] = round(time.time() - t, 1)
+                    t1 = time.time()
+                    with tr.span("viirs.inference") as si:
+                        r.update(detect(vvd, dnb, geo, tmp, task["regions"]))
+                        si.set(**{"viirs.detections": len(r.get("detections", []))})
+                    r["detection_s"] = round(time.time() - t1, 1)
+            except (DonneesInaccessibles, FichierInvalide) as e:
+                r["erreur"] = str(e)[:500]
+                sg.erreur(r["erreur"])
+                print(f"granule {g['dnb']} : {e}", flush=True)
+                # Données inaccessibles, ou premier granule déjà en échec : inutile de télécharger les autres
+                if isinstance(e, DonneesInaccessibles) or k == 0:
+                    stop = str(e)[:500]
+            except Exception as e:                       # une autre granule en échec n'arrête pas les suivantes
+                r["erreur"] = f"{type(e).__name__}: {e}"[:500]
+                sg.exception(e)
+                traceback.print_exc()
+            r["rss_max_mo"] = rss_mo()
+            sg.set(**{"viirs.rss_max_mo": r["rss_max_mo"]})
+        tr.envoyer()                                     # spans envoyés après chaque granule
         out.append(r)
         print(json.dumps({x: v for x, v in r.items() if x != "detections"} | {"n": len(r.get("detections", []))}),
               flush=True)
@@ -240,12 +255,15 @@ def run(task: dict, local: bool = False) -> dict:
     return result
 
 
-def send(task: dict, path: str, body: dict):
-    """Envoi au serveur, avec quelques nouvelles tentatives (le serveur peut redémarrer pendant l'analyse)."""
+def send(task: dict, path: str, body: dict, traceparent: str | None = None):
+    """Envoi au serveur, avec quelques nouvelles tentatives (le serveur peut redémarrer pendant l'analyse) ; le
+    contexte de trace suit la requête (l'API rejoint la trace du travailleur)."""
+    headers = {"Authorization": f"Bearer {task['jeton']}"}
+    if traceparent:
+        headers["traceparent"] = traceparent
     for k in range(6):
         try:
-            r = requests.post(f"{task['retour']}{path}", json=body, timeout=60,
-                              headers={"Authorization": f"Bearer {task['jeton']}"})
+            r = requests.post(f"{task['retour']}{path}", json=body, timeout=60, headers=headers)
             if r.status_code < 500:
                 return r.status_code
         except requests.RequestException as e:
@@ -260,12 +278,21 @@ def main():
         print(json.dumps(run(task, local=True)))
         return
     task = json.load(open(os.environ.get("MARS_TACHE", "/mars/tache.json")))
-    send(task, "/etat", {"etat": "demarre"})
-    try:
-        result = run(task)
-    except Exception as e:
-        result = {"granules": [], "erreur": f"{type(e).__name__}: {e}"[:1000], "mesures": {"rss_max_mo": rss_mo()}}
-    send(task, "/resultats", result)
+    tr = otel_mini.depuis_tache(task, **{"travailleur.tache": "viirs"})
+    with tr.span("travailleur.viirs", **{"viirs.granules": len(task.get("granules", []))}) as racine:
+        with tr.span("travailleur.signal_demarre"):
+            send(task, "/etat", {"etat": "demarre"}, tr.traceparent())
+        try:
+            result = run(task, tr=tr)
+        except Exception as e:
+            result = {"granules": [], "erreur": f"{type(e).__name__}: {e}"[:1000], "mesures": {"rss_max_mo": rss_mo()}}
+        if result.get("erreur"):
+            racine.erreur(result["erreur"])
+        racine.set(**{"viirs.duree_s": result.get("mesures", {}).get("duree_s"),
+                      "viirs.telecharge_mo": result.get("mesures", {}).get("telecharge_mo")})
+        with tr.span("travailleur.renvoi_resultats") as sr:
+            sr.set(**{"http.response.status_code": send(task, "/resultats", result, tr.traceparent())})
+    tr.envoyer()
 
 
 if __name__ == "__main__":

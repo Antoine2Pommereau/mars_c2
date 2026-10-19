@@ -119,3 +119,52 @@ groups:
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      # Étape D2 : collecteur OpenTelemetry muet ou saturé (mesures_otel, relevées chaque minute par taches)
+      - uid: mars-collecteur-muet
+        title: Collecteur de traces muet
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {source: grafana}
+        annotations:
+          summary: 'Le collecteur OpenTelemetry ne reçoit plus aucun span depuis {{ printf "%.0f" $values.A.Value }} min.'
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: A, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT coalesce(extract(epoch FROM now() - max(mesure_le) FILTER (WHERE recus > prec)) / 60, 1440) AS minutes FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '1 day') x WHERE EXISTS (SELECT 1 FROM mesures_otel WHERE mesure_le > now() - interval '30 minutes')"}
+          - refId: B
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: B, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT CASE WHEN coalesce(extract(epoch FROM now() - max(mesure_le) FILTER (WHERE recus > prec)) / 60, 1440) > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_collecteur_muet_min'), 15) THEN 1 ELSE 0 END AS alerte FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '1 day') x WHERE EXISTS (SELECT 1 FROM mesures_otel WHERE mesure_le > now() - interval '30 minutes')"}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      - uid: mars-collecteur-refus
+        title: Collecteur de traces saturé
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {source: grafana}
+        annotations:
+          summary: 'Le collecteur OpenTelemetry a refusé {{ printf "%.0f" $values.A.Value }} spans en 15 min (mémoire saturée ou file pleine).'
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: A, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT coalesce(sum(greatest(refuses - prec, 0)), 0) AS refus FROM (SELECT mesure_le, refuses, lag(refuses) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '16 minutes') x WHERE mesure_le > now() - interval '15 minutes'"}
+          - refId: B
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: B, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT CASE WHEN coalesce(sum(greatest(refuses - prec, 0)), 0) > 0 THEN 1 ELSE 0 END AS alerte FROM (SELECT mesure_le, refuses, lag(refuses) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '16 minutes') x WHERE mesure_le > now() - interval '15 minutes'"}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}

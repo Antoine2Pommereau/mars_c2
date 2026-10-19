@@ -317,19 +317,20 @@ def test_thresholds_live_in_one_file():
     env = dict(line.split("=", 1) for line in (ROOT / "config" / "supervision.env").read_text().splitlines()
                if line and not line.startswith("#"))
     assert env == {"SEUIL_DISQUE_LIBRE_PCT": "15", "SEUIL_COLLECTE_MIN": "5", "SEUIL_INGESTION_MIN": "10",
-                   "HEURE_NUIT_VIIRS": "8", "ECHECS_SUCCESSIFS": "2"}
+                   "HEURE_NUIT_VIIRS": "8", "ECHECS_SUCCESSIFS": "2", "SEUIL_COLLECTEUR_MUET_MIN": "15"}
     rules = (ROOT / "grafana" / "provisioning" / "alerting" / "regles.yaml").read_text()
     for cle in ("seuil_disque_pct", "seuil_collecte_min", "seuil_ingestion_min", "seuil_heure_nuit_viirs",
-                "seuil_echecs_successifs"):
+                "seuil_echecs_successifs", "seuil_collecteur_muet_min"):
         assert f"cle = '{cle}'" in rules
     assert "$SEUIL" not in rules and "$$" not in rules        # Grafana ne les remplacerait pas
 
 
-def test_alert_rules_cover_the_five_cases():
+def test_alert_rules_cover_every_case():
     doc = yaml.safe_load((ROOT / "grafana" / "provisioning" / "alerting" / "regles.yaml").read_text())
     titles = [r["title"] for r in doc["groups"][0]["rules"]]
     assert titles == ["Disque presque plein", "Collecte AIS figée", "Ingestion AIS en échec ou en retard",
-                      "Nuit VIIRS absente", "Tâche en échec plusieurs fois de suite"]
+                      "Nuit VIIRS absente", "Tâche en échec plusieurs fois de suite",
+                      "Collecteur de traces muet", "Collecteur de traces saturé"]
     ntfy = yaml.safe_load((ROOT / "grafana" / "provisioning" / "alerting" / "ntfy.yaml").read_text())
     assert ntfy["policies"][0]["repeat_interval"] == "1h"
     r = ntfy["contactPoints"][0]["receivers"][0]
@@ -339,7 +340,8 @@ def test_alert_rules_cover_the_five_cases():
 def test_dashboards_are_generated_and_written_without_dashes():
     gen = _module("generer", ROOT / "grafana" / "generer.py")
     files = gen.generer()
-    assert set(files) == {"direct.json", "disque.json", "taches.json", "satellites.json", "alertes.json"}
+    assert set(files) == {"direct.json", "disque.json", "taches.json", "satellites.json", "alertes.json",
+                          "traces.json"}
     for name, text in files.items():
         assert (gen.OUT / name).read_text() == text, f"{name} à régénérer : python grafana/generer.py"
         d = json.loads(text)
@@ -348,6 +350,9 @@ def test_dashboards_are_generated_and_written_without_dashes():
         assert not [v for v in visible if re.search(r"[‐–—]|\w-\w| - ", v)], name
         for p in d["panels"]:
             for t in p.get("targets", []):
+                if "rawSql" not in t:               # panneaux Tempo (TraceQL)
+                    assert t["datasource"]["uid"] == "tempo"
+                    continue
                 assert "positions " not in t["rawSql"].replace("positions_octets", "") or "FROM positions" \
                     not in t["rawSql"], f"{p['title']} lit la table des positions"
 

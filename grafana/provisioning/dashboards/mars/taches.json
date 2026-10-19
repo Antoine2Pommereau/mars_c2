@@ -342,7 +342,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT DISTINCT ON (task) task AS \"Tâche\", status AS \"Statut\", started_at AS \"Début\", extract(epoch FROM finished_at - started_at) AS \"Durée\", left(coalesce(details->>'erreur', details->>'motif', ''), 160) AS \"Motif\" FROM task_runs WHERE started_at > now() - interval '30 days' ORDER BY task, started_at DESC"
+     "rawSql": "SELECT DISTINCT ON (task) task AS \"Tâche\", status AS \"Statut\", started_at AS \"Début\", extract(epoch FROM finished_at - started_at) AS \"Durée\", left(coalesce(details->>'erreur', details->>'motif', ''), 160) AS \"Motif\", trace_id AS \"Trace\" FROM task_runs WHERE started_at > now() - interval '30 days' ORDER BY task, started_at DESC"
     }
    ],
    "fieldConfig": {
@@ -359,6 +359,27 @@
      }
     },
     "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Trace"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Ouvrir la trace dans Tempo",
+          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+         }
+        ]
+       },
+       {
+        "id": "custom.width",
+        "value": 120
+       }
+      ]
+     },
      {
       "matcher": {
        "id": "byName",
@@ -632,7 +653,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT started_at AS \"Le\", task AS \"Tâche\", left(coalesce(details->>'erreur', details->>'motif', ''), 200) AS \"Motif\" FROM task_runs WHERE status = 'echec' AND started_at > now() - interval '7 days' ORDER BY 1 DESC LIMIT 200"
+     "rawSql": "SELECT started_at AS \"Le\", task AS \"Tâche\", left(coalesce(details->>'erreur', details->>'motif', ''), 200) AS \"Motif\", trace_id AS \"Trace\" FROM task_runs WHERE status = 'echec' AND started_at > now() - interval '7 days' ORDER BY 1 DESC LIMIT 200"
     }
    ],
    "fieldConfig": {
@@ -648,7 +669,29 @@
       "fixedColor": "#c2ccd3"
      }
     },
-    "overrides": []
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Trace"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Ouvrir la trace dans Tempo",
+          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+         }
+        ]
+       },
+       {
+        "id": "custom.width",
+        "value": 120
+       }
+      ]
+     }
+    ]
    },
    "options": {
     "showHeader": true,

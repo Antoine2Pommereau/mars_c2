@@ -1,5 +1,24 @@
 # MARS C2 : contexte du projet pour Claude Code
 
+> **Règle permanente (étape D2).** Toute addition est instrumentée avec OpenTelemetry : chaque tâche, route, appel
+> externe et étape métier produit des spans, avec les attributs utiles et sans donnée sensible. Une fonctionnalité non
+> tracée n'est pas terminée.
+>
+> Liste de contrôle, avant de déclarer une addition terminée (détail : `docs/opentelemetry.md`) :
+> 1. **Tâche** : passe par `run()` de `scripts/taches.py` (span « tache <nom> », trace_id dans `task_runs`) ; une
+>    **commande** se déclare par `@commande` (registre `COMMANDES`, span « commande <nom> »).
+> 2. **Étape métier** : `with traces.span("domaine.etape", **attributs)` (`mars/traces.py`) ; compteurs et durées en
+>    attributs, identifiants internes seulement (jamais nom de navire, position, clé, jeton, mot de passe, adresse
+>    signée, sujet ntfy).
+> 3. **Appel externe** : requests et httpx sont tracés d'office ; sinon (boto3, urllib, websockets) un span avec
+>    `peer.service`, et l'hôte ajouté à `EXTERNES` de `mars/traces.py`.
+> 4. **Route de l'API** : tracée d'office (FastAPI, asyncpg) ; route lourde : un span métier en plus ; route appelée
+>    chaque seconde : à exclure (`API_NON_TRACEES`).
+> 5. **Travailleur** : son script importe `otel_mini` et rattache ses spans à `TRACEPARENT` ; toute écriture d'alerte
+>    se fait dans une trace (`traces.en_base`, le déclencheur de la migration 27 écrit `details.trace_id`).
+> 6. `tests/test_traces.py` vert (il échoue si une commande de `taches.py` ou un type de travailleur n'est pas tracé),
+>    puis `scripts/verifier_images.sh traces` avant de publier.
+
 Ce fichier est la mémoire du projet. Lis le en entier avant toute tâche, et tiens le à jour à chaque jalon. Le
 document de référence de la direction est la Claude Doc « MARS C2, mise à jour du projet » :
 https://claude.ai/code/artifact/00f50730-d117-4ad4-94ac-0cb9b967f002 (sinon, demander à Antoine de la déposer dans
@@ -104,6 +123,8 @@ que sur le serveur.
 | `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) ; contrôle de santé (`scripts/sante.py`) : figée 5 min sans fichier, arrêtée puis relancée (`init`, `restart`) |
 | `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` ; ne s'arrête plus sur une erreur (DiskFull journalisé), boucle figée relancée |
 | `grafana` | Docker, serveur seulement | Grafana 12.4.2 sur PostgreSQL (rôle `grafana_lecture`), 127.0.0.1:3000, 256 Mo ; tableaux, règles et canal ntfy en code (`grafana/provisioning`) |
+| `otel` | Docker, serveur seulement | Collecteur OpenTelemetry contrib 0.163.1 (`otel/collecteur.yaml`) : 127.0.0.1:4318 et réseau Docker, filtre des données sensibles, tail sampling, file d'attente sur disque, 200 Mo |
+| `tempo` | Docker, serveur seulement | Grafana Tempo 3.1.0, binaire unique, stockage local, traces gardées 72 h, 320 Mo ; lu par Grafana (source « Tempo ») |
 | `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine), calendrier des passages satellites ; 06:30 : nuits VIIRS confiées à un travailleur éphémère ; chaque minute : surveillance des travailleurs ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
 | Travailleurs | Instances Scaleway éphémères (API Scaleway, `mars/travailleurs.py`) | Analyse satellite hors du serveur : créées à la demande, script et tâche par cloud-init, résultat renvoyé par le réseau privé (nginx, port 8090, jeton), détruites par le serveur ; DEV1-M pour VIIRS (fr-par-1), L4-1-24G pour Sentinel 1 (fr-par-2, volume bloc) |
 | Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
@@ -123,13 +144,16 @@ la fusion (`mars/fusion/pipeline.py`) et la persistance des échos fixes, écrit
 mars_c2/
   CLAUDE.md, start.sh, pyproject.toml, docker-compose.yml, docker-compose.serveur.yml
   config/rules.yaml       seuils versionnés
-  db/init/01 à 25         schéma et migrations (idempotentes à partir de 02)
+  db/init/01 à 27         schéma et migrations (idempotentes à partir de 02)
   mars/
     ais/live.py, ingest.py, mid.py   zones, nettoyage, allègement, ingestion, pavillon
     watchlist.py, archive.py, r2.py  listes, archivage et sauvegarde, client R2
     satellites.py                    calendrier des passages Sentinel 1 et 2 (catalogue, plans de l'ESA, couverture)
     travailleurs.py, viirs.py        orchestrateur des travailleurs éphémères ; granules VIIRS, appariement, alertes
   travailleurs/viirs.py              script du travailleur VIIRS (exécuté dans l'image publique d'allenai)
+  travailleurs/otel_mini.py, traces.sh  traces des travailleurs (OTLP JSON en bibliothèque standard, et en bash)
+  mars/traces.py                     traces OpenTelemetry : init, spans, filtre des données sensibles, journaux
+  otel/collecteur.yaml, tempo.yaml   collecteur OpenTelemetry et Tempo (étape D2, docs/opentelemetry.md)
   mars/sentinel.py                   Sentinel 1 : sélection des passages, garde fous, clés de lecture, fusion, alertes
   mars/evaluation.py                 détection satellite évaluable ou non (zone de réception fiable), VIIRS et Sentinel
   travailleurs/sentinel.py           script du travailleur GPU (image publique d'AI2, Python 3.8)
@@ -483,15 +507,37 @@ données synthétiques : à un point toutes les 3 minutes, `reception.min_pairs`
 des cellules d'un rail de 30 navires, et le test par injection n'a plus de candidat ; à un point toutes les
 2 minutes, 5 sur 5. Le test par injection indique désormais combien de candidats il écarte, et pourquoi.
 
+
+**Étape D2, traces OpenTelemetry (19/10/2026)** (migration 27, `docs/opentelemetry.md`) : tout le système envoie
+ses traces à un collecteur OpenTelemetry (contrib, nécessaire pour le tail sampling, le filtre `transform` et la
+file d'attente sur disque : la distribution de base refuse la configuration), gardées 72 h dans Tempo 3.1 (binaire
+unique, sans Kafka) et lues dans Grafana (source Tempo, tableau « Traces », liens depuis les tâches et les
+travailleurs). API (FastAPI, asyncpg, httpx, requests, spans métier ; SSE et santé exclus), collecte (par écriture
+et par connexion AISStream), ingestion (par cycle et par fichier), taches (toute tâche par `run()`, toute commande
+par le registre `COMMANDES`, chaque minute, chaque étape des règles, de l'archivage, des listes, des passages, du
+disque), appels externes nommés (`peer.service`), interface (requêtes vers l'API, par nginx), travailleurs : une
+analyse est une trace de bout en bout (lancement et étapes Scaleway, script de démarrage bash, script Python,
+téléchargements, granules ou scènes, inférence, renvoi, traitement des résultats, alertes, destruction). Images
+d'AI2 et d'allenai en Python 3.8 et 3.10 avec protobuf 4, alors que tout exportateur OTLP officiel exige protobuf 5 :
+exportateur OTLP JSON en bibliothèque standard (`travailleurs/otel_mini.py`). Travailleurs authentifiés par nginx
+(port 8090, jeton de l'exécution vérifié par l'API, refusé après la destruction). trace_id dans `task_runs`,
+`travailleurs`, `analyses` et les détails de chaque alerte (déclencheur). Échantillonnage : tâches et travailleurs
+100 %, API erreurs et plus de 1 s, 10 % du reste. Données sensibles filtrées dans le code et dans le collecteur.
+Alertes ntfy : collecteur muet 15 min, ou spans refusés. Empreinte du commit dans chaque image (indicateur
+« Version », Grafana). Mesures (émulation) : surcoût des règles dans le bruit, ingestion +0,8 % ; environ 45 000
+spans par jour, moins de 30 Mo de traces à 72 h ; collecteur 110 à 200 Mo, Tempo 90 à 185 Mo. Bilan serveur : **la
+mémoire de la DEV1-S ne suffit plus (passer en DEV1-M) et le disque tombe sous l'alerte des 15 % à l'équilibre
+(agrandir à 20 Go)**, docs/deploiement.md.
+
 ## 10. Tests
 
-`python -m pytest tests` : 178 réussis, 34 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 33 sans
+`python -m pytest tests` : 192 réussis, 35 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 34 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 211 réussis, 1 ignoré (rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 226 réussis, 1 ignoré (identifiant de trace des alertes par le déclencheur ; rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
-création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `npx knip` et `npm run typecheck` pour
+création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `tests/test_traces.py` : chaque commande de `taches.py` et chaque type de travailleur tracés (échoue sinon), filtre des données sensibles, script de démarrage bash (avec `gdate` sur le Mac). `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
 
 ## 11. Pièges connus
@@ -663,3 +709,13 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   archivées en sortent), `task_runs` des règles aussi.
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.
+* **Traces (étape D2)** : l'instrumentation de requests remplace l'en tête `traceparent` posé à la main par le
+  contexte courant ; les travailleurs n'ont pas le kit (aucun conflit), mais un test qui exécute leur script dans le
+  processus des tests doit désinstrumenter requests. Les images du collecteur et de Tempo sont sans système (pas de
+  shell, pas de `du`) : lancées en root pour écrire dans leur volume nommé ; mesurer la place par un conteneur
+  `alpine` qui monte le volume. TraceQL refuse un point échappé par une barre oblique inverse venu de Grafana :
+  écrire `[.]`. Tempo 3 a changé sa configuration (plus d'ingester ni de compactor : `live_store`, `backend_worker`,
+  `backend_scheduler`) ; la conservation se règle dans `backend_worker` et `backend_scheduler`. Une commande nouvelle
+  de `taches.py` se déclare par `@commande` (sinon refusée par l'analyse des arguments, et le test le signale).
+* Construire les images sur le Mac par `docker build` (docs/deploiement.md) : la surcouche du serveur exige ses
+  secrets (`:?`), Compose refuse alors toute commande sans eux.

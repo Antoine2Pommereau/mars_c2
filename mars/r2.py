@@ -8,6 +8,13 @@ import os
 import re
 from pathlib import Path
 
+from mars import traces
+
+
+def _span(op: str, key: str = "", **attrs):
+    """Appel externe à R2 : opération, objet (chemin de l'archive, sans secret) et taille."""
+    return traces.span(f"R2 {op}", **{"peer.service": "R2", "r2.operation": op, "r2.objet": key, **attrs})
+
 
 class R2:
     def __init__(self, client=None, bucket: str | None = None):
@@ -36,7 +43,8 @@ class R2:
         """Envoie un contenu en une seule requête avec son MD5 (R2 refuse un contenu altéré en route), puis vérifie
         l'objet stocké (verify). Lève une exception si l'objet ne correspond pas."""
         md5 = hashlib.md5(data)
-        self.s3.put_object(Bucket=self.bucket, Key=key, Body=data, ContentMD5=base64.b64encode(md5.digest()).decode())
+        with _span("envoi", key, **{"r2.octets": len(data)}):
+            self.s3.put_object(Bucket=self.bucket, Key=key, Body=data, ContentMD5=base64.b64encode(md5.digest()).decode())
         method = self.verify(key, md5.hexdigest(), len(data))
         return {"bytes": len(data), "md5": md5.hexdigest(), "verification": method}
 
@@ -46,7 +54,8 @@ class R2:
         L'ETag d'un objet envoyé en une requête est son MD5 : il suffit de le comparer. Celui d'un objet envoyé en
         plusieurs morceaux n'est pas le MD5 du fichier (il se termine par « -nombre de morceaux ») : l'objet est
         alors relu et son MD5 recalculé. Renvoie la méthode employée (etag ou relecture)."""
-        head = self.s3.head_object(Bucket=self.bucket, Key=key)
+        with _span("verification", key):
+            head = self.s3.head_object(Bucket=self.bucket, Key=key)
         if head["ContentLength"] != size:
             raise RuntimeError(f"Envoi non confirmé pour {key} : {head['ContentLength']} octets sur R2 pour {size}")
         etag = head["ETag"].strip('"').lower()
@@ -64,25 +73,35 @@ class R2:
     def put_stream(self, stream, key: str) -> dict:
         """Envoie un flux (sortie de pg_dump) en plusieurs parties, sans fichier local, en calculant au passage la
         taille et le MD5 de ce qui est lu. Mémoire bornée : deux parties de 16 Mo au plus en vol."""
-        from boto3.s3.transfer import TransferConfig
-
         counter = _Counting(stream)
+        with _span("envoi_en_flux", key) as sp:
+            self._upload(counter, key)
+            sp.set_attribute("r2.octets", counter.n)
+        return {"bytes": counter.n, "md5": counter.md5.hexdigest()}
+
+    def _upload(self, counter, key: str):
+        from boto3.s3.transfer import TransferConfig
         self.s3.upload_fileobj(counter, self.bucket, key, Config=TransferConfig(
             multipart_threshold=16 * 2**20, multipart_chunksize=16 * 2**20, max_concurrency=2, use_threads=True))
-        return {"bytes": counter.n, "md5": counter.md5.hexdigest()}
 
     def list(self, prefix: str) -> list[dict]:
         out = []
-        for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix):
-            out += [{"key": o["Key"], "bytes": o["Size"], "modified": o["LastModified"]} for o in page.get("Contents", [])]
+        with _span("liste", prefix):
+            self._list(prefix, out)
         return out
 
+    def _list(self, prefix: str, out: list):
+        for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix):
+            out += [{"key": o["Key"], "bytes": o["Size"], "modified": o["LastModified"]} for o in page.get("Contents", [])]
+
     def delete(self, key: str):
-        self.s3.delete_object(Bucket=self.bucket, Key=key)
+        with _span("suppression", key):
+            self.s3.delete_object(Bucket=self.bucket, Key=key)
 
     def download(self, key: str, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.s3.download_file(self.bucket, key, str(path))
+        with _span("telechargement", key):
+            self.s3.download_file(self.bucket, key, str(path))
 
 
 class _Counting:

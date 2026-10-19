@@ -1,12 +1,17 @@
 # Surcouche pour le serveur Scaleway (DEV1-S) : redémarrage automatique, journaux bornés, aucun port ouvert sur
 # Internet (base fermée, API et interface sur 127.0.0.1, consultées par un tunnel SSH). Activée par le fichier .env
 # du serveur : COMPOSE_FILE=docker-compose.yml:docker-compose.serveur.yml et COMPOSE_PROFILES=direct.
+# Le collecteur OpenTelemetry (otel) et Tempo n'existent que sur le serveur (étape D2) ; sur le Mac, sans collecteur,
+# les services créent leurs spans sans les envoyer (identifiants consignés en base tout de même).
 # Le service « taches » n'existe que sur le serveur : règles en continu, archivage sur R2, purge, sauvegarde,
 # surveillance du disque ; on y lance aussi ponctuellement scripts/build_masks.py.
 # Les étiquettes !reset et !override demandent Docker Compose 2.24.4 ou plus récent.
 x-journaux: &journaux
   driver: json-file
   options: { max-size: "10m", max-file: "3" }
+# Traces OpenTelemetry (étape D2) : chaque service envoie ses spans au collecteur, par le réseau Docker
+x-traces: &traces
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel:4318
 
 services:
   db:
@@ -16,6 +21,7 @@ services:
 
   backend:
     ports: !override ["127.0.0.1:8000:8000"]
+    environment: *traces
     restart: unless-stopped
     logging: *journaux
 
@@ -27,9 +33,11 @@ services:
     logging: *journaux
 
   collector:
+    environment: *traces
     logging: *journaux
 
   ingest:
+    environment: *traces
     logging: *journaux
 
   # Tâches planifiées (scripts/taches.py) : pas de cron sur l'hôte, redémarre avec la plateforme.
@@ -50,6 +58,8 @@ services:
       SAUVEGARDES_GARDEES: "7"
       ALERTE_DISQUE_PCT: "15"
       GRAFANA_URL: http://grafana:3000   # Grafana arrêté : taches envoie lui même les alertes les plus graves
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel:4318
+      OTEL_METRIQUES_URL: http://otel:8888/metrics   # mesures du collecteur, consignées chaque minute (mesures_otel)
     volumes:
       - ./data/ais_live:/app/data/ais_live
       - ./config:/app/config:ro
@@ -111,5 +121,42 @@ services:
     restart: unless-stopped
     logging: *journaux
 
+  # Collecteur OpenTelemetry (étape D2, otel/collecteur.yaml) : distribution contrib, épinglée par version et par
+  # empreinte (tail_sampling, filtre des données sensibles, file d'attente sur disque). Écoute sur le réseau Docker et
+  # sur 127.0.0.1:4318 ; jamais sur une adresse publique ni privée : interface (port 8080) et travailleurs (port 8090,
+  # jeton vérifié) passent par nginx. Mémoire : memory_limiter à 120 Mo, limite Docker à 200 Mo.
+  otel:
+    image: otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806
+    # Image sans système (un seul binaire) : root pour écrire la file d'attente dans le volume nommé, créé par Docker
+    # au nom de root ; aucun port publié hors de 127.0.0.1
+    user: "0:0"
+    environment:
+      GOMEMLIMIT: 130MiB
+    volumes:
+      - ./otel/collecteur.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - otel_file:/var/lib/otelcol
+    ports: ["127.0.0.1:4318:4318"]
+    depends_on: [tempo]
+    mem_limit: 200m
+    restart: unless-stopped
+    logging: *journaux
+
+  # Grafana Tempo (étape D2, otel/tempo.yaml) : binaire unique, stockage local, conservation de 72 h. Aucun port
+  # publié : le collecteur lui écrit (tempo:4317), Grafana le lit (http://tempo:3200).
+  tempo:
+    image: grafana/tempo:3.1.0@sha256:3076b8dcdfb32fd6bc5ccef85e7b7313e6199b9cb84366257fc17ecb696db5fd
+    command: ["-config.file=/etc/tempo.yaml"]
+    user: "0:0"                      # volume nommé créé au nom de root (image distroless)
+    environment:
+      GOMEMLIMIT: 240MiB
+    volumes:
+      - ./otel/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    mem_limit: 320m
+    restart: unless-stopped
+    logging: *journaux
+
 volumes:
   grafana_data:
+  otel_file:
+  tempo_data:

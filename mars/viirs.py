@@ -16,6 +16,7 @@ import re
 import statistics
 from datetime import date, datetime, timedelta, timezone
 
+from mars import traces
 from mars.ais.live import ZONES
 from mars.evaluation import critere, motif_non_evaluable
 from mars.satellites import extent
@@ -350,38 +351,48 @@ def ingest(conn, w: dict, rules: dict) -> dict:
         if err:
             out["granules_en_echec"] += 1
             continue
-        conn.execute("DELETE FROM alert_evidence WHERE evidence_type = 'viirs' AND evidence_id IN "
-                     "(SELECT id FROM viirs_detections WHERE granule_id = %s)", (gid,))
-        conn.execute("DELETE FROM viirs_detections WHERE granule_id = %s", (gid,))   # leurs preuves seront purgées
-        dets = [{**d, "ts": detection_time(d["lon"], d["lat"], start, end, frame)} for d in g.get("detections", [])]
-        if dets:
-            box = (min(d["lon"] for d in dets) - 0.2, min(d["lat"] for d in dets) - 0.2,
-                   max(d["lon"] for d in dets) + 0.2, max(d["lat"] for d in dets) + 0.2)
-            matched = match(dets, _tracks(conn, start, end, box, v["estime_max_min"]), rules)
-        else:
-            matched = {}
-        for i, d in enumerate(dets):
-            vid, dist = matched.get(i, (None, None))
-            did = conn.execute(
-                """INSERT INTO viirs_detections (granule_id, ts, geom, nanowatts, orientation, lune, ciel_clair,
-                       matched_vessel_id, match_distance_m)
-                   VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s, %s, %s)
-                   ON CONFLICT DO NOTHING RETURNING id""",
-                (gid, d["ts"], d["lon"], d["lat"], d.get("nanowatts"), d.get("orientation"), d.get("lune"),
-                 d.get("ciel_clair"), vid, dist)).fetchone()
-            if did:                                   # index unique : une même détection n'est jamais écrite deux fois
-                new_ids.append(did[0])
-                if d.get("vignette"):
-                    images.append((did[0], d["vignette"], d.get("vignette_geo"), d["ts"], p["nuit"], p["nom"]))
-        conn.execute("UPDATE viirs_granules SET detections = (SELECT count(*) FROM viirs_detections WHERE granule_id = %s) "
-                     "WHERE id = %s", (gid, gid))
-        _measure_granule(conn, gid, rules)
-        out["detections"] += len(dets)
-        out["appariees"] += len(matched)
+        with traces.span("viirs.granule", **{"viirs.granule": gid, "viirs.satellite": p["satellite"]}) as sp:
+            n = _ingest_granule(conn, gid, g, start, end, frame, p, rules, v, new_ids, images, out)
+            sp.set_attribute("viirs.detections", n)
     if new_ids:
-        out.update(_screen(conn, new_ids, rules, out))
-    out.update(_store_images(conn, images))
+        with traces.span("viirs.evaluation_et_alertes", **{"viirs.detections": len(new_ids)}):
+            out.update(_screen(conn, new_ids, rules, out))
+    with traces.span("viirs.vignettes", **{"viirs.vignettes": len(images)}):
+        out.update(_store_images(conn, images))
     return out
+
+
+def _ingest_granule(conn, gid, g, start, end, frame, p, rules, v, new_ids, images, out) -> int:
+    """Détections d'une granule : appariement AIS, écriture, mesures ; retourne le nombre de détections."""
+    conn.execute("DELETE FROM alert_evidence WHERE evidence_type = 'viirs' AND evidence_id IN "
+                 "(SELECT id FROM viirs_detections WHERE granule_id = %s)", (gid,))
+    conn.execute("DELETE FROM viirs_detections WHERE granule_id = %s", (gid,))   # leurs preuves seront purgées
+    dets = [{**d, "ts": detection_time(d["lon"], d["lat"], start, end, frame)} for d in g.get("detections", [])]
+    if dets:
+        box = (min(d["lon"] for d in dets) - 0.2, min(d["lat"] for d in dets) - 0.2,
+               max(d["lon"] for d in dets) + 0.2, max(d["lat"] for d in dets) + 0.2)
+        matched = match(dets, _tracks(conn, start, end, box, v["estime_max_min"]), rules)
+    else:
+        matched = {}
+    for i, d in enumerate(dets):
+        vid, dist = matched.get(i, (None, None))
+        did = conn.execute(
+            """INSERT INTO viirs_detections (granule_id, ts, geom, nanowatts, orientation, lune, ciel_clair,
+                   matched_vessel_id, match_distance_m)
+               VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT DO NOTHING RETURNING id""",
+            (gid, d["ts"], d["lon"], d["lat"], d.get("nanowatts"), d.get("orientation"), d.get("lune"),
+             d.get("ciel_clair"), vid, dist)).fetchone()
+        if did:                                   # index unique : une même détection n'est jamais écrite deux fois
+            new_ids.append(did[0])
+            if d.get("vignette"):
+                images.append((did[0], d["vignette"], d.get("vignette_geo"), d["ts"], p["nuit"], p["nom"]))
+    conn.execute("UPDATE viirs_granules SET detections = (SELECT count(*) FROM viirs_detections WHERE granule_id = %s) "
+                 "WHERE id = %s", (gid, gid))
+    _measure_granule(conn, gid, rules)
+    out["detections"] += len(dets)
+    out["appariees"] += len(matched)
+    return len(dets)
 
 
 def _store_images(conn, images: list[tuple]) -> dict:

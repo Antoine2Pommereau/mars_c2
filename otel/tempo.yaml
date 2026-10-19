@@ -1,0 +1,58 @@
+# Grafana Tempo de MARS C2 (étape D2) : binaire unique, sans Kafka (Tempo 3, ingestion locale directe), stockage
+# local sur le volume tempo_data, conservation de 72 h (block_retention, réglable ici seulement). Reçoit les traces du
+# collecteur OpenTelemetry (otel:4317), lues par Grafana (http://tempo:3200). Aucun port publié sur l'hôte.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+  log_level: warn
+
+memory:
+  automemlimit_enabled: false      # GOMEMLIMIT posé par Compose, sous la limite Docker
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+# Traces en cours gardées en mémoire : quelques Mo suffisent au volume de MARS C2 (borne de 250 Mo par défaut)
+live_store:
+  max_live_traces_bytes: 30000000
+  complete_block_timeout: 20m
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+backend_scheduler:
+  provider:
+    compaction:
+      compaction:
+        block_retention: 72h
+
+backend_worker:
+  compaction:
+    block_retention: 72h
+
+# TraceQL metrics (durées par étape dans le tableau « Traces ») calculées depuis les blocs, sans Prometheus
+query_frontend:
+  search:
+    max_duration: 0
+  metrics:
+    max_duration: 168h
+
+overrides:
+  defaults:
+    ingestion:
+      max_traces_per_user: 20000
+
+usage_report:
+  reporting_enabled: false

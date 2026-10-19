@@ -29,6 +29,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
+from mars import traces
 from mars.evaluation import critere, motif_non_evaluable
 
 STAC = "https://stac.dataspace.copernicus.eu/v1/search"
@@ -356,7 +357,9 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     from mars import travailleurs
     from mars.viirs import regions_boxes
     s, t = rules["sentinel"], travailleurs.type_params(rules, "sentinel")
-    p = plan(conn, session, rules, now, pass_id)
+    with traces.span("sentinel.selection", **{"sentinel.passage_demande": pass_id}) as sp:
+        p = plan(conn, session, rules, now, pass_id)
+        sp.set_attribute("sentinel.passages", len(p.get("passages") or []))
     if "refus" in p:
         return p
     if not p["passages"]:
@@ -378,7 +381,8 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     import psycopg
     # Paire dédiée aux travailleurs : présente, non expirée, et acceptée par Copernicus (lecture réelle de 16 octets),
     # avant tout appel à Scaleway
-    motif = pair_expired(TRAVAILLEUR, now) or check_cdse(session, selected[0]["scenes"][0]["vv"], TRAVAILLEUR)
+    with traces.span("sentinel.verification_cles", **{"peer.service": "Copernicus"}):
+        motif = pair_expired(TRAVAILLEUR, now) or check_cdse(session, selected[0]["scenes"][0]["vv"], TRAVAILLEUR)
     if motif:
         return {"refus": motif}
     analyses, tasks = [], []
@@ -389,14 +393,14 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                 motifs = sorted({pt["motif"] for pt in ps["points"]}) or ["demande"]
                 aid = conn.execute(
                     """INSERT INTO analyses (pass_id, aoi, mode, status, model_version, source, scenes, declenchement,
-                                             cout_estime_eur, requested_at)
+                                             cout_estime_eur, requested_at, trace_id)
                        VALUES (%s, ST_MakeEnvelope(%s, %s, %s, %s, 4326)::geography, 'full', 'pending', %s, 'sentinel1',
-                               %s, %s, %s, %s) RETURNING id""",
+                               %s, %s, %s, %s, %s) RETURNING id""",
                     (ps["pass_id"], *env, "allenai/vessel-detection-sentinels fafc6c3",
                      json.dumps([{k: sc[k] for k in ("id", "debut", "fin", "orbite", "satellite", "emprise", "octets")}
                                  for sc in ps["scenes"]]),
                      json.dumps({"motifs": motifs, "points": ps["points"]}, default=str),
-                     round(estimate * len(ps["scenes"]) / n, 3), now)).fetchone()[0]
+                     round(estimate * len(ps["scenes"]) / n, 3), now, traces.trace_id())).fetchone()[0]
                 analyses.append(aid)
                 for sc in ps["scenes"]:
                     tasks.append({"analyse": aid, "id": sc["id"], "debut": sc["debut"], "fin": sc["fin"],
@@ -471,7 +475,9 @@ def ingest(conn, w: dict, rules: dict) -> dict:
                 out["detections"] += 1
                 if d.get("vignette"):
                     images.append((did[0], d["vignette"], d.get("vignette_geo"), t_scene, sc["id"]))
-        summary = fuse_analysis(conn, aid, rules) if any(not sc.get("erreur") for sc in scenes) else {}
+        with traces.span("sentinel.fusion_et_alertes", **{"sentinel.analyse": aid, "sentinel.scenes": len(scenes)}) as sp:
+            summary = fuse_analysis(conn, aid, rules) if any(not sc.get("erreur") for sc in scenes) else {}
+            sp.set_attributes({f"sentinel.{k}": v for k, v in summary.items() if isinstance(v, (int, float))})
         for k in ("appariees", "alertes_dark_ship", "alertes_non_confirme", "alertes_incoherence", "non_evaluables",
                   "echos_fixes"):
             out[k] += summary.get(k, 0)
@@ -481,7 +487,8 @@ def ingest(conn, w: dict, rules: dict) -> dict:
         conn.execute("UPDATE analyses SET status = %s, completed_at = now(), summary = %s, timings = %s, error = %s "
                      "WHERE id = %s", (status, json.dumps(summary, default=str), json.dumps(mes),
                                        "; ".join(errors)[:1000] or None, aid))
-    out.update(_store_images(conn, images))
+    with traces.span("sentinel.vignettes", **{"sentinel.vignettes": len(images)}):
+        out.update(_store_images(conn, images))
     # Analyses de ce travailleur sans aucun résultat (travailleur arrêté avant) : en échec, avec le motif
     conn.execute("UPDATE analyses SET status = 'failed', completed_at = now(), error = coalesce(error, %s) "
                  "WHERE travailleur_id = %s AND status IN ('pending', 'running')",

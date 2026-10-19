@@ -59,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import psycopg
 
-from mars import archive, supervision
+from mars import archive, supervision, traces
 from mars.config import ROOT, database_url, load_env, load_rules
 
 LIVE = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
@@ -92,29 +92,44 @@ def r2():
     return R2()
 
 
-def run(conn, task: str, fn, quiet: bool = False) -> dict | None:
-    """Exécute une tâche et la consigne dans task_runs (traçabilité, et pas de double exécution le même jour)."""
+def run(conn, task: str, fn, quiet: bool = False, parent: str | None = None) -> dict | None:
+    """Exécute une tâche et la consigne dans task_runs (traçabilité, et pas de double exécution le même jour).
+
+    Chaque tâche, présente ou future, est tracée par construction : cette enveloppe ouvre le span « tache <nom> »,
+    racine d'une trace propre (ou rattaché à `parent`, traceparent W3C), dont l'identifiant est écrit dans task_runs
+    et donné à la session PostgreSQL (les alertes créées ou mises à jour le portent dans leurs détails)."""
     day = datetime.now(timezone.utc).date()
-    rid = conn.execute("INSERT INTO task_runs (task, run_day, status) VALUES (%s, %s, 'en_cours') RETURNING id",
-                       (task, day)).fetchone()[0]
-    t = time.time()
-    try:
-        details = fn()
-        details["duree_s"] = round(time.time() - t, 1)
-        conn.execute("UPDATE task_runs SET status = 'ok', finished_at = now(), details = %s WHERE id = %s",
-                     (json.dumps(details, default=str), rid))
-        if not quiet or _changed(details):
-            log(f"{task} : {json.dumps(details, default=str, ensure_ascii=False)}")
-        return details
-    except Exception as e:
-        # refus : attendu (plafond, budget, clés absentes), ignoré par l'alerte « deux échecs de suite »
-        conn.execute("UPDATE task_runs SET status = 'echec', finished_at = now(), details = %s WHERE id = %s",
-                     (json.dumps({"erreur": str(e)[:1000], **({"refus": True} if getattr(e, "motif_seul", False) else {})}),
-                      rid))
-        log(f"{task} : ÉCHEC, {e}")
-        if not getattr(e, "motif_seul", False):   # refus attendu (plafond, clés absentes) : le motif suffit
-            traceback.print_exc()
-        return None
+    with traces.span(f"tache {task}", parent=parent, nouvelle_trace=parent is None, **{"tache.nom": task}) as sp:
+        rid = conn.execute("INSERT INTO task_runs (task, run_day, status, trace_id) VALUES (%s, %s, 'en_cours', %s) "
+                           "RETURNING id", (task, day, traces.trace_id())).fetchone()[0]
+        sp.set_attribute("tache.execution", rid)
+        t = time.time()
+        try:
+            with traces.en_base(conn):
+                details = fn()
+            details["duree_s"] = round(time.time() - t, 1)
+            sp.set_attributes(traces.propres({f"tache.{k}": v for k, v in details.items()
+                                              if isinstance(v, (int, float, bool, str)) and len(str(v)) <= 200}))
+            conn.execute("UPDATE task_runs SET status = 'ok', finished_at = now(), details = %s WHERE id = %s",
+                         (json.dumps(details, default=str), rid))
+            if not quiet or _changed(details):
+                log(f"{task} : {json.dumps(details, default=str, ensure_ascii=False)}")
+            return details
+        except Exception as e:
+            # refus : attendu (plafond, budget, clés absentes), ignoré par l'alerte « deux échecs de suite » ; le span
+            # n'est pas en erreur, le motif est un attribut
+            refus = bool(getattr(e, "motif_seul", False))
+            if refus:
+                sp.set_attribute("tache.refus", str(e)[:300])
+            else:
+                sp.record_exception(e)
+                traces.erreur(f"{type(e).__name__}: {e}")
+            conn.execute("UPDATE task_runs SET status = 'echec', finished_at = now(), details = %s WHERE id = %s",
+                         (json.dumps({"erreur": str(e)[:1000], **({"refus": True} if refus else {})}), rid))
+            log(f"{task} : ÉCHEC, {e}")
+            if not refus:                         # refus attendu (plafond, clés absentes) : le motif suffit
+                traceback.print_exc()
+            return None
 
 
 def _changed(details) -> bool:
@@ -283,18 +298,23 @@ def rules_cycle(lists_only: bool = False) -> dict:
         for t in ("json", "jsonb"):
             await c.set_type_codec(t, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
         try:
-            now, rules = datetime.now(timezone.utc), load_rules()
-            if lists_only:
-                p = rules["continu"]
-                return {"watchlist": await run_watchlist(c, now - timedelta(hours=p["fenetre_h"]), now, rules),
-                        "identite": await run_identity(c, now - timedelta(hours=p["identite_fenetre_h"]), now, rules)}
-            out = await run_continuous(c, now, rules)
-            t = time.perf_counter()
-            out["frise"] = await refresh_stats(c, now)      # statistiques de la frise (densité, coupures du flux)
-            out.setdefault("durees_s", {})["frise"] = round(time.perf_counter() - t, 2)
-            return out
+            async with traces.en_base_async(c):        # alertes écrites avec l'identifiant de la trace du cycle
+                return await cycle(c)
         finally:
             await c.close()
+
+    async def cycle(c):
+        now, rules = datetime.now(timezone.utc), load_rules()
+        if lists_only:
+            p = rules["continu"]
+            return {"watchlist": await run_watchlist(c, now - timedelta(hours=p["fenetre_h"]), now, rules),
+                    "identite": await run_identity(c, now - timedelta(hours=p["identite_fenetre_h"]), now, rules)}
+        out = await run_continuous(c, now, rules)
+        t = time.perf_counter()
+        with traces.span("regles.frise"):
+            out["frise"] = await refresh_stats(c, now)  # statistiques de la frise (densité, coupures du flux)
+        out.setdefault("durees_s", {})["frise"] = round(time.perf_counter() - t, 2)
+        return out
 
     return asyncio.run(go())
 
@@ -307,63 +327,79 @@ def loop(conn):
     if n:
         log(f"{n} tâche(s) interrompue(s) marquée(s) en échec")
     log(f"Tâches planifiées : chaque nuit à {HOUR} UTC (archivage, purge au delà de {KEEP_DAYS} jours, sauvegarde, "
-        f"{KEEP_BACKUPS} gardées) ; disque toutes les {DISK_EVERY_S // 60} min, alerte sous {DISK_PCT:.0f} %")
-    step(lambda: supervision.role_grafana(conn), "rôle grafana_lecture")
-    step(lambda: supervision.parametres(conn, load_rules()), "paramètres de supervision")
+        f"{KEEP_BACKUPS} gardées) ; disque toutes les {DISK_EVERY_S // 60} min, alerte sous {DISK_PCT:.0f} % ; "
+        f"version {traces.version()}")
+    with traces.span("taches.demarrage", nouvelle_trace=True):
+        step(lambda: supervision.role_grafana(conn), "rôle grafana_lecture")
+        step(lambda: supervision.parametres(conn, load_rules()), "paramètres de supervision")
     secours = supervision.Secours(supervision.Ntfy.from_env())
     if secours.ntfy is None:
         log("NTFY_SUJET absent du .env : aucune alerte de secours ne partira sur le téléphone")
-    last_disk = last_rules = last_sentinel = 0.0
+    last = {"disk": 0.0, "rules": 0.0, "sentinel": 0.0}
     while True:
+        conn = minute(conn, secours, last)
+        time.sleep(60)
+
+
+def minute(conn, secours, last: dict):
+    """Un tour de la boucle, chaque minute : une trace « taches.minute » dont chaque étape est un span ; chaque tâche
+    lancée ouvre sa propre trace (run)."""
+    with traces.span("taches.minute", nouvelle_trace=True):
         if conn.closed:                             # base redémarrée : nouvelle connexion, sans arrêter les alertes
             conn = step(connect, "connexion à la base") or conn
         # Alertes de secours d'abord, sans écrire en base : elles doivent partir disque plein (incident du 18/10/2026)
         step(lambda: alert_if_grafana_down(conn, secours), "alertes de secours")
         step(lambda: signs_of_life(conn), "signes de vie")
+        step(lambda: supervision.mesurer_otel(conn), "mesures du collecteur OpenTelemetry")
         step(lambda: supervise_workers(conn), "surveillance des travailleurs")   # chaque minute : aucun orphelin
-        if time.time() - last_disk >= DISK_EVERY_S:
-            last_disk = time.time()
+        if time.time() - last["disk"] >= DISK_EVERY_S:
+            last["disk"] = time.time()
             step(lambda: archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log), "disque")
             step(lambda: supervision.mesurer(conn, LIVE), "mesures du disque")
             step(lambda: supervision.parametres(conn, load_rules()), "paramètres de supervision")
-        if time.time() - last_rules >= 60 * load_rules()["continu"]["intervalle_min"]:
-            last_rules = time.time()
+        if time.time() - last["rules"] >= 60 * load_rules()["continu"]["intervalle_min"]:
+            last["rules"] = time.time()
             step(lambda: run(conn, "regles", rules_cycle, quiet=True), "règles")
         # Sentinel 1 : passages examinés toutes les 30 minutes (rien n'est lancé sans point d'intérêt ; un refus du
         # plafond ou du budget est consigné dans task_runs, sans trace d'erreur)
-        if time.time() - last_sentinel >= 60 * load_rules()["sentinel"]["intervalle_min"]:
-            last_sentinel = time.time()
+        if time.time() - last["sentinel"] >= 60 * load_rules()["sentinel"]["intervalle_min"]:
+            last["sentinel"] = time.time()
             if os.environ.get("CDSE_TRAVAILLEUR_ACCESS_KEY") and os.environ.get("SCW_SECRET_KEY"):
                 step(lambda: run(conn, "sentinel", lambda: launch_sentinel(conn, auto=True), quiet=True), "sentinel")
         for task, (fn, every, hour) in tasks(conn).items():
             if step(lambda: due(conn, task, datetime.now(timezone.utc), every, hour), f"{task} (échéance)"):
                 step(lambda: run(conn, task, fn), task)
-        time.sleep(60)
+    return conn
 
 
 _step_errors: dict[str, str] = {}
 
 
 def step(fn, name: str):
-    """Une étape de la boucle : son erreur est journalisée (une fois tant qu'elle se répète) sans arrêter la boucle."""
-    try:
-        out = fn()
-        if _step_errors.pop(name, None):
-            log(f"{name} : rétabli")
-        return out
-    except Exception as e:
-        msg = f"{type(e).__name__}: {str(e).splitlines()[0][:200] if str(e) else ''}"
-        if _step_errors.get(name) != msg:
-            _step_errors[name] = msg
-            log(f"{name} : ÉCHEC, {msg}")
-        return None
+    """Une étape de la boucle, dans son span : son erreur est journalisée (une fois tant qu'elle se répète) et marque
+    le span en erreur, sans arrêter la boucle."""
+    with traces.span(f"etape {name}") as sp:
+        try:
+            out = fn()
+            if _step_errors.pop(name, None):
+                log(f"{name} : rétabli")
+            return out
+        except Exception as e:
+            sp.record_exception(e)
+            traces.erreur(f"{type(e).__name__}: {e}")
+            msg = f"{type(e).__name__}: {str(e).splitlines()[0][:200] if str(e) else ''}"
+            if _step_errors.get(name) != msg:
+                _step_errors[name] = msg
+                log(f"{name} : ÉCHEC, {msg}")
+            return None
 
 
 def signs_of_life(conn):
     now = datetime.now(timezone.utc)
     t = supervision.signe_collecte(LIVE)
     if t is not None:
-        supervision.signe(conn, "collecte", t, {"age_s": round((now - t).total_seconds())})
+        supervision.signe(conn, "collecte", t, {"age_s": round((now - t).total_seconds())},
+                          version=supervision.version_collecte(LIVE))
     supervision.signe(conn, "taches", now)
 
 
@@ -376,148 +412,256 @@ def alert_if_grafana_down(conn, secours) -> list[str]:
     return secours.evaluer(etat, log=log)
 
 
-def main():
+# Commandes : chacune est enregistrée ici et exécutée par `executer`, qui ouvre son span (racine d'une trace) ; une
+# commande ajoutée sans passer par ce registre n'est pas acceptée par l'analyse des arguments
+# (tests/test_traces.py vérifie que chaque commande produit son span).
+
+COMMANDES: dict[str, tuple] = {}
+
+
+def commande(nom: str, base: bool = True):
+    """Déclare une commande de taches.py ; `base` : une connexion à la base lui est ouverte."""
+    def deco(fn):
+        COMMANDES[nom] = (fn, base)
+        return fn
+    return deco
+
+
+def executer(nom: str, a) -> None:
+    fn, base = COMMANDES[nom]
+    if nom == "boucle":                     # sans fin : chaque tour et chaque tâche ouvrent leur propre trace
+        return fn(connect(), a)
+    try:
+        with traces.span(f"commande {nom}", nouvelle_trace=True, **{"commande.nom": nom}) as sp:
+            conn = connect() if base else None
+            if conn is None:
+                return fn(conn, a)
+            with traces.en_base(conn):
+                try:
+                    return fn(conn, a)
+                except SystemExit as e:
+                    if e.code not in (0, None):
+                        traces.erreur(f"code de sortie {e.code}")
+                        sp.set_attribute("commande.code_sortie", str(e.code))
+                    raise
+    finally:
+        traces.fermer()
+
+
+@commande("boucle")
+def _boucle(conn, _a):
+    loop(conn)
+
+
+@commande("tester-alerte", base=False)           # avant la base : l'envoi doit marcher même base arrêtée
+def _tester_alerte(_conn, _a):
+    n = supervision.Ntfy.from_env()
+    if n is None:
+        print("NTFY_SUJET absent du .env : rien n'est envoyé")
+        sys.exit(1)
+    try:
+        code = n.envoyer("MARS C2 : essai d'alerte", f"Message d'essai envoyé le "
+                         f"{datetime.now(timezone.utc):%d/%m/%Y à %H:%M} UTC. La réception fonctionne.", "default",
+                         "white_check_mark")
+    except RuntimeError as e:
+        print(f"Envoi en échec : {e}")
+        sys.exit(1)
+    print(f"Message d'essai envoyé (HTTP {code}) : il doit apparaître sur le téléphone dans les secondes qui suivent")
+
+
+def _named(task):
+    def go(conn, _a):
+        if run(conn, task, tasks(conn)[task][0], parent=traces.traceparent()) is None:
+            sys.exit(1)
+    return go
+
+
+commande("archiver")(_named("archivage"))
+commande("purger")(_named("purge"))
+commande("sauvegarder")(_named("sauvegarde"))
+
+
+@commande("regles")
+def _regles(conn, _a):
+    if run(conn, "regles", rules_cycle, parent=traces.traceparent()) is None:
+        sys.exit(1)
+
+
+@commande("listes")                                  # les deux listes, sans attendre la nuit
+def _listes(conn, _a):
+    ok = [run(conn, f"listes_{s}", lambda s=s: update_list(conn, s), parent=traces.traceparent()) is not None
+          for s in ("opensanctions", "gur")]
+    if not all(ok):
+        sys.exit(1)
+
+
+@commande("passages")
+def _passages(conn, _a):
+    if run(conn, "passages", lambda: update_passes(conn), parent=traces.traceparent()) is None:
+        sys.exit(1)
+
+
+@commande("viirs")
+def _viirs(conn, _a):
+    if run(conn, "viirs", lambda: launch_viirs(conn), parent=traces.traceparent()) is None:
+        sys.exit(1)
+
+
+@commande("travailleurs")
+def _travailleurs(conn, _a):
+    supervise_workers(conn, quiet=False)
+    for r in conn.execute("SELECT id, tache, etat, commercial_type, cree_le, detruit_le, erreur, trace_id "
+                          "FROM travailleurs ORDER BY id DESC LIMIT 10").fetchall():
+        print(*r)
+
+
+@commande("journal-travailleur")                     # journal envoyé par un travailleur (le dernier par défaut)
+def _journal_travailleur(conn, a):
+    row = conn.execute("SELECT id, etat, erreur, journal_le, journal, diagnostic, trace_id FROM travailleurs "
+                       "WHERE (%s::bigint IS NULL OR id = %s) ORDER BY id DESC LIMIT 1",
+                       (a.args[0] if a.args else None,) * 2).fetchone()
+    if row is None:
+        raise SystemExit("aucun travailleur")
+    print(f"travailleur {row[0]}, état {row[1]}, journal reçu le {row[3] or 'jamais'}, trace {row[6] or 'aucune'}\n"
+          f"{row[2] or ''}")
+    if row[5]:
+        print("état Scaleway relevé avant la destruction :\n" + json.dumps(row[5], ensure_ascii=False, indent=2))
+    print(row[4] or "(aucun journal : le travailleur n'a jamais joint le serveur ; lire la console série Scaleway)")
+
+
+@commande("detruire-travailleurs")
+def _detruire_travailleurs(conn, _a):
+    from mars import travailleurs
+    scw = travailleurs.Scaleway.from_env()
+    if scw is None:
+        raise SystemExit("clés Scaleway absentes")
+    p = load_rules()["travailleurs"]
+    zones = sorted({p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values())})   # GPU : fr-par-2
+    block = {r[0]: r[1] or [] for r in conn.execute(
+        "SELECT scw_server_id, volumes_bloc FROM travailleurs WHERE scw_server_id IS NOT NULL").fetchall()}
+    for zone in zones:
+        for s in scw.tagged(zone):                                     # travailleurs seulement (garde complète)
+            try:
+                gone = scw.destroy(zone, s["id"], block.get(s["id"], []))
+                print(s["id"], s["name"], zone, "détruite" if gone else "destruction en cours (relancer dans une minute)")
+            except travailleurs.RefusDestruction as e:
+                print(s["id"], s.get("name"), f"REFUSÉE : {e}")
+    conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = coalesce(fini_le, now()), "
+                 "erreur = coalesce(erreur, 'arrêt d''urgence') WHERE detruit_le IS NULL AND etat NOT IN ('termine', 'echec')")
+
+
+@commande("viirs-reevaluer")                         # règles VIIRS en vigueur appliquées aux détections en base
+def _viirs_reevaluer(conn, _a):
+    from mars import viirs
+    print(json.dumps(viirs.reevaluate(conn, load_rules()), ensure_ascii=False, indent=2, default=str))
+
+
+@commande("sentinel-diagnostic")                     # lecture seule : Copernicus, puis Scaleway
+def _sentinel_diagnostic(conn, _a):
+    import requests
+    from mars import diagnostic, travailleurs
+    # Volumes bloc enregistrés des travailleurs Sentinel récents : chacun doit avoir été supprimé
+    recorded = conn.execute("SELECT id, volumes_bloc FROM travailleurs WHERE tache = 'sentinel' AND "
+                            "cardinality(volumes_bloc) > 0 AND cree_le > now() - interval '30 days' "
+                            "ORDER BY id").fetchall()
+    lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env(), recorded=recorded)
+    print(diagnostic.report(lines))
+    sys.exit(1 if any(s == diagnostic.MANQUE for s, _r, _d in lines) else 0)
+
+
+def _sentinel(manual: bool):
+    def go(conn, a):
+        pid = int(a.args[0]) if manual and a.args else None
+        if manual and pid is None:
+            raise SystemExit("Préciser l'identifiant du passage : taches.py sentinel-analyser ID (table sar_passes)")
+        if run(conn, "sentinel", lambda: launch_sentinel(conn, pid), parent=traces.traceparent()) is None:
+            sys.exit(1)
+    return go
+
+
+commande("sentinel")(_sentinel(False))
+commande("sentinel-analyser")(_sentinel(True))
+
+
+@commande("coupures-injection", base=False)          # coupures simulées dans des transactions annulées
+def _coupures_injection(_conn, a):
+    print(json.dumps(injection(a.jour or (datetime.now(timezone.utc) - timedelta(days=1)).date(), a.essais),
+                     ensure_ascii=False, indent=2, default=str))
+
+
+@commande("mesures", base=False)
+def _mesures(_conn, a):
+    from mesures_calibration import main as mesures
+    mesures(a.jours)
+
+
+@commande("mesurer-tableaux")                        # lecture seule, sous le rôle de Grafana, transactions annulées
+def _mesurer_tableaux(conn, _a):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("generer", ROOT / "grafana" / "generer.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    rows = supervision.mesurer_requetes(conn, gen.requetes())
+    for r in sorted(rows, key=lambda r: -r["duree_s"]):
+        print(f"{r['duree_s']:7.3f} s  {r['jours']:>2} j  {r['tableau']:<10} {r['panneau']:<48} "
+              f"{r.get('erreur') or str(r['lignes']) + ' lignes'}")
+    lentes = [r for r in rows if r["duree_s"] > 1 or r.get("erreur")]
+    print(f"\n{len(rows)} mesures, la plus longue {max(r['duree_s'] for r in rows):.3f} s ; "
+          f"{len(lentes)} au dessus de 1 s ou en erreur")
+    sys.exit(1 if lentes else 0)
+
+
+@commande("disque")
+def _disque(conn, _a):
+    print(archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log))
+
+
+@commande("sauvegardes", base=False)
+def _sauvegardes(_conn, _a):
+    for o in sorted(r2().list(archive.BACKUP_PREFIX), key=lambda o: o["key"]):
+        print(f"{o['key']}  {o['bytes'] / 1e6:.1f} Mo")
+
+
+@commande("telecharger", base=False)
+def _telecharger(_conn, a):
+    key, dest = a.args
+    r2().download(key, Path(dest))
+    print(f"{key} enregistré dans {dest}")
+
+
+@commande("restaurer-positions")
+def _restaurer_positions(conn, a):
+    from mars.ais.ingest import Ingestor
+    if not a.du or not a.au:
+        raise SystemExit("Préciser --du et --au (AAAA-MM-JJ)")
+    client, ing = r2(), Ingestor(conn, LIVE, load_rules()["ingestion"])   # allègement neuf, sans reprise
+    workdir = LIVE / ".restauration"
+    workdir.mkdir(parents=True, exist_ok=True)
+    d = a.du
+    while d <= a.au:                          # dans l'ordre chronologique : continuité de l'allègement
+        with traces.span("restauration.jour", jour=str(d)):
+            log(json.dumps(archive.restore_positions(conn, client, ing, d, workdir), ensure_ascii=False))
+        d += timedelta(days=1)
+    ing.refresh_watch(force=True)
+
+
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Tâches planifiées de MARS C2")
-    ap.add_argument("commande", nargs="?", default="boucle",
-                    choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "viirs",
-                             "travailleurs", "journal-travailleur", "detruire-travailleurs", "viirs-reevaluer", "mesures",
-                             "coupures-injection", "sentinel", "sentinel-analyser",
-                             "sentinel-diagnostic", "tester-alerte", "mesurer-tableaux",
-                             "sauvegardes", "telecharger", "restaurer-positions"])
+    ap.add_argument("commande", nargs="?", default="boucle", choices=list(COMMANDES))
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
     ap.add_argument("--au", type=date.fromisoformat)
     ap.add_argument("--jours", type=int, default=14, help="mesures : nombre de jours examinés")
     ap.add_argument("--jour", type=date.fromisoformat, help="coupures-injection : journée (par défaut, la veille)")
     ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    a = parser().parse_args()
     load_env()
-    if a.commande == "tester-alerte":                   # avant la base : l'envoi doit marcher même base arrêtée
-        n = supervision.Ntfy.from_env()
-        if n is None:
-            print("NTFY_SUJET absent du .env : rien n'est envoyé")
-            sys.exit(1)
-        try:
-            code = n.envoyer("MARS C2 : essai d'alerte", f"Message d'essai envoyé le "
-                             f"{datetime.now(timezone.utc):%d/%m/%Y à %H:%M} UTC. La réception fonctionne.", "default",
-                             "white_check_mark")
-        except RuntimeError as e:
-            print(f"Envoi en échec : {e}")
-            sys.exit(1)
-        print(f"Message d'essai envoyé (HTTP {code}) : il doit apparaître sur le téléphone dans les secondes qui suivent")
-        return
-    conn = connect()
-    named = {"archiver": "archivage", "purger": "purge", "sauvegarder": "sauvegarde"}
-    if a.commande == "boucle":
-        loop(conn)
-    elif a.commande in named:
-        if run(conn, named[a.commande], tasks(conn)[named[a.commande]][0]) is None:
-            sys.exit(1)
-    elif a.commande == "regles":
-        if run(conn, "regles", rules_cycle) is None:
-            sys.exit(1)
-    elif a.commande == "listes":                  # les deux listes, sans attendre la nuit
-        ok = [run(conn, f"listes_{s}", lambda s=s: update_list(conn, s)) is not None for s in ("opensanctions", "gur")]
-        if not all(ok):
-            sys.exit(1)
-    elif a.commande == "viirs":
-        if run(conn, "viirs", lambda: launch_viirs(conn)) is None:
-            sys.exit(1)
-    elif a.commande == "travailleurs":
-        supervise_workers(conn, quiet=False)
-        for r in conn.execute("SELECT id, tache, etat, commercial_type, cree_le, detruit_le, erreur FROM travailleurs "
-                              "ORDER BY id DESC LIMIT 10").fetchall():
-            print(*r)
-    elif a.commande == "journal-travailleur":           # journal envoyé par un travailleur (le dernier par défaut)
-        row = conn.execute("SELECT id, etat, erreur, journal_le, journal, diagnostic FROM travailleurs "
-                           "WHERE (%s::bigint IS NULL OR id = %s) ORDER BY id DESC LIMIT 1",
-                           (a.args[0] if a.args else None,) * 2).fetchone()
-        if row is None:
-            raise SystemExit("aucun travailleur")
-        print(f"travailleur {row[0]}, état {row[1]}, journal reçu le {row[3] or 'jamais'}\n{row[2] or ''}")
-        if row[5]:
-            print("état Scaleway relevé avant la destruction :\n" + json.dumps(row[5], ensure_ascii=False, indent=2))
-        print(row[4] or "(aucun journal : le travailleur n'a jamais joint le serveur ; lire la console série Scaleway)")
-    elif a.commande == "detruire-travailleurs":
-        from mars import travailleurs
-        scw = travailleurs.Scaleway.from_env()
-        if scw is None:
-            raise SystemExit("clés Scaleway absentes")
-        p = load_rules()["travailleurs"]
-        zones = sorted({p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values())})   # GPU : fr-par-2
-        block = {r[0]: r[1] or [] for r in conn.execute(
-            "SELECT scw_server_id, volumes_bloc FROM travailleurs WHERE scw_server_id IS NOT NULL").fetchall()}
-        for zone in zones:
-            for s in scw.tagged(zone):                                     # travailleurs seulement (garde complète)
-                try:
-                    gone = scw.destroy(zone, s["id"], block.get(s["id"], []))
-                    print(s["id"], s["name"], zone, "détruite" if gone else "destruction en cours (relancer dans une minute)")
-                except travailleurs.RefusDestruction as e:
-                    print(s["id"], s.get("name"), f"REFUSÉE : {e}")
-        conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = coalesce(fini_le, now()), "
-                     "erreur = coalesce(erreur, 'arrêt d''urgence') WHERE detruit_le IS NULL AND etat NOT IN ('termine', 'echec')")
-    elif a.commande == "viirs-reevaluer":                # règles VIIRS en vigueur appliquées aux détections en base
-        from mars import viirs
-        print(json.dumps(viirs.reevaluate(conn, load_rules()), ensure_ascii=False, indent=2, default=str))
-    elif a.commande == "sentinel-diagnostic":            # lecture seule : Copernicus, puis Scaleway
-        import requests
-        from mars import diagnostic, travailleurs
-        # Volumes bloc enregistrés des travailleurs Sentinel récents : chacun doit avoir été supprimé
-        recorded = conn.execute("SELECT id, volumes_bloc FROM travailleurs WHERE tache = 'sentinel' AND "
-                                "cardinality(volumes_bloc) > 0 AND cree_le > now() - interval '30 days' "
-                                "ORDER BY id").fetchall()
-        lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env(), recorded=recorded)
-        print(diagnostic.report(lines))
-        sys.exit(1 if any(s == diagnostic.MANQUE for s, _r, _d in lines) else 0)
-    elif a.commande in ("sentinel", "sentinel-analyser"):
-        pid = int(a.args[0]) if a.commande == "sentinel-analyser" and a.args else None
-        if a.commande == "sentinel-analyser" and pid is None:
-            raise SystemExit("Préciser l'identifiant du passage : taches.py sentinel-analyser ID (table sar_passes)")
-        if run(conn, "sentinel", lambda: launch_sentinel(conn, pid)) is None:
-            sys.exit(1)
-    elif a.commande == "coupures-injection":             # coupures simulées dans des transactions annulées
-        print(json.dumps(injection(a.jour or (datetime.now(timezone.utc) - timedelta(days=1)).date(), a.essais),
-                         ensure_ascii=False, indent=2, default=str))
-    elif a.commande == "passages":
-        if run(conn, "passages", lambda: update_passes(conn)) is None:
-            sys.exit(1)
-    elif a.commande == "mesures":
-        from mesures_calibration import main as mesures
-        mesures(a.jours)
-    elif a.commande == "mesurer-tableaux":               # lecture seule, sous le rôle de Grafana, transactions annulées
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("generer", ROOT / "grafana" / "generer.py")
-        gen = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(gen)
-        rows = supervision.mesurer_requetes(conn, gen.requetes())
-        for r in sorted(rows, key=lambda r: -r["duree_s"]):
-            print(f"{r['duree_s']:7.3f} s  {r['jours']:>2} j  {r['tableau']:<10} {r['panneau']:<48} "
-                  f"{r.get('erreur') or str(r['lignes']) + ' lignes'}")
-        lentes = [r for r in rows if r["duree_s"] > 1 or r.get("erreur")]
-        print(f"\n{len(rows)} mesures, la plus longue {max(r['duree_s'] for r in rows):.3f} s ; "
-              f"{len(lentes)} au dessus de 1 s ou en erreur")
-        sys.exit(1 if lentes else 0)
-    elif a.commande == "disque":
-        print(archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log))
-    elif a.commande == "sauvegardes":
-        for o in sorted(r2().list(archive.BACKUP_PREFIX), key=lambda o: o["key"]):
-            print(f"{o['key']}  {o['bytes'] / 1e6:.1f} Mo")
-    elif a.commande == "telecharger":
-        key, dest = a.args
-        r2().download(key, Path(dest))
-        print(f"{key} enregistré dans {dest}")
-    elif a.commande == "restaurer-positions":
-        from mars.ais.ingest import Ingestor
-        if not a.du or not a.au:
-            raise SystemExit("Préciser --du et --au (AAAA-MM-JJ)")
-        client, ing = r2(), Ingestor(conn, LIVE, load_rules()["ingestion"])   # allègement neuf, sans reprise
-        workdir = LIVE / ".restauration"
-        workdir.mkdir(parents=True, exist_ok=True)
-        d = a.du
-        while d <= a.au:                          # dans l'ordre chronologique : continuité de l'allègement
-            log(json.dumps(archive.restore_positions(conn, client, ing, d, workdir), ensure_ascii=False))
-            d += timedelta(days=1)
-        ing.refresh_watch(force=True)
+    traces.init("mars-taches")
+    executer(a.commande, a)
 
 
 if __name__ == "__main__":

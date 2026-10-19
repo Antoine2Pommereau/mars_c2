@@ -1,7 +1,7 @@
 """Tableaux Grafana de MARS C2, écrits en code : ce script produit les fichiers JSON de
 grafana/provisioning/dashboards/mars (relus par Grafana au démarrage, jamais modifiés à la main).
 
-    python grafana/generer.py          # régénère les cinq tableaux ; tests/test_supervision.py vérifie qu'ils sont à jour
+    python grafana/generer.py          # régénère les six tableaux ; tests/test_supervision.py vérifie qu'ils sont à jour
 
 Sobres et sombres, aux couleurs de MARS C2 : séries en gris et en bleu du signal système, la couleur n'est donnée qu'à
 ce qui demande l'attention (seuil franchi, échec, alerte). Requêtes sur des tables de statistiques et de mesures,
@@ -11,9 +11,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 OUT = Path(__file__).resolve().parent / "provisioning" / "dashboards" / "mars"
 DS = {"type": "grafana-postgresql-datasource", "uid": "mars"}
+TEMPO = {"type": "tempo", "uid": "tempo"}
+
+
+def lien_trace(colonne: str = "${__value.raw}") -> str:
+    """Adresse de l'exploration Tempo pour un identifiant de trace (lien d'une cellule de tableau)."""
+    pane = {"a": {"datasource": "tempo", "queries": [{"refId": "A", "datasource": TEMPO, "queryType": "traceql",
+                                                         "query": "__TRACE__"}], "range": {"from": "now-3d", "to": "now"}}}
+    return ("/explore?schemaVersion=1&orgId=1&panes=" + quote(json.dumps(pane, separators=(",", ":")), safe="")
+            ).replace("__TRACE__", colonne)
 
 NEUTRE, CLAIR, SIGNAL = "#7c8b97", "#c2ccd3", "#4fb6c8"
 ROUGE, ORANGE, SOMBRE = "#ef6461", "#f0a84b", "#e85bc7"
@@ -91,8 +101,12 @@ class Tableau:
                      "tooltip": {"mode": "multi", "sort": "desc"}}, overrides)
 
     def table(self, titre: str, sql: str, w: int = 24, h: int = 8, description: str = "", etats: dict | None = None,
-              colonne_etat: str | None = None, unites: dict | None = None):
+              colonne_etat: str | None = None, unites: dict | None = None, trace: str | None = None):
         overrides = []
+        if trace:                                   # colonne de l'identifiant de trace : lien vers Tempo
+            overrides.append({"matcher": {"id": "byName", "options": trace}, "properties": [
+                {"id": "links", "value": [{"title": "Ouvrir la trace dans Tempo", "url": lien_trace()}]},
+                {"id": "custom.width", "value": 120}]})
         if etats and colonne_etat:
             overrides.append({"matcher": {"id": "byName", "options": colonne_etat}, "properties": [
                 {"id": "mappings", "value": [{"type": "value", "options": {
@@ -104,6 +118,24 @@ class Tableau:
                     {"custom": {"align": "auto", "cellOptions": {"type": "auto"}}, "color": {"mode": "fixed",
                                                                                            "fixedColor": CLAIR}},
                     {"showHeader": True, "cellHeight": "sm", "footer": {"show": False}}, overrides)
+
+    def tempo(self, titre: str, requete: str, w: int = 12, h: int = 9, description: str = "", spans: bool = False,
+              metriques: bool = False, limite: int = 50):
+        """Panneau sur Tempo : recherche TraceQL (tableau des traces ou des spans), ou TraceQL metrics (courbe)."""
+        cible = {"refId": "A", "datasource": TEMPO, "queryType": "traceql", "query": requete, "limit": limite,
+                 "tableType": "spans" if spans else "traces"}
+        if metriques:                               # pas choisi par Grafana selon la période affichée
+            cible.update({"metricsQueryType": "range"})
+            cible.pop("tableType")
+            cible.pop("limit")
+        p = {"id": len(self.panels) + 1, "type": "timeseries" if metriques else "table", "title": titre,
+             "description": description, "datasource": TEMPO, "gridPos": self._place(w, h), "transparent": True,
+             "targets": [cible], "options": {"showHeader": True, "cellHeight": "sm"} if not metriques else
+             {"legend": {"showLegend": True, "displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+             "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"} if metriques else
+                                          {"mode": "fixed", "fixedColor": CLAIR},
+                                          **({"unit": "s"} if metriques else {})}, "overrides": []}}
+        self.panels.append(p)
 
     def json(self) -> dict:
         return {"uid": self.uid, "title": self.titre, "description": self.description, "tags": ["mars-c2"],
@@ -243,9 +275,10 @@ def taches() -> Tableau:
     t.table("Dernière exécution de chaque tâche",
             """SELECT DISTINCT ON (task) task AS "Tâche", status AS "Statut", started_at AS "Début",
                       extract(epoch FROM finished_at - started_at) AS "Durée",
-                      left(coalesce(details->>'erreur', details->>'motif', ''), 160) AS "Motif"
+                      left(coalesce(details->>'erreur', details->>'motif', ''), 160) AS "Motif",
+                      trace_id AS "Trace"
                FROM task_runs WHERE started_at > now() - interval '30 days' ORDER BY task, started_at DESC""",
-            h=10, etats=STATUTS, colonne_etat="Statut", unites={"Durée": "s"})
+            h=10, etats=STATUTS, colonne_etat="Statut", unites={"Durée": "s"}, trace="Trace")
     t.courbe("Cycle des règles par étape",
              """SELECT started_at AS time, e.k AS metric, e.v::float8 AS value
                 FROM task_runs, jsonb_each_text(details->'durees_s') AS e(k, v)
@@ -261,9 +294,9 @@ def taches() -> Tableau:
                ORDER BY 1 DESC LIMIT 100""", w=12)
     t.table("Échecs des 7 derniers jours",
             """SELECT started_at AS "Le", task AS "Tâche",
-                      left(coalesce(details->>'erreur', details->>'motif', ''), 200) AS "Motif"
+                      left(coalesce(details->>'erreur', details->>'motif', ''), 200) AS "Motif", trace_id AS "Trace"
                FROM task_runs WHERE status = 'echec' AND started_at > now() - interval '7 days'
-               ORDER BY 1 DESC LIMIT 200""", w=12)
+               ORDER BY 1 DESC LIMIT 200""", w=12, trace="Trace")
     return t
 
 
@@ -313,10 +346,10 @@ def satellites() -> Tableau:
                       coalesce(mesures->>'rss_max_mo', mesures->'mesures_travailleur'->>'rss_max_mo')::float8
                           AS "Mémoire (Mo)",
                       (mesures->>'cout_estime_eur')::float8 AS "Coût",
-                      left(erreur, 160) AS "Motif d'échec"
+                      left(erreur, 160) AS "Motif d'échec", trace_id AS "Trace"
                FROM travailleurs WHERE $__timeFilter(cree_le) ORDER BY id DESC LIMIT 100""",
             h=9, etats={"echec": ("échec", ROUGE), "termine": ("terminé", NEUTRE)}, colonne_etat="État",
-            unites={"Durée": "s", "Coût": "currencyEUR"})
+            unites={"Durée": "s", "Coût": "currencyEUR"}, trace="Trace")
     t.table("Passages Sentinel 1",
             """SELECT p.acquired_at AS "Acquis le", p.satellite AS "Satellite", p.statut AS "État",
                       array_to_string(p.regions, ', ') AS "Régions", cardinality(p.infra_ids) AS "Infrastructures",
@@ -362,7 +395,62 @@ def alertes() -> Tableau:
     return t
 
 
-TABLEAUX = {"direct": direct, "disque": disque, "taches": taches, "satellites": satellites, "alertes": alertes}
+# Collecteur OpenTelemetry (mesures_otel, relevées chaque minute par taches) : spans reçus depuis le dernier relevé
+RECUS_PAR_MINUTE = """SELECT mesure_le AS time, greatest(recus - lag(recus) OVER (ORDER BY mesure_le), 0) AS value
+    FROM mesures_otel WHERE $__timeFilter(mesure_le) ORDER BY 1"""
+MINUTES_SANS_SPAN = """SELECT extract(epoch FROM now() - max(mesure_le) FILTER (WHERE recus > prec)) / 60 AS minutes
+    FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel
+          WHERE mesure_le > now() - interval '1 day') x
+    WHERE EXISTS (SELECT 1 FROM mesures_otel WHERE mesure_le > now() - interval '30 minutes')"""
+REFUS_15_MIN = """SELECT coalesce(sum(greatest(refuses - prec, 0)), 0) AS refus
+    FROM (SELECT mesure_le, refuses, lag(refuses) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel
+          WHERE mesure_le > now() - interval '16 minutes') x WHERE mesure_le > now() - interval '15 minutes'"""
+# Étapes métier, par préfixe du nom de span (TraceQL n'accepte pas l'échappement du point : [.])
+ETAPES = ('name =~ "(regles|archivage|purge|sauvegarde|listes|passages|travailleur|viirs|sentinel|demarrage|scaleway)'
+          '[.].*"')
+
+
+def traces() -> Tableau:
+    t = Tableau("mars-traces", "Traces", "Traces OpenTelemetry (Tempo, 72 h) : erreurs, lenteurs, durées par étape, "
+                "collecteur, versions des images", de="now-24h")
+    t.chiffre("Collecteur : dernier span reçu", MINUTES_SANS_SPAN, "m", ((None, NEUTRE), (15, ROUGE)), w=6,
+              decimales=1, description="Minutes depuis le dernier relevé où le collecteur avait reçu de nouveaux "
+                                       "spans. Alerte au delà de 15 minutes.")
+    t.chiffre("Spans refusés, 15 min", REFUS_15_MIN, seuils=((None, NEUTRE), (1, ROUGE)), w=6,
+              description="Spans refusés par le collecteur (mémoire saturée, file pleine). Alerte dès le premier.")
+    t.chiffre("File d'attente vers Tempo",
+              "SELECT file_attente AS lots FROM mesures_otel ORDER BY mesure_le DESC LIMIT 1",
+              seuils=((None, NEUTRE), (100, ORANGE), (1000, ROUGE)), w=6,
+              description="Lots en attente sur le disque du collecteur (Tempo redémarré ou lent).")
+    t.chiffre("Mémoire du collecteur",
+              "SELECT memoire_octets AS octets FROM mesures_otel ORDER BY mesure_le DESC LIMIT 1", "bytes",
+              ((None, NEUTRE), (150e6, ORANGE), (180e6, ROUGE)), w=6, decimales=None,
+              description="Limite Docker 200 Mo, refus au delà de 120 Mo (memory_limiter).")
+    t.section("Recherche des traces")
+    t.tempo("Traces en erreur", "{ status = error }", description="Toute trace dont un span est en erreur.")
+    t.tempo("Traces lentes de l'API", '{ resource.service.name =~ "mars-api|mars-web" && duration > 1s }',
+            description="Requêtes de plus d'une seconde (toutes gardées par l'échantillonnage).")
+    t.tempo("Tâches", '{ name =~ "tache .*|commande .*" }', description="Une trace par exécution de tâche.")
+    t.tempo("Analyses satellites", '{ name = "travailleur.lancement" }',
+            description="Une analyse VIIRS ou Sentinel 1 de bout en bout : sélection, lancement, démarrage, "
+                        "téléchargements, inférence, fusion, alertes, destruction.")
+    t.section("Durées par étape")
+    t.tempo("Durée par étape (90e centile)", "{ " + ETAPES + " } | quantile_over_time(duration, .9) by (name)",
+            w=24, metriques=True, description="Étapes du cycle des règles, de l'archivage, des listes, des passages "
+                                              "et des travailleurs (TraceQL metrics, calculé par Tempo).")
+    t.tempo("Étapes des analyses satellites", '{ resource.service.name = "mars-travailleur" || ' + ETAPES + " }",
+            w=24, spans=True, limite=100, description="Spans des travailleurs et du traitement de leurs résultats.")
+    t.section("Collecteur et versions")
+    t.courbe("Spans reçus par minute", RECUS_PAR_MINUTE, w=12, barres=True)
+    t.table("Versions des images",
+            """SELECT service AS "Service", detail->>'version' AS "Version", dernier_le AS "Dernier signe de vie"
+               FROM signes_de_vie WHERE detail ? 'version' ORDER BY 1""", w=12,
+            description="Empreinte du commit de chaque image : toutes égales après un déploiement complet.")
+    return t
+
+
+TABLEAUX = {"direct": direct, "disque": disque, "taches": taches, "satellites": satellites, "alertes": alertes,
+            "traces": traces}
 
 
 def generer() -> dict[str, str]:
@@ -375,7 +463,8 @@ def requetes() -> list[tuple[str, str, str]]:
     for nom, f in TABLEAUX.items():
         for p in f().json()["panels"]:
             for tg in p.get("targets", []):
-                out.append((nom, p["title"], tg["rawSql"]))
+                if tg.get("rawSql"):                # les panneaux Tempo ne lisent pas la base
+                    out.append((nom, p["title"], tg["rawSql"]))
     return out
 
 

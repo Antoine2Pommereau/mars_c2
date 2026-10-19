@@ -44,6 +44,8 @@ export const L = {
     nuitDe: (d: string, g: number, n: number, e: number) => `${d}, ${g} granules${e ? ` dont ${e} en échec` : ""}, ${n} détections`,
     etatsTravailleur: { demande: "demandé", cree: "créé", demarre: "en cours", resultats: "résultats reçus",
       termine: "terminé", echec: "en échec" } as Record<string, string>,
+    version: "Version", differente: "version différente de l'interface",
+    services: { interface: "Interface", api: "API", taches: "Tâches", ingestion: "Ingestion", collecte: "Collecte" } as Record<string, string>,
     travailleurDe: (etat: string, type: string, le: string, s: number | null, eur: number | null) =>
       `${etat}, ${type}, ${le}${s != null ? `, ${Math.round(s / 60)} min d'analyse` : ""}${eur != null ? `, ${eur.toFixed(3).replace(".", ",")} €` : ""}`,
   },
@@ -233,6 +235,7 @@ export const L = {
     type: "Type", longueur: "Longueur", destination: "Destination", vitesse: "Vitesse", route: "Route",
     dernierMessage: "Dernier message", nonRenseigne: "non renseigné", ilYaMin: (m: string) => `il y a ${m} min`,
     regles: (v: string, t?: string) => `Règles ${v}${t ? `, alerte levée le ${t}` : ""}`, sansNom: "sans nom",
+    trace: (id: string) => `Trace ${id}`,
   },
 
   // Décisions

@@ -5,6 +5,7 @@ import { api, gpxUrl, photoUrl, type VesselCard } from "../lib/api";
 import { auteurMemorise, memoriserAuteur } from "../lib/auteur";
 import { dayLabel, jourHeure, num, utc } from "../lib/format";
 import { L } from "../lib/libelles";
+import { appel } from "../lib/traces";
 import type { Feature, Props } from "../lib/types";
 import { zoneAlerte } from "../lib/fil";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
@@ -23,7 +24,7 @@ function usePhoto(vesselId: number) {
   const [motif, setMotif] = useState<string | null>(null);
   const echec = () => {
     setEtat("absente");
-    fetch(photoUrl(vesselId)).then((r) => (r.ok ? null : r.json())).then((j) => setMotif(j?.detail ?? null)).catch(() => setMotif(null));
+    appel(photoUrl(vesselId)).then((r) => (r.ok ? null : r.json())).then((j) => setMotif(j?.detail ?? null)).catch(() => setMotif(null));
   };
   return { etat, motif, ok: () => setEtat("ok"), echec };
 }

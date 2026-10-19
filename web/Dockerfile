@@ -4,10 +4,15 @@ WORKDIR /web
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
+# Empreinte du commit (docker build --build-arg MARS_VERSION=…), montrée par l'indicateur « Version » de la barre d'état
+ARG MARS_VERSION=dev
+ENV MARS_VERSION=$MARS_VERSION
 RUN npm run build
 
 FROM nginx:1.27-alpine
 # Relie le paquet du registre au dépôt (nettoyage par GitHub Actions, .github/workflows/nettoyage_registre.yml)
 LABEL org.opencontainers.image.source="https://github.com/Antoine2Pommereau/mars_c2"
+ARG MARS_VERSION=dev
+LABEL org.opencontainers.image.revision=$MARS_VERSION
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /web/dist /usr/share/nginx/html

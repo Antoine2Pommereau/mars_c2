@@ -2,13 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { L } from "../lib/libelles";
+import { appel } from "../lib/traces";
 import type { Props } from "../lib/types";
 import { sourcePreuve } from "../registres/preuves";
 
 const P = L.preuveImage;
 
 async function fiche(path: string): Promise<Props> {
-  const r = await fetch(`/api${path}`);
+  const r = await appel(`/api${path}`);
   if (!r.ok) throw new Error(`${path} : ${r.status}`);
   return r.json();
 }

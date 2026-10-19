@@ -52,6 +52,7 @@ Le disque est passé à 15 Go (13 Go utilisables, 4,6 Go libres).
   depuis 5 minutes, ingestion en échec ou en retard de plus de 10 minutes, nuit VIIRS absente à 08:00 UTC, même tâche
   en échec deux fois de suite (les refus attendus, plafond ou budget, ne comptent pas). Une alerte est répétée au plus
   une fois par heure ; le retour à la normale est annoncé.
+  Depuis l'étape D2 (docs/opentelemetry.md) : collecteur de traces muet depuis 15 minutes, ou spans refusés.
 * **Secours par taches**, si Grafana ne répond pas (`/api/health`) : les trois plus graves (disque, collecte figée,
   ingestion), évaluées chaque minute **sans rien écrire en base**, pour fonctionner disque plein. Même rythme : au plus
   une fois par heure, retour à la normale annoncé. Quand Grafana revient, taches n'annonce plus que le retour à la
@@ -95,7 +96,7 @@ Espace libre, taille de la base (`pg_database_size`), de la table des positions 
 `signes_de_vie` : collecte (dernier fichier écrit, relevé par taches), ingestion (dernier passage réussi et attente du
 plus ancien fichier, écrite par l'ingestion), taches.
 
-## Les cinq tableaux
+## Les cinq tableaux (six depuis l'étape D2, avec « Traces »)
 
 | Tableau | Contenu |
 |---|---|

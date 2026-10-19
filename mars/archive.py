@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from mars import traces
+
 ARCHIVE_PREFIX = "ais"
 BACKUP_PREFIX = "sauvegardes/"
 GRACE = timedelta(minutes=30)       # marge après minuit avant de considérer la veille comme terminée
@@ -117,30 +119,39 @@ def run_archive(conn, r2, root: Path, now: datetime | None = None, log=print) ->
             _remove_if_empty(path)
             continue
         stats["dossiers"] += 1
-        ingested = _ingested(conn, folder)
-        plan = plan_folder(on_disk, ingested, _archived(conn, kind, zone, day))
-        if plan.blocked:
-            stats["fichiers_non_ingeres"] += len(plan.blocked)
-            log(f"{folder} : {len(plan.blocked)} fichier(s) pas encore ingéré(s), conservés "
-                f"(par exemple {plan.blocked[0]})")
-        if plan.to_archive:
-            data, rows = compact([path / f for f in plan.to_archive])
-            key = archive_key(kind, zone, day, now)
-            sent = r2.put_verified(data, key)          # lève une exception si l'objet stocké ne correspond pas
-            with conn.transaction():
-                conn.execute("INSERT INTO archives (kind, zone, day, object_key, files, rows, bytes, md5) "
-                             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                             (kind, zone, day, key, plan.to_archive, rows, sent["bytes"], sent["md5"]))
-            stats["archives"] += 1
-            stats["octets_envoyes"] += sent["bytes"]
-            stats["lignes"] += rows
-        # Suppression : la base est relue, seule source de vérité sur ce qui est confirmé
-        confirmed = _archived(conn, kind, zone, day)
-        for f in deletable(plan.to_delete + plan.to_archive, _ingested(conn, folder), confirmed):
-            (path / f).unlink(missing_ok=True)
-            stats["fichiers_supprimes"] += 1
-        _remove_if_empty(path)
+        with traces.span("archivage.dossier", **{"archivage.type": kind, "archivage.zone": zone,
+                                                 "archivage.jour": str(day)}) as sp:
+            _archive_folder(conn, r2, folder, kind, zone, day, path, on_disk, now, stats, log, sp)
     return stats
+
+
+def _archive_folder(conn, r2, folder, kind, zone, day, path, on_disk, now, stats, log, sp):
+    ingested = _ingested(conn, folder)
+    plan = plan_folder(on_disk, ingested, _archived(conn, kind, zone, day))
+    if plan.blocked:
+        stats["fichiers_non_ingeres"] += len(plan.blocked)
+        log(f"{folder} : {len(plan.blocked)} fichier(s) pas encore ingéré(s), conservés "
+            f"(par exemple {plan.blocked[0]})")
+    if plan.to_archive:
+        data, rows = compact([path / f for f in plan.to_archive])
+        key = archive_key(kind, zone, day, now)
+        sent = r2.put_verified(data, key)          # lève une exception si l'objet stocké ne correspond pas
+        with conn.transaction():
+            conn.execute("INSERT INTO archives (kind, zone, day, object_key, files, rows, bytes, md5) "
+                         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                         (kind, zone, day, key, plan.to_archive, rows, sent["bytes"], sent["md5"]))
+        stats["archives"] += 1
+        stats["octets_envoyes"] += sent["bytes"]
+        stats["lignes"] += rows
+        sp.set_attributes({"archivage.fichiers": len(plan.to_archive), "archivage.octets": sent["bytes"],
+                           "archivage.lignes": rows})
+    sp.set_attribute("archivage.non_ingeres", len(plan.blocked))
+    # Suppression : la base est relue, seule source de vérité sur ce qui est confirmé
+    confirmed = _archived(conn, kind, zone, day)
+    for f in deletable(plan.to_delete + plan.to_archive, _ingested(conn, folder), confirmed):
+        (path / f).unlink(missing_ok=True)
+        stats["fichiers_supprimes"] += 1
+    _remove_if_empty(path)
 
 
 def _ingested(conn, folder: str) -> set[str]:
@@ -173,10 +184,11 @@ def run_purge(conn, root: Path, keep_days: int, now: datetime | None = None) -> 
         (cutoff,))]
     stats = {"jours": [str(d) for d in days], "positions_supprimees": 0, "registre_supprime": 0}
     for d in days:
-        with conn.transaction():
+        with traces.span("purge.jour", **{"purge.jour": str(d)}) as sp, conn.transaction():
             n = conn.execute("DELETE FROM positions WHERE ts >= (%(d)s::date)::timestamp AT TIME ZONE 'UTC' "
                              "AND ts < (%(d)s::date + 1)::timestamp AT TIME ZONE 'UTC'", {"d": d}).rowcount
             conn.execute("DELETE FROM ais_days WHERE day = %s", (d,))
+            sp.set_attribute("purge.positions", n)
         stats["positions_supprimees"] += n
     # Registre d'ingestion : lignes des dossiers anciens qui n'existent plus sur le disque (archivés et supprimés)
     old = [r[0] for r in conn.execute(
@@ -207,7 +219,7 @@ def run_backup(r2, database_url: str, keep: int, now: datetime | None = None) ->
     key = f"{BACKUP_PREFIX}mars_{now:%Y%m%dT%H%M%S}.dump"
     cmd = ["pg_dump", "--format=custom", "--compress=6", f"--dbname={database_url}"]
     cmd += [f"--exclude-table-data={t}" for t in EXCLUDED_DATA]
-    with tempfile.TemporaryFile() as err:
+    with tempfile.TemporaryFile() as err, traces.span("sauvegarde.pg_dump_vers_r2"):
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
         try:
             sent = r2.put_stream(proc.stdout, key)
@@ -219,7 +231,8 @@ def run_backup(r2, database_url: str, keep: int, now: datetime | None = None) ->
     try:
         if code != 0 or sent["bytes"] == 0:
             raise RuntimeError(f"pg_dump code {code}, {sent['bytes']} octets : {message[-500:]}")
-        method = r2.verify(key, sent["md5"], sent["bytes"])     # envoi en plusieurs morceaux : relecture
+        with traces.span("sauvegarde.verification", **{"sauvegarde.octets": sent["bytes"]}):
+            method = r2.verify(key, sent["md5"], sent["bytes"])     # envoi en plusieurs morceaux : relecture
     except Exception as e:
         r2.delete(key)                    # une sauvegarde tronquée ou altérée ne doit pas passer pour valide
         raise RuntimeError(f"Sauvegarde invalide : {e}")
@@ -289,4 +302,5 @@ def check_disk(conn, paths: list[str], threshold_pct: float, log=print) -> list[
             log(f"ALERTE DISQUE : {pct:.1f} % libre sur {p} ({u.free / 1e9:.1f} Go sur {u.total / 1e9:.1f} Go), "
                 f"seuil {threshold_pct:.0f} %")
         out.append({"chemin": p, "libre_pct": round(pct, 1), "alerte": alert})
+        traces.attributs(**{"disque.libre_pct": round(pct, 1), "disque.alerte": alert})
     return out

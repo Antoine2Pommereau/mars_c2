@@ -35,6 +35,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from mars import traces
 from mars.config import ROOT
 
 API = "https://api.scaleway.com"
@@ -412,20 +413,24 @@ def orphans(servers: list[dict], active: dict[str, datetime], now: datetime, max
     return out
 
 
-def cloud_init(script: str, tache: dict, env: dict, image: str, mac: str, docker_opts: str = "") -> str:
+def cloud_init(script: str, tache: dict, env: dict, image: str, mac: str, docker_opts: str = "",
+               traceparent: str | None = None) -> str:
     """Configuration cloud-init : script de démarrage (travailleurs/demarrage.sh), script et tâche du travailleur,
     secrets en 0600 ; `mac` : adresse de la carte du réseau privé, que le démarrage configure explicitement ;
-    `docker_opts` : options du conteneur d'analyse (GPU : « --gpus all --shm-size=16g »)."""
+    `docker_opts` : options du conteneur d'analyse (GPU : « --gpus all --shm-size=16g ») ; `traceparent` : contexte W3C
+    du lancement (pas un secret), dont le démarrage et l'analyse prolongent la trace (travailleurs/otel_mini.py)."""
     def f(path, content, mode):
         b = base64.b64encode(content.encode()).decode()
         return f"  - path: {path}\n    encoding: b64\n    permissions: '{mode}'\n    content: {b}\n"
     envtxt = "".join(f"{k}={v}\n" for k, v in env.items())
     name = Path(tache.get("script", "travailleur.py")).name
     boot = {"RETOUR": tache["retour"], "JETON": tache["jeton"], "MAC": mac.lower(), "IMAGE": image, "SCRIPT": name,
-            "GPU": docker_opts}
+            "GPU": docker_opts, "TRACEPARENT": traceparent or ""}
     boottxt = "".join(f"{k}={json.dumps(v)}\n" for k, v in boot.items())
     return ("#cloud-config\nwrite_files:\n" + f("/mars/demarrage.sh", (ROOT / "travailleurs" / "demarrage.sh").read_text(), "0755")
             + f("/mars/demarrage.env", boottxt, "0600") + f(f"/mars/{name}", script, "0644")
+            + f("/mars/otel_mini.py", (ROOT / "travailleurs" / "otel_mini.py").read_text(), "0644")
+            + f("/mars/traces.sh", (ROOT / "travailleurs" / "traces.sh").read_text(), "0644")
             + f("/mars/tache.json", json.dumps(tache), "0600") + f("/mars/env", envtxt, "0600")
             + "runcmd:\n  - [bash, /mars/demarrage.sh]\n")
 
@@ -465,9 +470,11 @@ def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, privat
     cloud-init (qui reçoit l'adresse MAC de la carte privée), démarrage jusqu'à « running ». `user_data(mac)` produit
     le cloud-init ; `on_created(server_id)` est appelé dès la création (pour pouvoir détruire en cas d'échec),
     `on_block_volumes(ids)` dès que les volumes bloc sont connus (pour les supprimer à coup sûr)."""
-    image = scw.resolve_image(zone, t["image_label"], t["commercial_type"], t.get("arch", "x86_64"),
-                              t.get("volume", "l_ssd"))
-    s = scw.create(zone, name, t["commercial_type"], image, t["disque_go"], tags)
+    with traces.span("scaleway.image", **{"peer.service": "Scaleway", "scaleway.zone": zone}):
+        image = scw.resolve_image(zone, t["image_label"], t["commercial_type"], t.get("arch", "x86_64"),
+                                  t.get("volume", "l_ssd"))
+    with traces.span("scaleway.creation", **{"peer.service": "Scaleway", "scaleway.type": t["commercial_type"]}):
+        s = scw.create(zone, name, t["commercial_type"], image, t["disque_go"], tags)
     if on_created:
         on_created(s["id"])
     block = [v["id"] for v in (s.get("volumes") or {}).values()
@@ -478,12 +485,16 @@ def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, privat
         raise ScalewayError(f"instance créée dans l'état « {s.get('state')} » au lieu de « stopped »")
     # Relecture : l'instance doit démarrer sur le disque local copié de l'image attendue (sinon « UEFI Interactive
     # Shell » à la console : aucun système amorçable, constaté au premier essai réel)
-    motif = boot_problem(scw.server(zone, s["id"]), image, lambda vid: scw.block_volume_size(zone, vid))
+    with traces.span("scaleway.verification_demarrage", **{"peer.service": "Scaleway"}):
+        motif = boot_problem(scw.server(zone, s["id"]), image, lambda vid: scw.block_volume_size(zone, vid))
     if motif:
         raise ScalewayError(f"volume de démarrage incorrect : {motif}")
-    nic = scw.attach_private_network(zone, s["id"], private_network_id, sleep=sleep)
-    scw.set_cloud_init(zone, s["id"], user_data(nic["mac_address"]))
-    scw.start(zone, s["id"], sleep=sleep)
+    with traces.span("scaleway.reseau_prive", **{"peer.service": "Scaleway"}):
+        nic = scw.attach_private_network(zone, s["id"], private_network_id, sleep=sleep)
+    with traces.span("scaleway.cloud_init", **{"peer.service": "Scaleway"}):
+        scw.set_cloud_init(zone, s["id"], user_data(nic["mac_address"]))
+    with traces.span("scaleway.demarrage", **{"peer.service": "Scaleway"}):
+        scw.start(zone, s["id"], sleep=sleep)
     return {"server_id": s["id"], "mac": nic["mac_address"], "nic": nic["id"]}
 
 
@@ -497,7 +508,20 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
            sleep=time.sleep, log=print) -> dict:
     """Crée un travailleur, si les plafonds et le verrou le permettent. Retourne {"travailleur": id}, {"refus": motif}
     ou {"occupe": id} (un travailleur de cette tâche est déjà actif). Une étape en échec lève l'erreur, après avoir
-    détruit l'instance (garde de Scaleway.destroy) et clos la ligne."""
+    détruit l'instance (garde de Scaleway.destroy) et clos la ligne.
+
+    Trace : span « travailleur.lancement », dont le contexte (traceparent) est enregistré dans la ligne et remis au
+    travailleur ; son démarrage, ses téléchargements, son inférence, le traitement de ses résultats et sa destruction
+    s'y rattachent : une analyse est une seule trace de bout en bout."""
+    with traces.span("travailleur.lancement", **{"travailleur.tache": tache}) as sp:
+        r = _launch(conn, scw, rules, tache, parametres, env, now, sleep, log)
+        sp.set_attributes(traces.propres({f"travailleur.{k}": v for k, v in r.items() if k != "mac_privee"}))
+        if "refus" in r:
+            sp.set_attribute("travailleur.refus", r["refus"])
+        return r
+
+
+def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log) -> dict:
     now = now or datetime.now(timezone.utc)
     p, t = rules["travailleurs"], type_params(rules, tache)
     # Seuls comptent les travailleurs dont une instance a été créée chez Scaleway (scw_server_id renseigné dès la
@@ -520,9 +544,10 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
     try:
         with conn.transaction():
             wid = conn.execute(
-                "INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, verrou) "
-                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (tache, t["commercial_type"], zone, token_hash(token), json.dumps(parametres), tache)).fetchone()[0]
+                "INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, verrou, trace_id, "
+                "traceparent) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (tache, t["commercial_type"], zone, token_hash(token), json.dumps(parametres), tache,
+                 traces.trace_id(), traces.traceparent())).fetchone()[0]
     except psycopg.errors.UniqueViolation:
         busy = conn.execute("SELECT id FROM travailleurs WHERE verrou = %s AND detruit_le IS NULL", (tache,)).fetchone()
         return {"occupe": busy[0] if busy else None}
@@ -547,7 +572,8 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
             task = {**parametres, **task}
         script = (ROOT / t["script"]).read_text()
         r = provision(scw, zone, f"mars-travailleur-{wid}", t, [TAG, f"run-{wid}", f"tache-{tache}"], pn,
-                      lambda mac: cloud_init(script, task, env, t["image"], mac, t.get("docker_opts", "")),
+                      lambda mac: cloud_init(script, task, env, t["image"], mac, t.get("docker_opts", ""),
+                                             traces.traceparent()),
                       sleep=sleep, on_created=on_created, on_block_volumes=on_block_volumes)
         conn.execute("UPDATE travailleurs SET etat = 'cree' WHERE id = %s", (wid,))
         return {"travailleur": wid, "instance": r["server_id"], "type": t["commercial_type"], "mac_privee": r["mac"]}
@@ -579,13 +605,14 @@ def _journal(conn, w: dict, rules: dict):
     if w.get("volumes_bloc"):
         details["volumes_bloc_supprimes"] = list(w["volumes_bloc"])        # journalisé une fois l'instance détruite
     conn.execute(
-        "INSERT INTO task_runs (task, run_day, started_at, finished_at, status, details) VALUES (%s, %s, %s, now(), %s, %s)",
+        "INSERT INTO task_runs (task, run_day, started_at, finished_at, status, details, trace_id) "
+        "VALUES (%s, %s, %s, now(), %s, %s, %s)",
         (f"travailleur_{w['tache']}", w["cree_le"].date(), w["cree_le"], "ok" if w["etat"] == "termine" else "echec",
-         json.dumps(details, default=str)))
+         json.dumps(details, default=str), traces.trace_de(w.get("traceparent"))))
 
 
 COLS = ("id", "tache", "etat", "commercial_type", "zone", "scw_server_id", "resultat", "mesures", "erreur",
-        "cree_le", "fini_le", "detruit_le", "parametres", "demarre_le", "volumes_bloc")
+        "cree_le", "fini_le", "detruit_le", "parametres", "demarre_le", "volumes_bloc", "traceparent")
 
 
 def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print, now: datetime | None = None) -> dict:
@@ -597,86 +624,119 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
     rows = [dict(zip(COLS, r)) for r in conn.execute(
         f"SELECT {', '.join(COLS)} FROM travailleurs WHERE detruit_le IS NULL ORDER BY id").fetchall()]
     for w in rows:
-        age_min = (now - w["cree_le"]).total_seconds() / 60
-        if w["etat"] == "resultats":
-            try:
-                # Tout ou rien, et une seule fois : la ligne est verrouillée (un autre processus la saute), relue, et
-                # passe à « termine » dans la même transaction que l'écriture des détections
-                with conn.transaction():
-                    if conn.execute("SELECT 1 FROM travailleurs WHERE id = %s AND etat = 'resultats' "
-                                    "FOR UPDATE SKIP LOCKED", (w["id"],)).fetchone() is None:
-                        continue
-                    summary = handlers[w["tache"]](conn, w)
-                    # Le travailleur peut s'être arrêté de lui même (données inaccessibles, licence…) : ce qu'il a
-                    # traité est gardé, l'exécution est en échec avec son motif
-                    motif = failure(w["resultat"] or {})
-                    conn.execute("UPDATE travailleurs SET etat = %s, erreur = %s, fini_le = now(), resultat = NULL, "
-                                 "mesures = mesures || %s WHERE id = %s",
-                                 ("echec" if motif else "termine", motif and f"travailleur : {motif}"[:1000],
-                                  json.dumps(summary, default=str), w["id"]))
-                w["etat"] = "echec" if motif else "termine"
-                w["erreur"] = motif and f"travailleur : {motif}"
-                w["mesures"] = {**(w["mesures"] or {}), **summary}
-            except Exception as e:
-                conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s WHERE id = %s",
-                             (f"traitement : {e}"[:1000], w["id"]))
-                w["etat"], w["erreur"] = "echec", str(e)
-            out["traites"] += 1
-        elif w["etat"] in ("demande", "cree") and w["demarre_le"] is None and age_min > p["delai_demarrage_min"]:
-            motif = (f"aucun signe de vie {p['delai_demarrage_min']} min après la création (réseau privé ou démarrage en "
-                     "échec ; diagnostic : taches.py journal-travailleur, ou console série Scaleway) : destruction")
-            # État Scaleway relevé avant la destruction : sans lui, un travailleur muet ne laisse aucune trace
-            diag = scw.diagnose(w["zone"], w["scw_server_id"]) if scw is not None and w["scw_server_id"] else None
-            conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s, diagnostic = %s WHERE id = %s",
-                         (motif, json.dumps(diag) if diag else None, w["id"]))
-            w["etat"], w["erreur"] = "echec", motif
-            out["expires"] += 1
-            log(f"travailleur {w['id']} : {motif}")
-        elif w["etat"] in ("demande", "cree", "demarre") and age_min > p["duree_max_min"]:
-            diag = scw.diagnose(w["zone"], w["scw_server_id"]) if scw is not None and w["scw_server_id"] else None
-            conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s, diagnostic = %s WHERE id = %s",
-                         (f"durée de vie de {p['duree_max_min']} min dépassée : destruction forcée",
-                          json.dumps(diag) if diag else None, w["id"]))
-            w["etat"] = "echec"
-            out["expires"] += 1
-            log(f"travailleur {w['id']} : durée de vie dépassée, destruction forcée")
-        if w["etat"] in ("termine", "echec"):
-            if not w["scw_server_id"]:
-                gone = True
-            elif scw is None:                                   # clés absentes : rien n'est marqué détruit
-                gone = False
-            else:
-                try:
-                    gone = scw.destroy(w["zone"], w["scw_server_id"], w["volumes_bloc"] or [])
-                except RefusDestruction as e:
-                    # Jamais détruite : la ligne est close, sans rien toucher chez Scaleway
-                    log(f"travailleur {w['id']} : DESTRUCTION REFUSÉE, {e}")
-                    conn.execute("UPDATE travailleurs SET erreur = coalesce(erreur || ' ; ', '') || %s, detruit_le = now() "
-                                 "WHERE id = %s", (f"destruction refusée : {e}"[:500], w["id"]))
-                    continue
-                except ScalewayError as e:
-                    # API indisponible ou étape refusée : reprise à la minute suivante, sans bloquer les autres
-                    log(f"travailleur {w['id']} : destruction à reprendre, {e}")
-                    continue
-            if gone:
-                conn.execute("UPDATE travailleurs SET detruit_le = now() WHERE id = %s", (w["id"],))
-                w["detruit_le"] = now
-                _journal(conn, w, rules)
-                out["detruits"] += 1
+        _surveiller(conn, scw, rules, handlers, log, now, p, w, out)
     if scw is not None:
         active = {w["scw_server_id"]: w["cree_le"] for w in rows if w["scw_server_id"] and w["etat"] not in ("termine", "echec")}
         zones = {p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values()), *(w["zone"] for w in rows)}
         for zone in sorted(zones):
             for sid in orphans(scw.tagged(zone), active, now, p["duree_max_min"], scw.project, scw.protected):
-                try:
-                    scw.destroy(zone, sid)
-                except RefusDestruction as e:
-                    log(f"instance {sid} ({zone}) : DESTRUCTION REFUSÉE, {e}")
-                    continue
-                except ScalewayError as e:
-                    log(f"instance orpheline {sid} ({zone}) : destruction à reprendre, {e}")
-                    continue
+                with traces.span("travailleur.orphelin", **{"peer.service": "Scaleway", "scaleway.zone": zone}):
+                    try:
+                        scw.destroy(zone, sid)
+                    except RefusDestruction as e:
+                        traces.erreur(f"destruction refusée : {e}")
+                        log(f"instance {sid} ({zone}) : DESTRUCTION REFUSÉE, {e}")
+                        continue
+                    except ScalewayError as e:
+                        traces.erreur(f"destruction à reprendre : {e}")
+                        log(f"instance orpheline {sid} ({zone}) : destruction à reprendre, {e}")
+                        continue
                 out["orphelins"] += 1
                 log(f"instance orpheline {sid} ({zone}) : destruction")
     return out
 
+
+def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: dict, w: dict, out: dict):
+    """Un travailleur pendant une minute de surveillance. Chaque action (résultats, expiration, destruction) est un
+    span rattaché à la trace du lancement (w["traceparent"]) : une analyse reste une seule trace."""
+    tp, attrs = w.get("traceparent"), {"travailleur.id": w["id"], "travailleur.tache": w["tache"]}
+    age_min = (now - w["cree_le"]).total_seconds() / 60
+    if w["etat"] == "resultats":
+        with traces.span("travailleur.resultats", parent=tp, **attrs), traces.en_base(conn):
+            if not _resultats(conn, handlers, w):
+                return
+        out["traites"] += 1
+    elif w["etat"] in ("demande", "cree") and w["demarre_le"] is None and age_min > p["delai_demarrage_min"]:
+        motif = (f"aucun signe de vie {p['delai_demarrage_min']} min après la création (réseau privé ou démarrage en "
+                 "échec ; diagnostic : taches.py journal-travailleur, ou console série Scaleway) : destruction")
+        with traces.span("travailleur.expiration", parent=tp, **attrs):
+            traces.erreur(motif)
+            # État Scaleway relevé avant la destruction : sans lui, un travailleur muet ne laisse aucune trace
+            diag = scw.diagnose(w["zone"], w["scw_server_id"]) if scw is not None and w["scw_server_id"] else None
+            conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s, diagnostic = %s "
+                         "WHERE id = %s", (motif, json.dumps(diag) if diag else None, w["id"]))
+        w["etat"], w["erreur"] = "echec", motif
+        out["expires"] += 1
+        log(f"travailleur {w['id']} : {motif}")
+    elif w["etat"] in ("demande", "cree", "demarre") and age_min > p["duree_max_min"]:
+        motif = f"durée de vie de {p['duree_max_min']} min dépassée : destruction forcée"
+        with traces.span("travailleur.expiration", parent=tp, **attrs):
+            traces.erreur(motif)
+            diag = scw.diagnose(w["zone"], w["scw_server_id"]) if scw is not None and w["scw_server_id"] else None
+            conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s, diagnostic = %s "
+                         "WHERE id = %s", (motif, json.dumps(diag) if diag else None, w["id"]))
+        w["etat"] = "echec"
+        out["expires"] += 1
+        log(f"travailleur {w['id']} : durée de vie dépassée, destruction forcée")
+    if w["etat"] in ("termine", "echec"):
+        with traces.span("travailleur.destruction", parent=tp, **{**attrs, "peer.service": "Scaleway"}) as sp:
+            gone = _detruire(conn, scw, log, w)
+            sp.set_attribute("travailleur.detruit", bool(gone))
+        if gone:
+            conn.execute("UPDATE travailleurs SET detruit_le = now() WHERE id = %s", (w["id"],))
+            w["detruit_le"] = now
+            _journal(conn, w, rules)
+            out["detruits"] += 1
+
+
+def _resultats(conn, handlers: dict, w: dict) -> bool:
+    """Résultats reçus traités (handlers[tache]) ; faux si un autre processus les traite déjà."""
+    try:
+        # Tout ou rien, et une seule fois : la ligne est verrouillée (un autre processus la saute), relue, et
+        # passe à « termine » dans la même transaction que l'écriture des détections
+        with conn.transaction():
+            if conn.execute("SELECT 1 FROM travailleurs WHERE id = %s AND etat = 'resultats' "
+                            "FOR UPDATE SKIP LOCKED", (w["id"],)).fetchone() is None:
+                return False
+            summary = handlers[w["tache"]](conn, w)
+            # Le travailleur peut s'être arrêté de lui même (données inaccessibles, licence…) : ce qu'il a
+            # traité est gardé, l'exécution est en échec avec son motif
+            motif = failure(w["resultat"] or {})
+            conn.execute("UPDATE travailleurs SET etat = %s, erreur = %s, fini_le = now(), resultat = NULL, "
+                         "mesures = mesures || %s WHERE id = %s",
+                         ("echec" if motif else "termine", motif and f"travailleur : {motif}"[:1000],
+                          json.dumps(summary, default=str), w["id"]))
+        w["etat"] = "echec" if motif else "termine"
+        w["erreur"] = motif and f"travailleur : {motif}"
+        w["mesures"] = {**(w["mesures"] or {}), **summary}
+        traces.attributs(**{f"resultats.{k}": v for k, v in summary.items() if isinstance(v, (int, float))})
+        if motif:
+            traces.erreur(motif)
+    except Exception as e:
+        traces.erreur(f"traitement : {e}")
+        conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = %s WHERE id = %s",
+                     (f"traitement : {e}"[:1000], w["id"]))
+        w["etat"], w["erreur"] = "echec", str(e)
+    return True
+
+
+def _detruire(conn, scw, log, w: dict) -> bool:
+    """Destruction par la garde de Scaleway.destroy ; vrai quand plus rien n'existe."""
+    if not w["scw_server_id"]:
+        return True
+    if scw is None:                                   # clés absentes : rien n'est marqué détruit
+        return False
+    try:
+        return scw.destroy(w["zone"], w["scw_server_id"], w["volumes_bloc"] or [])
+    except RefusDestruction as e:
+        # Jamais détruite : la ligne est close, sans rien toucher chez Scaleway
+        traces.erreur(f"destruction refusée : {e}")
+        log(f"travailleur {w['id']} : DESTRUCTION REFUSÉE, {e}")
+        conn.execute("UPDATE travailleurs SET erreur = coalesce(erreur || ' ; ', '') || %s, detruit_le = now() "
+                     "WHERE id = %s", (f"destruction refusée : {e}"[:500], w["id"]))
+        return False
+    except ScalewayError as e:
+        # API indisponible ou étape refusée : reprise à la minute suivante, sans bloquer les autres
+        traces.erreur(f"destruction à reprendre : {e}")
+        log(f"travailleur {w['id']} : destruction à reprendre, {e}")
+        return False

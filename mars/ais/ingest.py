@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 import psycopg
 
+from mars import traces
 from mars.ais.live import (Thinner, clean_positions, clean_text, parse_times, ship_type_label, valid_imo,
                            zones_extent, zones_wkt)
 from mars.ais.mid import flag_of
@@ -286,15 +287,22 @@ class Ingestor:
         except OSError:
             self.retard_s = 0.0
         for folder, name in todo:
-            try:
-                s = (self.ingest_statics if folder.startswith("statiques") else self.ingest_positions)(folder, name)
-            except (OSError, ValueError) as e:     # fichier illisible : on réessaiera au cycle suivant
-                print(f"Fichier ignoré pour l'instant, {folder}/{name} : {e}", flush=True)
-                continue
+            with traces.span("ingestion.fichier", **{"ingestion.type": folder.split("/")[0],
+                                                     "ingestion.dossier": folder, "ingestion.fichier": name}) as sp:
+                try:
+                    s = (self.ingest_statics if folder.startswith("statiques") else self.ingest_positions)(folder, name)
+                except (OSError, ValueError) as e:     # fichier illisible : on réessaiera au cycle suivant
+                    sp.record_exception(e)
+                    traces.erreur(f"fichier illisible ({type(e).__name__})")
+                    print(f"Fichier ignoré pour l'instant, {folder}/{name} : {e}", flush=True)
+                    continue
+                sp.set_attributes({f"ingestion.{k}": v for k, v in s.items() if isinstance(v, (int, float))})
             totals["fichiers"] += 1
             for k, v in s.items():
                 totals[k] = totals.get(k, 0) + v
         if totals["fichiers"]:
-            self.update_days()
-        self.refresh_watch()
+            with traces.span("ingestion.journees"):
+                self.update_days()
+        with traces.span("ingestion.vessel_watch"):
+            self.refresh_watch()
         return totals

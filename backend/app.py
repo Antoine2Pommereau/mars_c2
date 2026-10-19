@@ -24,6 +24,7 @@ from satellites import next_passes, router as satellites_router
 from preuves import router as preuves_router
 from travailleurs import router as travailleurs_router, viirs_status
 from sentinel import router as sentinel_router, sentinel_status
+from mars import traces
 from mars.config import load_rules
 from mars.frise import timeline
 from mars.fusion.pipeline import fuse
@@ -39,6 +40,19 @@ TRAIL_MIN = 10            # longueur de la traînée, en minutes simulées
 MAX_ZONE_KM = 50          # taille maximale d'une zone analysée
 TASKS: set = set()
 
+# Traces (étape D2) : FastAPI, asyncpg, httpx et requests instrumentés ; spans métier sur les routes lourdes. Ni le flux
+# SSE (une réponse par seconde), ni /api/health, ni la vérification du jeton des travailleurs par nginx ne sont tracés.
+# Paramètres SQL jamais capturés (positions), chaînes de requête retirées (recherche par nom), mars/traces.py.
+traces.init("mars-api")
+try:
+    from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    AsyncPGInstrumentor(capture_parameters=False).instrument()
+    HTTPXClientInstrumentor().instrument(request_hook=traces.requete_httpx, async_request_hook=traces.requete_httpx_async)
+except ImportError:                                         # pragma: no cover
+    FastAPIInstrumentor = None
+
 
 async def _init(conn):
     for t in ("json", "jsonb"):
@@ -48,11 +62,20 @@ async def _init(conn):
 @asynccontextmanager
 async def lifespan(app):
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, init=_init, min_size=1, max_size=10)
+    try:                                       # version de l'API, lue par la barre d'état et Grafana
+        async with app.state.pool.acquire() as c:
+            await c.execute("INSERT INTO signes_de_vie (service, dernier_le, detail) VALUES ('api', now(), $1) "
+                            "ON CONFLICT (service) DO UPDATE SET dernier_le = now(), detail = EXCLUDED.detail, "
+                            "mesure_le = now()", {"version": traces.version()})
+    except Exception:
+        pass                                   # base sans la migration 26 : la version reste lisible par /api/ingestion
     yield
     await app.state.pool.close()
 
 
 app = FastAPI(title="MARS C2", lifespan=lifespan)
+if FastAPIInstrumentor is not None:
+    FastAPIInstrumentor.instrument_app(app, excluded_urls=traces.API_NON_TRACEES)
 app.include_router(contenu_router)      # recherche, fiches, notes, navires suivis, photo (backend/contenu.py)
 app.include_router(satellites_router)   # calendrier des passages Sentinel 1 et 2 (backend/satellites.py)
 app.include_router(travailleurs_router) # travailleurs, détections VIIRS, mesures (backend/travailleurs.py)
@@ -158,6 +181,13 @@ async def read_traffic(c, now: datetime, region: str | None = None) -> dict:
     noms de champs à chaque navire, avec des coordonnées arrondies au mètre, le trafic de plusieurs milliers de
     navires tient en 5 fois moins d'octets que du GeoJSON. `t` : instant de la position, en secondes. `region` :
     seulement les navires dont la dernière position est dans la région (géométrie EWKT, voir backend/regions.py)."""
+    with traces.span("trafic.lecture") as sp:
+        out = await _read_traffic(c, now, region)
+        sp.set_attribute("trafic.navires", len(out["rows"]))
+        return out
+
+
+async def _read_traffic(c, now: datetime, region: str | None) -> dict:
     rows = await c.fetch(
         """
         SELECT t.vessel_id, round(t.lon::numeric, 5)::float8 AS lon, round(t.lat::numeric, 5)::float8 AS lat,
@@ -205,16 +235,22 @@ async def trails(minutes: int = TRAIL_MIN, at: datetime | None = None, region: s
     """Traînées des `minutes` précédant `at` (sans `at` : l'horloge partagée, comportement d'origine)."""
     async with app.state.pool.acquire() as c:
         clock = {"now": at} if at else await read_clock(c)
-        rows = await c.fetch(
-            """
-            SELECT p.vessel_id, ST_AsGeoJSON(ST_MakeLine(p.geom::geometry ORDER BY p.ts))::json AS geometry
-            FROM positions p
-            WHERE p.ts > $1::timestamptz - make_interval(mins => $2::int) AND p.ts <= $1::timestamptz
-              AND """ + dans_region("p.geom::geometry", 3) + """
-            GROUP BY p.vessel_id
-            HAVING count(*) >= 2
-            """, clock["now"], minutes, await region_ewkt(c, region))
+        with traces.span("trafic.trainees", **{"trafic.minutes": minutes}) as sp:
+            rows = await _trails(c, clock["now"], minutes, await region_ewkt(c, region))
+            sp.set_attribute("trafic.navires", len(rows))
     return collection([feature(r["geometry"], {"vessel_id": r["vessel_id"]}) for r in rows])
+
+
+async def _trails(c, now: datetime, minutes: int, region):
+    return await c.fetch(
+        """
+        SELECT p.vessel_id, ST_AsGeoJSON(ST_MakeLine(p.geom::geometry ORDER BY p.ts))::json AS geometry
+        FROM positions p
+        WHERE p.ts > $1::timestamptz - make_interval(mins => $2::int) AND p.ts <= $1::timestamptz
+          AND """ + dans_region("p.geom::geometry", 3) + """
+        GROUP BY p.vessel_id
+        HAVING count(*) >= 2
+        """, now, minutes, region)
 
 
 @app.get("/api/vessels/{vessel_id}")
@@ -288,7 +324,14 @@ async def ingestion_status(region: str | None = None):
         runs = await c.fetch(
             "SELECT DISTINCT ON (task) task AS tache, status AS statut, started_at AS debut, details "
             "FROM task_runs ORDER BY task, started_at DESC")
+        try:                                  # empreinte du commit de chaque image (signes de vie, migration 26)
+            versions = {r["service"]: r["version"] for r in await c.fetch(
+                "SELECT service, detail->>'version' AS version FROM signes_de_vie WHERE detail ? 'version'")}
+        except asyncpg.PostgresError:
+            versions = {}
+    versions["api"] = traces.version()
     return {"dernier_fichier": clean(last) if last else None, "derniere_heure": {**clean(hour), **clean(files)},
+            "versions": versions,
             "listes": [clean(r) for r in lists],
             "alerte_disque": any(r["alerte"] for r in disk), "disque": [clean(r) for r in disk],
             "taches": [clean(r) for r in runs], "satellites": satellites}
@@ -414,6 +457,12 @@ async def add_progress(c, analysis_id: int, item: dict):
 
 
 async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, product_name: str, mode: str):
+    """Analyse radar sur le Mac : un span de bout en bout (inférence, fusion, alertes), rattaché à la requête."""
+    with traces.span("analyse.radar", **{"analyse.id": analysis_id, "analyse.mode": mode}):
+        await _run_analysis(analysis_id, bbox, t0, product_name, mode)
+
+
+async def _run_analysis(analysis_id: int, bbox: list[float], t0: datetime, product_name: str, mode: str):
     pool = app.state.pool
     rules = load_rules()
     started = asyncio.get_running_loop().time()
@@ -528,7 +577,8 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                     finite(float(d.match_cost)) if pd.notna(d.match_cost) else None)
             for a in alerts:
                 d = det.loc[a["det_index"]]
-                details = {"analysis_id": analysis_id, "pass": product_name, **a["details"]}
+                details = {"analysis_id": analysis_id, "pass": product_name, **a["details"],
+                           "trace_id": traces.trace_id()}
                 alert_id = await c.fetchval(
                     "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
                     "VALUES ('DARK_SHIP', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) RETURNING id",
@@ -580,7 +630,7 @@ async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produc
                            "motif": "Grand navire déclaré par l'AIS dans la zone analysée, sans aucun écho radar "
                                     "compatible à l'instant du passage : position possiblement falsifiée",
                            "contexte": ["Le détecteur manque environ un navire sur dix : indice à recouper, pas une preuve"],
-                           "parametres": dict(rules["unconfirmed"])}
+                           "parametres": dict(rules["unconfirmed"]), "trace_id": traces.trace_id()}
                 alert_id = await c.fetchval(
                     "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
                     "VALUES ('AIS_UNCONFIRMED', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) "
@@ -627,9 +677,9 @@ async def create_analysis(req: AnalysisRequest):
         if not ais_ok:
             raise HTTPException(422, "Pas de données AIS chargées pour la date de ce passage")
         analysis_id = await c.fetchval(
-            "INSERT INTO analyses (pass_id, aoi, mode, status, model_version) "
-            "VALUES ($1, $2::geography, $3, 'pending', $4) RETURNING id",
-            p["id"], aoi_wkt(b), req.mode, rules["model"]["version"])
+            "INSERT INTO analyses (pass_id, aoi, mode, status, model_version, trace_id) "
+            "VALUES ($1, $2::geography, $3, 'pending', $4, $5) RETURNING id",
+            p["id"], aoi_wkt(b), req.mode, rules["model"]["version"], traces.trace_id())
     task = asyncio.create_task(run_analysis(analysis_id, b, p["acquired_at"], req.product_name, req.mode))
     TASKS.add(task)
     task.add_done_callback(TASKS.discard)
@@ -856,8 +906,10 @@ async def timeline_route(start: datetime, end: datetime, bins: int = 240, region
         raise HTTPException(422, "Plage vide")
     async with app.state.pool.acquire() as c:
         await region_ewkt(c, region)                      # 404 pour une région inconnue
-        return await timeline(c, start, end, max(10, min(bins, 1000)), load_rules()["continu"]["flux_min_ratio"],
-                              region.lower() if region else None)
+        with traces.span("frise.lecture", **{"frise.jours": round((end - start).total_seconds() / 86400, 2),
+                                             "frise.tranches": bins}):
+            return await timeline(c, start, end, max(10, min(bins, 1000)), load_rules()["continu"]["flux_min_ratio"],
+                                  region.lower() if region else None)
 
 
 # Consultation

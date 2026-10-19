@@ -6,9 +6,13 @@
 # Chaque étape est écrite dans /var/log/mars-travailleur.log et sur la console série (lignes « MARS »), lisible depuis
 # la console Scaleway même si le réseau privé ne fonctionne pas. En cas d'échec, la machine s'arrête au bout de
 # 10 minutes (le temps de lire la console) ; le serveur la détruit au plus tard 10 minutes après sa création.
+# Traces (étape D2) : chaque étape est un span OTLP (JSON) rattaché à la trace du lancement (TRACEPARENT), gardé dans
+# un fichier puis envoyé au serveur dès que le réseau privé fonctionne ; le script d'analyse reçoit le contexte de
+# l'étape « analyse », ses propres spans s'y rattachent (travailleurs/otel_mini.py).
 set -uo pipefail
-. /mars/demarrage.env                 # RETOUR, JETON, MAC, IMAGE, SCRIPT, GPU
+. /mars/demarrage.env                 # RETOUR, JETON, MAC, IMAGE, SCRIPT, GPU, TRACEPARENT
 LOG=/var/log/mars-travailleur.log
+. /mars/traces.sh                     # spans des étapes (TRACEPARENT, RETOUR, JETON)
 
 log() { echo "MARS $(date -u +%H:%M:%S) $*" | tee -a "$LOG" > /dev/console; }
 detail() { "$@" 2>&1 | tee -a "$LOG" > /dev/console; }
@@ -20,12 +24,17 @@ envoyer_journal() {
   curl -s -m 20 -o /dev/null -X POST -H "Authorization: Bearer $JETON" -H "Content-Type: text/plain" \
        --data-binary @"$LOG" "$RETOUR/journal" || true
 }
-echec() { log "ECHEC : $*"; detail ip -br addr; detail ip route; shutdown -h +10; exit 1; }
+echec() {
+  log "ECHEC : $*"; detail ip -br addr; detail ip route
+  fin_etape 2 "$*"; span "travailleur.demarrage" "$RACINE" "$PARENT" "$RACINE_DEBUT" 2 "$*"; envoyer_spans
+  shutdown -h +10; exit 1
+}
 a_une_ipv4() { ip -4 -br addr show "$1" 2>/dev/null | grep -q '[0-9]\.[0-9]'; }
 
 log "démarrage ; réseau privé attendu sur l'interface d'adresse $MAC ; serveur $RETOUR"
 
 # 1. Interface privée
+etape interface_privee
 IF=""
 for _ in $(seq 1 30); do
   for d in /sys/class/net/*; do
@@ -52,6 +61,7 @@ a_une_ipv4 "$IF" || echec "aucune adresse DHCP sur l'interface privée $IF"
 log "interface privée $IF : $(ip -4 -br addr show "$IF" | awk '{print $3}')"
 
 # 2. Contact du serveur
+etape contact_serveur
 CODE=000
 for _ in $(seq 1 30); do
   CODE=$(signal reseau)
@@ -60,11 +70,14 @@ for _ in $(seq 1 30); do
 done
 [ "$CODE" = "200" ] || echec "serveur injoignable sur le réseau privé ($RETOUR, réponse $CODE)"
 log "serveur joint sur le réseau privé"
+fin_etape
 envoyer_journal
+envoyer_spans
 
 # 3. Analyse : Docker installé s'il manque (image Ubuntu officielle), puis image d'analyse
 log "système : $(. /etc/os-release && echo "$PRETTY_NAME"), disque $(df -h / | awk 'NR==2 {print $2 " dont " $4 " libres"}')"
 if ! command -v docker > /dev/null; then
+  etape installation_docker
   log "installation de Docker"
   export DEBIAN_FRONTEND=noninteractive
   detail apt-get -qq update && detail apt-get -qq install -y docker.io > /dev/null \
@@ -72,14 +85,21 @@ if ! command -v docker > /dev/null; then
   systemctl start docker
 fi
 envoyer_journal
+etape telechargement_image
 log "téléchargement de l'image $IMAGE"
 detail docker pull -q "$IMAGE" || { envoyer_journal; echec "image $IMAGE introuvable"; }
 envoyer_journal
+etape analyse
+envoyer_spans
 log "analyse"
 # shellcheck disable=SC2086
-docker run --rm $GPU --env-file /mars/env -e MARS_TACHE=/mars/tache.json -v /mars:/mars:ro \
-  --entrypoint python3 "$IMAGE" "/mars/$SCRIPT" 2>&1 | tee -a "$LOG"
-log "analyse terminée (code ${PIPESTATUS[0]})"
+docker run --rm $GPU --env-file /mars/env -e MARS_TACHE=/mars/tache.json -e "TRACEPARENT=00-$TRACE-$ETAPE_ID-01" \
+  -v /mars:/mars:ro --entrypoint python3 "$IMAGE" "/mars/$SCRIPT" 2>&1 | tee -a "$LOG"
+CODE_ANALYSE=${PIPESTATUS[0]}
+log "analyse terminée (code $CODE_ANALYSE)"
+if [ "$CODE_ANALYSE" = "0" ]; then fin_etape; else fin_etape 2 "code de sortie $CODE_ANALYSE"; fi
+span "travailleur.demarrage" "$RACINE" "$PARENT" "$RACINE_DEBUT" 1 ""
+envoyer_spans
 envoyer_journal
 # Le serveur détruit l'instance dès réception du résultat, tant qu'elle tourne encore (action terminate) ; l'arrêt
 # différé n'est qu'un filet si la destruction tardait
