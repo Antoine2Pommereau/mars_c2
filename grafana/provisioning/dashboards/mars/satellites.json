@@ -767,7 +767,566 @@
    }
   },
   {
+   "type": "row",
+   "title": "Analyses Sentinel 1 (lot C3)",
+   "collapsed": false,
    "id": 10,
+   "gridPos": {
+    "x": 0,
+    "y": 21,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 11,
+   "type": "stat",
+   "title": "En attente d'un GPU",
+   "description": "Rupture de stock chez Scaleway : nouvel essai à chaque cycle, repli sur processeur après repli_cpu_apres_h, abandon (et alerte) au delà de fenetre_utile_h.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 22,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu'"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       },
+       {
+        "value": 1,
+        "color": "#f0a84b"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 12,
+   "type": "stat",
+   "title": "Octets lus ce mois",
+   "description": "Fenêtres utiles lues dans les images COG (requêtes partielles), toutes analyses du mois.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 22,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT coalesce(sum(octets_lus), 0) AS octets FROM analyses WHERE source = 'sentinel1' AND requested_at >= date_trunc('month', now())"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 13,
+   "type": "stat",
+   "title": "Analyses sur processeur ce mois",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 22,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND calcul = 'cpu' AND requested_at >= date_trunc('month', now())"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       },
+       {
+        "value": 1,
+        "color": "#4fb6c8"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 14,
+   "type": "stat",
+   "title": "Abandonnées faute de GPU, 30 jours",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 22,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE 'GPU indisponible pendant toute la fenêtre utile%' AND requested_at > now() - interval '30 days'"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       },
+       {
+        "value": 1,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 15,
+   "type": "timeseries",
+   "title": "Analyses par mode",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 26,
+    "w": 12,
+    "h": 8
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT date_trunc('day', requested_at) AS time, CASE WHEN status = 'attente_gpu' THEN 'attente' WHEN calcul = 'cpu' THEN 'processeur' WHEN calcul = 'gpu' THEN 'GPU' ELSE 'sans calcul' END AS metric, count(*) AS value FROM analyses WHERE source = 'sentinel1' AND $__timeFilter(requested_at) GROUP BY 1, 2 ORDER BY 1"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#7c8b97"
+     },
+     "custom": {
+      "drawStyle": "bars",
+      "lineWidth": 1,
+      "fillOpacity": 60,
+      "pointSize": 3,
+      "showPoints": "never",
+      "spanNulls": false,
+      "axisBorderShow": false,
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "GPU"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#4fb6c8"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "processeur"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#c2ccd3"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "attente"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#f0a84b"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "sans calcul"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#7c8b97"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 16,
+   "type": "table",
+   "title": "Analyses Sentinel 1",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 26,
+    "w": 12,
+    "h": 8
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT a.requested_at AS \"Demandée le\", a.pass_id AS \"Passage\", a.status AS \"Statut\", coalesce(a.calcul_type, '') AS \"Calcul\", a.octets_lus AS \"Octets lus\", a.cout_estime_eur AS \"Coût estimé\", a.essais_calcul AS \"Essais\", left(coalesce(a.calcul_motif, a.error, ''), 140) AS \"Motif\", a.trace_id AS \"Trace\" FROM analyses a WHERE a.source = 'sentinel1' AND $__timeFilter(a.requested_at) ORDER BY 1 DESC LIMIT 100"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Trace"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Ouvrir la trace dans Tempo (vue Gantt)",
+          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+         }
+        ]
+       },
+       {
+        "id": "custom.width",
+        "value": 120
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Statut"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "failed": {
+            "text": "échec",
+            "color": "#ef6461",
+            "index": 0
+           },
+           "attente_gpu": {
+            "text": "attente GPU",
+            "color": "#f0a84b",
+            "index": 1
+           },
+           "running": {
+            "text": "en cours",
+            "color": "#4fb6c8",
+            "index": 2
+           },
+           "done": {
+            "text": "analysée",
+            "color": "#7c8b97",
+            "index": 3
+           },
+           "pending": {
+            "text": "demandée",
+            "color": "#4fb6c8",
+            "index": 4
+           }
+          }
+         }
+        ]
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Octets lus"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "bytes"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Coût estimé"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "currencyEUR"
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
+  },
+  {
+   "id": 17,
    "type": "table",
    "title": "Passages Sentinel 1",
    "description": "",
@@ -777,7 +1336,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 21,
+    "y": 34,
     "w": 24,
     "h": 9
    },

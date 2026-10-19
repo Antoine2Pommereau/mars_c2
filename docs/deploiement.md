@@ -671,6 +671,46 @@ L'indicateur « Disque » de la barre d'état doit avoir la couleur de la tuile 
 rouge sous 15 %, orange jusqu'à 25 %), et l'indicateur « Version » être vert avec l'empreinte publiée. La première
 journée complète sans Grafana donne le nombre de spans reçus par jour ; celle du déploiement mélange les deux.
 
+## Sentinel 1 robuste (lot C3, docs/sentinel.md)
+
+Rupture de stock des GPU, types de secours, analyse limitée aux fenêtres utiles, repli sur processeur. Migration 28
+(`db/init/28_sentinel_robuste.sql` : état « attente_gpu », mode et motif du calcul, fenêtres, octets lus, rupture de
+stock des travailleurs ; reclasse en échec l'analyse 94 de l'essai du 14/10). Règles 2026.10.27 (`config/rules.yaml`,
+relu à chaque cycle). **Deux images changent : scripts (taches, mais aussi le script du travailleur, déposé par
+cloud-init depuis cette image) et API (état de l'attente pour la barre d'état) ; l'interface aussi (indicateur
+Satellites).** `scenes_max_par_jour` reste à 0.
+
+```zsh
+# Sur le Mac
+cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git checkout main && git pull origin main
+R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
+docker build --platform linux/amd64 -f backend/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-backend:latest . \
+  && docker build --platform linux/amd64 -f scripts/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-scripts:latest . \
+  && docker build --platform linux/amd64 --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-web:latest web
+for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
+  v=$(docker image inspect "${R}/${i}:latest" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+  [ "$v" = "$TAG" ] && echo "$i : $v" || { echo "$i : empreinte $v, attendue $TAG"; break; }
+done
+scripts/verifier_images.sh backend scripts web traces fenetres ai2 && for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
+  docker tag "${R}/${i}:latest" "${R}/${i}:${TAG}" && docker push "${R}/${i}:latest" && docker push "${R}/${i}:${TAG}" || break
+done
+```
+
+```bash
+# Sur le serveur
+cd /opt/mars_c2 && git pull origin main
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/28_sentinel_robuste.sql
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf backend web && docker image prune -af
+docker compose pull backend web && docker compose up -d --no-build backend web
+docker compose restart grafana                         # panneaux Sentinel 1, tuile, règle d'abandon
+docker compose exec taches python scripts/taches.py sentinel-diagnostic   # disponibilité et prix de chaque type
+```
+
+L'essai réel se fait ensuite pas à pas, plafond relevé pour la seule commande manuelle (docs/sentinel.md, « Essai réel
+du lot C3 »).
+
 ## Vérifier
 
 ```bash

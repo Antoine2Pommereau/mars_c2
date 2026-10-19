@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.26"
+version: "2026.10.27"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -224,7 +224,21 @@ sentinel:
   # Coût estimé avant lancement (refus si le budget du mois serait dépassé) : démarrage, pilotes et image d'analyse
   # (5 Go), puis téléchargement et analyse par scène (307 s sur un T4 selon AI2 ; L4 au moins aussi rapide)
   minutes_fixes: 12
-  minutes_par_scene: 6
+  minutes_par_scene: 6          # scène entière (analyse manuelle d'un passage sans point d'intérêt)
+  # Lot C3 : analyse limitée aux fenêtres utiles. Autour de chaque point d'intérêt, un carré de 2 × (interet_rayon_m
+  # + fenetre_marge_m) de côté ; les carrés qui se chevauchent sont réunis. Le travailleur ne lit que ces fenêtres
+  # dans les images COG (requêtes partielles) ; les détections à moins de fenetre_marge_m du bord d'une fenêtre sont
+  # écartées (la chaîne d'AI2 garde les objets coupés au bord de l'image). Côté minimal : la chaîne découpe en
+  # carreaux de 2 048 pixels Web Mercator (environ 14 km au sud de nos régions) et se trompe sur une image plus petite.
+  fenetre_marge_m: 2000
+  fenetre_cote_min_m: 16000
+  minutes_par_fenetre_gpu: 2    # lecture partielle et analyse d'une fenêtre de 24 km sur GPU (estimation)
+  minutes_fixes_cpu: 10         # démarrage d'une instance CPU, Docker, image d'analyse (5 Go)
+  minutes_par_fenetre_cpu: 12   # analyse d'une fenêtre sur 8 processeurs (mesure en émulation, borne haute)
+  # Rupture de stock des GPU (essai du 16/10/2026 : 412 out_of_stock au démarrage d'un L4-1-24G) : l'analyse attend en
+  # « attente_gpu » et un nouvel essai a lieu à chaque cycle (intervalle_min), tant que la scène reste utile
+  fenetre_utile_h: 24           # après l'acquisition ; au delà, analyse abandonnée et alerte ntfy
+  repli_cpu_apres_h: 3          # sans GPU de la liste au bout de 3 h d'attente : fenêtres analysées sur processeur
   # Modèle d'AI2 (paramètres de sa chaîne)
   confiance: 0.9
   nms_m: 10
@@ -285,6 +299,35 @@ travailleurs:
       image: ghcr.io/allenai/vessel-detection-sentinels@sha256:43880082de543afe25770de07f4b5f888f18a368f11bc32b5ecc90ae54fa487e
       script: travailleurs/sentinel.py
       docker_opts: "--gpus all --shm-size=16g"
+      # Lot C3 : types de secours, essayés dans l'ordre quand le précédent est en rupture (disponibilité lue avant toute
+      # création ; catalogue public de Scaleway du 19/10/2026). Région fr-par seulement : le réseau privé qui ramène
+      # les résultats est régional (pl-waw-2, où le L4 était « scarce », est injoignable). Exigences du modèle d'AI2 :
+      # PyTorch 1.13.1 compilé pour CUDA 11.7 (architectures sm_37 à sm_86, plus le PTX pour les plus récentes), 16 Go
+      # de mémoire GPU suffisent (AI2 l'a réglé sur un T4 de 16 Go). Écartés : H100 (Hopper, sm_90, au delà de CUDA 11.7,
+      # 2,87 €/h), les multi GPU (inutiles, une scène à la fois), GPU-3070 (absent du catalogue).
+      secours:
+        - commercial_type: L4-1-24G    # même GPU, autre zone de la région
+          zone: fr-par-1
+        - commercial_type: L40S-1-48G  # Ada comme le L4 (sm_89, même chemin CUDA éprouvé le 14/10), 48 Go
+          zone: fr-par-2
+          prix_heure: 1.4699
+        - commercial_type: RENDER-S    # Tesla P100 16 Go (Pascal, sm_60, compilé dans PyTorch 1.13), disque local
+          zone: fr-par-2
+          volume: l_ssd
+          prix_heure: 1.221
+      # Repli sur processeur après repli_cpu_apres_h sans GPU (fenêtres seules) : GP1-S, 8 processeurs et 32 Go
+      # (modèle et deux fenêtres en mémoire, avec marge), disque local de 300 Go, 0,19 €/h, « available » en fr-par-1 et
+      # fr-par-2 le 19/10/2026, quand POP2-8C-32G (0,29 €/h) était « scarce » et demande un volume bloc
+      repli_cpu:
+        commercial_type: GP1-S
+        zone: fr-par-2
+        image_label: ubuntu_noble
+        volume: l_ssd
+        disque_go: 60
+        prix_heure: 0.1907
+        facturation_min_min: 60
+        duree_max_min: 150             # sur processeur, environ 12 min par fenêtre (mesure en émulation) : 45 ne suffit pas
+        docker_opts: "--shm-size=16g"
       # Tâche remise par le réseau privé (route etat, {"etat": "tache"}), une seule fois, avec la paire de clés
       # Copernicus dédiée aux travailleurs : Copernicus refuse les adresses présignées (14/10/2026)
       tache_par_le_reseau: true

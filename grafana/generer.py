@@ -368,6 +368,40 @@ def satellites() -> Tableau:
                FROM travailleurs WHERE $__timeFilter(cree_le) ORDER BY id DESC LIMIT 100""",
             h=9, etats={"echec": ("échec", ROUGE), "termine": ("terminé", NEUTRE)}, colonne_etat="État",
             unites={"Durée": "s", "Coût": "currencyEUR"}, trace="Trace")
+    t.section("Analyses Sentinel 1 (lot C3)")
+    t.chiffre("En attente d'un GPU",
+              "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu'",
+              seuils=((None, NEUTRE), (1, ORANGE)), w=6,
+              description="Rupture de stock chez Scaleway : nouvel essai à chaque cycle, repli sur processeur après "
+                          "repli_cpu_apres_h, abandon (et alerte) au delà de fenetre_utile_h.")
+    t.chiffre("Octets lus ce mois",
+              """SELECT coalesce(sum(octets_lus), 0) AS octets FROM analyses WHERE source = 'sentinel1'
+                 AND requested_at >= date_trunc('month', now())""", "bytes", w=6, decimales=None,
+              description="Fenêtres utiles lues dans les images COG (requêtes partielles), toutes analyses du mois.")
+    t.chiffre("Analyses sur processeur ce mois",
+              """SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND calcul = 'cpu'
+                 AND requested_at >= date_trunc('month', now())""", seuils=((None, NEUTRE), (1, SIGNAL)), w=6)
+    t.chiffre("Abandonnées faute de GPU, 30 jours",
+              """SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'failed'
+                 AND error LIKE 'GPU indisponible pendant toute la fenêtre utile%'
+                 AND requested_at > now() - interval '30 days'""", seuils=((None, NEUTRE), (1, ROUGE)), w=6)
+    t.courbe("Analyses par mode",
+             """SELECT date_trunc('day', requested_at) AS time,
+                       CASE WHEN status = 'attente_gpu' THEN 'attente' WHEN calcul = 'cpu' THEN 'processeur'
+                            WHEN calcul = 'gpu' THEN 'GPU' ELSE 'sans calcul' END AS metric, count(*) AS value
+                FROM analyses WHERE source = 'sentinel1' AND $__timeFilter(requested_at) GROUP BY 1, 2 ORDER BY 1""",
+             w=12, barres=True, empile=True,
+             couleurs={"GPU": SIGNAL, "processeur": CLAIR, "attente": ORANGE, "sans calcul": NEUTRE})
+    t.table("Analyses Sentinel 1",
+            """SELECT a.requested_at AS "Demandée le", a.pass_id AS "Passage", a.status AS "Statut",
+                      coalesce(a.calcul_type, '') AS "Calcul", a.octets_lus AS "Octets lus",
+                      a.cout_estime_eur AS "Coût estimé", a.essais_calcul AS "Essais",
+                      left(coalesce(a.calcul_motif, a.error, ''), 140) AS "Motif", a.trace_id AS "Trace"
+               FROM analyses a WHERE a.source = 'sentinel1' AND $__timeFilter(a.requested_at)
+               ORDER BY 1 DESC LIMIT 100""", w=12,
+            etats={"failed": ("échec", ROUGE), "attente_gpu": ("attente GPU", ORANGE), "running": ("en cours", SIGNAL),
+                   "done": ("analysée", NEUTRE), "pending": ("demandée", SIGNAL)},
+            colonne_etat="Statut", unites={"Octets lus": "bytes", "Coût estimé": "currencyEUR"}, trace="Trace")
     t.table("Passages Sentinel 1",
             """SELECT p.acquired_at AS "Acquis le", p.satellite AS "Satellite", p.statut AS "État",
                       array_to_string(p.regions, ', ') AS "Régions", cardinality(p.infra_ids) AS "Infrastructures",
@@ -510,16 +544,21 @@ TUILE_TACHES = f"""SELECT now() AS time,
                     AND st[1:{_seuil("seuil_echecs_successifs", 2)}::int] <@ ARRAY['echec']) AS suite) x"""
 TUILE_SATELLITES = f"""SELECT now() AS time,
       CASE WHEN absente THEN 'Nuit du ' || to_char(veille, 'DD/MM') || ' absente'
+           WHEN attente_min IS NOT NULL THEN 'GPU indisponible chez Scaleway, nouvel essai dans '
+                || greatest(attente_min, 0) || ' min'
            WHEN nuit IS NULL THEN 'aucune nuit VIIRS traitée'
            ELSE 'Nuit du ' || to_char(nuit, 'DD/MM') || ' traitée' END AS metric,
-      CASE WHEN absente THEN 2 WHEN nuit IS NULL THEN -1 WHEN echec THEN 1 ELSE 0 END AS value
+      CASE WHEN absente THEN 2 WHEN attente_min IS NOT NULL THEN 1 WHEN nuit IS NULL THEN -1 WHEN echec THEN 1
+           ELSE 0 END AS value
     FROM (SELECT (SELECT max(nuit) FROM viirs_granules WHERE traite_le IS NOT NULL) AS nuit,
                  (now() AT TIME ZONE 'UTC')::date - 1 AS veille,
                  extract(hour FROM now() AT TIME ZONE 'UTC') >= {_seuil("seuil_heure_nuit_viirs", 8)}
                    AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1
                                    AND traite_le IS NOT NULL) AS absente,
-                 EXISTS (SELECT 1 FROM travailleurs WHERE etat = 'echec' AND cree_le > now() - interval '24 hours')
-                   AS echec) x"""
+                 EXISTS (SELECT 1 FROM travailleurs WHERE etat = 'echec' AND NOT rupture_stock
+                         AND cree_le > now() - interval '24 hours') AS echec,
+                 (SELECT ceil(extract(epoch FROM min(prochain_essai) - now()) / 60)::int FROM analyses
+                   WHERE source = 'sentinel1' AND status = 'attente_gpu') AS attente_min) x"""
 TUILE_TRACES = f"""SELECT now() AS time,
       CASE WHEN NOT mesure THEN 'aucune mesure du collecteur'
            ELSE replace(to_char(coalesce(recus, 0), 'FM999,999,990'), ',', ' ') || ' spans en 1 h' END AS metric,
@@ -556,8 +595,9 @@ def vue_ensemble() -> Tableau:
             "Échecs des tâches sur 24 h (refus attendus exclus). Rouge si une tâche échoue ECHECS_SUCCESSIFS fois de "
             "suite (alerte), orange dès un échec.")
     t.tuile("Satellites", TUILE_SATELLITES, "Satellites",
-            "Dernière nuit VIIRS traitée. Rouge si la nuit précédente manque après HEURE_NUIT_VIIRS (alerte), orange si "
-            "un travailleur a échoué en 24 h.")
+            "Dernière nuit VIIRS traitée. Rouge si la nuit précédente manque après HEURE_NUIT_VIIRS (alerte) ; orange si "
+            "une analyse Sentinel 1 attend un GPU (rupture de stock, nouvel essai à chaque cycle) ou si un travailleur a "
+            "échoué en 24 h (hors rupture de stock).")
     t.tuile("Traces", TUILE_TRACES, "Traces",
             "Spans reçus par le collecteur en 1 h. Rouge s'il est muet depuis SEUIL_COLLECTEUR_MUET_MIN, injoignable "
             "ou s'il refuse des spans (alertes), orange si sa file d'attente dépasse 100 lots.")

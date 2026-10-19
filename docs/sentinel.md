@@ -278,10 +278,131 @@ Pour valider la chaîne sur un seul passage :
 
 Arrêt d'urgence : `docker compose exec taches python scripts/taches.py detruire-travailleurs` (toutes zones des types).
 
+## Lot C3 : Sentinel 1 robuste (19/10/2026)
+
+État réel avant ce lot : essai 19 (14/10) refusé par notre contrôle du volume bloc, corrigé ; essai 20 (14/10) :
+instance L4 démarrée, réseau privé de fr-par-2 vers fr-par-1 joint, tâche remise, GPU vu (NVIDIA L4, CUDA 11.7,
+torch 1.13.1), échec à l'import de la chaîne d'AI2, corrigé et éprouvé sur CPU dans la vraie image ; l'analyse 94,
+comptée « terminée » sans aucune scène aboutie, est reclassée en échec par la migration 28 (toute analyse « terminée »
+sans détection dont aucune scène n'a abouti) ; essai du 16/10 (passage 143) : 412 out_of_stock au démarrage du
+L4-1-24G, instance et volume créés pour rien.
+
+### Rupture de stock des GPU
+
+* **Disponibilité lue avant toute création** (API Instances, `products/servers/availability`, lecture seule) : un type
+  « shortage » n'est jamais essayé, rien n'est créé. Le 19/10/2026 à midi, le L4-1-24G était « shortage » en fr-par-1
+  et en fr-par-2 : le stock varie d'heure en heure.
+* **out_of_stock à la création ou au démarrage** (« scarce » ne garantit rien) : instance et volume bloc supprimés
+  aussitôt par la garde habituelle, travailleur marqué `rupture_stock` (hors du plafond quotidien, coût nul, journal
+  marqué refus : pas d'alerte « deux échecs de suite »), type suivant essayé dans le même cycle.
+* **Aucun type lançable** : l'analyse passe en **« attente_gpu »** (pas en échec), avec son motif (« GPU indisponible
+  chez Scaleway (L4-1-24G fr-par-2 : épuisé ; …) ») et l'heure du prochain essai ; nouvel essai à chaque cycle
+  (30 minutes) tant que la scène reste utile (`sentinel.fenetre_utile_h`, 24 h après l'acquisition). Au delà :
+  analyse abandonnée, en échec, et **alerte ntfy** (règle « Analyse Sentinel 1 abandonnée faute de GPU », une fois).
+  Une simple rupture n'alerte pas.
+* Indicateur « Satellites » de la barre d'état et tuile Satellites de Grafana : orange, « GPU indisponible chez
+  Scaleway, nouvel essai dans N min ».
+
+### Types de secours (catalogue public de Scaleway, 19/10/2026)
+
+Exigences du modèle d'AI2 : PyTorch 1.13.1 compilé pour CUDA 11.7 (architectures sm_37 à sm_86, plus le PTX pour les
+plus récentes : le L4, sm_89, l'a confirmé à l'essai 20), 16 Go de mémoire GPU suffisent (réglage d'AI2 sur un T4 de
+16 Go). Région fr-par seulement : le réseau privé qui ramène les résultats est régional.
+
+| Ordre | Type | Zone | GPU | Prix | Disponibilité le 19/10 | Raison |
+|---|---|---|---|---|---|---|
+| 1 | L4-1-24G | fr-par-2 | L4 24 Go | 0,79 €/h | shortage | éprouvé (essai 20) |
+| 2 | L4-1-24G | fr-par-1 | L4 24 Go | 0,79 €/h | shortage | même GPU, autre stock |
+| 3 | L40S-1-48G | fr-par-2 | L40S 48 Go | 1,47 €/h | shortage | Ada comme le L4 (même chemin CUDA) |
+| 4 | RENDER-S | fr-par-2 | P100 16 Go | 1,22 €/h | **available** | Pascal (sm_60, compilé dans PyTorch 1.13), disque local ; pilote récent de l'image GPU OS à confirmer |
+| repli | GP1-S | fr-par-2 | aucun (8 processeurs, 32 Go) | 0,19 €/h | available | voir ci dessous |
+
+Écartés : H100 (Hopper, sm_90, au delà de CUDA 11.7, 2,87 €/h), L4 et H100 de pl-waw-2 (hors de la région du réseau
+privé), multi GPU (une scène à la fois), GPU-3070 (absent du catalogue). `taches.py sentinel-diagnostic` affiche la
+disponibilité et le prix du catalogue de chaque type, et signale un prix de `config/rules.yaml` à mettre à jour.
+
+### Analyse limitée aux fenêtres utiles
+
+* **Serveur** (`mars/sentinel.py`, `fenetres`) : autour de chaque point d'intérêt couvert par la scène, un carré de
+  2 × (10 km + 2 km de marge) de côté ; les carrés qui se chevauchent sont réunis. Enregistrées dans l'analyse
+  (`analyses.fenetres`), remises au travailleur avec sa tâche. Un passage choisi à la main sans corridor prend pour
+  points les navires des listes de son emprise (`points_liste`) ; sans aucun navire, scène entière (GPU seulement).
+* **Travailleur** (`travailleurs/sentinel.py`, `analyse_fenetres`) : GDAL ouvre l'image COG par `/vsis3/` (clés en
+  mémoire du processus, jamais écrites), calcule la fenêtre en pixels par les **points d'appui** de la scène (les GRD
+  ne sont pas géoréférencés par une transformation affine), puis la découpe par `gdal.Translate` : seules les tuiles
+  utiles sont lues (requêtes partielles par plages d'octets, signées par en tête, AWS version 4), et la copie garde
+  ses points d'appui recalés sur la fenêtre. La chaîne d'AI2 (`prepare_scenes` reprojette par ces points d'appui)
+  analyse chaque fenêtre ; les détections à moins de la marge du bord sont écartées.
+* **Chaîne d'AI2 et images partielles** : elle découpe en carreaux de 2 048 pixels Web Mercator, et une image plus
+  petite dans une dimension donne des décalages négatifs (découpe fausse). Une fenêtre fait donc au moins
+  2 300 pixels de côté (agrandie dans l'image au besoin) ; près du bord d'une scène trop petite, motif clair.
+* **Essais** (`scripts/verifier_images.sh fenetres` et `ai2-fenetres`, vraie image d'AI2, GDAL 3.4.3) :
+  * faux S3 qui vérifie la signature AWS version 4 de chaque requête de GDAL (région « default », adressage par
+    chemin, comme Copernicus) : 8 requêtes signées, aucune refusée ; signature fausse refusée ;
+  * scène synthétique de 12 000 × 8 000 pixels (113 Mo par polarisation), fenêtre de 24 km : **13,1 Mo lus (11,6 %)**,
+    l'index du TIFF en annonçait 12,9 ; points d'appui exacts (écart nul entre scène et fenêtre) ;
+  * chaîne d'AI2 complète sur processeur (émulation) : scène entière de 3 200 × 3 200 pixels, 4 détections en 855 s,
+    2,8 Go de mémoire ; fenêtre de 2 300 × 2 300 pixels, **les 2 détections de son cœur retrouvées à 6,3 m près**
+    (moins d'un pixel), en 470 s.
+* **Projection sur une vraie scène** (non mesurée faute de clés Copernicus sur le Mac) : un GRD fait environ
+  25 000 × 16 700 pixels (0,4 à 0,9 Go par polarisation) ; une fenêtre de 24 km en couvre environ 1,4 %, soit de
+  l'ordre de 15 à 25 Mo par polarisation au lieu de la scène entière. Mesure réelle au premier essai (octets lus dans
+  `analyses.octets_lus` et dans la trace).
+
+### Repli sur processeur
+
+Après `repli_cpu_apres_h` (3 h) sans GPU de la liste, les fenêtres seules sont analysées sur un GP1-S : 8 processeurs
+et 32 Go (le modèle et une fenêtre tiennent en moins de 3 Go mesurés), disque local (pas de volume bloc à gérer),
+0,19 €/h facturés à l'heure, « available » en fr-par-1 et fr-par-2 le 19/10/2026 quand le POP2-8C-32G (0,29 €/h,
+volume bloc) était « scarce ». Une scène entière n'est jamais envoyée sur processeur. Le choix (GPU ou processeur),
+le type et la raison sont enregistrés dans l'analyse (`calcul`, `calcul_type`, `calcul_motif`) et dans la trace
+(`sentinel.choix_calcul`, `sentinel.essai_type`). Durée : 470 s par fenêtre de 2 300 pixels sur processeur en
+émulation (borne haute) : estimation de 12 min par fenêtre (`minutes_par_fenetre_cpu`), 10 min fixes, durée de vie
+du travailleur portée à 150 min pour ce type (45 pour les autres).
+
+### Budget et garde fous
+
+Coût estimé selon le type réellement lancé et le nombre de fenêtres : GPU, 12 min fixes et 2 min par fenêtre au tarif
+du type (6 min par scène entière) ; processeur, une heure entamée de GP1-S (0,19 €) pour une à quatre fenêtres.
+Plafond de scènes et budget mensuel inchangés. Grafana (tableau Satellites, section « Analyses Sentinel 1 ») :
+analyses en attente d'un GPU, octets lus du mois, analyses sur processeur, abandons, analyses par mode (GPU,
+processeur, attente) et table des analyses avec leur trace.
+
+### Essai réel du lot C3
+
+1. **Diagnostic**, lecture seule : `docker compose exec taches python scripts/taches.py sentinel-diagnostic`. Aucune
+   ligne MANQUE ; lire la disponibilité de chaque type (une rupture n'est pas un manque).
+2. **Choisir un passage** récent qui couvre un navire des listes :
+   `docker compose exec taches python scripts/taches.py sentinel-candidats` (passages des 36 dernières heures : points,
+   scènes, fenêtres, octets estimés, coût sur L4). Retenir un passage avec une ou deux fenêtres.
+3. **Plafond relevé à 1 pour cette seule commande**, sur le serveur, sans toucher à `config/rules.yaml` (la boucle
+   garde 0) :
+   `docker compose exec -e SENTINEL_PLAFOND_ESSAI=1 taches python scripts/taches.py sentinel-analyser <passage>`.
+   Réponse attendue : `calcul`, `type`, `motif`, `cout_estime_eur`, ou `attente_gpu` avec le motif (rupture : la
+   boucle réessaiera chaque 30 minutes, avec le plafond versionné de 0 pour les passages nouveaux ; l'analyse déjà
+   créée est reprise).
+4. **Suivre par la trace** : Grafana, Vue d'ensemble, « Dernières traces de bout en bout », colonne Trace (ou
+   `taches.py travailleurs`, qui affiche l'identifiant). La trace doit montrer, dans l'ordre :
+   `commande sentinel-analyser` › `tache sentinel` › `sentinel.attente` › `sentinel.selection` › `sentinel.fenetres`
+   (nombre et surface) › `sentinel.verification_cles` › `sentinel.choix_calcul` (une ligne `dispo.<type zone>` par
+   type) › `sentinel.disponibilite` (une par zone) › `sentinel.essai_type` (un par type essayé ; rupture marquée) ›
+   `travailleur.lancement` et ses `scaleway.*` ; puis sur le travailleur `travailleur.demarrage` (étapes bash) ›
+   `travailleur.sentinel` › `travailleur.remise_tache` › `sentinel.preparation_gpu` › `sentinel.scene` ›
+   `sentinel.fenetre` (une par fenêtre) › `GET S3 eodata VV fenêtre` et `VH` (octets) › `sentinel.preparation_scene` ›
+   `sentinel.inference` › `sentinel.mesures_et_vignettes` › `travailleur.renvoi_resultats` ; enfin sur le serveur
+   `travailleur.resultats` › `sentinel.fusion_et_alertes` › `sentinel.vignettes` › `travailleur.destruction`.
+5. **Console Scaleway** : Instances (fr-par-1 et fr-par-2) et Block Storage : aucune instance `mars-travailleur-*` ni
+   aucun volume restant ; `taches.py sentinel-diagnostic` le vérifie aussi (volumes bloc enregistrés).
+6. **Plafond** : rien à remettre, il n'a été relevé que pour la commande. Vérifier `scenes_max_par_jour: 0` dans
+   `config/rules.yaml` (`git status` propre).
+7. Relever pour ajuster les estimations : `analyses.octets_lus`, `timings` (lecture et analyse par fenêtre, mémoire
+   GPU), durée et coût dans `task_runs` (`travailleur_sentinel`).
+
 ## Limites
 
-* Aucun essai sur une vraie instance GPU à ce jour ; les points « non vérifié » ci dessus seront tranchés au premier
-  essai, avant tout automatisme (les clés CDSE absentes du `.env` le bloquent).
+* Aucune analyse aboutie sur une vraie instance GPU à ce jour (essai 20 : GPU vu, import corrigé depuis) ; la
+  lecture par fenêtres est éprouvée dans la vraie image d'AI2 contre un faux S3, pas encore contre Copernicus (aucune
+  clé sur le Mac) ; RENDER-S (P100) et le repli GP1-S ne sont pas encore essayés chez Scaleway.
 * Sentinel 2 (optique) n'est pas dans cette livraison ; le registre des preuves l'attend (`sentinel2`).
 * Le modèle d'AI2 manque une partie des petits navires ; AIS_UNCONFIRMED ne concerne que les navires de 50 m et plus.
 * Les seuils d'incohérence et de persistance sont des valeurs de départ, à calibrer sur les premiers passages.

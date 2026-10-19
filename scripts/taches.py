@@ -38,6 +38,7 @@ Usage :
     python scripts/taches.py sentinel                 # passages Sentinel 1 à analyser maintenant (sélection automatique)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? lecture seule, aucune création, aucun coût
+    python scripts/taches.py sentinel-candidats [H]    # passages des H (36) dernières heures avec un navire des listes
     python scripts/taches.py coupures-injection [--jour 2026-10-09] [--essais 20]
                                                       # test par injection de la règle des coupures (rien n'est écrit)
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
@@ -577,6 +578,22 @@ def _sentinel(manual: bool):
         if run(conn, "sentinel", lambda: launch_sentinel(conn, pid), parent=traces.traceparent()) is None:
             sys.exit(1)
     return go
+
+
+@commande("sentinel-candidats")                      # essai réel : passages récents avec un navire des listes
+def _sentinel_candidats(conn, a):
+    import requests
+    from mars import sentinel
+    rows = sentinel.candidats_essai(conn, requests.Session(), load_rules(), datetime.now(timezone.utc),
+                                    int(a.args[0]) if a.args else 36)
+    if not rows:
+        print("Aucun passage Sentinel 1 acquis dans les 36 dernières heures ne couvre un navire des listes")
+    for r in rows:
+        cout = f"{r['cout_gpu_eur']:.2f} €".replace(".", ",") if r["cout_gpu_eur"] is not None else "rien à analyser"
+        print(f"passage {r['passage']:>6}  {r['acquis_le']:%d/%m/%Y %H:%M} UTC  {r['satellite']}  "
+              f"{r['navires_des_listes']} navire(s) des listes, {r['points']} point(s), {r['scenes']} scène(s), "
+              f"{r['fenetres']} fenêtre(s) ({r['km2']} km²), environ {r['octets_estimes'] / 1e6:.0f} Mo lus sur "
+              f"{r['octets_scenes'] / 1e6:.0f} Mo, {cout} sur L4")
 
 
 commande("sentinel")(_sentinel(False))

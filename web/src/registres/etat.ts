@@ -110,8 +110,10 @@ export const INDICATEURS: Indicateur[] = [
       if (nuit) niveaux.push(palier(age(nuit.traite_le, now), 30 * 60 * MIN, 54 * 60 * MIN));
       if (w?.etat === "echec" || lance?.statut === "echec") niveaux.push("orange");
       if (w && !w.detruit_le && age(w.cree_le, now) > 60 * MIN) niveaux.push("rouge");    // instance non détruite
-      const gpu = sat.sentinel?.travailleur;
-      if (gpu?.etat === "echec") niveaux.push("orange");
+      const gpu = sat.sentinel?.travailleur, attente = sat.sentinel?.attente;
+      // Rupture de stock chez Scaleway : une attente (nouvel essai à chaque cycle), pas un échec
+      if (gpu?.etat === "echec" && !gpu.rupture_stock) niveaux.push("orange");
+      if (attente) niveaux.push("orange");
       if (gpu && !gpu.detruit_le && age(gpu.cree_le, now) > 60 * MIN) niveaux.push("rouge"); // GPU facturé à la minute
       const niveau = pire(niveaux);
       const prochains: any[] = sat.prochains ?? [];
@@ -136,6 +138,7 @@ export const INDICATEURS: Indicateur[] = [
       if (g) detail.push([E.travailleurGpu, E.travailleurDe(E.etatsTravailleur[g.etat] ?? g.etat, g.commercial_type, date(g.cree_le),
         null, g.cout_eur)]);
       if (g?.erreur) detail.push([E.motif, g.erreur]);
+      if (attente) detail.push([E.analyseSentinel, E.attenteGpu(duree(Math.max(0, Date.parse(attente.prochain_essai) - now)))]);
       if (s1) detail.push([E.coutMois, E.euros(s1.euros_mois ?? 0)]);
       if (ls?.statut === "echec") detail.push([E.lancementSentinel, `${date(ls.le)}${ls.erreur ? ` : ${ls.erreur}` : ""}`]);
       return { niveau, resume: premier ? E.dans(duree(Date.parse(premier.acquired_at) - now)) : L.commun.nd, detail };

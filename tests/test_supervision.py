@@ -330,7 +330,8 @@ def test_alert_rules_cover_every_case():
     titles = [r["title"] for r in doc["groups"][0]["rules"]]
     assert titles == ["Disque presque plein", "Collecte AIS figée", "Ingestion AIS en échec ou en retard",
                       "Nuit VIIRS absente", "Tâche en échec plusieurs fois de suite",
-                      "Collecteur de traces muet", "Collecteur de traces saturé"]
+                      "Collecteur de traces muet", "Collecteur de traces saturé",
+                      "Analyse Sentinel 1 abandonnée faute de GPU"]
     ntfy = yaml.safe_load((ROOT / "grafana" / "provisioning" / "alerting" / "ntfy.yaml").read_text())
     assert ntfy["policies"][0]["repeat_interval"] == "1h"
     r = ntfy["contactPoints"][0]["receivers"][0]

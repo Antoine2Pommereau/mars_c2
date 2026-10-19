@@ -45,6 +45,8 @@ export const L = {
     etatsTravailleur: { demande: "demandé", cree: "créé", demarre: "en cours", resultats: "résultats reçus",
       termine: "terminé", echec: "en échec" } as Record<string, string>,
     version: "Version", differente: "version différente de l'interface",
+    analyseSentinel: "Analyse Sentinel 1",
+    attenteGpu: (dans: string) => `GPU indisponible chez Scaleway, nouvel essai dans ${dans}`,
     services: { interface: "Interface", api: "API", taches: "Tâches", ingestion: "Ingestion", collecte: "Collecte" } as Record<string, string>,
     travailleurDe: (etat: string, type: string, le: string, s: number | null, eur: number | null) =>
       `${etat}, ${type}, ${le}${s != null ? `, ${Math.round(s / 60)} min d'analyse` : ""}${eur != null ? `, ${eur.toFixed(3).replace(".", ",")} €` : ""}`,

@@ -13,6 +13,11 @@
 #                 (config/rules.yaml), en linux/amd64, sans GPU (une minute) ;
 #   ai2-complet : analyse complète sur CPU d'une scène synthétique, quatre cibles à retrouver (environ 7 minutes).
 #   Ajouté après le second essai réel du 14/10/2026 (« No module named 'src' »).
+#   fenetres    : lecture par fenêtres (lot C3) dans l'image d'AI2 : faux S3 qui vérifie la signature AWS version 4 de
+#                 GDAL et compte les octets, scène synthétique géolocalisée par points d'appui ; part lue, points
+#                 d'appui recalés, signature fausse refusée (environ une minute) ;
+#   ai2-fenetres: chaîne d'AI2 sur une scène entière puis sur une fenêtre : mêmes détections au même endroit
+#                 (environ 15 minutes sur CPU).
 #   traces      : une trace complète de bout en bout arrive dans Tempo (étape D2) : base, Tempo et collecteur réels,
 #                 API et nginx des images construites ; lancement d'un travailleur simulé côté taches, étapes du script
 #                 de démarrage et vrai script Sentinel sous Python 3.8 (comme l'image d'AI2), envoyés par nginx avec le
@@ -23,7 +28,7 @@
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet] [sante] [traces]   (sans argument : les trois premiers)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres] [sante] [traces]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -117,7 +122,7 @@ verifier_web() {
 }
 
 verifier_ai2() {
-  local mode=$1 image
+  local mode=$1 script=${2:-essai_ai2.py} image
   image=$(grep -o 'ghcr.io/allenai/vessel-detection-sentinels@sha256:[0-9a-f]*' config/rules.yaml | head -1)
   [ -n "$image" ] || echec "ai2 : image d'AI2 introuvable dans config/rules.yaml"
   if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -128,7 +133,7 @@ verifier_ai2() {
   local sortie code=0
   sortie=$(mktemp)
   docker run --rm --platform "$PLATEFORME" --shm-size=2g -v "$PWD/travailleurs:/mars:ro" --entrypoint python3 \
-    "$image" /mars/essai_ai2.py $mode >"$sortie" 2>&1 || code=$?
+    "$image" "/mars/$script" $mode >"$sortie" 2>&1 || code=$?
   grep -E '^(OK|ÉCHEC|        )' "$sortie" || true
   if [ "$code" -ne 0 ]; then
     grep -vE 'Warning|warn\(' "$sortie" | tail -30
@@ -259,9 +264,11 @@ for cible in "${CIBLES[@]}"; do
     web)     verifier_web ;;
     ai2)     verifier_ai2 --imports ;;
     ai2-complet) verifier_ai2 "" ;;
+    fenetres) verifier_ai2 --lecture essai_fenetres.py ;;
+    ai2-fenetres) verifier_ai2 --complet essai_fenetres.py ;;
     sante)   verifier_sante ;;
     traces)  verifier_traces ;;
-    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, sante ou traces)" ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, sante ou traces)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."

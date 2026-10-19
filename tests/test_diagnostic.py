@@ -65,7 +65,14 @@ class ScalewayApi:
             "/instance/v1/zones/fr-par-2/images/gpuos": (200, {"image": {"id": "gpuos", "name": "Ubuntu Noble GPU OS 13",
                 "arch": "x86_64", "root_volume": {"id": "snap", "volume_type": "sbs_snapshot", "size": 0}}}),
             "/block/v1alpha1/zones/fr-par-2/snapshots/snap": (200, {"id": "snap", "size": 20_000_000_000}),
-            "/instance/v1/zones/fr-par-2/products/servers/availability": (200, {"servers": {"L4-1-24G": {"availability": "available"}}}),
+            "/instance/v1/zones/fr-par-2/products/servers/availability": (200, {"servers": {
+                k: {"availability": "available"} for k in ("L4-1-24G", "L40S-1-48G", "RENDER-S", "GP1-S")}}),
+            "/instance/v1/zones/fr-par-1/products/servers/availability": (200, {"servers": {
+                "L4-1-24G": {"availability": "available"}}}),
+            "/instance/v1/zones/fr-par-2/products/servers": (200, {"servers": {
+                "L4-1-24G": {"hourly_price": 0.7875}, "L40S-1-48G": {"hourly_price": 1.469916},
+                "RENDER-S": {"hourly_price": 1.221}, "GP1-S": {"hourly_price": 0.19074}}}),
+            "/instance/v1/zones/fr-par-1/products/servers": (200, {"servers": {"L4-1-24G": {"hourly_price": 0.7875}}}),
             "/account/v3/projects/p": (200, {"organization_id": "org"}),
             "/iam/v1alpha1/quota": (200, {"quota": [{"name": "instances_l4_1_24g", "limits": [{"zone": "fr-par-2", "limit": 1}]}]}),
             "/block/v1alpha1/zones/fr-par-2/volumes": (200, {"volumes": []}),
@@ -129,6 +136,24 @@ def test_missing_and_unreadable_points_are_named(monkeypatch):
     assert lines["Quota L4-1-24G"][0] == D.A_VERIFIER and lines["Droits de la clé"][0] == D.A_VERIFIER
     assert lines["Plafond de scènes"][0] == D.INFO and "Sentinel arrêté" in lines["Plafond de scènes"][1]
     assert lines["Clés Copernicus dédiées aux travailleurs valides"][0] == D.PRET
+
+
+def test_every_calculation_type_shows_its_stock_and_price(monkeypatch):
+    _env(monkeypatch)
+    lines, _ = _run(ScalewayApi())
+    types = {r: v for r, v in lines.items() if r.startswith("Type ")}
+    assert list(types) == ["Type 1 : L4-1-24G en fr-par-2", "Type 2 : L4-1-24G en fr-par-1",
+                           "Type 3 : L40S-1-48G en fr-par-2", "Type 4 : RENDER-S en fr-par-2", "Type 5 : GP1-S en fr-par-2"]
+    assert types["Type 1 : L4-1-24G en fr-par-2"] == (D.PRET, "GPU, available, 0,7875 €/h au catalogue")
+    assert types["Type 5 : GP1-S en fr-par-2"][1].startswith("processeur (repli), available")
+    api = ScalewayApi(**{"/instance/v1/zones/fr-par-2/products/servers/availability": (200, {"servers": {
+        "L4-1-24G": {"availability": "shortage"}, "L40S-1-48G": {"availability": "scarce"}, "GP1-S": {"availability": "available"}}}),
+        "/instance/v1/zones/fr-par-2/products/servers": (200, {"servers": {"L4-1-24G": {"hourly_price": 0.99},
+                                                                           "GP1-S": {"hourly_price": 0.19074}}})})
+    lines, _ = _run(api)
+    l4 = lines["Type 1 : L4-1-24G en fr-par-2"]
+    assert l4[0] == D.A_VERIFIER and "shortage" in l4[1] and "à mettre à jour" in l4[1]   # rupture : pas un manque
+    assert lines["Type 4 : RENDER-S en fr-par-2"] == (D.MANQUE, "GPU, absent du catalogue, prix inconnu")
 
 
 def test_copernicus_is_checked_first_and_refused_keys_are_reported(monkeypatch):

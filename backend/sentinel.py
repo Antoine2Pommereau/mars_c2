@@ -3,6 +3,7 @@ vérification satellite d'un navire, état pour la barre d'état et mesures. Le 
 taches (mars/sentinel.py) ; l'API ne fait que lire."""
 from datetime import datetime, timedelta, timezone
 
+import asyncpg
 from fastapi import APIRouter, HTTPException, Request
 
 from preuves import ais_near, proof_of
@@ -112,8 +113,21 @@ async def sentinel_status(c) -> dict:
     month = await c.fetchval(
         """SELECT coalesce(sum((mesures->>'cout_estime_eur')::float8), 0) FROM travailleurs
            WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())""")
+    attente = None
+    try:                                  # lot C3 : analyses en attente d'un GPU (rupture de stock chez Scaleway)
+        a = await c.fetchrow(
+            """SELECT count(*) AS analyses, min(attente_depuis) AS depuis, min(prochain_essai) AS prochain_essai,
+                      (array_agg(calcul_motif ORDER BY id DESC))[1] AS motif
+               FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu'""")
+        attente = _row(a) if a and a["analyses"] else None
+        if w is not None:
+            w = {**dict(w), "rupture_stock": await c.fetchval("SELECT rupture_stock FROM travailleurs WHERE id = $1",
+                                                              w["id"])}
+    except asyncpg.PostgresError:
+        pass                              # base sans la migration 28
     return {"dernier": _row(last) if last else None, "travailleur": _row(w) if w else None,
-            "lancement": _row(launch) if launch else None, "euros_mois": round(float(month or 0), 2)}
+            "lancement": _row(launch) if launch else None, "euros_mois": round(float(month or 0), 2),
+            "attente": attente}
 
 
 async def sentinel_metrics(c, line) -> list[str]:

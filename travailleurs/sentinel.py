@@ -318,10 +318,67 @@ def preflight(force_cpu: bool = False):
                                   "cuda": torch.version.cuda, "torch": torch.__version__}
 
 
-def analyse(scene: dict, task: dict, device, tmp: str, local: bool, tr=None) -> dict:
-    tr = tr or otel_mini.Traceur(None, None, None)
+def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, device, tmp: str, tr, coeur=None) -> dict:
+    """Chaîne d'AI2 sur une image (scène entière ou fenêtre, rangée en SAFE sous `raw`), puis mesures et vignettes
+    sur l'image VV d'origine. `coeur` (lon_min, lat_min, lon_max, lat_max) : seules les détections dedans sont gardées
+    (fenêtre : les objets coupés au bord sont écartés)."""
     import torch
     prepare_scenes, detect_vessels = ai2()
+    r = {}
+    t = time.time()
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+    base = os.path.join(tmp, "travail_" + scene_id)
+    scratch, out = os.path.join(base, "scratch"), os.path.join(base, "sortie")
+    os.makedirs(scratch, exist_ok=True)
+    os.makedirs(out, exist_ok=True)
+    cat_path, base_path = os.path.join(scratch, scene_id + "_cat.npy"), os.path.join(scratch, scene_id + "_base.tif")
+    with tr.span("sentinel.preparation_scene"):
+        prepare_scenes(raw, scratch, scene_id, None, None, "sentinel1", cat_path, base_path, device, DETECTEUR, ATTRIBUTS)
+    # nms_thresh : annoncé float mais utilisé en division entière par la grille de la chaîne d'AI2 (range) ; un décimal
+    # la fait échouer (« 'float' object cannot be interpreted as an integer », essai dans l'image du 15/10/2026)
+    with tr.span("sentinel.inference", **{"sentinel.appareil": device.type}):
+        detect_vessels(DETECTEUR, ATTRIBUTS, raw, scene_id, cat_path, base_path, out, 2048, 400, 20,
+                       float(task.get("confiance", 0.9)), int(round(float(task.get("nms_m", 10)))), False, device,
+                       "sentinel1", None)
+    r["analyse_s"] = round(time.time() - t, 1)
+    if device.type == "cuda":
+        r["gpu_max_mo"] = round(torch.cuda.max_memory_allocated() / 2 ** 20)
+    with tr.span("sentinel.mesures_et_vignettes") as ms:
+        radar = Radar(files["vv"])
+        dets, hors, bord = [], 0, 0
+        with open(os.path.join(out, "predictions.csv")) as f:
+            for row in csv.DictReader(f):
+                lon, lat = num(row.get("lon")), num(row.get("lat"))
+                if lon is None or lat is None or not in_regions(lon, lat, task["regions"]):
+                    hors += 1
+                    continue
+                if coeur and not in_regions(lon, lat, [coeur]):
+                    bord += 1                                # marge de la fenêtre : vue par une autre, ou coupée
+                    continue
+                cap, cap_p = heading([num(row.get(f"heading_bucket_{k}")) for k in range(16)])
+                det = {"lon": round(lon, 6), "lat": round(lat, 6), "score": num(row.get("score")),
+                       "longueur_m": num(row.get("vessel_length_m")), "largeur_m": num(row.get("vessel_width_m")),
+                       "cap_deg": cap, "cap_prob": cap_p, "vitesse_kn": num(row.get("vessel_speed_k")),
+                       "peche": num(row.get("is_fishing_vessel"))}
+                try:                                     # une mesure ou une vignette en échec n'empêche pas la détection
+                    det["contraste_db"] = contrast_db(radar, lon, lat)
+                    png, geo = vignette(radar, lon, lat, float(task.get("vignette_km", 3)),
+                                        {"satellite": scene.get("satellite", "").replace("S1", "Sentinel 1"),
+                                         "date": f"{scene['debut'][8:10]}/{scene['debut'][5:7]}/{scene['debut'][:4]} "
+                                                 f"{scene['debut'][11:16]} UTC"})
+                    det["vignette"], det["vignette_geo"] = base64.b64encode(png).decode(), geo
+                except Exception as e:
+                    det["vignette_erreur"] = f"{type(e).__name__}: {e}"[:200]
+                dets.append(det)
+        ms.set(**{"sentinel.detections": len(dets), "sentinel.hors_regions": hors, "sentinel.marge": bord})
+    r.update({"detections": dets, "hors_regions": hors, "ecartees_marge": bord})
+    return r
+
+
+def analyse(scene: dict, task: dict, device, tmp: str, local: bool, tr=None) -> dict:
+    """Scène entière : images VV et VH téléchargées (passage choisi à la main sans point d'intérêt)."""
+    tr = tr or otel_mini.Traceur(None, None, None)
     scene_id = scene["id"] if scene["id"].endswith(".SAFE") else scene["id"] + ".SAFE"
     raw = os.path.join(tmp, "raw")
     mdir = os.path.join(raw, scene_id, "measurement")
@@ -342,51 +399,168 @@ def analyse(scene: dict, task: dict, device, tmp: str, local: bool, tr=None) -> 
                 n = download(scene[pol], files[pol])
                 sd.set(**{"sentinel.octets": n})
                 octets += n
-    r["telecharge_s"], r["telecharge_mo"] = round(time.time() - t, 1), round(octets / 1e6, 1)
-    t = time.time()
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats()
-    scratch, out = os.path.join(tmp, "scratch"), os.path.join(tmp, "sortie")
-    os.makedirs(scratch, exist_ok=True)
-    os.makedirs(out, exist_ok=True)
-    cat_path, base_path = os.path.join(scratch, scene_id + "_cat.npy"), os.path.join(scratch, scene_id + "_base.tif")
-    with tr.span("sentinel.preparation_scene"):
-        prepare_scenes(raw, scratch, scene_id, None, None, "sentinel1", cat_path, base_path, device, DETECTEUR, ATTRIBUTS)
-    # nms_thresh : annoncé float mais utilisé en division entière par la grille de la chaîne d'AI2 (range) ; un décimal
-    # la fait échouer (« 'float' object cannot be interpreted as an integer », essai dans l'image du 15/10/2026)
-    with tr.span("sentinel.inference", **{"sentinel.appareil": device.type}):
-        detect_vessels(DETECTEUR, ATTRIBUTS, raw, scene_id, cat_path, base_path, out, 2048, 400, 20,
-                       float(task.get("confiance", 0.9)), int(round(float(task.get("nms_m", 10)))), False, device,
-                       "sentinel1", None)
-    r["analyse_s"] = round(time.time() - t, 1)
-    if device.type == "cuda":
-        r["gpu_max_mo"] = round(torch.cuda.max_memory_allocated() / 2 ** 20)
-    with tr.span("sentinel.mesures_et_vignettes") as ms:
-        radar = Radar(files["vv"])
-        dets, hors = [], 0
-        with open(os.path.join(out, "predictions.csv")) as f:
-            for row in csv.DictReader(f):
-                lon, lat = num(row.get("lon")), num(row.get("lat"))
-                if lon is None or lat is None or not in_regions(lon, lat, task["regions"]):
-                    hors += 1
-                    continue
-                cap, cap_p = heading([num(row.get(f"heading_bucket_{k}")) for k in range(16)])
-                det = {"lon": round(lon, 6), "lat": round(lat, 6), "score": num(row.get("score")),
-                       "longueur_m": num(row.get("vessel_length_m")), "largeur_m": num(row.get("vessel_width_m")),
-                       "cap_deg": cap, "cap_prob": cap_p, "vitesse_kn": num(row.get("vessel_speed_k")),
-                       "peche": num(row.get("is_fishing_vessel"))}
-                try:                                     # une mesure ou une vignette en échec n'empêche pas la détection
-                    det["contraste_db"] = contrast_db(radar, lon, lat)
-                    png, geo = vignette(radar, lon, lat, float(task.get("vignette_km", 3)),
-                                        {"satellite": scene.get("satellite", "").replace("S1", "Sentinel 1"),
-                                         "date": f"{scene['debut'][8:10]}/{scene['debut'][5:7]}/{scene['debut'][:4]} "
-                                                 f"{scene['debut'][11:16]} UTC"})
-                    det["vignette"], det["vignette_geo"] = base64.b64encode(png).decode(), geo
-                except Exception as e:
-                    det["vignette_erreur"] = f"{type(e).__name__}: {e}"[:200]
-                dets.append(det)
-        ms.set(**{"sentinel.detections": len(dets), "sentinel.hors_regions": hors})
-    r["detections"], r["hors_regions"] = dets, hors
+    r["telecharge_s"], r["telecharge_mo"], r["octets_lus"] = round(time.time() - t, 1), round(octets / 1e6, 1), octets
+    r.update(_detecter(raw, scene_id, files, scene, task, device, tmp, tr))
+    return r
+
+
+# Lecture par fenêtres (lot C3) : l'image COG reste chez Copernicus, GDAL n'en lit que les tuiles utiles par requêtes
+# partielles (plages d'octets), signées par en tête avec la paire dédiée (AWS version 4, comme s3_headers)
+
+COTE_MIN_PX = 2300            # carreaux de 2 048 pixels Web Mercator de la chaîne d'AI2, après reprojection
+
+
+class FenetreInvalide(Exception):
+    """Fenêtre hors de l'image, ou trop petite pour la chaîne d'AI2 (bord de scène)."""
+
+
+def configurer_s3():
+    """Accès /vsis3/ de GDAL à Copernicus : clés en mémoire seulement (options du processus, jamais écrites)."""
+    from osgeo import gdal
+    host = _S3.get("endpoint", "eodata.dataspace.copernicus.eu")
+    for k, v in (("AWS_S3_ENDPOINT", host), ("AWS_VIRTUAL_HOSTING", "FALSE"),
+                 ("AWS_HTTPS", "NO" if _S3.get("http") else "YES"), ("AWS_REGION", _S3.get("region", "default")),
+                 ("AWS_ACCESS_KEY_ID", _S3.get("access_key", "")), ("AWS_SECRET_ACCESS_KEY", _S3.get("secret_key", "")),
+                 ("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR"), ("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tiff,.tif"),
+                 ("GDAL_HTTP_MAX_RETRY", "3"), ("GDAL_HTTP_RETRY_DELAY", "2"), ("VSI_CACHE", "TRUE"),
+                 ("CPL_VSIL_NETWORK_STATS_ENABLED", "YES")):
+        gdal.SetConfigOption(k, v)
+
+
+def source_image(href: str) -> str:
+    """Chemin GDAL d'une image : s3://eodata/… devient /vsis3/eodata/… ; un chemin local reste tel quel (essais)."""
+    return "/vsis3/" + href[len("s3://"):] if href.startswith("s3://") else href
+
+
+def octets_tuiles(band, x0: int, y0: int, w: int, h: int) -> int:
+    """Octets des tuiles de l'image qui recouvrent la fenêtre (index du TIFF : ce que GDAL doit lire)."""
+    bw, bh = band.GetBlockSize()
+    total = 0
+    for by in range(y0 // bh, (y0 + h - 1) // bh + 1):
+        for bx in range(x0 // bw, (x0 + w - 1) // bw + 1):
+            total += int(band.GetMetadataItem(f"BLOCK_SIZE_{bx}_{by}", "TIFF") or 0)
+    return total
+
+
+def fenetre_pixels(ds, bbox: list) -> list:
+    """Fenêtre en pixels (x0, y0, largeur, hauteur) couvrant l'emprise lon, lat, par les points d'appui de l'image
+    (les GRD ne sont pas géoréférencés par une transformation affine). Agrandie au côté minimal dans l'image si besoin ;
+    FenetreInvalide si l'image est trop petite ou ne la couvre pas."""
+    from osgeo import gdal
+    tr = gdal.Transformer(ds, None, [])
+    x0g, y0g, x1g, y1g = bbox
+    xs, ys = [], []
+    for k in range(5):
+        for lon, lat in ((x0g + (x1g - x0g) * k / 4, y0g), (x0g + (x1g - x0g) * k / 4, y1g),
+                         (x0g, y0g + (y1g - y0g) * k / 4), (x1g, y0g + (y1g - y0g) * k / 4)):
+            ok, (x, y, _) = tr.TransformPoint(1, lon, lat, 0)
+            if ok:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        raise FenetreInvalide("fenêtre hors de la géolocalisation de l'image")
+    W, H = ds.RasterXSize, ds.RasterYSize
+    x0, x1 = max(0, int(min(xs))), min(W, int(math.ceil(max(xs))))
+    y0, y1 = max(0, int(min(ys))), min(H, int(math.ceil(max(ys))))
+    if x1 <= x0 or y1 <= y0:
+        raise FenetreInvalide("fenêtre hors de l'image")
+    if x1 - x0 < COTE_MIN_PX:                        # fenêtre agrandie dans l'image, autour de son centre
+        c = (x0 + x1) // 2
+        x0 = max(0, min(c - COTE_MIN_PX // 2, W - COTE_MIN_PX))
+        x1 = min(W, x0 + COTE_MIN_PX)
+    if y1 - y0 < COTE_MIN_PX:
+        c = (y0 + y1) // 2
+        y0 = max(0, min(c - COTE_MIN_PX // 2, H - COTE_MIN_PX))
+        y1 = min(H, y0 + COTE_MIN_PX)
+    if x1 - x0 < COTE_MIN_PX or y1 - y0 < COTE_MIN_PX:
+        raise FenetreInvalide(f"image trop petite pour une fenêtre de {COTE_MIN_PX} pixels ({W} × {H})")
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
+def decouper(src: str, srcwin: list, dst: str) -> int:
+    """Copie locale de la fenêtre (GeoTIFF tuilé), points d'appui recalés sur la fenêtre par GDAL ; retourne les
+    octets des tuiles lues."""
+    from osgeo import gdal
+    ds = gdal.Open(src)
+    if ds is None:
+        raise FenetreInvalide(f"image illisible : {gdal.GetLastErrorMsg()[:200]}")
+    n = octets_tuiles(ds.GetRasterBand(1), *srcwin)
+    out = gdal.Translate(dst, ds, srcWin=srcwin, creationOptions=["TILED=YES"])
+    if out is None or out.GetGCPCount() == 0:
+        raise FenetreInvalide("fenêtre découpée sans points d'appui : géolocalisation perdue")
+    out = None
+    return n
+
+
+def coeur(bbox: list, marge_m: float) -> list:
+    """Emprise de la fenêtre réduite de sa marge : seules les détections dedans sont gardées."""
+    lat = (bbox[1] + bbox[3]) / 2
+    dlat, dlon = marge_m / 110574.0, marge_m / (111320.0 * math.cos(math.radians(lat)))
+    return [bbox[0] + dlon, bbox[1] + dlat, bbox[2] - dlon, bbox[3] - dlat]
+
+
+def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=None) -> dict:
+    """Seules les fenêtres utiles de la scène (calculées par le serveur) : lecture partielle des images COG, découpe
+    avec points d'appui, chaîne d'AI2 sur chaque fenêtre, détections du cœur seulement."""
+    from osgeo import gdal
+    tr = tr or otel_mini.Traceur(None, None, None)
+    r = {"analyse": scene["analyse"], "id": scene["id"], "debut": scene["debut"], "fin": scene["fin"], "fenetres": []}
+    if not local:
+        configurer_s3()
+    srcs = {pol: (scene[f"{pol}_path"] if local else source_image(scene[pol])) for pol in ("vv", "vh")}
+    vv = gdal.Open(srcs["vv"])
+    if vv is None:
+        raise Arret(f"image VV illisible chez Copernicus : {gdal.GetLastErrorMsg()[:200]}")
+    r["image_px"] = [vv.RasterXSize, vv.RasterYSize]
+    dets, octets, t_lecture, t_analyse, ecartees = [], 0, 0.0, 0.0, 0
+    for k, f in enumerate(scene["fenetres"]):
+        base = scene["id"].replace(".SAFE", "")
+        sid = f"{base}_F{k}.SAFE"
+        mdir = os.path.join(tmp, "raw_f" + str(k), sid, "measurement")
+        os.makedirs(mdir, exist_ok=True)
+        rf = {"index": k, "bbox": f["bbox"]}
+        with tr.span("sentinel.fenetre", **{"sentinel.fenetre": k, "sentinel.points": f.get("points"),
+                                            "sentinel.km2": f.get("km2")}) as sf:
+            try:
+                win = fenetre_pixels(vv, f["bbox"])
+                rf["srcwin"] = win
+                t = time.time()
+                files = {}
+                for pol in ("vv", "vh"):
+                    name = os.path.basename(srcs[pol].split("?", 1)[0])
+                    files[pol] = os.path.join(mdir, name)
+                    with tr.span("GET S3 eodata " + pol.upper() + " fenêtre",
+                                 **{"peer.service": "Copernicus", "sentinel.polarisation": pol}) as sd:
+                        n = decouper(srcs[pol], win, files[pol])
+                        sd.set(**{"sentinel.octets": n, "sentinel.largeur_px": win[2], "sentinel.hauteur_px": win[3]})
+                        octets += n
+                        rf["octets"] = rf.get("octets", 0) + n
+                rf["lecture_s"] = round(time.time() - t, 1)
+                t_lecture += time.time() - t
+                d = _detecter(os.path.dirname(os.path.dirname(mdir)), sid, files, scene, task, device, tmp, tr,
+                              coeur(f["bbox"], f.get("marge_m", 2000)))
+                t_analyse += d["analyse_s"]
+                ecartees += d["ecartees_marge"]
+                dets += d["detections"]
+                rf.update({"analyse_s": d["analyse_s"], "detections": len(d["detections"]),
+                           "ecartees_marge": d["ecartees_marge"], "gpu_max_mo": d.get("gpu_max_mo")})
+                sf.set(**{"sentinel.detections": len(d["detections"]), "sentinel.octets": rf["octets"]})
+            except FenetreInvalide as e:
+                rf["erreur"] = str(e)[:300]
+                sf.erreur(rf["erreur"])
+            finally:
+                shutil.rmtree(os.path.join(tmp, "raw_f" + str(k)), ignore_errors=True)
+                shutil.rmtree(os.path.join(tmp, "travail_" + sid), ignore_errors=True)
+        r["fenetres"].append(rf)
+    try:
+        r["reseau_octets"] = int(json.loads(gdal.NetworkStatsGetAsSerializedJSON() or "{}").get("methods", {})
+                                 .get("GET", {}).get("downloaded_bytes", 0)) or None
+    except Exception:
+        r["reseau_octets"] = None
+    r.update({"detections": dets, "octets_lus": octets, "telecharge_mo": round(octets / 1e6, 1),
+              "telecharge_s": round(t_lecture, 1), "analyse_s": round(t_analyse, 1), "ecartees_marge": ecartees})
+    if r["fenetres"] and all(x.get("erreur") for x in r["fenetres"]):
+        r["erreur"] = "aucune fenêtre analysée : " + r["fenetres"][0]["erreur"]
     return r
 
 
@@ -405,9 +579,12 @@ def run(task: dict, local: bool = False, tr=None) -> dict:
     for k, scene in enumerate(task["scenes"]):
         tmp = tempfile.mkdtemp(prefix="scene_", dir=task.get("travail"))
         with tr.span("sentinel.scene", **{"sentinel.index": k, "sentinel.analyse": scene.get("analyse"),
-                                          "sentinel.satellite": scene.get("satellite")}) as sc:
+                                          "sentinel.satellite": scene.get("satellite"),
+                                          "sentinel.fenetres": len(scene.get("fenetres") or [])}) as sc:
             try:
-                r = analyse(scene, task, device, tmp, local, tr)
+                fn = analyse_fenetres if scene.get("fenetres") else analyse
+                r = fn(scene, task, device, tmp, local, tr)
+                sc.set(**{"sentinel.octets_lus": r.get("octets_lus")})
                 octets += r.get("telecharge_mo", 0)
                 sc.set(**{"sentinel.detections": len(r.get("detections", []))})
             except (Arret, FichierInvalide) as e:

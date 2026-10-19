@@ -49,6 +49,12 @@ class ScalewayError(RuntimeError):
     pass
 
 
+def en_rupture(e: Exception | str) -> bool:
+    """Rupture de stock chez Scaleway (412 « out_of_stock » à la création ou au démarrage, essai du 16/10/2026)."""
+    t = str(e).lower()
+    return "out_of_stock" in t or "out of stock" in t
+
+
 class RefusDestruction(ScalewayError):
     """Destruction refusée : l'instance n'est pas un travailleur."""
 
@@ -162,6 +168,29 @@ class Scaleway:
                                     f"instantané bloc {root['id']}) : {_short(img)}")
         return {"id": img["id"], "name": img.get("name"), "arch": img["arch"], "root_type": volume,
                 "root_size": size, "fiche": img}
+
+    def availability(self, zone: str) -> dict[str, str]:
+        """Disponibilité de chaque type d'instance de la zone : « available », « scarce » ou « shortage » (API Instances,
+        lecture seule, aucune création)."""
+        out, page = {}, 1
+        while True:
+            d = self._req("GET", f"/instance/v1/zones/{zone}/products/servers/availability?per_page=100&page={page}")
+            servers = {} if d is GONE else (d or {}).get("servers", {})
+            out.update({k: (v or {}).get("availability", "inconnue") for k, v in servers.items()})
+            if len(servers) < 100:
+                return out
+            page += 1
+
+    def products(self, zone: str) -> dict[str, dict]:
+        """Catalogue des types d'instance de la zone : prix horaire, processeurs, mémoire, GPU (lecture seule)."""
+        out, page = {}, 1
+        while True:
+            d = self._req("GET", f"/instance/v1/zones/{zone}/products/servers?per_page=100&page={page}")
+            servers = {} if d is GONE else (d or {}).get("servers", {})
+            out.update(servers)
+            if len(servers) < 100:
+                return out
+            page += 1
 
     def block_volume(self, zone: str, volume_id: str):
         """Fiche d'un volume bloc (API Block Storage) ; None s'il n'existe pas (404). ScalewayError sinon."""
@@ -364,9 +393,12 @@ def failure(res: dict) -> str | None:
     return None
 
 
-def type_params(rules: dict, tache: str) -> dict:
+def type_params(rules: dict, tache: str, variante: dict | None = None) -> dict:
+    """Paramètres du type de travailleur `tache`, avec une variante (type de secours, repli sur processeur) qui en
+    remplace certains : type d'instance, zone, volume, prix, options Docker."""
     p = rules["travailleurs"]
-    t = dict(p["types"][tache])
+    t = {k: v for k, v in p["types"][tache].items() if k not in ("secours", "repli_cpu")}
+    t.update(variante or {})
     t.setdefault("facturation_min_min", p["facturation_min_min"])
     return t
 
@@ -505,7 +537,7 @@ def token_hash(token: str) -> str:
 # Orchestration (psycopg, conteneur taches)
 
 def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: dict, now: datetime | None = None,
-           sleep=time.sleep, log=print) -> dict:
+           sleep=time.sleep, log=print, variante: dict | None = None) -> dict:
     """Crée un travailleur, si les plafonds et le verrou le permettent. Retourne {"travailleur": id}, {"refus": motif}
     ou {"occupe": id} (un travailleur de cette tâche est déjà actif). Une étape en échec lève l'erreur, après avoir
     détruit l'instance (garde de Scaleway.destroy) et clos la ligne.
@@ -513,21 +545,25 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
     Trace : span « travailleur.lancement », dont le contexte (traceparent) est enregistré dans la ligne et remis au
     travailleur ; son démarrage, ses téléchargements, son inférence, le traitement de ses résultats et sa destruction
     s'y rattachent : une analyse est une seule trace de bout en bout."""
-    with traces.span("travailleur.lancement", **{"travailleur.tache": tache}) as sp:
-        r = _launch(conn, scw, rules, tache, parametres, env, now, sleep, log)
+    with traces.span("travailleur.lancement", **{"travailleur.tache": tache,
+                                                 "travailleur.type": type_params(rules, tache, variante)["commercial_type"],
+                                                 "travailleur.zone": type_params(rules, tache, variante).get(
+                                                     "zone", rules["travailleurs"]["zone"])}) as sp:
+        r = _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante)
         sp.set_attributes(traces.propres({f"travailleur.{k}": v for k, v in r.items() if k != "mac_privee"}))
         if "refus" in r:
             sp.set_attribute("travailleur.refus", r["refus"])
         return r
 
 
-def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log) -> dict:
+def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante=None) -> dict:
     now = now or datetime.now(timezone.utc)
-    p, t = rules["travailleurs"], type_params(rules, tache)
+    p, t = rules["travailleurs"], type_params(rules, tache, variante)
     # Seuls comptent les travailleurs dont une instance a été créée chez Scaleway (scw_server_id renseigné dès la
     # création) : un lancement refusé avant (image, quota, clés) ne coûte rien et n'entame pas le plafond
     today = [dict(zip(("cree_le", "fini_le", "tache"), r)) for r in conn.execute(
-        "SELECT cree_le, fini_le, tache FROM travailleurs WHERE cree_le >= %s AND scw_server_id IS NOT NULL",
+        "SELECT cree_le, fini_le, tache FROM travailleurs WHERE cree_le >= %s AND scw_server_id IS NOT NULL "
+        "AND NOT rupture_stock",
         (now.replace(hour=0, minute=0, second=0, microsecond=0),)).fetchall()]
     refus = quota(rules, today, now, tache)
     if refus:
@@ -578,8 +614,11 @@ def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log) -> dict:
         conn.execute("UPDATE travailleurs SET etat = 'cree' WHERE id = %s", (wid,))
         return {"travailleur": wid, "instance": r["server_id"], "type": t["commercial_type"], "mac_privee": r["mac"]}
     except Exception as e:
-        motif = f"lancement : {e}"[:1000]
-        conn.execute("UPDATE travailleurs SET etat = 'echec', erreur = %s, fini_le = now() WHERE id = %s", (motif, wid))
+        rupture = en_rupture(e)
+        motif = (f"rupture de stock chez Scaleway ({t['commercial_type']}, {zone})" if rupture else f"lancement : {e}")[:1000]
+        # Rupture de stock : instance et volume bloc supprimés aussitôt (ci dessous), travailleur hors du plafond
+        conn.execute("UPDATE travailleurs SET etat = 'echec', erreur = %s, fini_le = now(), rupture_stock = %s "
+                     "WHERE id = %s", (motif, rupture, wid))
         gone = True
         for server_id in created:                     # destruction aussitôt, par le garde
             try:
@@ -591,19 +630,46 @@ def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log) -> dict:
             conn.execute("UPDATE travailleurs SET detruit_le = now() WHERE id = %s", (wid,))
             w = dict(zip(COLS, conn.execute(f"SELECT {', '.join(COLS)} FROM travailleurs WHERE id = %s", (wid,)).fetchone()))
             _journal(conn, w, rules)
+        if rupture:
+            traces.attributs(**{"travailleur.rupture_stock": True})
+            log(f"travailleur {wid} : {motif}, instance {'détruite' if gone else 'en cours de destruction'}")
+            return {"rupture": motif, "travailleur": wid, "type": t["commercial_type"], "zone": zone}
         raise
 
 
+def variantes(rules: dict, tache: str) -> list[dict]:
+    """Variantes d'un type de travailleur, dans l'ordre : type de base, types de secours, repli sur processeur (avec
+    « calcul » : gpu ou cpu, pour Sentinel ; un type sans secours n'a que sa base)."""
+    base = rules["travailleurs"]["types"][tache]
+    out = [{"calcul": "gpu" if "--gpus" in base.get("docker_opts", "") else "cpu"}]
+    out += [{**v, "calcul": "gpu"} for v in base.get("secours", [])]
+    if base.get("repli_cpu"):
+        out.append({**base["repli_cpu"], "calcul": "cpu"})
+    return out
+
+
+def variante_de(rules: dict, tache: str, commercial_type: str | None, zone: str | None) -> dict | None:
+    """Variante qui correspond au type et à la zone d'un travailleur lancé (prix réel au journal)."""
+    for v in variantes(rules, tache):
+        t = type_params(rules, tache, v)
+        if t["commercial_type"] == commercial_type and t.get("zone", rules["travailleurs"]["zone"]) == zone:
+            return v
+    return None
+
+
 def _journal(conn, w: dict, rules: dict):
-    """Résumé d'une exécution dans task_runs (tâche travailleur_<tache>), une fois l'instance détruite."""
-    t = type_params(rules, w["tache"])
+    """Résumé d'une exécution dans task_runs (tâche travailleur_<tache>), une fois l'instance détruite. Prix du type
+    réellement lancé ; une instance détruite pour rupture de stock n'a jamais tourné : coût nul."""
+    t = type_params(rules, w["tache"], variante_de(rules, w["tache"], w.get("commercial_type"), w.get("zone")))
     minutes = ((w["detruit_le"] or datetime.now(timezone.utc)) - w["cree_le"]).total_seconds() / 60
-    euros = cost(minutes, t["prix_heure"], t["facturation_min_min"])
+    euros = 0.0 if w.get("rupture_stock") else cost(minutes, t["prix_heure"], t["facturation_min_min"])
     mesures = {**(w["mesures"] or {}), "minutes_instance": round(minutes, 1), "cout_estime_eur": euros}
     conn.execute("UPDATE travailleurs SET mesures = %s WHERE id = %s", (json.dumps(mesures), w["id"]))
     details = {"travailleur": w["id"], "type": w["commercial_type"], "etat": w["etat"], "erreur": w["erreur"], **mesures}
     if w.get("volumes_bloc"):
         details["volumes_bloc_supprimes"] = list(w["volumes_bloc"])        # journalisé une fois l'instance détruite
+    if w.get("rupture_stock"):          # attendue : ni échec de tâche (alerte « deux échecs de suite »), ni coût
+        details.update({"refus": True, "rupture_stock": True})
     conn.execute(
         "INSERT INTO task_runs (task, run_day, started_at, finished_at, status, details, trace_id) "
         "VALUES (%s, %s, %s, now(), %s, %s, %s)",
@@ -612,7 +678,7 @@ def _journal(conn, w: dict, rules: dict):
 
 
 COLS = ("id", "tache", "etat", "commercial_type", "zone", "scw_server_id", "resultat", "mesures", "erreur",
-        "cree_le", "fini_le", "detruit_le", "parametres", "demarre_le", "volumes_bloc", "traceparent")
+        "cree_le", "fini_le", "detruit_le", "parametres", "demarre_le", "volumes_bloc", "traceparent", "rupture_stock")
 
 
 def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print, now: datetime | None = None) -> dict:
@@ -629,7 +695,9 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
         active = {w["scw_server_id"]: w["cree_le"] for w in rows if w["scw_server_id"] and w["etat"] not in ("termine", "echec")}
         zones = {p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values()), *(w["zone"] for w in rows)}
         for zone in sorted(zones):
-            for sid in orphans(scw.tagged(zone), active, now, p["duree_max_min"], scw.project, scw.protected):
+            vie = max([p["duree_max_min"]] + [type_params(rules, k, v).get("duree_max_min", 0)
+                                              for k in p["types"] for v in variantes(rules, k)])
+            for sid in orphans(scw.tagged(zone), active, now, vie, scw.project, scw.protected):
                 with traces.span("travailleur.orphelin", **{"scaleway.zone": zone}):
                     try:
                         scw.destroy(zone, sid)
@@ -651,6 +719,9 @@ def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: d
     span rattaché à la trace du lancement (w["traceparent"]) : une analyse reste une seule trace."""
     tp, attrs = w.get("traceparent"), {"travailleur.id": w["id"], "travailleur.tache": w["tache"]}
     age_min = (now - w["cree_le"]).total_seconds() / 60
+    # Durée de vie du type réellement lancé (repli sur processeur : plus longue, lot C3), sinon celle de tous
+    duree_max = type_params(rules, w["tache"], variante_de(rules, w["tache"], w.get("commercial_type"), w.get("zone"))
+                            ).get("duree_max_min", p["duree_max_min"])
     if w["etat"] == "resultats":
         with traces.span("travailleur.resultats", parent=tp, **attrs), traces.en_base(conn):
             if not _resultats(conn, handlers, w):
@@ -668,8 +739,8 @@ def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: d
         w["etat"], w["erreur"] = "echec", motif
         out["expires"] += 1
         log(f"travailleur {w['id']} : {motif}")
-    elif w["etat"] in ("demande", "cree", "demarre") and age_min > p["duree_max_min"]:
-        motif = f"durée de vie de {p['duree_max_min']} min dépassée : destruction forcée"
+    elif w["etat"] in ("demande", "cree", "demarre") and age_min > duree_max:
+        motif = f"durée de vie de {duree_max} min dépassée : destruction forcée"
         with traces.span("travailleur.expiration", parent=tp, **attrs):
             traces.erreur(motif)
             diag = scw.diagnose(w["zone"], w["scw_server_id"]) if scw is not None and w["scw_server_id"] else None

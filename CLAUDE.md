@@ -59,9 +59,9 @@ TrAISformer ensuite ; **CircleNet** (xView3) gardé en repli et en comparaison.
 **Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu (**faites**, alertes WATCHLIST et
 IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (lot A, calendrier des
 passages Sentinel 1 et 2, **fait** ; lot B, VIIRS chaque nuit par travailleurs éphémères, **fait** ; lot C, analyse
-Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1 et C2 faits ; essais des 11 et 12/10 refusés par
-Scaleway avant création (image GPU), corrigés le 12/10 ; Sentinel arrêté (`scenes_max_par_jour: 0`) jusqu'à
-`taches.py sentinel-diagnostic` au vert** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle. Étape D, supervision (Grafana sur PostgreSQL, alertes sur le téléphone par ntfy, contrôles de santé avec redémarrage automatique) : **faite** (`docs/supervision.md`).
+Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1, C2 et C3 faits (C3 : rupture de stock, types
+de secours, fenêtres utiles, repli sur processeur) ; aucune analyse aboutie sur un vrai GPU à ce jour ; Sentinel arrêté
+(`scenes_max_par_jour: 0`) jusqu'à l'essai réel du lot C3** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle. Étape D, supervision (Grafana sur PostgreSQL, alertes sur le téléphone par ntfy, contrôles de santé avec redémarrage automatique) : **faite** (`docs/supervision.md`).
 
 **Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
 plutôt qu'affirmer (une règle silencieuse est prouvée par un test par injection) ; respecter la physique du
@@ -548,13 +548,26 @@ archive »), service distant dans `peer.service` ; recherche des granules VIIRS 
 tâche) ; indicateur « Disque » de la barre d'état aligné sur `config/supervision.env` comme la tuile de Grafana
 (`SEUIL_DISQUE_ORANGE_PTS`).
 
+**Lot C3, Sentinel 1 robuste (19/10/2026)** (migration 28, règles 2026.10.27, `docs/sentinel.md`) : disponibilité des
+GPU lue avant toute création (API Instances, publique) ; rupture de stock à la création ou au démarrage : instance et
+volume supprimés, travailleur hors plafond et sans coût, analyse en « attente_gpu » reprise à chaque cycle pendant 24 h
+après l'acquisition, puis abandon et alerte ntfy ; types de secours dans l'ordre (L4 fr-par-2, L4 fr-par-1, L40S,
+RENDER-S P100) et repli sur processeur GP1-S après 3 h ; **analyse limitée aux fenêtres utiles** (carrés de 24 km
+autour des points d'intérêt, réunis s'ils se chevauchent) lues par GDAL en `/vsis3/` (requêtes partielles signées,
+points d'appui recalés) ; choix du calcul et sa raison dans l'analyse et la trace ; coût selon le type et les fenêtres ;
+Grafana : analyses par mode, octets lus, attente ; `taches.py sentinel-candidats` et plafond d'essai
+`SENTINEL_PLAFOND_ESSAI` pour la seule commande manuelle. Essais dans la vraie image d'AI2 : faux S3 qui vérifie la
+signature AWS version 4 de GDAL, 11,6 % du fichier lu pour une fenêtre de 24 km sur une scène synthétique de 113 Mo ;
+chaîne d'AI2 sur une fenêtre et sur la scène entière : mêmes détections à 6,3 m près, 470 s contre 855 s sur processeur
+émulé. Pas encore éprouvé contre Copernicus ni sur une instance réelle ; `scenes_max_par_jour` reste à 0.
+
 ## 10. Tests
 
-`python -m pytest tests` : 192 réussis, 35 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 34 sans
+`python -m pytest tests` : 219 réussis, 40 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 39 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 226 réussis, 1 ignoré (identifiant de trace des alertes par le déclencheur ; rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 258 réussis, 1 ignoré (lot C3 : rupture de stock, attente, reprise, repli sur processeur, abandon, plafond de l'essai manuel, reclassement des analyses sans scène aboutie ; identifiant de trace des alertes par le déclencheur ; rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `tests/test_traces.py` : chaque commande de `taches.py` et chaque type de travailleur tracés (échoue sinon), filtre des données sensibles, script de démarrage bash (avec `gdate` sur le Mac). `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -744,3 +757,10 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   d'environnement de Grafana changée demande `docker compose up -d grafana` (`restart` garde l'ancienne).
 * Construire les images sur le Mac par `docker build` (docs/deploiement.md) : la surcouche du serveur exige ses
   secrets (`:?`), Compose refuse alors toute commande sans eux.
+* **Chaîne d'AI2 et images partielles** : `detect_vessels` découpe en carreaux de 2 048 pixels (Web Mercator, après
+  reprojection) ; une image plus petite dans une dimension donne des décalages négatifs et une découpe fausse. Une
+  fenêtre fait au moins 2 300 pixels de côté (`COTE_MIN_PX` du travailleur). `gdal.Translate(srcWin=…)` recale les
+  points d'appui d'un GRD sur la fenêtre (vérifié : écart nul) ; `prepare_scenes` reprojette par ces points d'appui.
+* **Stock des GPU chez Scaleway** : catalogue et disponibilités publics (`/instance/v1/zones/<zone>/products/servers`
+  et `/availability`, sans clé) ; « scarce » ne garantit rien (412 out_of_stock au démarrage le 16/10/2026). Le réseau
+  privé est régional : un GPU de pl-waw-2 ne peut pas renvoyer ses résultats au serveur de fr-par.

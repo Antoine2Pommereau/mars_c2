@@ -118,6 +118,7 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
                 show(json.dumps(fiche, ensure_ascii=False, indent=2, default=str)[:4000])
 
     out.append(_availability(scw, zone, ctype, show))
+    out += types_calcul(scw, rules)
 
     out += _quota(scw, ctype, zone)
     out += _rights(scw, zone)
@@ -130,6 +131,34 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
                         f"« {body.get('name')} », région {body.get('region')} : régional, donc rattachable depuis {zone}"))
         else:
             out.append((MANQUE, f"Réseau privé en {zone}", f"HTTP {code} : {str(body)[:200]}"))
+    return out
+
+
+def types_calcul(scw, rules: dict) -> list[tuple[str, str, str]]:
+    """Chaque type de la liste de calcul Sentinel (GPU, secours, repli sur processeur), dans l'ordre d'essai :
+    disponibilité annoncée et prix du catalogue Scaleway, comparé au prix de config/rules.yaml (coût estimé). Une
+    rupture de stock n'est pas un manque : l'analyse attend et réessaie (lot C3)."""
+    from mars.travailleurs import type_params, variantes
+    dispo, cat, out = {}, {}, []
+    for k, v in enumerate(variantes(rules, "sentinel"), 1):
+        t = type_params(rules, "sentinel", v)
+        zone, ctype = t.get("zone", rules["travailleurs"]["zone"]), t["commercial_type"]
+        try:
+            if zone not in dispo:
+                dispo[zone], cat[zone] = scw.availability(zone), scw.products(zone)
+        except Exception as e:
+            out.append((A_VERIFIER, f"Type {k} : {ctype} en {zone}", f"catalogue illisible ({str(e)[:150]})"))
+            continue
+        etat = dispo[zone].get(ctype, "absent du catalogue")
+        prix = (cat[zone].get(ctype) or {}).get("hourly_price")
+        ecart = prix is not None and abs(prix - t["prix_heure"]) > 0.05 * t["prix_heure"]
+        texte = (f"{'GPU' if v['calcul'] == 'gpu' else 'processeur (repli)'}, {etat}, "
+                 + (f"{prix:.4f} €/h au catalogue" if prix is not None else "prix inconnu").replace(".", ",")
+                 + (f", {t['prix_heure']} €/h dans config/rules.yaml : à mettre à jour".replace(".", ",") if ecart else ""))
+        statut = PRET if etat == "available" and not ecart else A_VERIFIER
+        if etat == "absent du catalogue":
+            statut = MANQUE
+        out.append((statut, f"Type {k} : {ctype} en {zone}", texte))
     return out
 
 
