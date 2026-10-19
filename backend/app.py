@@ -324,6 +324,12 @@ async def ingestion_status(region: str | None = None):
         runs = await c.fetch(
             "SELECT DISTINCT ON (task) task AS tache, status AS statut, started_at AS debut, details "
             "FROM task_runs ORDER BY task, started_at DESC")
+        try:                                  # seuils du disque, ceux de Grafana (config/supervision.env, recopiés par taches)
+            seuils = {r["cle"].removeprefix("seuil_"): r["valeur"] for r in await c.fetch(
+                "SELECT cle, valeur FROM parametres_supervision WHERE cle IN ('seuil_disque_pct', "
+                "'seuil_disque_orange_pts')")}
+        except asyncpg.PostgresError:
+            seuils = {}
         try:                                  # empreinte du commit de chaque image (signes de vie, migration 26)
             versions = {r["service"]: r["version"] for r in await c.fetch(
                 "SELECT service, detail->>'version' AS version FROM signes_de_vie WHERE detail ? 'version'")}
@@ -332,6 +338,7 @@ async def ingestion_status(region: str | None = None):
     versions["api"] = traces.version()
     return {"dernier_fichier": clean(last) if last else None, "derniere_heure": {**clean(hour), **clean(files)},
             "versions": versions,
+            "seuils": {"disque_pct": seuils.get("disque_pct", 15.0), "disque_orange_pts": seuils.get("disque_orange_pts", 10.0)},
             "listes": [clean(r) for r in lists],
             "alerte_disque": any(r["alerte"] for r in disk), "disque": [clean(r) for r in disk],
             "taches": [clean(r) for r in runs], "satellites": satellites}

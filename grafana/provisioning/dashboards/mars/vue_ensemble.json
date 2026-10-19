@@ -210,7 +210,7 @@
    "id": 3,
    "type": "stat",
    "title": "Disque",
-   "description": "Espace libre. Rouge sous le seuil de l'alerte (SEUIL_DISQUE_LIBRE_PCT), orange jusqu'à 10 points au dessus.",
+   "description": "Espace libre. Rouge sous le seuil de l'alerte (SEUIL_DISQUE_LIBRE_PCT), orange jusqu'à SEUIL_DISQUE_ORANGE_PTS points au dessus ; mêmes couleurs que l'indicateur Disque de la barre d'état.",
    "datasource": {
     "type": "grafana-postgresql-datasource",
     "uid": "mars"
@@ -232,7 +232,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "time_series",
-     "rawSql": "SELECT now() AS time, CASE WHEN pct IS NULL THEN 'aucune mesure' ELSE round(pct)::int || ' % libres, ' || replace(round(go::numeric, 1)::text, '.', ',') || ' Go' END AS metric, CASE WHEN pct IS NULL THEN -1 WHEN pct < s THEN 2 WHEN pct < s + 10 THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT libre_pct FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS pct, (SELECT libre_octets / 1e9 FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS go, coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_disque_pct'), 15) AS s) x"
+     "rawSql": "SELECT now() AS time, CASE WHEN pct IS NULL THEN 'aucune mesure' ELSE round(pct)::int || ' % libres, ' || replace(round(go::numeric, 1)::text, '.', ',') || ' Go' END AS metric, CASE WHEN pct IS NULL THEN -1 WHEN pct < s THEN 2 WHEN pct < s + marge THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT libre_pct FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS pct, (SELECT libre_octets / 1e9 FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS go, coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_disque_pct'), 15) AS s, coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_disque_orange_pts'), 10) AS marge) x"
     }
    ],
    "fieldConfig": {

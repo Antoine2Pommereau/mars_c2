@@ -251,7 +251,7 @@
    "id": 4,
    "type": "stat",
    "title": "Mémoire du collecteur",
-   "description": "Limite Docker 200 Mo, refus au delà de 120 Mo (memory_limiter).",
+   "description": "Limite Docker 400 Mo, refus au delà de 250 Mo (memory_limiter).",
    "datasource": {
     "type": "grafana-postgresql-datasource",
     "uid": "mars"
@@ -291,11 +291,11 @@
         "color": "#7c8b97"
        },
        {
-        "value": 150000000.0,
+        "value": 300000000.0,
         "color": "#f0a84b"
        },
        {
-        "value": 180000000.0,
+        "value": 360000000.0,
         "color": "#ef6461"
        }
       ]

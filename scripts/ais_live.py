@@ -186,7 +186,7 @@ async def collect(api_key):
         while not stop.is_set():
             try:
                 # Appel externe tracé : la connexion et l'abonnement (la clé n'est jamais un attribut)
-                with traces.span("aisstream.connexion", nouvelle_trace=True,
+                with traces.span("CONNECT AISStream flux", nouvelle_trace=True,
                                  **{"peer.service": "AISStream", "aisstream.zones": len(ZONES)}):
                     ws = await websockets.connect(URL, ping_interval=20, max_size=2**22)
                     await ws.send(json.dumps(subscription))   # à envoyer dans les 3 secondes
@@ -196,7 +196,7 @@ async def collect(api_key):
                     async for raw in ws:
                         msg = json.loads(raw)
                         if "error" in msg:
-                            with traces.span("aisstream.erreur", nouvelle_trace=True, **{"peer.service": "AISStream"}):
+                            with traces.span("aisstream.erreur", nouvelle_trace=True):
                                 traces.erreur(str(msg["error"])[:200])
                             print("Erreur AISStream :", msg["error"], flush=True)
                             break
@@ -207,7 +207,7 @@ async def collect(api_key):
                     await ws.close()
             except Exception as e:
                 with traces.span("aisstream.coupure", nouvelle_trace=True,
-                                 **{"peer.service": "AISStream", "aisstream.nouvel_essai_s": delay}) as sp:
+                                 **{"aisstream.nouvel_essai_s": delay}) as sp:
                     sp.record_exception(e)
                     traces.erreur(f"connexion perdue ({e.__class__.__name__})")
                 print(f"Connexion perdue ({e.__class__.__name__}), nouvel essai dans {delay} s", flush=True)

@@ -105,14 +105,9 @@ services:
       GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"
       GF_PLUGINS_PREINSTALL_DISABLED: "true"
-      GOMEMLIMIT: 200MiB             # sous la limite de 256 Mo : le ramasse miettes de Go travaille avant
-      # Traces de Grafana lui même (étape D2) : affichage des tableaux, requêtes, évaluation des règles d'alerte, vers
-      # le collecteur en gRPC ; échantillonnées comme l'API (erreurs, plus de 1 s, 10 % du reste)
-      GF_TRACING_OPENTELEMETRY_OTLP_ADDRESS: otel:4317
-      GF_TRACING_OPENTELEMETRY_OTLP_PROPAGATION: w3c
-      GF_TRACING_OPENTELEMETRY_SAMPLER_TYPE: const
-      GF_TRACING_OPENTELEMETRY_SAMPLER_PARAM: "1"
-      GF_TRACING_OPENTELEMETRY_CUSTOM_ATTRIBUTES: service.namespace:mars-c2
+      GOMEMLIMIT: 300MiB             # sous la limite de 384 Mo : le ramasse miettes de Go travaille avant
+      # Grafana n'est jamais tracé (règle de CLAUDE.md : les outils de supervision ne le sont pas) : aucune variable
+      # de traces ici, et le collecteur écarte de toute façon ses spans (filter/outils)
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
@@ -120,7 +115,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    mem_limit: 256m
+    mem_limit: 384m                 # 208 Mo mesurés sur le serveur (19/10/2026) pour 256 : marge de 85 %
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health | grep -q ok"]
       interval: 60s
@@ -132,35 +127,37 @@ services:
   # Collecteur OpenTelemetry (étape D2, otel/collecteur.yaml) : distribution contrib, épinglée par version et par
   # empreinte (tail_sampling, filtre des données sensibles, file d'attente sur disque). Écoute sur le réseau Docker et
   # sur 127.0.0.1:4318 ; jamais sur une adresse publique ni privée : interface (port 8080) et travailleurs (port 8090,
-  # jeton vérifié) passent par nginx. Mémoire : memory_limiter à 120 Mo, limite Docker à 200 Mo.
+  # jeton vérifié) passent par nginx. Mémoire : 211 Mo mesurés sur le serveur pour une limite de 200 (19/10/2026) ;
+  # limite Docker à 400 Mo, memory_limiter à 250 Mo, GOMEMLIMIT à 270 Mo.
   otel:
     image: otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806
     # Image sans système (un seul binaire) : root pour écrire la file d'attente dans le volume nommé, créé par Docker
     # au nom de root ; aucun port publié hors de 127.0.0.1
     user: "0:0"
     environment:
-      GOMEMLIMIT: 130MiB
+      GOMEMLIMIT: 270MiB
     volumes:
       - ./otel/collecteur.yaml:/etc/otelcol-contrib/config.yaml:ro
       - otel_file:/var/lib/otelcol
     ports: ["127.0.0.1:4318:4318"]
     depends_on: [tempo]
-    mem_limit: 200m
+    mem_limit: 400m
     restart: unless-stopped
     logging: *journaux
 
   # Grafana Tempo (étape D2, otel/tempo.yaml) : binaire unique, stockage local, conservation de 72 h. Aucun port
-  # publié : le collecteur lui écrit (tempo:4317), Grafana le lit (http://tempo:3200).
+  # publié : le collecteur lui écrit (tempo:4317), Grafana le lit (http://tempo:3200). Mémoire : 255 Mo au plus mesurés
+  # (Mac, rafale extrême, limite de 256 atteinte) : limite Docker à 448 Mo, GOMEMLIMIT à 340 Mo.
   tempo:
     image: grafana/tempo:3.1.0@sha256:3076b8dcdfb32fd6bc5ccef85e7b7313e6199b9cb84366257fc17ecb696db5fd
     command: ["-config.file=/etc/tempo.yaml"]
     user: "0:0"                      # volume nommé créé au nom de root (image distroless)
     environment:
-      GOMEMLIMIT: 240MiB
+      GOMEMLIMIT: 340MiB
     volumes:
       - ./otel/tempo.yaml:/etc/tempo.yaml:ro
       - tempo_data:/var/tempo
-    mem_limit: 320m
+    mem_limit: 448m
     restart: unless-stopped
     logging: *journaux
 

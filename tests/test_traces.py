@@ -328,3 +328,160 @@ def test_alerts_carry_the_trace_that_wrote_them():
             c.execute("UPDATE alerts SET details = '{\"c\": 3}' WHERE id = %s", (aid,))
             d = c.execute("SELECT details FROM alerts WHERE id = %s", (aid,)).fetchone()[0]
             assert d["trace_id"] == "2" * 32 and d["trace_id_creation"] == "1" * 32
+
+
+# Outils de supervision : jamais tracés
+
+def test_supervision_tools_never_send_spans():
+    texte = (ROOT / "docker-compose.serveur.yml").read_text().replace("!reset", "").replace("!override", "")
+    services = yaml.safe_load(texte)["services"]
+    for svc in ("grafana", "otel", "tempo"):
+        env = services[svc].get("environment") or {}
+        assert not [k for k in env if k.startswith(("GF_TRACING", "OTEL_"))], f"{svc} enverrait ses spans"
+    c = yaml.safe_load((ROOT / "otel" / "collecteur.yaml").read_text())
+    assert set(c["receivers"]["otlp"]["protocols"]) == {"http"}     # pas de port gRPC ouvert pour Grafana
+    procs = c["service"]["pipelines"]["traces"]["processors"]
+    assert procs.index("filter/outils") < procs.index("tail_sampling")
+    conds = " ".join(c["processors"]["filter/outils"]["traces"]["span"])
+    for outil in ('"grafana"', '"tempo"', "otelcol"):
+        assert outil in conds, f"le collecteur ne filtre pas {outil}"
+
+
+# Appels externes : service distant en attribut, nom lisible de l'opération
+
+ATTENDUS = [
+    ("GET", "https://cmr.earthdata.nasa.gov/search/granules.json?short_name=VJ102DNB_NRT&page_size=200", None,
+     "NASA", "GET CMR granules VJ102DNB_NRT"),
+    ("POST", "https://stac.dataspace.copernicus.eu/v1/search", b'{"collections": ["sentinel-1-grd"]}',
+     "Copernicus", "POST STAC sentinel-1-grd"),
+    ("GET", "https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-l2a/items", None,
+     "Copernicus", "GET STAC sentinel-2-l2a"),
+    ("GET", "https://eodata.dataspace.copernicus.eu/Sentinel-1/SAR/x-cog.tiff", None, "Copernicus", "GET S3 eodata"),
+    ("GET", "https://sentinels.copernicus.eu/copernicus/sentinel-1/acquisition-plans", None, "ESA",
+     "GET plans d'acquisition"),
+    ("POST", "https://api.scaleway.com/instance/v1/zones/fr-par-1/servers/abc/action", None, "Scaleway",
+     "POST Scaleway action"),
+    ("GET", "https://api.scaleway.com/marketplace/v2/local-images?image_label=ubuntu", None, "Scaleway",
+     "GET Scaleway local-images"),
+    ("DELETE", "https://api.scaleway.com/block/v1alpha1/zones/fr-par-2/volumes/xyz", None, "Scaleway",
+     "DELETE Scaleway volumes"),
+    ("GET", "https://compte.eu.r2.cloudflarestorage.com/mars/vignettes/viirs/2026-10-18/g/12.png", None, "R2",
+     "GET R2 preuve"),
+    ("GET", "https://data.opensanctions.org/datasets/latest/maritime/maritime.csv", None, "OpenSanctions",
+     "GET OpenSanctions maritime"),
+    ("GET", "https://api.github.com/repos/o/r/contents/Vessels1.db", None, "GitHub", "GET GitHub version de Vessels1.db"),
+    ("GET", "https://raw.githubusercontent.com/o/r/main/Vessels1.db", None, "GitHub", "GET GitHub Vessels1.db"),
+    ("GET", "https://www.vesselfinder.com/vessels/details/227000000", None, "VesselFinder", "GET VesselFinder fiche"),
+    ("POST", "https://ntfy.sh/sujet_secret", None, "ntfy", "POST ntfy alerte"),
+]
+
+
+@pytest.mark.parametrize("methode,url,corps,service,nom", ATTENDUS)
+def test_external_calls_have_readable_names(methode, url, corps, service, nom):
+    assert traces.nom_operation(methode, url, corps) == (service, nom)
+    assert not re.match(r"^\w+(GET|POST)", nom) and nom.split()[1] != service or service in nom   # pas de « NASAGET NASA »
+
+
+def test_requests_hook_names_the_span():
+    class Span:
+        def __init__(self):
+            self.attrs, self.name = {}, "GET"
+
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, k, v):
+            self.attrs[k] = v
+
+        def update_name(self, n):
+            self.name = n
+
+    class Requete:
+        method, url, body = "GET", "https://cmr.earthdata.nasa.gov/search/granules.json?short_name=VNP02DNB_NRT", None
+    sp = Span()
+    traces.requete_sortante(sp, Requete())
+    assert sp.name == "GET CMR granules VNP02DNB_NRT" and sp.attrs["peer.service"] == "NASA"
+    assert traces.nom_operation("GET", "http://backend:8000/api/health") == (None, None)   # appel interne : inchangé
+
+
+def test_every_hand_made_external_span_is_named_by_its_operation():
+    """Tout span écrit à la main qui porte peer.service s'appelle « MÉTHODE opération »."""
+    motif = re.compile(r"\.span\(\s*(f?\"[^\"]*\"(?:\s*\+[^,]+)?)\s*,[^)]*peer\.service", re.S)
+    trouves = []
+    for f in [*(ROOT / "mars").rglob("*.py"), *(ROOT / "scripts").glob("*.py"), *(ROOT / "backend").glob("*.py"),
+              *(ROOT / "travailleurs").glob("*.py")]:
+        for m in motif.finditer(f.read_text()):
+            trouves.append((f.name, m.group(1)))
+            assert re.match(r'f?"(GET|PUT|POST|HEAD|DELETE|LIST|CONNECT|\{VERBES\[op\]\}) ', m.group(1)), (f.name, m.group(1))
+    assert len(trouves) >= 4                  # R2, ntfy, AISStream, téléchargements des travailleurs
+
+
+def test_r2_spans_are_named_by_operation_and_object_kind(spans):
+    from mars.r2 import R2
+
+    class S3:
+        def put_object(self, **k):
+            pass
+
+        def head_object(self, **_k):
+            import hashlib
+            return {"ContentLength": 3, "ETag": hashlib.md5(b"abc").hexdigest()}
+
+        def delete_object(self, **k):
+            pass
+    r = R2(client=S3(), bucket="b")
+    r.put_verified(b"abc", "ais/positions/zone=bretagne/date=2026-10-18/x.parquet")
+    r.delete("sauvegardes/mars_20261019.dump")
+    noms = [s.name for s in spans.get_finished_spans()]
+    assert noms == ["PUT R2 archive", "HEAD R2 archive", "DELETE R2 sauvegarde"]
+    assert all(s.attributes["peer.service"] == "R2" for s in spans.get_finished_spans())
+
+
+# Recherche des granules VIIRS : en parallèle, bornée, chaque appel dans la trace de la tâche
+
+def test_cmr_searches_run_in_parallel_within_the_task_trace(spans):
+    import threading
+    import time
+    from datetime import datetime, timezone
+    from mars import viirs
+    from mars.config import load_rules
+    etat = {"en_cours": 0, "max": 0, "appels": 0}
+    verrou = threading.Lock()
+
+    class Reponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"feed": {"entry": []}}
+
+    class Session:
+        def get(self, _url, **k):
+            with verrou:
+                etat["en_cours"] += 1
+                etat["appels"] += 1
+                etat["max"] = max(etat["max"], etat["en_cours"])
+            with traces.span(f"GET CMR granules {k['params']['short_name']}", **{"peer.service": "NASA"}):
+                time.sleep(0.05)
+            with verrou:
+                etat["en_cours"] -= 1
+            return Reponse()
+
+    class Conn:
+        def execute(self, *_a):
+            return self
+
+        def fetchall(self):
+            return []
+    with traces.span("tache viirs", nouvelle_trace=True):
+        p = viirs.plan(Conn(), Session(), load_rules(), datetime(2026, 10, 19, 7, tzinfo=timezone.utc))
+    # 3 nuits × 3 satellites × (DNB, géolocalisation) × (temps quasi réel vide, puis produit standard)
+    assert p["granules"] == [] and etat["appels"] == 36
+    assert 1 < etat["max"] <= viirs.CMR_SIMULTANES
+    fini = spans.get_finished_spans()
+    tache = [s for s in fini if s.name == "tache viirs"][0]
+    recherche = [s for s in fini if s.name == "viirs.recherche_granules"][0]
+    appels = [s for s in fini if s.name.startswith("GET CMR granules")]
+    assert len(appels) == 36 and recherche.parent.span_id == tache.context.span_id
+    assert all(a.parent.span_id == recherche.context.span_id and a.context.trace_id == tache.context.trace_id
+               for a in appels)

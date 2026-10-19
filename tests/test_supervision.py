@@ -308,7 +308,7 @@ def test_compose_restarts_frozen_services_and_grafana_is_locked_down():
     text = (ROOT / "docker-compose.serveur.yml").read_text().replace("!reset", "").replace("!override", "")
     g = yaml.safe_load(text)["services"]["grafana"]
     assert re.fullmatch(r"grafana/grafana:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", g["image"])
-    assert g["mem_limit"] == "256m" and g["ports"] == ["127.0.0.1:3000:3000"]
+    assert g["mem_limit"] == "384m" and g["ports"] == ["127.0.0.1:3000:3000"]
     assert g["environment"]["GF_SECURITY_ADMIN_PASSWORD"].startswith("${GRAFANA_ADMIN_MOT_DE_PASSE:?")
     assert g["volumes"][0] == "./grafana/provisioning:/etc/grafana/provisioning:ro"
 
@@ -316,7 +316,7 @@ def test_compose_restarts_frozen_services_and_grafana_is_locked_down():
 def test_thresholds_live_in_one_file():
     env = dict(line.split("=", 1) for line in (ROOT / "config" / "supervision.env").read_text().splitlines()
                if line and not line.startswith("#"))
-    assert env == {"SEUIL_DISQUE_LIBRE_PCT": "15", "SEUIL_COLLECTE_MIN": "5", "SEUIL_INGESTION_MIN": "10",
+    assert env == {"SEUIL_DISQUE_LIBRE_PCT": "15", "SEUIL_DISQUE_ORANGE_PTS": "10", "SEUIL_COLLECTE_MIN": "5", "SEUIL_INGESTION_MIN": "10",
                    "HEURE_NUIT_VIIRS": "8", "ECHECS_SUCCESSIFS": "2", "SEUIL_COLLECTEUR_MUET_MIN": "15"}
     rules = (ROOT / "grafana" / "provisioning" / "alerting" / "regles.yaml").read_text()
     for cle in ("seuil_disque_pct", "seuil_collecte_min", "seuil_ingestion_min", "seuil_heure_nuit_viirs",
@@ -378,8 +378,19 @@ def test_overview_is_home_with_six_tiles_on_alert_thresholds():
     assert any(o["matcher"]["options"] == "Trace" for o in table["fieldConfig"]["overrides"])
     compose = (ROOT / "docker-compose.serveur.yml").read_text()
     assert "HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/mars/vue_ensemble.json" in compose
-    assert "GF_TRACING_OPENTELEMETRY_OTLP_ADDRESS: otel:4317" in compose      # Grafana tracé lui même
-    assert '"127.0.0.1:4317' not in compose and ":4317:4317" not in compose   # gRPC jamais publié
+    env = yaml.safe_load(compose.replace("!reset", "").replace("!override", ""))["services"]["grafana"]["environment"]
+    assert not [k for k in env if k.startswith("GF_TRACING")]   # les outils de supervision ne sont jamais tracés
+
+
+def test_disk_colours_are_the_same_in_the_interface_and_grafana():
+    gen = _module("generer", ROOT / "grafana" / "generer.py")
+    assert "cle = 'seuil_disque_pct'" in gen.TUILE_DISQUE and "cle = 'seuil_disque_orange_pts'" in gen.TUILE_DISQUE
+    etat = (ROOT / "web" / "src" / "registres" / "etat.ts").read_text()
+    assert "s?.seuils?.disque_pct" in etat and "s?.seuils?.disque_orange_pts" in etat
+    assert "libre < 15" not in etat and "libre < 25" not in etat           # plus de seuil en dur dans l'interface
+    app = (ROOT / "backend" / "app.py").read_text()
+    assert "'seuil_disque_orange_pts'" in app and '"seuils": {"disque_pct"' in app
+    assert S.seuils()["disque_orange_pts"] == 10                             # recopié par taches (parametres)
 
 
 def test_grafana_macros_are_expanded_like_grafana():

@@ -218,7 +218,8 @@ def run(task: dict, local: bool = False, tr: "otel_mini.Traceur | None" = None) 
                     else:
                         dnb, geo = os.path.join(tmp, "dnb.nc"), os.path.join(tmp, "geo.nc")
                         for nom, url, dest in (("dnb", g["dnb_url"], dnb), ("geolocalisation", g["geo_url"], geo)):
-                            with tr.span("viirs.telechargement", **{"peer.service": "NASA", "viirs.fichier": nom}) as sd:
+                            with tr.span("GET LANCE " + {"dnb": "DNB"}.get(nom, nom), **{"peer.service": "NASA",
+                                                                                          "viirs.fichier": nom}) as sd:
                                 n = download(url, dest, token)
                                 sd.set(**{"viirs.octets": n})
                                 octets += n

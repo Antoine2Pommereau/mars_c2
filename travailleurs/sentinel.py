@@ -337,7 +337,8 @@ def analyse(scene: dict, task: dict, device, tmp: str, local: bool, tr=None) -> 
         else:
             name = scene[pol].split("?", 1)[0].rsplit("/", 1)[1]
             files[pol] = os.path.join(mdir, name)
-            with tr.span("sentinel.telechargement", **{"peer.service": "Copernicus", "sentinel.polarisation": pol}) as sd:
+            with tr.span("GET S3 eodata " + pol.upper(), **{"peer.service": "Copernicus",
+                                                            "sentinel.polarisation": pol}) as sd:
                 n = download(scene[pol], files[pol])
                 sd.set(**{"sentinel.octets": n})
                 octets += n

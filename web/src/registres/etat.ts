@@ -76,7 +76,9 @@ export const INDICATEURS: Indicateur[] = [
       const d: any[] = s?.disque ?? [];
       if (!d.length) return { niveau: "gris", resume: L.commun.nd, detail: [] };
       const libre = Math.min(...d.map((x) => x.libre_pct));
-      const niveau = pire([libre < 15 ? "rouge" : libre < 25 ? "orange" : "vert", d.some((x) => x.perimee) ? "orange" : "vert"]);
+      // Seuils de config/supervision.env, transmis par l'API : mêmes couleurs que la tuile Disque de Grafana
+      const rouge = s?.seuils?.disque_pct ?? 15, orange = rouge + (s?.seuils?.disque_orange_pts ?? 10);
+      const niveau = pire([libre < rouge ? "rouge" : libre < orange ? "orange" : "vert", d.some((x) => x.perimee) ? "orange" : "vert"]);
       return { niveau, resume: `${libre.toFixed(0)} %`,
         detail: d.map((x) => [x.chemin, `${E.libre} ${x.libre_pct} %, ${x.libre_go} Go${x.perimee ? `, ${E.perimee}` : ""}`]) };
     },

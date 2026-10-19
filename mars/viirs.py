@@ -77,17 +77,21 @@ def cmr_search(session, short_name: str, start: datetime, end: datetime) -> list
     return out
 
 
-def night_granules(session, d: date, rules: dict) -> list[dict]:
-    """Granules de nuit d'une nuit sur nos régions, par satellite : temps quasi réel, sinon produits standard."""
+# Appels simultanés au catalogue CMR de la NASA (19/10/2026 : une vingtaine d'appels l'un après l'autre, 13,1 s pour
+# la tâche viirs) : par nuit et par satellite, au plus quatre à la fois, pour rester poli avec le catalogue
+CMR_SIMULTANES = 4
+
+
+def sat_granules(session, d: date, sat: str, products: tuple, rules: dict) -> list[dict]:
+    """Granules d'un satellite pour une nuit : temps quasi réel, sinon produits standard (rattrapage)."""
     start, end = night_window(d, rules)
-    out = []
-    for sat, (dnb, geo) in rules["viirs"]["produits"].items():
-        for suffix in ("_NRT", ""):
-            pairs = pair_granules(sat, cmr_search(session, dnb + suffix, start, end), cmr_search(session, geo + suffix, start, end))
-            if pairs:
-                out += pairs
-                break
-    return out
+    dnb, geo = products
+    for suffix in ("_NRT", ""):
+        pairs = pair_granules(sat, cmr_search(session, dnb + suffix, start, end), cmr_search(session, geo + suffix, start, end))
+        if pairs:
+            return pairs
+    return []
+
 
 
 def plan(conn, session, rules: dict, now: datetime) -> dict:
@@ -100,8 +104,17 @@ def plan(conn, session, rules: dict, now: datetime) -> dict:
     for (p,) in conn.execute("SELECT parametres FROM travailleurs WHERE tache = 'viirs' AND detruit_le IS NULL").fetchall():
         busy |= {g["nom"] for g in (p or {}).get("granules", [])}
     todo, per_night = [], {}
+    sats = list(rules["viirs"]["produits"].items())
+    units = [(n, sat, pr) for n in nights for sat, pr in sats]
+    # Une recherche par nuit et par satellite, en parallèle ; chaque appel CMR reste un span de la tâche
+    with traces.span("viirs.recherche_granules", **{"viirs.nuits": len(nights), "viirs.recherches": len(units),
+                                                    "viirs.appels_simultanes": CMR_SIMULTANES}) as sp:
+        found = traces.en_parallele([lambda u=u: sat_granules(session, u[0], u[1], u[2], rules) for u in units],
+                                    CMR_SIMULTANES)
+        sp.set_attribute("viirs.granules_trouvees", sum(len(f) for f in found))
     for n in nights:
-        gs = [g for g in night_granules(session, n, rules) if g["nom"] not in done and g["nom"] not in busy]
+        gs = [g for (un, _s, _p), f in zip(units, found) if un == n for g in f
+              if g["nom"] not in done and g["nom"] not in busy]
         per_night[n.isoformat()] = len(gs)
         todo += [{**g, "nuit": n.isoformat()} for g in gs]
     return {"nuits": per_night, "granules": todo}

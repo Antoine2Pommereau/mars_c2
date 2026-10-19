@@ -470,10 +470,10 @@ def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, privat
     cloud-init (qui reçoit l'adresse MAC de la carte privée), démarrage jusqu'à « running ». `user_data(mac)` produit
     le cloud-init ; `on_created(server_id)` est appelé dès la création (pour pouvoir détruire en cas d'échec),
     `on_block_volumes(ids)` dès que les volumes bloc sont connus (pour les supprimer à coup sûr)."""
-    with traces.span("scaleway.image", **{"peer.service": "Scaleway", "scaleway.zone": zone}):
+    with traces.span("scaleway.image", **{"scaleway.zone": zone}):
         image = scw.resolve_image(zone, t["image_label"], t["commercial_type"], t.get("arch", "x86_64"),
                                   t.get("volume", "l_ssd"))
-    with traces.span("scaleway.creation", **{"peer.service": "Scaleway", "scaleway.type": t["commercial_type"]}):
+    with traces.span("scaleway.creation", **{"scaleway.type": t["commercial_type"]}):
         s = scw.create(zone, name, t["commercial_type"], image, t["disque_go"], tags)
     if on_created:
         on_created(s["id"])
@@ -485,15 +485,15 @@ def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, privat
         raise ScalewayError(f"instance créée dans l'état « {s.get('state')} » au lieu de « stopped »")
     # Relecture : l'instance doit démarrer sur le disque local copié de l'image attendue (sinon « UEFI Interactive
     # Shell » à la console : aucun système amorçable, constaté au premier essai réel)
-    with traces.span("scaleway.verification_demarrage", **{"peer.service": "Scaleway"}):
+    with traces.span("scaleway.verification_demarrage"):
         motif = boot_problem(scw.server(zone, s["id"]), image, lambda vid: scw.block_volume_size(zone, vid))
     if motif:
         raise ScalewayError(f"volume de démarrage incorrect : {motif}")
-    with traces.span("scaleway.reseau_prive", **{"peer.service": "Scaleway"}):
+    with traces.span("scaleway.reseau_prive"):
         nic = scw.attach_private_network(zone, s["id"], private_network_id, sleep=sleep)
-    with traces.span("scaleway.cloud_init", **{"peer.service": "Scaleway"}):
+    with traces.span("scaleway.cloud_init"):
         scw.set_cloud_init(zone, s["id"], user_data(nic["mac_address"]))
-    with traces.span("scaleway.demarrage", **{"peer.service": "Scaleway"}):
+    with traces.span("scaleway.demarrage"):
         scw.start(zone, s["id"], sleep=sleep)
     return {"server_id": s["id"], "mac": nic["mac_address"], "nic": nic["id"]}
 
@@ -630,7 +630,7 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
         zones = {p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values()), *(w["zone"] for w in rows)}
         for zone in sorted(zones):
             for sid in orphans(scw.tagged(zone), active, now, p["duree_max_min"], scw.project, scw.protected):
-                with traces.span("travailleur.orphelin", **{"peer.service": "Scaleway", "scaleway.zone": zone}):
+                with traces.span("travailleur.orphelin", **{"scaleway.zone": zone}):
                     try:
                         scw.destroy(zone, sid)
                     except RefusDestruction as e:
@@ -679,7 +679,7 @@ def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: d
         out["expires"] += 1
         log(f"travailleur {w['id']} : durée de vie dépassée, destruction forcée")
     if w["etat"] in ("termine", "echec"):
-        with traces.span("travailleur.destruction", parent=tp, **{**attrs, "peer.service": "Scaleway"}) as sp:
+        with traces.span("travailleur.destruction", parent=tp, **attrs) as sp:
             gone = _detruire(conn, scw, log, w)
             sp.set_attribute("travailleur.detruit", bool(gone))
         if gone:

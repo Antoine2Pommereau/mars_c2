@@ -128,13 +128,10 @@ Tableau « Vue d'ensemble » (`mars-vue-ensemble`), ouvert d'office à la connex
   trace dans Tempo, chronologie et vue Gantt des spans. Sans analyse : « aucune analyse satellite tracée depuis le
   déploiement ». Une trace n'est gardée que 72 h : au delà, la ligne reste et le lien ne trouve plus rien.
 
-Grafana est lui même tracé (étape D2) : il envoie ses spans au collecteur en gRPC (`otel:4317`, réseau Docker
-seulement), échantillonnés comme l'API ; l'affichage d'un tableau et chacune de ses requêtes apparaissent sous le
-service `grafana` dans Tempo. Mesuré au repos le 19/10/2026 (Mac, émulation) : environ 330 spans par minute
-(évaluation des règles d'alerte chaque minute, sessions), soit environ 480 000 par jour reçus, dix fois le reste du
-système ; le collecteur en garde environ 10 %, plus les erreurs et les requêtes lentes : de l'ordre de 50 000 par
-jour, quelques Mo dans Tempo. S'il fallait alléger : `GF_TRACING_OPENTELEMETRY_SAMPLER_TYPE: probabilistic` et
-`SAMPLER_PARAM: "0.1"` (mais les requêtes lentes ou en erreur ne seraient plus toutes gardées).
+Grafana n'est jamais tracé, pas plus que Tempo et le collecteur : ce sont des outils de supervision, pas MARS C2
+(règle en tête de CLAUDE.md). Tracé un temps le 19/10/2026, Grafana envoyait au repos environ 330 spans par minute
+(évaluation des règles d'alerte, sessions), soit environ 480 000 par jour, dix fois le reste du système. Le
+collecteur écarte désormais tout span de ces outils (`filter/outils`, otel/collecteur.yaml).
 
 ## Trace de démonstration à la demande
 

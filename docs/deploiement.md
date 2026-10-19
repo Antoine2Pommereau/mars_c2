@@ -625,6 +625,52 @@ docker compose restart otel         # relit otel/collecteur.yaml : récepteur gR
 d'accueil, envoi des traces). Un lot qui ne touche que `grafana/provisioning` se déploie, lui, par
 `git pull && docker compose restart grafana`.
 
+## Réglages de la supervision (19/10/2026)
+
+Grafana n'est plus tracé, limites de mémoire revues, appels externes nommés, recherche VIIRS en parallèle, seuil du
+disque de la barre d'état aligné sur Grafana. **Les trois images changent** (API : seuils du disque dans l'état du
+direct ; scripts : noms des spans, recherche en parallèle, seuils ; interface : indicateur Disque).
+
+```zsh
+# Sur le Mac : construire, vérifier l'empreinte du commit, éprouver, publier
+cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git checkout main && git pull origin main
+R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
+docker build --platform linux/amd64 -f backend/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-backend:latest . \
+  && docker build --platform linux/amd64 -f scripts/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-scripts:latest . \
+  && docker build --platform linux/amd64 --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-web:latest web
+for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
+  v=$(docker image inspect "${R}/${i}:latest" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+  [ "$v" = "$TAG" ] && echo "$i : $v" || { echo "$i : empreinte $v, attendue $TAG"; break; }
+done
+scripts/verifier_images.sh backend scripts web traces && for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
+  docker tag "${R}/${i}:latest" "${R}/${i}:${TAG}" && docker push "${R}/${i}:latest" && docker push "${R}/${i}:${TAG}" || break
+done
+```
+
+```bash
+# Sur le serveur
+cd /opt/mars_c2 && git pull origin main
+docker compose up -d otel tempo grafana        # nouvelles limites, filtre des outils, plus de traces de Grafana
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf backend web && docker image prune -af
+docker compose pull backend web && docker compose up -d --no-build backend web
+```
+
+Vérifier :
+
+```bash
+# Grafana absent de Tempo depuis le déploiement (attendu : 0 trace)
+docker compose exec taches python -c "import json, time, urllib.parse as p, urllib.request as u; t = int(time.time()); print(len(json.load(u.urlopen('http://tempo:3200/api/search?' + p.urlencode({'q': '{ resource.service.name = \"grafana\" }', 'start': t - 3600, 'end': t, 'limit': 100})))['traces']), 'trace(s) de Grafana dans la dernière heure')"
+# Spans reçus par jour (sans Grafana à partir du jour du déploiement ; environ 45 000 prévus)
+docker compose exec db psql -U mars -d mars -c "SELECT date_trunc('day', mesure_le)::date AS jour, sum(greatest(recus - prec, 0)) AS spans FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel) x GROUP BY 1 ORDER BY 1"
+docker stats --no-stream otel tempo grafana    # sous 400, 448 et 384 Mo
+```
+
+L'indicateur « Disque » de la barre d'état doit avoir la couleur de la tuile Disque de Grafana (vert à 39 % libres :
+rouge sous 15 %, orange jusqu'à 25 %), et l'indicateur « Version » être vert avec l'empreinte publiée. La première
+journée complète sans Grafana donne le nombre de spans reçus par jour ; celle du déploiement mélange les deux.
+
 ## Vérifier
 
 ```bash
@@ -741,13 +787,24 @@ disque de 8 Go s'est rempli le 18/10/2026 vers 01:00 (incident, docs/supervision
   **environ 3,1 Go libres après déploiement, et environ 1,8 Go à l'équilibre**, 12 % de 15 Go : **sous l'alerte des
   15 %**. Il faut agrandir le volume : 20 Go donneraient environ 6,8 Go libres à l'équilibre (34 %).
 
-**Mémoire du serveur (DEV1-S, 2 Go), estimée le 19/10/2026** (aucune mesure du serveur disponible ici : à confirmer
-par `free -m` et `docker stats --no-stream`). Avant l'étape D2, environ 1,4 à 1,6 Go en régime courant : base 300 à
-400 Mo, API 150, collecte 150, ingestion 200, taches 150 (pics de 300 au cycle des règles et au compactage nocturne),
-Grafana 200 à 215, système et Docker 250. L'étape D2 ajoute environ 250 à 350 Mo réels (collecteur 110 à 160, Tempo
-90 à 180 ; limites Docker de 200 et 320 Mo). Total : environ 1,7 à 1,9 Go en régime courant, au delà de 2 Go aux
-pics : **la marge ne suffit pas, passer en DEV1-M (4 Go)**. Sur DEV1-S, la mémoire d'échange éviterait l'arrêt, au
-prix de lenteurs aux heures de pointe (nuit, cycle des règles).
+**Mémoire du serveur (DEV1-M, 4 Go, depuis le 19/10/2026).** La DEV1-S (2 Go) ne suffisait pas aux traces : serveur
+passé en DEV1-M, 3,5 Go disponibles avant les traces (`free -m`), soit environ 0,5 Go utilisés par la base, l'API,
+l'interface, la collecte, l'ingestion, taches et Grafana. Limites Docker revues d'après les mesures du serveur
+(collecteur 211 Mo pour une limite de 200, Grafana 208 Mo pour 256) :
+
+| Service | Mesuré | Limite | Marge |
+|---|---|---|---|
+| collecteur (`otel`) | 211 Mo (serveur) | 400 Mo, refus au delà de 250 (memory_limiter) | 90 % |
+| Tempo | 88 à 255 Mo (Mac, rafale extrême) | 448 Mo | 75 % sur le pire mesuré |
+| Grafana | 208 Mo (serveur) | 384 Mo | 85 % |
+| taches | 150 à 300 Mo (règles, compactage) | 768 Mo | inchangée |
+
+Mémoire prévue : **environ 0,9 Go en régime courant** (0,5 + collecteur 0,21 + Tempo 0,15 à 0,25) ; **environ 1,6 Go
+aux pics** (compactage nocturne et cycle des règles de taches, collecteur et Tempo sous une rafale) ; **au pire 2,3 Go**
+si chaque service limité atteignait sa limite en même temps (2,0 Go de limites, plus 0,3 Go pour la base et les
+services sans limite). Il reste au moins 1,4 Go sur les 3,7 Go utilisables : marge suffisante. Depuis que Grafana
+n'est plus tracé, le collecteur reçoit environ dix fois moins de spans. À confirmer sur 24 h :
+`docker stats --no-stream` et `free -m`.
 
 **R2** :
 * archive : 27,4 octets par position et 22,5 par message statique après compactage (mesuré sur l'archivage de

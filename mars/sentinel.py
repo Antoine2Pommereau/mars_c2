@@ -381,7 +381,7 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     import psycopg
     # Paire dédiée aux travailleurs : présente, non expirée, et acceptée par Copernicus (lecture réelle de 16 octets),
     # avant tout appel à Scaleway
-    with traces.span("sentinel.verification_cles", **{"peer.service": "Copernicus"}):
+    with traces.span("sentinel.verification_cles"):
         motif = pair_expired(TRAVAILLEUR, now) or check_cdse(session, selected[0]["scenes"][0]["vv"], TRAVAILLEUR)
     if motif:
         return {"refus": motif}

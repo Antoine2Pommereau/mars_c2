@@ -4,9 +4,12 @@ Rédigé le 19/10/2026. Tout le système envoie des traces, travailleurs éphém
 OpenTelemetry ; elles sont gardées 72 h dans Grafana Tempo et consultées dans le Grafana existant (tableau « Traces »,
 liens depuis les tâches et les travailleurs).
 
-**Règle permanente** (en tête de CLAUDE.md) : toute addition est instrumentée ; chaque tâche, route, appel externe et
-étape métier produit des spans, avec les attributs utiles et sans donnée sensible. Une fonctionnalité non tracée
-n'est pas terminée. `tests/test_traces.py` échoue si une commande de `scripts/taches.py` ou un type de travailleur
+**Règle permanente** (en tête de CLAUDE.md) : toute addition à MARS C2 est instrumentée ; chaque tâche, route, appel
+externe et étape métier produit des spans, avec les attributs utiles et sans donnée sensible. Une fonctionnalité non
+tracée n'est pas terminée. Les outils de supervision eux mêmes (Grafana, Tempo, le collecteur) ne sont jamais tracés :
+aucune variable de traces dans leurs services, et le collecteur écarte dès l'entrée tout span qu'ils enverraient
+(`filter/outils`, après `memory_limiter`). Essai : un span envoyé sous le nom `grafana` n'arrive jamais dans Tempo
+(`scripts/verifier_images.sh traces`), et `tests/test_traces.py` échoue si une variable de traces réapparaît. `tests/test_traces.py` échoue si une commande de `scripts/taches.py` ou un type de travailleur
 n'est pas tracé.
 
 ## Architecture
@@ -26,14 +29,14 @@ travailleurs ──► nginx :8090 (adresse privée, jeton vérifié) ─►    
     le filtre des données sensibles est un processeur `transform` ; la file d'attente qui survit à un redémarrage
     de Tempo ou du collecteur est une `file_storage`.
   * Prix mesuré : 116 Mo à télécharger contre 39 Mo, environ 420 Mo décompressés (un seul binaire) contre 130 Mo.
-  * Mémoire : processeur `memory_limiter` en premier (refus au delà de 120 Mo, l'émetteur réessaie), limite Docker
-    de 200 Mo, `GOMEMLIMIT` de 130 Mo.
+  * Mémoire : processeur `memory_limiter` en premier (refus au delà de 250 Mo, l'émetteur réessaie), limite Docker
+    de 400 Mo, `GOMEMLIMIT` de 270 Mo (211 Mo mesurés sur le serveur le 19/10/2026 pour l'ancienne limite de 200).
   * File d'attente sur disque (volume `otel_file`) : jusqu'à 2 h de nouvelles tentatives si Tempo redémarre.
   * Image sans système (un seul binaire, sans shell) : lancée en root pour écrire dans le volume nommé, que Docker
     crée au nom de root ; aucun port publié hors de 127.0.0.1.
 * **Tempo** : `grafana/tempo:3.1.0`, épinglé par empreinte, binaire unique sans Kafka (Tempo 3 pousse directement
   l'ingestion locale), stockage local (volume `tempo_data`), conservation de **72 h** (`block_retention`, réglable
-  dans `otel/tempo.yaml` seulement), traces en cours bornées à 30 Mo, limite Docker de 320 Mo. Aucun port publié.
+  dans `otel/tempo.yaml` seulement), traces en cours bornées à 30 Mo, limite Docker de 448 Mo. Aucun port publié.
 * **Grafana** : source de données Tempo provisionnée en code (`grafana/provisioning/datasources/tempo.yaml`, uid
   `tempo`, non modifiable).
 
@@ -55,16 +58,39 @@ Un jeton faux reçoit 403 (éprouvé par `scripts/verifier_images.sh traces`).
 | Service (`service.name`) | Spans |
 |---|---|
 | `mars-api` | FastAPI, asyncpg (sans paramètres), httpx, requests ; spans métier : `trafic.lecture`, `trafic.trainees`, `frise.lecture`, `analyse.radar`. Exclus : flux SSE, `/api/health`, vérification du jeton par nginx (`API_NON_TRACEES`) |
-| `mars-collecte` | `collecte.ecriture` (chaque minute), `aisstream.connexion`, `aisstream.coupure`, `aisstream.erreur` |
+| `mars-collecte` | `collecte.ecriture` (chaque minute), `CONNECT AISStream flux`, `aisstream.coupure`, `aisstream.erreur` |
 | `mars-ingestion` | `ingestion.cycle` (chaque passage), `ingestion.fichier` (chaque fichier), `ingestion.journees`, `ingestion.vessel_watch` |
-| `mars-taches` | `tache <nom>` (par construction, `run()`), `commande <nom>` (registre `COMMANDES`), `taches.minute` et ses `etape …`, `regles.<étape>`, `archivage.dossier`, `purge.jour`, `sauvegarde.*`, `listes.*`, `passages.*`, `R2 <opération>`, `ntfy.envoi`, `travailleur.*`, `scaleway.*`, `viirs.*`, `sentinel.*` |
+| `mars-taches` | `tache <nom>` (par construction, `run()`), `commande <nom>` (registre `COMMANDES`), `taches.minute` et ses `etape …`, `regles.<étape>`, `archivage.dossier`, `purge.jour`, `sauvegarde.*`, `listes.*`, `passages.*`, `PUT R2 archive` et autres opérations R2, `POST ntfy alerte`, `viirs.recherche_granules` et ses `GET CMR granules …`, `travailleur.*`, `scaleway.*`, `viirs.*`, `sentinel.*` |
 | `mars-travailleur` | `demarrage.<étape>` et `travailleur.demarrage` (script bash), `travailleur.<tâche>`, remise de la tâche, chaque téléchargement, chaque granule ou scène, inférence, vignettes, renvoi des résultats |
 | `mars-web` | une requête de l'interface vers l'API (méthode, chemin réduit à son gabarit, code, durée) |
-| `grafana` | Grafana lui même (OTLP gRPC, `otel:4317`) : affichage des tableaux, requêtes, évaluation des règles ; environ 330 spans par minute au repos, 10 % gardés hors erreurs et lenteurs |
 
 **Appels externes** : AISStream (websockets), Copernicus STAC et S3, ESA, NASA CMR et LANCE, Scaleway, OpenSanctions,
-GitHub (requests, tracés d'office avec `peer.service`) ; R2 (boto3, un span par opération) ; VesselFinder (httpx) ;
-ntfy (urllib, sans le sujet). Les téléchargements des travailleurs (NASA, Copernicus) sont des spans du travailleur.
+GitHub (requests, tracés d'office) ; R2 (boto3, un span par opération) ; VesselFinder (httpx) ; ntfy (urllib, sans le
+sujet). Les téléchargements des travailleurs (NASA, Copernicus) sont des spans du travailleur. Chacun porte le service
+distant dans `peer.service`, et un nom qui dit l'opération (table `OPERATIONS` de `mars/traces.py`) :
+
+| Appel | Nom du span |
+|---|---|
+| Catalogue CMR de la NASA | `GET CMR granules VJ102DNB_NRT` (produit demandé) |
+| Fichiers LANCE (travailleur VIIRS) | `GET LANCE DNB`, `GET LANCE geolocalisation` |
+| Catalogue STAC de Copernicus | `POST STAC sentinel-1-grd` (collection demandée), `GET STAC sentinel-2-l2a` |
+| Images S3 de Copernicus | `GET S3 eodata`, et `GET S3 eodata VV` ou `VH` dans le travailleur |
+| Plans d'acquisition de l'ESA | `GET plans d'acquisition`, `GET fichier de plan` |
+| Scaleway | `POST Scaleway servers`, `POST Scaleway action`, `PATCH Scaleway user_data`, `GET Scaleway local-images`, `DELETE Scaleway volumes` |
+| R2 | `PUT R2 archive`, `HEAD R2 archive`, `PUT R2 sauvegarde`, `LIST R2 sauvegarde`, `GET R2 preuve` |
+| OpenSanctions, GitHub | `GET OpenSanctions maritime`, `GET GitHub version de Vessels1.db`, `GET GitHub Vessels1.db` |
+| VesselFinder, ntfy, AISStream | `GET VesselFinder fiche`, `POST ntfy alerte`, `CONNECT AISStream flux` |
+
+Avant, le nom était fait du service seul (« GET NASA »), et la vue Gantt affichait « NASAGET NASA ». Les étapes
+métier (`scaleway.creation`, `travailleur.destruction`…) ne portent plus `peer.service` : leurs appels HTTP le portent.
+
+**Appels en parallèle** : la tâche viirs cherche les granules par nuit et par satellite (trois nuits, trois
+satellites, temps quasi réel puis produit standard : 18 à 36 appels au catalogue CMR), au plus quatre à la fois
+(`CMR_SIMULTANES`, `mars/viirs.py`, par `traces.en_parallele` qui donne à chaque fil le contexte de la trace : chaque
+appel reste un span enfant de `viirs.recherche_granules`, lui même enfant de `tache viirs`). Mesuré sur de vraies
+recherches le 19/10/2026 (Mac, trois nuits, 34 granules trouvées) : 5,5 et 15,3 s en série, 1,5 et 3,6 s en
+parallèle, soit environ quatre fois moins ; la trace du serveur du 19/10 (f92d8d64a6dd14546d87c840e99bebf2) montrait
+13,1 s en série.
 
 **Journaux** : chaque ligne écrite pendant un span se termine par `trace_id=… span_id=…` (print et logging) ; aucun
 journal n'est envoyé au collecteur.
@@ -161,8 +187,9 @@ Chaque image porte l'empreinte de son commit (`--build-arg MARS_VERSION=$(git re
 | Surcoût sur l'ingestion (460 fichiers réels du 05/10) | 9,72 s sans, 9,79 s avec : **+0,8 %** |
 | Volume prévu | environ 45 000 spans gardés par jour (ingestion 29 000, minutes de taches 7 000, collecte 1 400, règles 1 700, nuit VIIRS une centaine, API 10 %) |
 | Disque des traces | 2,2 Mo de blocs pour une journée type, plus 6 Mo de journal d'écriture transitoire : **moins de 30 Mo à 72 h** |
-| Mémoire du collecteur | 113 à 160 Mo au repos, 199 Mo au plus sous une rafale d'une journée de spans en 5 s (limite 200), sans refus ni arrêt ; tas Go de 24 Mo, le reste est surtout le binaire de 419 Mo chargé et l'émulation |
-| Mémoire de Tempo | 88 à 184 Mo sous la même rafale (limite 320), tas Go de 62 Mo |
+| Mémoire du collecteur | Mac : 113 à 199 Mo (rafale d'une journée de spans en 5 s) ; **serveur : 211 Mo** pour une limite de 200, relevée à 400 (le 19/10/2026) |
+| Mémoire de Tempo | Mac : 88 à 255 Mo (limite 256 atteinte sous la rafale) ; limite portée à 448 Mo, mesure du serveur à faire |
+| Mémoire de Grafana | **serveur : 208 Mo** pour une limite de 256, relevée à 384 |
 | Images | collecteur 116 Mo compressés (environ 420 décompressés), Tempo 41 Mo (environ 137) ; API +17 Mo, scripts +29 Mo |
 | Trace de bout en bout | 22 spans, trois services (taches, travailleur, API) dans une seule trace (`verifier_images.sh traces`) |
 

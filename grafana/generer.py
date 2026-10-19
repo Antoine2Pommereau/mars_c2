@@ -442,8 +442,8 @@ def traces() -> Tableau:
               description="Lots en attente sur le disque du collecteur (Tempo redémarré ou lent).")
     t.chiffre("Mémoire du collecteur",
               "SELECT memoire_octets AS octets FROM mesures_otel ORDER BY mesure_le DESC LIMIT 1", "bytes",
-              ((None, NEUTRE), (150e6, ORANGE), (180e6, ROUGE)), w=6, decimales=None,
-              description="Limite Docker 200 Mo, refus au delà de 120 Mo (memory_limiter).")
+              ((None, NEUTRE), (300e6, ORANGE), (360e6, ROUGE)), w=6, decimales=None,
+              description="Limite Docker 400 Mo, refus au delà de 250 Mo (memory_limiter).")
     t.section("Recherche des traces")
     t.tempo("Traces en erreur", "{ status = error }", description="Toute trace dont un span est en erreur.")
     t.tempo("Traces lentes de l'API", '{ resource.service.name =~ "mars-api|mars-web" && duration > 1s }',
@@ -494,10 +494,10 @@ TUILE_INGESTION = f"""SELECT now() AS time,
 TUILE_DISQUE = f"""SELECT now() AS time,
       CASE WHEN pct IS NULL THEN 'aucune mesure'
            ELSE round(pct)::int || ' % libres, ' || replace(round(go::numeric, 1)::text, '.', ',') || ' Go' END AS metric,
-      CASE WHEN pct IS NULL THEN -1 WHEN pct < s THEN 2 WHEN pct < s + 10 THEN 1 ELSE 0 END AS value
+      CASE WHEN pct IS NULL THEN -1 WHEN pct < s THEN 2 WHEN pct < s + marge THEN 1 ELSE 0 END AS value
     FROM (SELECT (SELECT libre_pct FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS pct,
                  (SELECT libre_octets / 1e9 FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) AS go,
-                 {_seuil("seuil_disque_pct", 15)} AS s) x"""
+                 {_seuil("seuil_disque_pct", 15)} AS s, {_seuil("seuil_disque_orange_pts", 10)} AS marge) x"""
 TUILE_TACHES = f"""SELECT now() AS time,
       CASE n WHEN 0 THEN 'aucun échec sur 24 h' WHEN 1 THEN '1 échec sur 24 h' ELSE n || ' échecs sur 24 h' END AS metric,
       CASE WHEN suite > 0 THEN 2 WHEN n > 0 THEN 1 ELSE 0 END AS value
@@ -550,7 +550,8 @@ def vue_ensemble() -> Tableau:
     t.tuile("Ingestion", TUILE_INGESTION, "Direct",
             "Retard de l'ingestion. Rouge au seuil de l'alerte (SEUIL_INGESTION_MIN), orange à sa moitié.")
     t.tuile("Disque", TUILE_DISQUE, "Disque et base",
-            "Espace libre. Rouge sous le seuil de l'alerte (SEUIL_DISQUE_LIBRE_PCT), orange jusqu'à 10 points au dessus.")
+            "Espace libre. Rouge sous le seuil de l'alerte (SEUIL_DISQUE_LIBRE_PCT), orange jusqu'à SEUIL_DISQUE_ORANGE_PTS "
+            "points au dessus ; mêmes couleurs que l'indicateur Disque de la barre d'état.")
     t.tuile("Tâches", TUILE_TACHES, "Tâches",
             "Échecs des tâches sur 24 h (refus attendus exclus). Rouge si une tâche échoue ECHECS_SUCCESSIFS fois de "
             "suite (alerte), orange dès un échec.")

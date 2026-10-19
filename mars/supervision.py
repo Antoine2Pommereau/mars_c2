@@ -41,7 +41,8 @@ def seuil(nom: str, defaut: float) -> float:
 
 
 def seuils() -> dict:
-    return {"disque_pct": seuil("SEUIL_DISQUE_LIBRE_PCT", 15), "collecte_min": seuil("SEUIL_COLLECTE_MIN", 5),
+    return {"disque_pct": seuil("SEUIL_DISQUE_LIBRE_PCT", 15), "disque_orange_pts": seuil("SEUIL_DISQUE_ORANGE_PTS", 10),
+            "collecte_min": seuil("SEUIL_COLLECTE_MIN", 5),
             "ingestion_min": seuil("SEUIL_INGESTION_MIN", 10), "heure_nuit_viirs": seuil("HEURE_NUIT_VIIRS", 8),
             "echecs_successifs": seuil("ECHECS_SUCCESSIFS", 2),
             "collecteur_muet_min": seuil("SEUIL_COLLECTEUR_MUET_MIN", 15)}
@@ -250,7 +251,7 @@ class Ntfy:
 
     def envoyer(self, titre: str, message: str, priorite: str = "high", tags: str = "warning") -> int:
         from mars import traces                         # appel externe tracé ; ni sujet ni message dans le span
-        with traces.span("ntfy.envoi", **{"peer.service": "ntfy", "ntfy.priorite": priorite}) as sp:
+        with traces.span("POST ntfy alerte", **{"peer.service": "ntfy", "ntfy.priorite": priorite}) as sp:
             code = self._envoyer(titre, message, priorite, tags)
             sp.set_attribute("http.response.status_code", code)
             return code

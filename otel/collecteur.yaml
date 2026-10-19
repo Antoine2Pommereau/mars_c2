@@ -3,8 +3,7 @@
 # lentes ou en erreur, décision prise une fois la trace complète), transform (filtre des données sensibles) et
 # file_storage (file d'attente sur disque) n'existent pas dans la distribution de base (docs/opentelemetry.md).
 #
-# Entrées : services du serveur par le réseau Docker (http://otel:4318) et 127.0.0.1:4318 sur l'hôte ; Grafana en
-# gRPC (otel:4317, réseau Docker seulement) ; interface
+# Entrées : services du serveur par le réseau Docker (http://otel:4318) et 127.0.0.1:4318 sur l'hôte ; interface
 # web par nginx (port 8080, /otel/v1/traces) ; travailleurs par nginx sur le réseau privé (port 8090, jeton vérifié
 # par l'API). Le collecteur n'écoute jamais sur une adresse publique.
 # Échantillonnage (seuils dans ce seul fichier) : tâches, collecte, ingestion et travailleurs à 100 % ; requêtes de
@@ -21,9 +20,6 @@ extensions:
 receivers:
   otlp:
     protocols:
-      # gRPC : Grafana seulement (son traceur n'exporte qu'en gRPC), sur le réseau Docker ; port non publié
-      grpc:
-        endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
         max_request_body_size: 4194304          # 4 Mo : un lot d'un travailleur, jamais plus
@@ -31,13 +27,23 @@ receivers:
           allowed_origins: ["http://localhost:8080", "http://127.0.0.1:8080"]
 
 processors:
-  # Premier processeur : au delà de 120 Mo (sur 200 de la limite Docker, dont la part du binaire chargé), le
-  # collecteur refuse les nouveaux lots (l'émetteur réessaie) au lieu d'être tué ; un refus déclenche l'alerte
-  # « collecteur saturé ». Mesure du 19/10/2026 : 158 Mo au plus sous une rafale d'une journée de spans en 5 s.
+  # Premier processeur : au delà de 250 Mo (sur 400 de la limite Docker, le reste pour le binaire chargé et le
+  # runtime), le collecteur refuse les nouveaux lots (l'émetteur réessaie) au lieu d'être tué ; un refus déclenche
+  # l'alerte « collecteur saturé ». Mesure du serveur le 19/10/2026 : 211 Mo pour une limite de 200 (relevée).
   memory_limiter:
     check_interval: 1s
-    limit_mib: 120
-    spike_limit_mib: 30
+    limit_mib: 250
+    spike_limit_mib: 60
+
+  # Les outils de supervision ne sont jamais tracés (règle de CLAUDE.md) : un span de Grafana, de Tempo ou du
+  # collecteur lui même est écarté dès l'entrée, même si l'envoi était réactivé par erreur
+  filter/outils:
+    error_mode: ignore
+    traces:
+      span:
+        - 'resource.attributes["service.name"] == "grafana"'
+        - 'resource.attributes["service.name"] == "tempo"'
+        - 'IsMatch(resource.attributes["service.name"], "^otelcol")'
 
   # Données sensibles, seconde barrière après le filtre du code (mars/traces.py, travailleurs/otel_mini.py) : clés,
   # jetons, mots de passe, adresses signées, chaînes de requête, sujet ntfy. Testé par scripts/verifier_images.sh traces.
@@ -113,7 +119,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, transform/sensible, tail_sampling, batch]
+      processors: [memory_limiter, filter/outils, transform/sensible, tail_sampling, batch]
       exporters: [otlp_grpc/tempo]
   telemetry:
     logs:

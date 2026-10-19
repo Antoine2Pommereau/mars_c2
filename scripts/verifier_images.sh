@@ -215,6 +215,11 @@ verifier_traces() {
   brut=$(openssl rand -hex 16)
   docker exec "$WEB" curl -s -o /dev/null -X POST -H "Content-Type: application/json" http://otel:4318/v1/traces \
     -d '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"mars-taches"}}]},"scopeSpans":[{"spans":[{"traceId":"'"$brut"'","spanId":"0102030405060708","name":"essai.filtre","kind":1,"startTimeUnixNano":"1","endTimeUnixNano":"2","attributes":[{"key":"jeton","value":{"stringValue":"SECRET1"}},{"key":"url.full","value":{"stringValue":"https://h/p?X-Amz-Signature=SECRET2"}},{"key":"detail","value":{"stringValue":"Bearer SECRET3"}}]}]}]}]}'
+  # Les outils de supervision ne sont jamais tracés : un span qui se dit « grafana » doit être écarté par le collecteur
+  local outil
+  outil=$(openssl rand -hex 16)
+  docker exec "$WEB" curl -s -o /dev/null -X POST -H "Content-Type: application/json" http://otel:4318/v1/traces \
+    -d '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"grafana"}}]},"scopeSpans":[{"spans":[{"traceId":"'"$outil"'","spanId":"0102030405060708","name":"essai.outil","kind":1,"startTimeUnixNano":"'"$(date +%s)"'000000000","endTimeUnixNano":"'"$(date +%s)"'100000000"}]}]}]}'
   echo "        attente de la décision d'échantillonnage du collecteur (15 s) et de l'écriture dans Tempo"
   local verdict=""
   for _ in $(seq 1 20); do
@@ -242,7 +247,9 @@ print("OK %d spans, services %s" % (len(noms), ", ".join(sorted(services))) if n
   filtre=$(curl -s "http://127.0.0.1:13209/api/traces/$brut")
   echo "$filtre" | grep -q essai.filtre || echec "traces : span de l'essai du filtre absent de Tempo"
   echo "$filtre" | grep -q SECRET && echec "traces : une donnée sensible a traversé le collecteur"
-  ok "traces : trace $trace de bout en bout dans Tempo ($verdict) ; jeton faux refusé ; données sensibles filtrées par le collecteur"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:13209/api/traces/$outil")" = 404 ] \
+    || echec "traces : un span de Grafana est arrivé dans Tempo (les outils de supervision ne sont jamais tracés)"
+  ok "traces : trace $trace de bout en bout dans Tempo ($verdict) ; jeton faux refusé ; données sensibles filtrées ; Grafana écarté"
 }
 
 for cible in "${CIBLES[@]}"; do

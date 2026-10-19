@@ -38,8 +38,65 @@ EXTERNES = {
     "esa.int": "ESA", "earthdata.nasa.gov": "NASA", "nasa.gov": "NASA", "api.scaleway.com": "Scaleway",
     "r2.cloudflarestorage.com": "R2", "opensanctions.org": "OpenSanctions", "github.com": "GitHub",
     "githubusercontent.com": "GitHub", "vesselfinder.com": "VesselFinder", "vesselfinder.net": "VesselFinder",
-    "ntfy.sh": "ntfy",
+    "ntfy.sh": "ntfy", "naciscdn.org": "Natural Earth", "ngdc.noaa.gov": "NOAA", "soest.hawaii.edu": "GSHHG",
+    "emodnet-humanactivities.eu": "EMODnet", "sentinels.copernicus.eu": "ESA",
 }
+# Nom lisible d'un appel externe : « MÉTHODE opération » ; motif sur l'hôte et le chemin (sans chaîne de requête),
+# service distant, opération ({1} : premier groupe du motif). Premier motif reconnu gagnant ; tests/test_traces.py.
+OPERATIONS = [
+    (r"cmr\.earthdata\.nasa\.gov/search/granules", "NASA", "CMR granules"),
+    (r"eosdis\.nasa\.gov|earthdata\.nasa\.gov", "NASA", "LANCE fichier"),
+    (r"stac\.dataspace\.copernicus\.eu/v1/search", "Copernicus", "STAC search"),
+    (r"stac\.dataspace\.copernicus\.eu/v1/collections/([^/]+)", "Copernicus", "STAC {1}"),
+    (r"eodata-s3keysmanager\.dataspace", "Copernicus", "clés S3 CDSE"),
+    (r"eodata\.dataspace\.copernicus\.eu", "Copernicus", "S3 eodata"),
+    (r"identity\.dataspace\.copernicus\.eu", "Copernicus", "jeton CDSE"),
+    (r"sh\.dataspace\.copernicus\.eu", "Copernicus", "Sentinel Hub"),
+    (r"sentinels\.copernicus\.eu/.*acquisition-plans", "ESA", "plans d'acquisition"),
+    (r"sentinels\.copernicus\.eu", "ESA", "fichier de plan"),
+    (r"api\.scaleway\.com/.*(?<![\w-])(local-images|private_nics|user_data|action|snapshots|volumes|images|ips|servers)\b",
+     "Scaleway", "Scaleway {1}"),
+    (r"api\.scaleway\.com", "Scaleway", "Scaleway API"),
+    (r"r2\.cloudflarestorage\.com/[^/]+/vignettes/", "R2", "R2 preuve"),
+    (r"r2\.cloudflarestorage\.com", "R2", "R2 objet"),
+    (r"data\.opensanctions\.org", "OpenSanctions", "OpenSanctions maritime"),
+    (r"api\.github\.com/.*/contents/Vessels1\.db", "GitHub", "GitHub version de Vessels1.db"),
+    (r"githubusercontent\.com/.*/Vessels1\.db", "GitHub", "GitHub Vessels1.db"),
+    (r"vesselfinder\.(com|net)/vessels/details", "VesselFinder", "VesselFinder fiche"),
+    (r"vesselfinder\.(com|net)", "VesselFinder", "VesselFinder photo"),
+    (r"ntfy", "ntfy", "ntfy alerte"),
+    (r"emodnet-humanactivities\.eu", "EMODnet", "EMODnet infrastructures"),
+    (r"naciscdn\.org|ngdc\.noaa\.gov|soest\.hawaii\.edu", None, "trait de côte"),
+]
+
+
+def nom_operation(methode: str, url: str, corps: bytes | str | None = None) -> tuple[str | None, str | None]:
+    """(service distant, nom du span) d'un appel HTTP sortant : « GET CMR granules VJ102DNB_NRT », « POST STAC
+    sentinel-1-grd », « POST Scaleway action ». (None, None) pour un hôte inconnu (appel interne : API, inférence)."""
+    p = urlsplit(url)
+    hote_chemin = (p.hostname or "") + p.path
+    service = service_externe(p.hostname)
+    for motif, svc, libelle in OPERATIONS:
+        m = re.search(motif, hote_chemin)
+        if not m:
+            continue
+        svc = svc or service
+        nom = libelle.replace("{1}", m.group(1) if m.groups() else "")
+        if libelle == "CMR granules":                    # produit demandé, en clair dans la requête
+            q = re.search(r"(?:^|&)short_name=([A-Za-z0-9_]+)", p.query)
+            nom += f" {q.group(1)}" if q else ""
+        elif libelle == "STAC search" and corps:         # collection demandée, dans le corps JSON
+            try:
+                import json
+                c = json.loads(corps).get("collections") or []
+                nom = f"STAC {c[0]}" if c else nom
+            except (ValueError, AttributeError, TypeError):
+                pass
+        return svc, f"{methode.upper()} {nom}"
+    if service:
+        return service, f"{methode.upper()} {service}"
+    return None, None
+
 # Hôtes dont le chemin est lui même sensible : sujet ntfy (secret), MMSI dans l'adresse de VesselFinder
 CHEMIN_MASQUE = ("ntfy.sh", "vesselfinder.com", "vesselfinder.net")
 
@@ -186,15 +243,19 @@ def _instrumenter_requests():
 
 
 def requete_sortante(span, request):
-    """Appel HTTP sortant : service externe nommé et nom de span lisible (« GET Scaleway »)."""
+    """Appel HTTP sortant (requests) : service distant dans peer.service, nom lisible de l'opération."""
     if span is None or not span.is_recording():
         return
-    url = getattr(request, "url", None) or ""
-    host = getattr(url, "host", None) or urlsplit(str(url)).hostname
-    name = service_externe(host)
-    if name:
-        span.set_attribute("peer.service", name)
-        span.update_name(f"{getattr(request, 'method', 'HTTP')} {name}")
+    _nommer(span, getattr(request, "method", None) or "HTTP", str(getattr(request, "url", "") or ""),
+            getattr(request, "body", None))
+
+
+def _nommer(span, methode: str, url: str, corps=None):
+    service, nom = nom_operation(methode, url, corps)
+    if service:
+        span.set_attribute("peer.service", service)
+    if nom:
+        span.update_name(nom)
 
 
 # API : routes non tracées (expressions régulières, séparées par des virgules) : flux SSE envoyé chaque seconde,
@@ -207,10 +268,7 @@ def requete_httpx(span, info):
     if span is None or not span.is_recording():
         return
     method = info.method.decode() if isinstance(info.method, bytes) else str(info.method)
-    name = service_externe(getattr(info.url, "host", None))
-    if name:
-        span.set_attribute("peer.service", name)
-        span.update_name(f"{method} {name}")
+    _nommer(span, method, str(info.url))
 
 
 async def requete_httpx_async(span, info):
@@ -265,6 +323,17 @@ def trace_de(tp: str | None) -> str | None:
     """Identifiant de trace d'un traceparent W3C."""
     m = re.fullmatch(r"00-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}", tp or "")
     return m.group(1) if m else None
+
+
+def en_parallele(fonctions: list, simultanes: int) -> list:
+    """Exécute des fonctions sans argument dans des fils (au plus `simultanes` à la fois) et rend leurs résultats dans
+    l'ordre. Chaque fil reçoit une copie du contexte de l'appelant : les spans qu'il ouvre (appels HTTP compris)
+    restent rattachés au span courant. La première erreur est relevée une fois toutes les fonctions terminées."""
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, simultanes)) as pool:
+        futurs = [pool.submit(contextvars.copy_context().run, f) for f in fonctions]
+    return [f.result() for f in futurs]
 
 
 # Base : identifiant de trace donné à la session (alertes, db/init/27_traces.sql)

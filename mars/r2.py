@@ -11,9 +11,22 @@ from pathlib import Path
 from mars import traces
 
 
+VERBES = {"envoi": "PUT", "envoi_en_flux": "PUT", "verification": "HEAD", "liste": "LIST", "suppression": "DELETE",
+          "telechargement": "GET"}
+
+
+def genre(key: str) -> str:
+    """Nature d'un objet R2 d'après son chemin : archive de la collecte, sauvegarde, preuve image."""
+    for prefixe, nom in (("ais", "archive"), ("sauvegardes", "sauvegarde"), ("vignettes", "preuve")):
+        if key.startswith(prefixe):
+            return nom
+    return "objet"
+
+
 def _span(op: str, key: str = "", **attrs):
-    """Appel externe à R2 : opération, objet (chemin de l'archive, sans secret) et taille."""
-    return traces.span(f"R2 {op}", **{"peer.service": "R2", "r2.operation": op, "r2.objet": key, **attrs})
+    """Appel externe à R2 (boto3), nommé comme les autres : « PUT R2 archive », « LIST R2 sauvegarde »."""
+    return traces.span(f"{VERBES[op]} R2 {genre(key)}", **{"peer.service": "R2", "r2.operation": op, "r2.objet": key,
+                                                         **attrs})
 
 
 class R2:

@@ -1,8 +1,9 @@
 # MARS C2 : contexte du projet pour Claude Code
 
-> **Règle permanente (étape D2).** Toute addition est instrumentée avec OpenTelemetry : chaque tâche, route, appel
-> externe et étape métier produit des spans, avec les attributs utiles et sans donnée sensible. Une fonctionnalité non
-> tracée n'est pas terminée.
+> **Règle permanente (étape D2).** Toute addition à MARS C2 est instrumentée avec OpenTelemetry : chaque tâche, route,
+> appel externe et étape métier produit des spans, avec les attributs utiles et sans donnée sensible. Une
+> fonctionnalité non tracée n'est pas terminée. Les outils de supervision eux mêmes (Grafana, Tempo, le collecteur)
+> ne sont jamais tracés.
 >
 > Liste de contrôle, avant de déclarer une addition terminée (détail : `docs/opentelemetry.md`) :
 > 1. **Tâche** : passe par `run()` de `scripts/taches.py` (span « tache <nom> », trace_id dans `task_runs`) ; une
@@ -11,13 +12,15 @@
 >    attributs, identifiants internes seulement (jamais nom de navire, position, clé, jeton, mot de passe, adresse
 >    signée, sujet ntfy).
 > 3. **Appel externe** : requests et httpx sont tracés d'office ; sinon (boto3, urllib, websockets) un span avec
->    `peer.service`, et l'hôte ajouté à `EXTERNES` de `mars/traces.py`.
+>    `peer.service`. Nom lisible « MÉTHODE opération » (« GET CMR granules », « PUT R2 archive ») : hôte nouveau dans
+>    `EXTERNES` et `OPERATIONS` de `mars/traces.py`. Appels nombreux : en parallèle bornée (`traces.en_parallele`).
 > 4. **Route de l'API** : tracée d'office (FastAPI, asyncpg) ; route lourde : un span métier en plus ; route appelée
 >    chaque seconde : à exclure (`API_NON_TRACEES`).
 > 5. **Travailleur** : son script importe `otel_mini` et rattache ses spans à `TRACEPARENT` ; toute écriture d'alerte
 >    se fait dans une trace (`traces.en_base`, le déclencheur de la migration 27 écrit `details.trace_id`).
-> 6. `tests/test_traces.py` vert (il échoue si une commande de `taches.py` ou un type de travailleur n'est pas tracé),
->    puis `scripts/verifier_images.sh traces` avant de publier.
+> 6. Jamais de traces pour Grafana, Tempo ou le collecteur (le collecteur les écarte de toute façon : `filter/outils`).
+> 7. `tests/test_traces.py` vert (il échoue si une commande de `taches.py` ou un type de travailleur n'est pas tracé,
+>    si un appel externe est mal nommé, ou si Grafana envoie des spans), puis `scripts/verifier_images.sh traces`.
 
 Ce fichier est la mémoire du projet. Lis le en entier avant toute tâche, et tiens le à jour à chaque jalon. Le
 document de référence de la direction est la Claude Doc « MARS C2, mise à jour du projet » :
@@ -536,6 +539,15 @@ tableau détaillé ; « Dernières traces de bout en bout » (analyses satellite
 Grafana est tracé lui même (OTLP gRPC vers `otel:4317`, réseau Docker seulement). Trace de démonstration :
 `docs/supervision.md`.
 
+**Réglages de la supervision (19/10/2026)** : Grafana n'est plus tracé (variables retirées, port gRPC du collecteur
+fermé, filtre `filter/outils` qui écarte tout span de Grafana, Tempo ou du collecteur, éprouvé) ; mémoire relevée
+d'après les mesures du serveur passé en DEV1-M (collecteur 400 Mo et memory_limiter 250, Tempo 448, Grafana 384) ;
+appels externes nommés par leur opération (« GET CMR granules VJ102DNB_NRT », « POST STAC sentinel-1-grd », « PUT R2
+archive »), service distant dans `peer.service` ; recherche des granules VIIRS en parallèle, quatre appels à la fois
+(sur de vraies recherches CMR : 5,5 et 15,3 s en série, 1,5 et 3,6 s en parallèle, chaque appel reste un span de la
+tâche) ; indicateur « Disque » de la barre d'état aligné sur `config/supervision.env` comme la tuile de Grafana
+(`SEUIL_DISQUE_ORANGE_PTS`).
+
 ## 10. Tests
 
 `python -m pytest tests` : 192 réussis, 35 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 34 sans
@@ -724,6 +736,8 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   écrire `[.]`. Tempo 3 a changé sa configuration (plus d'ingester ni de compactor : `live_store`, `backend_worker`,
   `backend_scheduler`) ; la conservation se règle dans `backend_worker` et `backend_scheduler`. Une commande nouvelle
   de `taches.py` se déclare par `@commande` (sinon refusée par l'analyse des arguments, et le test le signale).
+* Filtre du collecteur (OTTL) : écrire chaque condition entre apostrophes dans le YAML ; non citée, une condition
+  `IsMatch(…)` a été acceptée par `validate` mais n'écartait rien. Vérifier par `otelcol_processor_filter_spans_filtered`.
 * Grafana : une tuile colorée selon un seuil lu en base se fait en SQL (colonnes `metric`, texte affiché, et `value`,
   niveau 0, 1 ou 2, format time_series, `textMode: name`) ; les seuils d'un panneau sont fixes. Le texte « aucune
   donnée » d'un tableau (`noValue`) s'applique aussi à chaque cellule vide : remplir les cellules en SQL. Une variable
