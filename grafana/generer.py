@@ -366,7 +366,8 @@ def satellites() -> Tableau:
                       (mesures->>'cout_estime_eur')::float8 AS "Coût",
                       left(erreur, 160) AS "Motif d'échec", trace_id AS "Trace"
                FROM travailleurs WHERE $__timeFilter(cree_le) ORDER BY id DESC LIMIT 100""",
-            h=9, etats={"echec": ("échec", ROUGE), "termine": ("terminé", NEUTRE)}, colonne_etat="État",
+            h=9, etats={"echec": ("échec", ROUGE), "termine": ("terminé", NEUTRE),
+                        "gpu_inutilisable": ("GPU inutilisable", ROUGE)}, colonne_etat="État",
             unites={"Durée": "s", "Coût": "currencyEUR"}, trace="Trace")
     t.section("Analyses Sentinel 1 (lot C3)")
     t.chiffre("En attente d'un GPU",
@@ -402,6 +403,15 @@ def satellites() -> Tableau:
             etats={"failed": ("échec", ROUGE), "attente_gpu": ("attente GPU", ORANGE), "running": ("en cours", SIGNAL),
                    "done": ("analysée", NEUTRE), "pending": ("demandée", SIGNAL)},
             colonne_etat="Statut", unites={"Octets lus": "bytes", "Coût estimé": "currencyEUR"}, trace="Trace")
+    t.table("Types marqués incompatibles",
+            """SELECT commercial_type || ' ' || zone AS "Type", depuis AS "Depuis", jusqu_au AS "Jusqu'au",
+                      CASE WHEN leve_le IS NOT NULL THEN 'levé le ' || to_char(leve_le, 'DD/MM HH24:MI')
+                           WHEN jusqu_au > now() THEN 'actif' ELSE 'expiré' END AS "État",
+                      travailleur_id AS "Travailleur", left(coalesce(message, ''), 160) AS "Cause", trace_id AS "Trace"
+               FROM types_incompatibles WHERE jusqu_au > now() - interval '30 days' ORDER BY depuis DESC LIMIT 50""",
+            w=24, h=6, etats={"actif": ("actif", ORANGE)}, colonne_etat="État", trace="Trace",
+            description="GPU inutilisable constaté par le travailleur au contrôle du GPU (NVML) : type et zone jamais "
+                        "essayés jusqu'à la date de fin, sauf levée à la main (commande de levée, docs/sentinel.md).")
     t.table("Passages Sentinel 1",
             """SELECT p.acquired_at AS "Acquis le", p.satellite AS "Satellite", p.statut AS "État",
                       array_to_string(p.regions, ', ') AS "Régions", cardinality(p.infra_ids) AS "Infrastructures",
@@ -604,7 +614,8 @@ def vue_ensemble() -> Tableau:
     t.table("Dernières traces de bout en bout", DERNIERES_ANALYSES, h=11,
             description="Analyses satellites (travailleurs VIIRS et Sentinel 1) : une trace chacune, du lancement à la "
                         "destruction. Le lien de la colonne Trace ouvre la vue Gantt dans Tempo (72 h gardées).",
-            etats={"echec": ("échec", ROUGE), "termine": ("terminée", NEUTRE), "resultats": ("résultats reçus", SIGNAL),
+            etats={"echec": ("échec", ROUGE), "gpu_inutilisable": ("GPU inutilisable", ROUGE),
+                   "termine": ("terminée", NEUTRE), "resultats": ("résultats reçus", SIGNAL),
                    "demarre": ("en cours", SIGNAL), "cree": ("créée", SIGNAL), "demande": ("demandée", SIGNAL)},
             colonne_etat="Statut", trace="Trace", vide="aucune analyse satellite tracée depuis le déploiement")
     return t

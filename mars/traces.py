@@ -325,6 +325,44 @@ def trace_de(tp: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+@contextmanager
+def sans_instrumentation():
+    """Appels HTTP sans span (sondages répétés) : l'instrumentation de requests et de httpx est suspendue le temps du
+    bloc ; le span d'attente qui les englobe les résume (sondage)."""
+    try:
+        from opentelemetry.instrumentation.utils import suppress_instrumentation
+    except ImportError:                                     # pragma: no cover
+        yield
+        return
+    with suppress_instrumentation():
+        yield
+
+
+class _Sondage:
+    def __init__(self, span):
+        self.span, self.n, self.debut, self.etats = span, 0, __import__("time").monotonic(), []
+
+    def etat(self, e):
+        """Un sondage de plus, avec l'état lu."""
+        self.n += 1
+        self.etats.append(str(e))
+
+
+@contextmanager
+def sondage(nom: str, **attributs):
+    """Attente par sondages (démarrage d'une instance, carte réseau) : un seul span, avec le nombre de sondages, la
+    durée, l'état final et le dernier état intermédiaire ; les requêtes de sondage elles mêmes ne sont pas tracées."""
+    import time as _t
+    with span(nom, **attributs) as sp:
+        so = _Sondage(sp)
+        try:
+            yield so
+        finally:
+            sp.set_attributes(propres({"sondage.nombre": so.n, "sondage.duree_s": round(_t.monotonic() - so.debut, 1),
+                                       "sondage.etat_final": so.etats[-1] if so.etats else None,
+                                       "sondage.dernier_intermediaire": so.etats[-2] if len(so.etats) > 1 else None}))
+
+
 def en_parallele(fonctions: list, simultanes: int) -> list:
     """Exécute des fonctions sans argument dans des fils (au plus `simultanes` à la fois) et rend leurs résultats dans
     l'ordre. Chaque fil reçoit une copie du contexte de l'appelant : les spans qu'il ouvre (appels HTTP compris)

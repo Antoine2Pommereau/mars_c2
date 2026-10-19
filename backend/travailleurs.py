@@ -69,7 +69,26 @@ async def worker_state(request: Request, wid: int, authorization: str | None = H
         await _check(c, wid, authorization)
         if isinstance(body, dict) and body.get("etat") == "tache":
             return await _deliver_task(c, wid)
+        if isinstance(body, dict) and body.get("etat") in ("echec", "gpu_inutilisable"):
+            return await _fin_signalee(c, wid, body)
         await c.execute("UPDATE travailleurs SET etat = 'demarre', demarre_le = coalesce(demarre_le, now()) WHERE id = $1", wid)
+    return {"ok": True}
+
+
+async def _fin_signalee(c, wid: int, body: dict) -> dict:
+    """Fin signalée par le script de démarrage (lot C4) : « echec » (étape et motif) ou « gpu_inutilisable » (message
+    de nvidia-smi ou de Docker). Le travailleur quitte aussitôt l'état actif ; la surveillance (taches) détruit
+    l'instance à la minute suivante, remet l'analyse en attente ou la passe en échec, et marque le type si le GPU est
+    inutilisable. Le motif est gardé tel quel (aucune clé n'y figure : lignes de Docker ou du système)."""
+    etat = body["etat"]
+    etape = str(body.get("etape") or "")[:60]
+    motif = str(body.get("message") or "")[:1500]
+    erreur = (f"GPU inutilisable : {motif}" if etat == "gpu_inutilisable" else f"échec à l'étape {etape or '?'} : {motif}")
+    await c.execute(
+        "UPDATE travailleurs SET etat = $2, erreur = $3, fini_le = now(), "
+        "mesures = coalesce(mesures, '{}'::jsonb) || jsonb_build_object('fin_signalee', $2::text, 'etape_echec', $4::text) "
+        "WHERE id = $1", wid, etat, erreur[:1000], etape)
+    log.warning("travailleur %s : %s", wid, erreur[:300])
     return {"ok": True}
 
 

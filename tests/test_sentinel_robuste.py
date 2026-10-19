@@ -58,8 +58,8 @@ def test_cost_depends_on_the_launched_type_and_the_windows():
 def test_variants_are_tried_in_the_configured_order():
     v = T.variantes(RULES, "sentinel")
     assert [(T.type_params(RULES, "sentinel", x)["commercial_type"], x["calcul"]) for x in v] == [
-        ("L4-1-24G", "gpu"), ("L4-1-24G", "gpu"), ("L40S-1-48G", "gpu"), ("RENDER-S", "gpu"), ("GP1-S", "cpu")]
-    assert T.type_params(RULES, "sentinel", v[3])["volume"] == "l_ssd"           # RENDER-S : disque local
+        ("L4-1-24G", "gpu"), ("L4-1-24G", "gpu"), ("L40S-1-48G", "gpu"), ("GP1-S", "cpu")]   # RENDER-S retiré (C4)
+    assert T.type_params(RULES, "sentinel", v[3])["volume"] == "l_ssd"           # GP1-S : disque local
     assert T.variante_de(RULES, "sentinel", "L40S-1-48G", "fr-par-2") == v[2]
     assert T.type_params(RULES, "viirs", None)["commercial_type"] == "DEV1-M"    # VIIRS inchangé
     assert T.en_rupture('POST /instance/v1/zones/fr-par-2/servers/x/action : 412 {"type":"out_of_stock"}')
@@ -74,12 +74,12 @@ class Dispo:
 
 
 def test_out_of_stock_types_are_never_tried_and_cpu_waits_for_its_delay(spans):
-    scw = Dispo({"fr-par-2": {"L4-1-24G": "shortage", "L40S-1-48G": "shortage", "RENDER-S": "scarce",
+    scw = Dispo({"fr-par-2": {"L4-1-24G": "shortage", "L40S-1-48G": "scarce",
                               "GP1-S": "available"},
                  "fr-par-1": {"L4-1-24G": "shortage"}})
     with traces.span("tache sentinel", nouvelle_trace=True):
         c, dispo = sentinel.candidats(scw, RULES, NOW - timedelta(hours=1), NOW)
-    assert [T.type_params(RULES, "sentinel", x)["commercial_type"] for x in c] == ["RENDER-S"]
+    assert [T.type_params(RULES, "sentinel", x)["commercial_type"] for x in c] == ["L40S-1-48G"]
     assert dispo["L4-1-24G fr-par-2"] == "shortage" and dispo["GP1-S fr-par-2"] == "available"
     c, _ = sentinel.candidats(scw, RULES, NOW - timedelta(hours=S["repli_cpu_apres_h"]), NOW)
     assert [x["calcul"] for x in c] == ["gpu", "cpu"]                             # repli après le délai
@@ -170,7 +170,7 @@ def test_stock_out_waits_retries_falls_back_to_cpu_then_runs(conn, monkeypatch):
     r = sentinel.launch(conn, None, rules, NOW, stac)
     aid = r["analyses"][0]
     assert r["attente_gpu"] == [aid] and r["prochain_essai_min"] == S["intervalle_min"] and r["fenetres"] >= 1
-    assert [x[1] for x in lances] == ["gpu"] * 4                                  # CPU pas encore permis
+    assert [x[1] for x in lances] == ["gpu"] * 3                                  # CPU pas encore permis
     st = conn.execute("SELECT status, essais_calcul, fenetres, calcul_motif FROM analyses WHERE id = %s", (aid,)).fetchone()
     assert st[0] == "attente_gpu" and st[1] == 1 and st[2] and "rupture de stock" in st[3]
     assert sentinel.plan(conn, stac, rules, NOW)["passages"] == []               # le passage n'est pas relancé à neuf
@@ -230,3 +230,170 @@ def test_done_analysis_without_any_analysed_scene_is_reclassified(conn):
         conn.execute(migration)
         assert conn.execute("SELECT status FROM analyses WHERE id = %s", (aid,)).fetchone()[0] == attendu
         conn.execute("UPDATE analyses SET status = 'failed' WHERE id = %s", (aid,))      # place au cas suivant
+
+
+# Lot C4 : GPU inutilisable, échec signalé, instance arrêtée, essai forcé sur processeur, sondages regroupés
+
+def _travailleur(conn, scw, etat: str, ctype="L4-1-24G", zone="fr-par-2", mesures=None, erreur=None, age_min=10):
+    """Travailleur Sentinel actif avec une analyse en cours, et son instance dans le faux Scaleway."""
+    from test_sentinel import _setup
+    pid, _ids, _t0 = _setup(conn, NOW)
+    wid = conn.execute(
+        "INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, etat, erreur, mesures, cree_le, demarre_le, "
+        "traceparent) VALUES ('sentinel', %s, %s, 'x', %s, %s, %s, now() - make_interval(mins => %s), now(), %s) "
+        "RETURNING id", (ctype, zone, etat, erreur, json.dumps(mesures or {}), age_min,
+                         "00-" + "c" * 32 + "-" + "d" * 16 + "-01")).fetchone()[0]
+    sid = f"srv-mars-travailleur-{wid}"
+    conn.execute("UPDATE travailleurs SET scw_server_id = %s WHERE id = %s", (sid, wid))
+    scw.servers[sid] = {"id": sid, "name": f"mars-travailleur-{wid}", "tags": [T.TAG, f"run-{wid}"], "project": "p",
+                        "state": "running"}
+    aid = conn.execute(
+        "INSERT INTO analyses (pass_id, aoi, mode, status, source, travailleur_id, scenes, requested_at) VALUES (%s, "
+        "ST_MakeEnvelope(-6, 48, -5, 49, 4326)::geography, 'full', 'running', 'sentinel1', %s, '[]', now()) RETURNING id",
+        (pid, wid)).fetchone()[0]
+    return wid, aid, sid
+
+
+def test_unusable_gpu_destroys_requeues_marks_and_skips_the_type(conn, spans, monkeypatch):
+    from test_travailleurs_base import FakeScw
+    conn.execute("DELETE FROM types_incompatibles")
+    scw = FakeScw()
+    wid, aid, sid = _travailleur(conn, scw, "gpu_inutilisable", erreur="GPU inutilisable : NVML Driver Not Loaded",
+                                 mesures={"fin_signalee": "gpu_inutilisable"})
+    T.supervise(conn, scw, RULES, {})
+    assert sid in scw.destroyed                                                   # détruite à cette minute même
+    etat, detruit, couts = conn.execute("SELECT etat, detruit_le IS NOT NULL, mesures->>'cout_estime_eur' FROM travailleurs "
+                                        "WHERE id = %s", (wid,)).fetchone()
+    assert etat == "echec" and detruit and float(couts) > 0                       # coût réel compté
+    st, prochain = conn.execute("SELECT status, prochain_essai <= now() FROM analyses WHERE id = %s", (aid,)).fetchone()
+    assert st == "attente_gpu" and prochain                                       # ni échec ni nouvelle analyse
+    jusqu = conn.execute("SELECT jusqu_au - now() FROM types_incompatibles WHERE commercial_type = 'L4-1-24G' "
+                         "AND zone = 'fr-par-2'").fetchone()[0]
+    assert timedelta(days=6, hours=23) < jusqu <= timedelta(days=7)
+    jr = conn.execute("SELECT details FROM task_runs WHERE task = 'travailleur_sentinel' ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert jr["refus"] is True and jr["gpu_inutilisable"] is True                 # alerte par le marquage seulement
+    assert "travailleur.gpu_inutilisable" in [s.name for s in spans.get_finished_spans()]
+    assert sentinel.usage(conn, datetime.now(timezone.utc))[1] >= float(couts)    # dans le budget du mois
+    # Cycle suivant : le type marqué est sauté, le suivant est essayé ; attribut visible dans le choix
+    essais = []
+
+    def faux(_c, _scw, _rules, tache, _params, _env, **kw):
+        essais.append(T.type_params(RULES, tache, kw["variante"])["commercial_type"] + " "
+                      + T.type_params(RULES, tache, kw["variante"]).get("zone", "fr-par-1"))
+        return {"rupture": "rupture", "travailleur": None}
+    monkeypatch.setattr(T, "launch", faux)
+    sentinel.launch(conn, None, RULES, datetime.now(timezone.utc), None)
+    assert essais[0] == "L4-1-24G fr-par-1" and "L4-1-24G fr-par-2" not in essais
+    choix = [s for s in spans.get_finished_spans() if s.name == "sentinel.choix_calcul"][-1]
+    assert choix.attributes["incompatible.L4-1-24G fr-par-2"].startswith("incompatible jusqu'au")
+    # Marquage expiré (7 jours passés) : le type est de nouveau essayé
+    conn.execute("UPDATE types_incompatibles SET jusqu_au = now() - interval '1 minute'")
+    conn.execute("UPDATE analyses SET prochain_essai = now() WHERE id = %s", (aid,))
+    essais.clear()
+    sentinel.launch(conn, None, RULES, datetime.now(timezone.utc), None)
+    assert essais[0] == "L4-1-24G fr-par-2"
+
+
+@pytest.mark.parametrize("etape,attendu", [("analyse_docker", "attente_gpu"), ("telechargement_image", "attente_gpu"),
+                                           ("analyse", "failed")])
+def test_signalled_failure_is_handled_at_once(conn, spans, etape, attendu):
+    from test_travailleurs_base import FakeScw
+    scw = FakeScw()
+    wid, aid, sid = _travailleur(conn, scw, "echec", erreur=f"échec à l'étape {etape} : code de sortie 125",
+                                 mesures={"fin_signalee": "echec", "etape_echec": etape})
+    T.supervise(conn, scw, RULES, {})
+    assert sid in scw.destroyed
+    st, err = conn.execute("SELECT status, coalesce(error, calcul_motif) FROM analyses WHERE id = %s", (aid,)).fetchone()
+    assert st == attendu and "code de sortie 125" in err
+    sp = [s for s in spans.get_finished_spans() if s.name == "travailleur.echec"][-1]
+    assert sp.status.status_code.name == "ERROR" and sp.attributes["travailleur.etape"] == etape
+    T.supervise(conn, scw, RULES, {})                                             # une seule fois
+    assert [s.name for s in spans.get_finished_spans()].count("travailleur.echec") == 1
+
+
+def test_instance_stopped_by_itself_is_treated_as_a_machine_failure(conn):
+    from test_travailleurs_base import FakeScw
+    scw = FakeScw()
+    wid, aid, sid = _travailleur(conn, scw, "demarre", age_min=8)
+    scw.servers[sid]["state"] = "stopped in place"                                # essai 26 : arrêtée, encore facturée
+    T.supervise(conn, scw, RULES, {})
+    assert sid in scw.destroyed
+    assert conn.execute("SELECT etat FROM travailleurs WHERE id = %s", (wid,)).fetchone()[0] == "echec"
+    assert conn.execute("SELECT status FROM analyses WHERE id = %s", (aid,)).fetchone()[0] == "attente_gpu"
+
+
+def test_forced_cpu_trial_launches_the_cpu_type_at_once_for_the_manual_command_only(conn, spans, monkeypatch):
+    pid, t0, stac = _passage(conn)
+    essais = []
+
+    def faux(c, _scw, _rules, _tache, params, _env, **kw):
+        essais.append((kw["variante"]["calcul"], params.get("force_cpu")))
+        wid = c.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres) VALUES "
+                        "('sentinel', 'GP1-S', 'fr-par-2', 'x', '{}') RETURNING id").fetchone()[0]
+        return {"travailleur": wid}
+    monkeypatch.setattr(T, "launch", faux)
+    monkeypatch.setenv("SENTINEL_PLAFOND_ESSAI", "1")
+    monkeypatch.setenv("SENTINEL_CALCUL_ESSAI", "cpu")
+    # La boucle automatique ignore la variable : plafond versionné de 0
+    assert "plafond de 0 scènes" in sentinel.launch(conn, None, RULES, NOW, stac)["refus"] and essais == []
+    r = sentinel.launch(conn, None, RULES, NOW, stac, pass_id=pid)
+    assert r["calcul"] == "cpu" and r["type"] == "GP1-S" and essais == [("cpu", True)]   # sans attendre 3 h
+    motif = conn.execute("SELECT calcul_motif FROM analyses WHERE id = %s", (r["analyses"][0],)).fetchone()[0]
+    assert motif.startswith("essai forcé sur processeur")
+    choix = [s for s in spans.get_finished_spans() if s.name == "sentinel.choix_calcul"][-1]
+    assert choix.attributes["sentinel.calcul_force"] == "cpu" and choix.attributes["sentinel.motif"].startswith("essai forcé")
+
+
+def test_polling_is_one_span_with_its_count_and_states(spans):
+    class Api:
+        headers = {}
+
+        def __init__(self):
+            self.etats = iter(["stopped", "starting", "starting", "running"])
+
+        def request(self, method, _url, **_kw):
+            class R:
+                status_code, content = 200, b"x"
+                headers = {"content-type": "application/json"}
+
+                def __init__(self, body):
+                    self.body = body
+
+                def json(self):
+                    return self.body
+            if method == "POST":
+                return R({"task": {}})
+            return R({"server": {"id": "s", "state": next(self.etats)}})
+    scw = T.Scaleway("cle", "p", session=Api(), protected=set())
+    scw.start("fr-par-2", "s", sleep=lambda _s: None)
+    (sp,) = [s for s in spans.get_finished_spans() if s.name == "scaleway.attente_demarrage"]
+    assert sp.attributes["sondage.nombre"] == 4 and sp.attributes["sondage.etat_final"] == "running"
+    assert sp.attributes["sondage.dernier_intermediaire"] == "starting"
+
+
+def test_polling_requests_are_not_traced_one_by_one(spans):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import requests
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}/"
+    with traces.sondage("essai.sondage") as so:
+        for _ in range(3):
+            with traces.sans_instrumentation():
+                requests.get(url, timeout=5)
+            so.etat("ok")
+    requests.get(url, timeout=5)                                                  # hors sondage : tracée
+    srv.shutdown()
+    noms = [s.name for s in spans.get_finished_spans()]
+    assert noms.count("essai.sondage") == 1 and noms.count("GET") == 1

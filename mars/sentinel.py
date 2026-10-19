@@ -346,12 +346,14 @@ def usage(conn, now: datetime) -> tuple[int, float]:
     scenes = conn.execute(
         "SELECT coalesce(sum(jsonb_array_length(scenes)), 0) FROM analyses "
         "WHERE source = 'sentinel1' AND status <> 'failed' AND requested_at >= %s", (day,)).fetchone()[0]
+    # Coût réel de chaque travailleur Sentinel du mois (journal, une fois détruit : un GPU inutilisable compte, une
+    # rupture de stock vaut 0), plus le coût estimé des analyses dont le travailleur tourne encore (lot C4)
     spent = conn.execute(
-        """SELECT coalesce(sum(coalesce((t.mesures->>'cout_estime_eur')::float8, a.cout)), 0)
-           FROM (SELECT travailleur_id, sum(cout_estime_eur) AS cout FROM analyses
-                 WHERE source = 'sentinel1' AND requested_at >= %s AND travailleur_id IS NOT NULL
-                 GROUP BY travailleur_id) a
-           LEFT JOIN travailleurs t ON t.id = a.travailleur_id""", (month,)).fetchone()[0]
+        """SELECT coalesce((SELECT sum((mesures->>'cout_estime_eur')::float8) FROM travailleurs
+                            WHERE tache = 'sentinel' AND cree_le >= %(m)s AND detruit_le IS NOT NULL), 0)
+                + coalesce((SELECT sum(a.cout_estime_eur) FROM analyses a JOIN travailleurs t ON t.id = a.travailleur_id
+                            WHERE a.source = 'sentinel1' AND t.detruit_le IS NULL AND t.cree_le >= %(m)s), 0)""",
+        {"m": month}).fetchone()[0]
     return int(scenes), float(spent)
 
 
@@ -469,7 +471,8 @@ def cout_calcul(n_fenetres: int, n_scenes_entieres: int, s: dict, t: dict, calcu
     return cost(minutes, t["prix_heure"], t["facturation_min_min"])
 
 
-def candidats(scw, rules: dict, attente_depuis: datetime, now: datetime, cpu_possible: bool = True) -> tuple[list, dict]:
+def candidats(scw, rules: dict, attente_depuis: datetime, now: datetime, cpu_possible: bool = True,
+              incompatibles: dict | None = None, force_cpu: bool = False) -> tuple[list, dict]:
     """Types à essayer, dans l'ordre de config/rules.yaml : GPU dont le stock n'est pas épuisé (disponibilité lue avant
     toute création, API Instances), puis le repli sur processeur si l'attente dépasse repli_cpu_apres_h. Retourne
     (variantes, disponibilités par « type zone »). Sans client Scaleway (essais), disponibilité inconnue : on essaie."""
@@ -480,18 +483,26 @@ def candidats(scw, rules: dict, attente_depuis: datetime, now: datetime, cpu_pos
     for v in travailleurs.variantes(rules, "sentinel"):
         t = travailleurs.type_params(rules, "sentinel", v)
         zone = t.get("zone", base["zone"])
-        if scw is not None and zone not in par_zone:
+        if scw is not None and zone not in par_zone and (t["commercial_type"], zone) not in (incompatibles or {}):
             with traces.span("sentinel.disponibilite", **{"scaleway.zone": zone}) as sp:
                 try:
                     par_zone[zone] = scw.availability(zone)
                 except Exception as e:
                     sp.record_exception(e)
                     par_zone[zone] = {}
+        cle = f"{t['commercial_type']} {zone}"
+        fin = (incompatibles or {}).get((t["commercial_type"], zone))
+        if fin is not None:                     # lot C4 : GPU inutilisable constaté, type sauté jusqu'à la fin du marquage
+            dispo[cle] = f"incompatible jusqu'au {fin:%d/%m/%Y %H:%M}"
+            continue
+        if force_cpu and v["calcul"] != "cpu":  # essai forcé sur processeur (commande manuelle)
+            continue
         etat = (par_zone.get(zone) or {}).get(t["commercial_type"], "inconnue")
-        dispo[f"{t['commercial_type']} {zone}"] = etat
+        dispo[cle] = etat
         if etat == "shortage":
             continue
-        if v["calcul"] == "cpu" and (not cpu_possible or now - attente_depuis < timedelta(hours=s["repli_cpu_apres_h"])):
+        if v["calcul"] == "cpu" and not force_cpu and (
+                not cpu_possible or now - attente_depuis < timedelta(hours=s["repli_cpu_apres_h"])):
             continue
         out.append(v)
     return out, dispo
@@ -525,6 +536,10 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     après repli_cpu_apres_h). Rupture de stock : analyses en « attente_gpu », nouvel essai au cycle suivant. Retourne le
     résumé ; {"refus": motif} si un garde fou l'interdit."""
     s = dict(rules["sentinel"])
+    # Essai forcé sur processeur (lot C4) : commande manuelle seulement, fenêtres seules ; la boucle n'est pas touchée
+    s["_force_cpu"] = pass_id is not None and (os.environ.get("SENTINEL_CALCUL_ESSAI") or "").strip().lower() == "cpu"
+    if s["_force_cpu"]:
+        traces.attributs(**{"sentinel.calcul_force": "cpu"})
     essai = os.environ.get("SENTINEL_PLAFOND_ESSAI")
     if pass_id is not None and essai:
         # Essai réel à la main : plafond relevé pour cette commande seulement (rien n'est écrit dans config/rules.yaml)
@@ -566,7 +581,12 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                            "sentinel.fenetres_km2": sum(f["km2"] for ps in selected for sc in ps["scenes"]
                                                         for f in sc["fenetres"])})
     from mars import travailleurs
-    estimate = cout_calcul(n_fen, n_full, s, travailleurs.type_params(rules, "sentinel"), "gpu")
+    if s["_force_cpu"] and n_full:
+        return {"refus": "essai forcé sur processeur : aucune fenêtre pour ce passage (aucun navire des listes ni point "
+                         "d'intérêt), une scène entière n'est jamais analysée sur processeur"}
+    calc = travailleurs.variantes(rules, "sentinel")[-1] if s["_force_cpu"] else {}
+    estimate = cout_calcul(n_fen, n_full, s, travailleurs.type_params(rules, "sentinel", calc or None),
+                           "cpu" if s["_force_cpu"] else "gpu")
     motif = guard(n or asked, scenes_today, spent, estimate, s)       # aucune place : le plafond est le motif
     if motif:
         return {"refus": motif, "scenes_demandees": asked}
@@ -624,11 +644,14 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
     n_full = sum(1 for t in tasks if not t["fenetres"])
     params = {"scenes": tasks, "regions": regions_boxes(), "confiance": s["confiance"], "nms_m": s["nms_m"],
               "vignette_km": s["vignette_km"]}
+    force = bool(s.get("_force_cpu"))
     with traces.span("sentinel.choix_calcul", **{"sentinel.analyses": len(ids), "sentinel.fenetres": n_fen,
-                                                 "sentinel.attente_min": round((now - attente_depuis).total_seconds() / 60)
-                                                 }) as sp:
-        cands, dispo = candidats(scw, rules, attente_depuis, now, cpu_possible=n_full == 0)
-        sp.set_attributes({f"dispo.{k}": v for k, v in dispo.items()})
+                                                 "sentinel.attente_min": round((now - attente_depuis).total_seconds() / 60),
+                                                 "sentinel.calcul_force": "cpu" if force else None}) as sp:
+        cands, dispo = candidats(scw, rules, attente_depuis, now, cpu_possible=n_full == 0,
+                                 incompatibles=travailleurs.incompatibles(conn), force_cpu=force)
+        sp.set_attributes({(f"incompatible.{k}" if str(v).startswith("incompatible") else f"dispo.{k}"): v
+                           for k, v in dispo.items()})
         essais = []
         for v in cands:
             t = travailleurs.type_params(rules, "sentinel", v)
@@ -657,7 +680,9 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
                 conn.execute("UPDATE analyses SET status = 'failed', error = %s, completed_at = now() WHERE id = ANY(%s)",
                              (r.get("refus") or f"travailleur occupé ({r.get('occupe')})", ids))
                 return r
-            if v["calcul"] == "cpu":
+            if v["calcul"] == "cpu" and force:
+                motif = "essai forcé sur processeur (SENTINEL_CALCUL_ESSAI=cpu, commande manuelle) : fenêtres seules"
+            elif v["calcul"] == "cpu":
                 motif = (f"aucun GPU de la liste disponible depuis {(now - attente_depuis).total_seconds() / 3600:.1f} h "
                          f"(repli après {s['repli_cpu_apres_h']} h) : fenêtres analysées sur processeur")
             else:

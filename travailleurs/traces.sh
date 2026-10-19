@@ -14,13 +14,23 @@ PARENT=${TP:36:16}
 RACINE=$(nid)
 RACINE_DEBUT=$(ns)
 ETAPE=""
-# span NOM ID PARENT DEBUT CODE MESSAGE (code 1 : réussi, 2 : erreur)
-span() {
-  printf '{"traceId":"%s","spanId":"%s","parentSpanId":"%s","name":"%s","kind":1,"startTimeUnixNano":"%s","endTimeUnixNano":"%s","status":{"code":%s,"message":"%s"}}\n' \
-    "$TRACE" "$2" "$3" "$1" "$4" "$(ns)" "$5" "$(printf '%s' "${6:-}" | tr -d '"\\' | tr '\n' ' ' | head -c 200)" >> "$SPANS"
+ETAPE_ATTRS=""
+# Texte sûr dans du JSON : ni guillemet, ni barre oblique inverse, ni retour à la ligne
+texte_json() { printf '%s' "${1:-}" | tr -d '"\\' | tr '\n\r\t' '   ' | head -c "${2:-200}"; }
+# attribut CLE VALEUR : ajouté au span de l'étape en cours
+attribut() {
+  ETAPE_ATTRS="${ETAPE_ATTRS:+$ETAPE_ATTRS,}{\"key\":\"$1\",\"value\":{\"stringValue\":\"$(texte_json "$2" 300)\"}}"
 }
-etape() { fin_etape; ETAPE=$1; ETAPE_ID=$(nid); ETAPE_DEBUT=$(ns); }
-fin_etape() { [ -n "$ETAPE" ] && span "demarrage.$ETAPE" "$ETAPE_ID" "$RACINE" "$ETAPE_DEBUT" "${1:-1}" "${2:-}"; ETAPE=""; }
+# span NOM ID PARENT DEBUT CODE MESSAGE [ATTRIBUTS] (code 1 : réussi, 2 : erreur ; attributs : liste OTLP en JSON)
+span() {
+  printf '{"traceId":"%s","spanId":"%s","parentSpanId":"%s","name":"%s","kind":1,"startTimeUnixNano":"%s","endTimeUnixNano":"%s","status":{"code":%s,"message":"%s"},"attributes":[%s]}\n' \
+    "$TRACE" "$2" "$3" "$1" "$4" "$(ns)" "$5" "$(texte_json "${6:-}")" "${7:-}" >> "$SPANS"
+}
+etape() { fin_etape; ETAPE=$1; ETAPE_ID=$(nid); ETAPE_DEBUT=$(ns); ETAPE_ATTRS=""; }
+fin_etape() {
+  [ -n "$ETAPE" ] && span "demarrage.$ETAPE" "$ETAPE_ID" "$RACINE" "$ETAPE_DEBUT" "${1:-1}" "${2:-}" "$ETAPE_ATTRS"
+  ETAPE=""; ETAPE_ATTRS=""
+}
 envoyer_spans() {
   [ -s "$SPANS" ] || return 0
   { printf '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"mars-travailleur"}},{"key":"service.namespace","value":{"stringValue":"mars-c2"}}]},"scopeSpans":[{"scope":{"name":"mars.demarrage"},"spans":['

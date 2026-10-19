@@ -711,6 +711,25 @@ docker compose exec taches python scripts/taches.py sentinel-diagnostic   # disp
 L'essai réel se fait ensuite pas à pas, plafond relevé pour la seule commande manuelle (docs/sentinel.md, « Essai réel
 du lot C3 »).
 
+## Sentinel 1, GPU inutilisable (lot C4, docs/sentinel.md)
+
+Migration 29 (`db/init/29_gpu_inutilisable.sql` : état « gpu_inutilisable », table `types_incompatibles`, analyse 96
+remise en échec, cause NVML du travailleur 26) ; règles 2026.10.28 (RENDER-S retiré). Images qui changent : scripts
+(script de démarrage et surveillance des travailleurs, déposés par cloud-init depuis cette image) et API (états
+« echec » et « gpu_inutilisable » reçus des travailleurs) ; l'interface est inchangée. Grafana : nouveau panneau et
+nouvelle règle (redémarrage).
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/29_gpu_inutilisable.sql
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf backend && docker image prune -af
+docker compose pull backend && docker compose up -d --no-build backend
+docker compose restart grafana
+docker compose exec taches python scripts/taches.py sentinel-diagnostic
+```
+
 ## Vérifier
 
 ```bash

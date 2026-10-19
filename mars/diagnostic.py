@@ -284,11 +284,21 @@ def config(rules: dict) -> list[tuple[str, str, str]]:
     return [(INFO, "Plafond de scènes", f"{s['scenes_max_par_jour']} par jour, budget {s['budget_mensuel_eur']} €")]
 
 
+def marquages(marques: list | None) -> list[tuple[str, str, str]]:
+    """Types marqués incompatibles (GPU inutilisable, lot C4) encore actifs : jamais essayés avant leur date de fin ;
+    levée à la main par taches.py sentinel-lever-incompatible TYPE ZONE. Information, hors du verdict : le reste de la
+    liste suffit à lancer."""
+    return [(INFO, f"Marqué incompatible : {t} en {z}",
+             f"jusqu'au {fin:%d/%m/%Y %H:%M} UTC (depuis le {depuis:%d/%m/%Y %H:%M}, travailleur {w or '?'}) : "
+             f"{(m or '')[:200]}") for t, z, depuis, fin, m, w in (marques or [])]
+
+
 def run(rules: dict, session, scw, now: datetime | None = None, show=print,
-        recorded: list | None = None) -> list[tuple[str, str, str]]:
+        recorded: list | None = None, marques: list | None = None) -> list[tuple[str, str, str]]:
     now = now or datetime.now(timezone.utc)
     lines = copernicus(session, now)
     lines += scaleway(scw, rules, show)
+    lines += marquages(marques)
     lines += block_volumes(scw, rules, recorded)
     lines += config(rules)
     return lines

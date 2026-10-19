@@ -143,9 +143,9 @@ def test_every_calculation_type_shows_its_stock_and_price(monkeypatch):
     lines, _ = _run(ScalewayApi())
     types = {r: v for r, v in lines.items() if r.startswith("Type ")}
     assert list(types) == ["Type 1 : L4-1-24G en fr-par-2", "Type 2 : L4-1-24G en fr-par-1",
-                           "Type 3 : L40S-1-48G en fr-par-2", "Type 4 : RENDER-S en fr-par-2", "Type 5 : GP1-S en fr-par-2"]
+                           "Type 3 : L40S-1-48G en fr-par-2", "Type 4 : GP1-S en fr-par-2"]
     assert types["Type 1 : L4-1-24G en fr-par-2"] == (D.PRET, "GPU, available, 0,7875 €/h au catalogue")
-    assert types["Type 5 : GP1-S en fr-par-2"][1].startswith("processeur (repli), available")
+    assert types["Type 4 : GP1-S en fr-par-2"][1].startswith("processeur (repli), available")
     api = ScalewayApi(**{"/instance/v1/zones/fr-par-2/products/servers/availability": (200, {"servers": {
         "L4-1-24G": {"availability": "shortage"}, "L40S-1-48G": {"availability": "scarce"}, "GP1-S": {"availability": "available"}}}),
         "/instance/v1/zones/fr-par-2/products/servers": (200, {"servers": {"L4-1-24G": {"hourly_price": 0.99},
@@ -153,7 +153,10 @@ def test_every_calculation_type_shows_its_stock_and_price(monkeypatch):
     lines, _ = _run(api)
     l4 = lines["Type 1 : L4-1-24G en fr-par-2"]
     assert l4[0] == D.A_VERIFIER and "shortage" in l4[1] and "à mettre à jour" in l4[1]   # rupture : pas un manque
-    assert lines["Type 4 : RENDER-S en fr-par-2"] == (D.MANQUE, "GPU, absent du catalogue, prix inconnu")
+    assert lines["Type 2 : L4-1-24G en fr-par-1"][0] == D.PRET
+    api = ScalewayApi(**{"/instance/v1/zones/fr-par-1/products/servers/availability": (200, {"servers": {}})})
+    lines, _ = _run(api)
+    assert lines["Type 2 : L4-1-24G en fr-par-1"] == (D.MANQUE, "GPU, absent du catalogue, 0,7875 €/h au catalogue")
 
 
 def test_copernicus_is_checked_first_and_refused_keys_are_reported(monkeypatch):

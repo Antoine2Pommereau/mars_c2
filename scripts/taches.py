@@ -39,6 +39,7 @@ Usage :
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? lecture seule, aucune création, aucun coût
     python scripts/taches.py sentinel-candidats [H]    # passages des H (36) dernières heures avec un navire des listes
+    python scripts/taches.py sentinel-lever-incompatible TYPE ZONE   # lève le marquage d'un GPU inutilisable
     python scripts/taches.py coupures-injection [--jour 2026-10-09] [--essais 20]
                                                       # test par injection de la règle des coupures (rien n'est écrit)
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
@@ -565,7 +566,10 @@ def _sentinel_diagnostic(conn, _a):
     recorded = conn.execute("SELECT id, volumes_bloc FROM travailleurs WHERE tache = 'sentinel' AND "
                             "cardinality(volumes_bloc) > 0 AND cree_le > now() - interval '30 days' "
                             "ORDER BY id").fetchall()
-    lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env(), recorded=recorded)
+    marques = conn.execute("SELECT commercial_type, zone, depuis, jusqu_au, message, travailleur_id FROM types_incompatibles "
+                           "WHERE leve_le IS NULL AND jusqu_au > now() ORDER BY depuis").fetchall()
+    lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env(), recorded=recorded,
+                           marques=marques)
     print(diagnostic.report(lines))
     sys.exit(1 if any(s == diagnostic.MANQUE for s, _r, _d in lines) else 0)
 
@@ -578,6 +582,17 @@ def _sentinel(manual: bool):
         if run(conn, "sentinel", lambda: launch_sentinel(conn, pid), parent=traces.traceparent()) is None:
             sys.exit(1)
     return go
+
+
+@commande("sentinel-lever-incompatible")              # GPU de nouveau utilisable (pilote corrigé) : marquage levé
+def _sentinel_lever_incompatible(conn, a):
+    if len(a.args) != 2:
+        raise SystemExit("Préciser le type et la zone : taches.py sentinel-lever-incompatible L40S-1-48G fr-par-2")
+    n = conn.execute("UPDATE types_incompatibles SET leve_le = now() WHERE commercial_type = %s AND zone = %s "
+                     "AND leve_le IS NULL AND jusqu_au > now()", tuple(a.args)).rowcount
+    traces.attributs(**{"marquage.type": a.args[0], "marquage.zone": a.args[1], "marquage.leves": n})
+    print(f"{n} marquage(s) levé(s) pour {a.args[0]} en {a.args[1]}" if n else
+          f"Aucun marquage actif pour {a.args[0]} en {a.args[1]}")
 
 
 @commande("sentinel-candidats")                      # essai réel : passages récents avec un navire des listes

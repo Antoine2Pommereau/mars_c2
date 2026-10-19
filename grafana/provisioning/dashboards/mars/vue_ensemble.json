@@ -628,30 +628,35 @@
             "color": "#ef6461",
             "index": 0
            },
+           "gpu_inutilisable": {
+            "text": "GPU inutilisable",
+            "color": "#ef6461",
+            "index": 1
+           },
            "termine": {
             "text": "terminée",
             "color": "#7c8b97",
-            "index": 1
+            "index": 2
            },
            "resultats": {
             "text": "résultats reçus",
             "color": "#4fb6c8",
-            "index": 2
+            "index": 3
            },
            "demarre": {
             "text": "en cours",
             "color": "#4fb6c8",
-            "index": 3
+            "index": 4
            },
            "cree": {
             "text": "créée",
             "color": "#4fb6c8",
-            "index": 4
+            "index": 5
            },
            "demande": {
             "text": "demandée",
             "color": "#4fb6c8",
-            "index": 5
+            "index": 6
            }
           }
          }

@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.27"
+version: "2026.10.28"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -275,6 +275,7 @@ travailleurs:
     travailleurs: 1
     minutes: 60            # une heure : DEV1-M facturée à l'heure entamée, une nuit dure 6 à 10 minutes
   facturation_min_min: 60  # instances CPU facturées à l'heure, une heure au moins
+  incompatibilite_jours: 7  # lot C4 : type au GPU inutilisable (nvidia-smi, NVML) jamais essayé pendant 7 jours
   types:
     viirs:
       commercial_type: DEV1-M        # 3 vCPU, 4 Go : 1,45 Go mesurés au plus pour le modèle
@@ -311,10 +312,10 @@ travailleurs:
         - commercial_type: L40S-1-48G  # Ada comme le L4 (sm_89, même chemin CUDA éprouvé le 14/10), 48 Go
           zone: fr-par-2
           prix_heure: 1.4699
-        - commercial_type: RENDER-S    # Tesla P100 16 Go (Pascal, sm_60, compilé dans PyTorch 1.13), disque local
-          zone: fr-par-2
-          volume: l_ssd
-          prix_heure: 1.221
+        # RENDER-S (Tesla P100, Pascal) retiré le 19/10/2026 après l'essai réel (passage 149, analyse 96, travailleur
+        # 26) : docker run --gpus en échec en 5 s, code 125, « failed to initialize NVML: Driver Not Loaded ». L'image
+        # « Ubuntu Noble GPU OS 13 » charge les modules noyau ouverts de NVIDIA, qui ne gèrent que Turing et plus
+        # récent : aucun Pascal ne peut servir. Pas remplacé (aucun autre GPU compatible dans la région fr-par).
       # Repli sur processeur après repli_cpu_apres_h sans GPU (fenêtres seules) : GP1-S, 8 processeurs et 32 Go
       # (modèle et deux fenêtres en mémoire, avec marge), disque local de 300 Go, 0,19 €/h, « available » en fr-par-1 et
       # fr-par-2 le 19/10/2026, quand POP2-8C-32G (0,29 €/h) était « scarce » et demande un volume bloc

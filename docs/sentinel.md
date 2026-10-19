@@ -314,8 +314,14 @@ plus récentes : le L4, sm_89, l'a confirmé à l'essai 20), 16 Go de mémoire G
 | 1 | L4-1-24G | fr-par-2 | L4 24 Go | 0,79 €/h | shortage | éprouvé (essai 20) |
 | 2 | L4-1-24G | fr-par-1 | L4 24 Go | 0,79 €/h | shortage | même GPU, autre stock |
 | 3 | L40S-1-48G | fr-par-2 | L40S 48 Go | 1,47 €/h | shortage | Ada comme le L4 (même chemin CUDA) |
-| 4 | RENDER-S | fr-par-2 | P100 16 Go | 1,22 €/h | **available** | Pascal (sm_60, compilé dans PyTorch 1.13), disque local ; pilote récent de l'image GPU OS à confirmer |
+| ~~4~~ | ~~RENDER-S~~ | fr-par-2 | P100 16 Go | 1,22 €/h | available | **retiré le 19/10/2026 (lot C4)** : voir ci dessous |
 | repli | GP1-S | fr-par-2 | aucun (8 processeurs, 32 Go) | 0,19 €/h | available | voir ci dessous |
+
+**RENDER-S retiré** après l'essai réel du 19/10/2026 (passage 149, analyse 96, travailleur 26, trace
+8a5f1602947453bf4ee1fe037e80f836) : démarrage en 1 min 14 s, réseau privé, Docker et image d'AI2 réussis, puis
+`docker run --gpus` en échec en 5 s, code 125, « failed to initialize NVML: Driver Not Loaded ». L'image « Ubuntu Noble
+GPU OS 13 » charge les modules noyau ouverts de NVIDIA, qui ne gèrent que Turing et plus récent : aucun Pascal ne peut
+servir. Non remplacé. Ordre restant : L4 fr-par-2, L4 fr-par-1, L40S fr-par-2, puis repli GP1-S.
 
 Écartés : H100 (Hopper, sm_90, au delà de CUDA 11.7, 2,87 €/h), L4 et H100 de pl-waw-2 (hors de la région du réseau
 privé), multi GPU (une scène à la fois), GPU-3070 (absent du catalogue). `taches.py sentinel-diagnostic` affiche la
@@ -398,11 +404,82 @@ processeur, attente) et table des analyses avec leur trace.
 7. Relever pour ajuster les estimations : `analyses.octets_lus`, `timings` (lecture et analyse par fenêtre, mémoire
    GPU), durée et coût dans `task_runs` (`travailleur_sentinel`).
 
+## Lot C4 : GPU inutilisable, échec signalé, essai forcé sur processeur (19/10/2026)
+
+* **Contrôle du GPU avant l'analyse** (`travailleurs/demarrage.sh`, étape `controle_gpu`, avant même le
+  téléchargement de l'image de 5 Go) : `nvidia-smi` donne le nom du GPU, le pilote, la mémoire et la version de CUDA,
+  dans le journal et en attributs du span (`gpu.nom`, `gpu.pilote`, `gpu.memoire`, `gpu.cuda`). Échec ou aucun GPU :
+  journal envoyé, état **« gpu_inutilisable »** signalé au serveur avec le message (dernières lignes utiles, `dmesg`
+  nvidia), span en erreur, arrêt sans `docker run`. Filet : `docker run` qui sort en 125 avec NVML ou CDI dans sa sortie
+  est traité de même.
+* **Serveur** : un GPU inutilisable est un problème de type, pas d'analyse. Instance et volume détruits à la minute
+  même ; analyse remise en « attente_gpu », reprise au cycle suivant avec le type suivant (pas d'échec, pas de nouvelle
+  analyse, plafond de scènes non entamé une seconde fois) ; coût réel du travailleur compté dans le budget du mois ;
+  type et zone **marqués incompatibles 7 jours** (`types_incompatibles`, migration 29 : date, message, travailleur,
+  trace), sautés par le choix du calcul (attribut `incompatible.<type zone>` de `sentinel.choix_calcul`) ; une alerte
+  ntfy par marquage (règle « GPU marqué incompatible »). `sentinel-diagnostic` affiche les marquages actifs, leur
+  cause et leur date de fin ; levée à la main :
+  `docker compose exec taches python scripts/taches.py sentinel-lever-incompatible L40S-1-48G fr-par-2`.
+* **Échec signalé tout de suite** (constat de l'essai 26 : rien n'était signalé, le serveur attendait 45 min, instance
+  « stopped in place » facturée environ 30 min pour rien) : toute sortie en échec du script de démarrage envoie l'état
+  **« echec »** avec l'étape et le motif (code de sortie, dernière ligne d'erreur utile) avant l'arrêt différé. Le
+  serveur passe le travailleur en échec, le détruit à la minute suivante, ferme la trace par un span
+  `travailleur.echec` (motif reçu), et : analyse remise en attente si la machine est en cause (Docker, pilote, image :
+  étapes `installation_docker`, `telechargement_image`, `analyse_docker` pour les codes 125 à 127), analyse en échec si
+  c'est l'analyse elle même (étape `analyse`). Filet : une instance « stopped in place » ou « stopped » d'un
+  travailleur encore « en cours » est traitée comme un échec de la machine et détruite aussitôt.
+* **Sondages regroupés** : l'attente du démarrage d'une instance et celle de la carte du réseau privé sont un seul
+  span chacune (`scaleway.attente_demarrage`, `scaleway.attente_reseau_prive` : nombre de sondages, durée, état final,
+  dernier état intermédiaire) ; création, action de démarrage et suppressions gardent leur span.
+* **Analyse 96** : remise en échec avec sa cause par la migration 29, ce qui libère le passage 149 pour une nouvelle
+  analyse lancée à la main ; le travailleur 26 reste dans l'historique, en échec, avec la cause NVML ; le RENDER-S y est
+  marqué incompatible à la date de l'essai (sans alerte).
+
+### Essai forcé sur processeur (passage 149)
+
+`SENTINEL_CALCUL_ESSAI=cpu`, sur le modèle de `SENTINEL_PLAFOND_ESSAI` : pour la seule commande manuelle
+`sentinel-analyser`, le repli GP1-S est lancé tout de suite (fenêtres seules, jamais une scène entière : refus clair si
+le passage n'a aucune fenêtre), sans attendre `repli_cpu_apres_h`. La boucle automatique et `config/rules.yaml` ne sont
+pas touchés. Motif enregistré dans l'analyse et dans la trace : « essai forcé sur processeur ».
+
+1. `docker compose exec taches python scripts/taches.py sentinel-diagnostic` : aucune ligne MANQUE ; GP1-S en fr-par-2
+   « available ».
+2. `docker compose exec taches python scripts/taches.py sentinel-candidats 72` : le passage 149 et ses fenêtres
+   (navires des listes de l'emprise). Le passage est acquis depuis plus de 24 h : la fenêtre utile ne concerne que les
+   reprises automatiques, la commande manuelle analyse quand même.
+3. Lancer :
+   `docker compose exec -e SENTINEL_PLAFOND_ESSAI=1 -e SENTINEL_CALCUL_ESSAI=cpu taches python scripts/taches.py sentinel-analyser 149`
+   Réponse attendue : `calcul: cpu`, `type: GP1-S`, `motif: essai forcé sur processeur …`, `cout_estime_eur` de 0,19
+   (une heure entamée de GP1-S pour une à quatre fenêtres).
+4. Durée attendue : création et démarrage 1 à 2 min (disque local, aucun volume bloc), installation de Docker 1 à
+   2 min, image d'AI2 de 5 Go 3 à 6 min, puis environ 8 à 12 min par fenêtre sur 8 processeurs (470 s par fenêtre de
+   2 300 pixels mesurés en émulation sur le Mac, borne haute) : **20 à 35 min pour une ou deux fenêtres**, sous la
+   durée de vie de 150 min du type. Coût : **0,19 € HT** (facturé à l'heure entamée).
+5. Spans attendus, dans l'ordre (Grafana, Vue d'ensemble, « Dernières traces de bout en bout », colonne Trace) :
+   `commande sentinel-analyser` › `tache sentinel` (attribut `sentinel.calcul_force: cpu`) › `sentinel.attente` ›
+   `sentinel.selection` › `sentinel.fenetres` › `sentinel.verification_cles` › `sentinel.choix_calcul`
+   (`sentinel.calcul_force: cpu`, `dispo.GP1-S fr-par-2`, `sentinel.motif: essai forcé sur processeur…`) ›
+   `sentinel.disponibilite` › `sentinel.essai_type` (GP1-S, cpu) › `travailleur.lancement` › `scaleway.image` ›
+   `scaleway.creation` (POST) › `scaleway.verification_demarrage` › `scaleway.reseau_prive` (POST, puis
+   `scaleway.attente_reseau_prive`) › `scaleway.cloud_init` › `scaleway.demarrage` (POST action, puis
+   `scaleway.attente_demarrage`) ; sur le travailleur : `travailleur.demarrage` › `demarrage.interface_privee` ›
+   `demarrage.contact_serveur` › `demarrage.installation_docker` › `demarrage.telechargement_image` ›
+   `demarrage.analyse` › `travailleur.sentinel` › `travailleur.remise_tache` › `sentinel.preparation_gpu`
+   (`sentinel.gpu` vide : processeur) › `sentinel.scene` › `sentinel.fenetre` › `GET S3 eodata VV fenêtre` et `VH` ›
+   `sentinel.preparation_scene` › `sentinel.inference` › `sentinel.mesures_et_vignettes` ›
+   `travailleur.renvoi_resultats` ; enfin sur le serveur `travailleur.resultats` › `sentinel.fusion_et_alertes` ›
+   `sentinel.vignettes` › `travailleur.destruction`. Pas d'étape `demarrage.controle_gpu` (aucun GPU demandé).
+6. Console Scaleway : aucune instance `mars-travailleur-*` restante (GP1-S : disque local, pas de volume bloc).
+7. Relever : `analyses.octets_lus` et `timings` (durée par fenêtre sur processeur, pour ajuster
+   `minutes_par_fenetre_cpu`), coût et durée dans `task_runs` (`travailleur_sentinel`).
+
 ## Limites
 
 * Aucune analyse aboutie sur une vraie instance GPU à ce jour (essai 20 : GPU vu, import corrigé depuis) ; la
   lecture par fenêtres est éprouvée dans la vraie image d'AI2 contre un faux S3, pas encore contre Copernicus (aucune
-  clé sur le Mac) ; RENDER-S (P100) et le repli GP1-S ne sont pas encore essayés chez Scaleway.
+  clé sur le Mac) ; le repli GP1-S n'est pas encore essayé chez Scaleway (essai forcé ci dessus).
+* Aucun GPU Pascal ne peut servir avec l'image GPU de Scaleway (modules noyau ouverts de NVIDIA, Turing et plus récent) :
+  RENDER-S retiré le 19/10/2026 ; quand L4 et L40S sont en rupture, seul le repli sur processeur reste.
 * Sentinel 2 (optique) n'est pas dans cette livraison ; le registre des preuves l'attend (`sentinel2`).
 * Le modèle d'AI2 manque une partie des petits navires ; AIS_UNCONFIRMED ne concerne que les navires de 50 m et plus.
 * Les seuils d'incohérence et de persistance sont des valeurs de départ, à calibrer sur les premiers passages.

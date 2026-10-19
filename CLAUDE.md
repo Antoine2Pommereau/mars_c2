@@ -59,8 +59,9 @@ TrAISformer ensuite ; **CircleNet** (xView3) gardé en repli et en comparaison.
 **Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu (**faites**, alertes WATCHLIST et
 IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (lot A, calendrier des
 passages Sentinel 1 et 2, **fait** ; lot B, VIIRS chaque nuit par travailleurs éphémères, **fait** ; lot C, analyse
-Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1, C2 et C3 faits (C3 : rupture de stock, types
-de secours, fenêtres utiles, repli sur processeur) ; aucune analyse aboutie sur un vrai GPU à ce jour ; Sentinel arrêté
+Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1 à C4 faits (C3 : rupture de stock, types de
+secours, fenêtres utiles, repli sur processeur ; C4 : GPU inutilisable, échec signalé, essai forcé sur processeur) ;
+aucune analyse aboutie sur un vrai GPU à ce jour ; Sentinel arrêté
 (`scenes_max_par_jour: 0`) jusqu'à l'essai réel du lot C3** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle. Étape D, supervision (Grafana sur PostgreSQL, alertes sur le téléphone par ntfy, contrôles de santé avec redémarrage automatique) : **faite** (`docs/supervision.md`).
 
 **Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
@@ -561,13 +562,24 @@ signature AWS version 4 de GDAL, 11,6 % du fichier lu pour une fenêtre de 24 km
 chaîne d'AI2 sur une fenêtre et sur la scène entière : mêmes détections à 6,3 m près, 470 s contre 855 s sur processeur
 émulé. Pas encore éprouvé contre Copernicus ni sur une instance réelle ; `scenes_max_par_jour` reste à 0.
 
+**Lot C4, GPU inutilisable (19/10/2026)** (migration 29, règles 2026.10.28, `docs/sentinel.md`) : essai réel du lot C3
+(passage 149, analyse 96, travailleur 26) sur un RENDER-S, `docker run --gpus` en échec, « failed to initialize NVML:
+Driver Not Loaded » (modules noyau ouverts de NVIDIA, sans Pascal) : RENDER-S retiré de la liste. Contrôle du GPU par
+`nvidia-smi` avant l'analyse (étape `controle_gpu`, attributs du GPU) ; état « gpu_inutilisable » : instance détruite,
+analyse remise en attente, type marqué incompatible 7 jours (`types_incompatibles`, une alerte ntfy par marquage,
+levée par `taches.py sentinel-lever-incompatible`) ; toute sortie en échec du script de démarrage signale « echec »
+avec l'étape et le motif (destruction à la minute suivante, attente si la machine est en cause, échec si c'est
+l'analyse), filet sur une instance arrêtée d'elle même ; budget sur le coût réel de chaque travailleur ;
+`SENTINEL_CALCUL_ESSAI=cpu` pour la seule commande manuelle (repli GP1-S immédiat) ; sondages de Scaleway en un seul
+span d'attente. Analyse 96 remise en échec (passage 149 relançable à la main).
+
 ## 10. Tests
 
-`python -m pytest tests` : 219 réussis, 40 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 39 sans
+`python -m pytest tests` : 227 réussis, 46 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 45 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 258 réussis, 1 ignoré (lot C3 : rupture de stock, attente, reprise, repli sur processeur, abandon, plafond de l'essai manuel, reclassement des analyses sans scène aboutie ; identifiant de trace des alertes par le déclencheur ; rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 272 réussis, 1 ignoré (lot C4 : GPU inutilisable, échec signalé, instance arrêtée, essai forcé sur processeur ; script de démarrage exécuté avec de fausses commandes, `tests/test_demarrage.py`, avec `gdate` ; lot C3 : rupture de stock, attente, reprise, repli sur processeur, abandon, plafond de l'essai manuel, reclassement des analyses sans scène aboutie ; identifiant de trace des alertes par le déclencheur ; rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `tests/test_traces.py` : chaque commande de `taches.py` et chaque type de travailleur tracés (échoue sinon), filtre des données sensibles, script de démarrage bash (avec `gdate` sur le Mac). `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -764,3 +776,9 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * **Stock des GPU chez Scaleway** : catalogue et disponibilités publics (`/instance/v1/zones/<zone>/products/servers`
   et `/availability`, sans clé) ; « scarce » ne garantit rien (412 out_of_stock au démarrage le 16/10/2026). Le réseau
   privé est régional : un GPU de pl-waw-2 ne peut pas renvoyer ses résultats au serveur de fr-par.
+* **GPU Pascal et image GPU de Scaleway** (essai 26 du 19/10/2026) : « Ubuntu Noble GPU OS 13 » charge les modules
+  noyau ouverts de NVIDIA, qui ne gèrent que Turing et plus récent ; un P100 (RENDER-S) démarre mais `docker run
+  --gpus` échoue (« failed to initialize NVML: Driver Not Loaded »). Le catalogue ne le dit pas : seul le contrôle du
+  GPU sur l'instance (`controle_gpu`) le révèle.
+* Une alerte « une fois » de Grafana (abandon Sentinel, GPU marqué incompatible) regarde une fenêtre de 55 minutes :
+  avec le rappel d'une heure de la politique ntfy, une fenêtre plus longue enverrait une seconde notification.

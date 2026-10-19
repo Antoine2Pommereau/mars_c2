@@ -719,6 +719,11 @@
             "text": "terminé",
             "color": "#7c8b97",
             "index": 1
+           },
+           "gpu_inutilisable": {
+            "text": "GPU inutilisable",
+            "color": "#ef6461",
+            "index": 2
            }
           }
          }
@@ -1328,6 +1333,109 @@
   {
    "id": 17,
    "type": "table",
+   "title": "Types marqués incompatibles",
+   "description": "GPU inutilisable constaté par le travailleur au contrôle du GPU (NVML) : type et zone jamais essayés jusqu'à la date de fin, sauf levée à la main (commande de levée, docs/sentinel.md).",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 34,
+    "w": 24,
+    "h": 6
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT commercial_type || ' ' || zone AS \"Type\", depuis AS \"Depuis\", jusqu_au AS \"Jusqu'au\", CASE WHEN leve_le IS NOT NULL THEN 'levé le ' || to_char(leve_le, 'DD/MM HH24:MI') WHEN jusqu_au > now() THEN 'actif' ELSE 'expiré' END AS \"État\", travailleur_id AS \"Travailleur\", left(coalesce(message, ''), 160) AS \"Cause\", trace_id AS \"Trace\" FROM types_incompatibles WHERE jusqu_au > now() - interval '30 days' ORDER BY depuis DESC LIMIT 50"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Trace"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Ouvrir la trace dans Tempo (vue Gantt)",
+          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+         }
+        ]
+       },
+       {
+        "id": "custom.width",
+        "value": 120
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "État"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "actif": {
+            "text": "actif",
+            "color": "#f0a84b",
+            "index": 0
+           }
+          }
+         }
+        ]
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
+  },
+  {
+   "id": 18,
+   "type": "table",
    "title": "Passages Sentinel 1",
    "description": "",
    "datasource": {
@@ -1336,7 +1444,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 34,
+    "y": 40,
     "w": 24,
     "h": 9
    },

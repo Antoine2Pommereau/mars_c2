@@ -237,34 +237,42 @@ class Scaleway:
         nic = self._req("POST", f"/instance/v1/zones/{zone}/servers/{server_id}/private_nics",
                         json={"private_network_id": private_network_id})["private_nic"]
         waited = 0.0
-        while nic.get("state") != "available":
-            if nic.get("state") in ("syncing_error", "error"):
-                raise ScalewayError(f"rattachement au réseau privé en erreur (état {nic.get('state')})")
-            if waited >= wait_s:
-                raise ScalewayError(f"rattachement au réseau privé non prêt après {wait_s:.0f} s (état {nic.get('state')})")
-            sleep(3)
-            waited += 3
-            d = self._req("GET", f"/instance/v1/zones/{zone}/servers/{server_id}/private_nics/{nic['id']}")
-            nic = d["private_nic"] if d is not GONE else {"state": "error"}
+        with traces.sondage("scaleway.attente_reseau_prive", **{"scaleway.zone": zone}) as so:
+            so.etat(nic.get("state"))
+            while nic.get("state") != "available":
+                if nic.get("state") in ("syncing_error", "error"):
+                    raise ScalewayError(f"rattachement au réseau privé en erreur (état {nic.get('state')})")
+                if waited >= wait_s:
+                    raise ScalewayError(f"rattachement au réseau privé non prêt après {wait_s:.0f} s "
+                                        f"(état {nic.get('state')})")
+                sleep(3)
+                waited += 3
+                with traces.sans_instrumentation():
+                    d = self._req("GET", f"/instance/v1/zones/{zone}/servers/{server_id}/private_nics/{nic['id']}")
+                nic = d["private_nic"] if d is not GONE else {"state": "error"}
+                so.etat(nic.get("state"))
         if nic.get("private_network_id") not in (None, private_network_id):
             raise ScalewayError("carte rattachée à un autre réseau privé")
         return nic
 
     def start(self, zone: str, server_id: str, wait_s: float = 300, sleep=time.sleep):
         """Démarre l'instance et attend l'état « running » ; ScalewayError si elle s'arrête ou tarde."""
-        self.action(zone, server_id, "poweron")
+        self.action(zone, server_id, "poweron")              # requête qui change quelque chose : son propre span
         waited = 0.0
-        while True:
-            s = self.server(zone, server_id)
-            state = (s or {}).get("state")
-            if state == "running":
-                return
-            if s is None or (state in ("stopped", "stopped in place") and waited >= 15):
-                raise ScalewayError(f"démarrage en échec (état {state})")
-            if waited >= wait_s:
-                raise ScalewayError(f"démarrage non abouti après {wait_s:.0f} s (état {state})")
-            sleep(3)
-            waited += 3
+        with traces.sondage("scaleway.attente_demarrage", **{"scaleway.zone": zone}) as so:
+            while True:
+                with traces.sans_instrumentation():          # un span pour toute l'attente, pas un par GET
+                    s = self.server(zone, server_id)
+                state = (s or {}).get("state")
+                so.etat(state)
+                if state == "running":
+                    return
+                if s is None or (state in ("stopped", "stopped in place") and waited >= 15):
+                    raise ScalewayError(f"démarrage en échec (état {state})")
+                if waited >= wait_s:
+                    raise ScalewayError(f"démarrage non abouti après {wait_s:.0f} s (état {state})")
+                sleep(3)
+                waited += 3
 
     def action(self, zone: str, server_id: str, action: str):
         """Seul le démarrage passe par ici ; toute action destructrice passe par destroy (et sa garde)."""
@@ -670,6 +678,8 @@ def _journal(conn, w: dict, rules: dict):
         details["volumes_bloc_supprimes"] = list(w["volumes_bloc"])        # journalisé une fois l'instance détruite
     if w.get("rupture_stock"):          # attendue : ni échec de tâche (alerte « deux échecs de suite »), ni coût
         details.update({"refus": True, "rupture_stock": True})
+    if (w.get("mesures") or {}).get("fin_signalee") == "gpu_inutilisable":   # alerte par le marquage seulement
+        details.update({"refus": True, "gpu_inutilisable": True})
     conn.execute(
         "INSERT INTO task_runs (task, run_day, started_at, finished_at, status, details, trace_id) "
         "VALUES (%s, %s, %s, now(), %s, %s, %s)",
@@ -722,7 +732,28 @@ def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: d
     # Durée de vie du type réellement lancé (repli sur processeur : plus longue, lot C3), sinon celle de tous
     duree_max = type_params(rules, w["tache"], variante_de(rules, w["tache"], w.get("commercial_type"), w.get("zone"))
                             ).get("duree_max_min", p["duree_max_min"])
-    if w["etat"] == "resultats":
+    mesures = w.get("mesures") or {}
+    # Lot C4 : fin signalée par le travailleur (script de démarrage), ou instance arrêtée d'elle même : traitée tout de
+    # suite (destruction à cette minute même), sans attendre la durée de vie
+    if w["etat"] == "gpu_inutilisable":
+        with traces.span("travailleur.gpu_inutilisable", parent=tp, **{**attrs, "travailleur.type": w.get("commercial_type"),
+                                                                     "travailleur.zone": w.get("zone")}):
+            traces.erreur(w.get("erreur") or "GPU inutilisable")
+            marquer_incompatible(conn, rules, w, log)
+            remettre_en_attente(conn, w, f"GPU inutilisable sur {w.get('commercial_type')} ({w.get('zone')}) : type "
+                                         "marqué incompatible, type suivant au prochain essai")
+            conn.execute("UPDATE travailleurs SET etat = 'echec' WHERE id = %s", (w["id"],))
+        w["etat"] = "echec"
+    elif w["etat"] == "echec" and mesures.get("fin_signalee") == "echec" and not mesures.get("echec_traite"):
+        _echec_signale(conn, w, tp, attrs, mesures.get("etape_echec") or "", w.get("erreur") or "échec signalé")
+    elif (w["etat"] in ("cree", "demarre") and scw is not None and w["scw_server_id"] and age_min > 3
+          and _arretee(scw, w)):
+        motif = "instance arrêtée d'elle même sans résultat (sortie du script de démarrage en échec)"
+        conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = now(), erreur = coalesce(erreur, %s) "
+                     "WHERE id = %s", (motif, w["id"]))
+        w["etat"], w["erreur"] = "echec", w.get("erreur") or motif
+        _echec_signale(conn, w, tp, attrs, "machine", motif)
+    elif w["etat"] == "resultats":
         with traces.span("travailleur.resultats", parent=tp, **attrs), traces.en_base(conn):
             if not _resultats(conn, handlers, w):
                 return
@@ -758,6 +789,77 @@ def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: d
             w["detruit_le"] = now
             _journal(conn, w, rules)
             out["detruits"] += 1
+
+
+# Étapes du script de démarrage dont l'échec relève de la machine (Docker, pilote, image, réseau) : l'analyse n'y est
+# pour rien et repart en attente ; un échec de l'étape « analyse » (code de sortie du script d'analyse) est le sien
+ETAPES_MACHINE = {"machine", "demarrage", "interface_privee", "contact_serveur", "installation_docker",
+                  "telechargement_image", "controle_gpu", "analyse_docker"}
+
+
+def _arretee(scw, w: dict) -> bool:
+    """Instance d'un travailleur actif arrêtée d'elle même (« stopped in place » ou « stopped ») : le script de démarrage
+    a fini en échec sans pouvoir le dire. Lecture sans span (sondage de chaque minute)."""
+    try:
+        with traces.sans_instrumentation():
+            s = scw.server(w["zone"], w["scw_server_id"])
+    except Exception:
+        return False
+    return bool(s) and s.get("state") in ("stopped in place", "stopped")
+
+
+def _echec_signale(conn, w: dict, tp, attrs: dict, etape: str, motif: str):
+    """Échec signalé par le travailleur (ou instance arrêtée) : span « travailleur.echec » qui ferme la trace, analyse
+    remise en attente si la machine est en cause, en échec sinon ; une seule fois."""
+    machine = etape in ETAPES_MACHINE
+    with traces.span("travailleur.echec", parent=tp, **{**attrs, "travailleur.etape": etape,
+                                                        "travailleur.cause": "machine" if machine else "analyse"}):
+        traces.erreur(motif)
+        if machine:
+            remettre_en_attente(conn, w, f"travailleur {w['id']} en échec ({etape}) : {motif}"[:900])
+        else:
+            n = conn.execute("UPDATE analyses SET status = 'failed', completed_at = now(), error = %s "
+                             "WHERE travailleur_id = %s AND status IN ('pending', 'running')",
+                             (f"travailleur : {motif}"[:1000], w["id"])).rowcount
+            traces.attributs(**{"travailleur.analyses_en_echec": n})
+        conn.execute("UPDATE travailleurs SET mesures = coalesce(mesures, '{}'::jsonb) || '{\"echec_traite\": true}' "
+                     "WHERE id = %s", (w["id"],))
+
+
+def remettre_en_attente(conn, w: dict, motif: str) -> int:
+    """Analyses du travailleur remises en attente d'un calcul, reprises au cycle suivant avec le type suivant : pas
+    d'échec, pas de nouvelle analyse (le plafond de scènes n'est pas entamé une seconde fois)."""
+    n = conn.execute(
+        "UPDATE analyses SET status = 'attente_gpu', attente_depuis = coalesce(attente_depuis, requested_at), "
+        "prochain_essai = now(), calcul_motif = %s WHERE travailleur_id = %s AND status IN ('pending', 'running')",
+        (motif[:1000], w["id"])).rowcount
+    traces.attributs(**{"travailleur.analyses_en_attente": n})
+    return n
+
+
+def incompatibles(conn) -> dict:
+    """Types marqués incompatibles et encore actifs : {(type, zone): fin du marquage}."""
+    return {(t, z): fin for t, z, fin in conn.execute(
+        "SELECT commercial_type, zone, max(jusqu_au) FROM types_incompatibles WHERE leve_le IS NULL AND jusqu_au > now() "
+        "GROUP BY 1, 2").fetchall()}
+
+
+def marquer_incompatible(conn, rules: dict, w: dict, log=print) -> bool:
+    """Type et zone d'un travailleur au GPU inutilisable marqués incompatibles pendant `incompatibilite_jours` (7) :
+    jamais essayés d'ici là (sauf levée à la main). Un seul marquage actif par type et zone ; la règle de Grafana
+    envoie une alerte par marquage."""
+    jours = rules["travailleurs"].get("incompatibilite_jours", 7)
+    with traces.span("travailleur.marquage_incompatible", **{"travailleur.type": w.get("commercial_type"),
+                                                             "travailleur.zone": w.get("zone"), "marquage.jours": jours}):
+        if (w.get("commercial_type"), w.get("zone")) in incompatibles(conn):
+            traces.attributs(**{"marquage.deja_actif": True})
+            return False
+        conn.execute("INSERT INTO types_incompatibles (commercial_type, zone, jusqu_au, message, travailleur_id, trace_id) "
+                     "VALUES (%s, %s, now() + make_interval(days => %s), %s, %s, %s)",
+                     (w.get("commercial_type"), w.get("zone"), jours, (w.get("erreur") or "")[:1000], w["id"],
+                      traces.trace_de(w.get("traceparent"))))
+        log(f"travailleur {w['id']} : {w.get('commercial_type')} en {w.get('zone')} marqué incompatible pour {jours} jours")
+        return True
 
 
 def _resultats(conn, handlers: dict, w: dict) -> bool:
