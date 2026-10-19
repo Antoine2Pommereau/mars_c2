@@ -592,7 +592,7 @@ docker compose rm -sf collector ingest taches && docker image prune -af
 docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
 docker compose rm -sf backend web && docker image prune -af
 docker compose pull backend web && docker compose up -d --no-build backend web
-docker compose up -d grafana                              # relit la source Tempo et le tableau Traces
+docker compose restart grafana                            # relit la source Tempo, le tableau Traces et les règles
 ```
 
 Vérifier :
