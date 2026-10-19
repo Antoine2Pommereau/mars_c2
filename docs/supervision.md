@@ -199,8 +199,12 @@ docker compose exec taches python scripts/taches.py stats-reconstruire 2026-10-1
 docker compose exec taches python scripts/taches.py stats-trous 2026-10-06   # trous de plus de 5 min, positions dedans
 ```
 
-Bornes en UTC, alignées sur les tranches de 10 minutes ; `stats-trous` donne pour chaque trou le nombre de positions
-qu'il contient : un vrai arrêt de la collecte en a zéro, un trou des statistiques en a des milliers. Mesure sur la
+Bornes en UTC, alignées sur les tranches de 10 minutes. `stats-trous` donne pour chaque trou le nombre de positions
+de ses seules minutes (la minute qui le précède a sa ligne et n'est pas comptée) et le qualifie : sous 5 % du flux
+habituel (médiane des positions par minute) sur sa durée, c'est un vrai arrêt du flux, que `stats-reconstruire` ne
+peut pas remplir ; au dessus, un trou des statistiques à reconstruire. Cas du 14/10/2026, 10:17 à 12:59 : 154
+positions en 162 min, venues de la minute précédant le trou (comptée à tort avant la correction), pour environ 190
+par minute d'habitude : vrai arrêt. Mesure sur la
 copie réelle (159 000 positions sur 27 h) : 1 020 minutes reconstruites en 2,7 s, second passage en 1,2 s sans aucune
 écriture, garde de 24 h en 0,05 s.
 

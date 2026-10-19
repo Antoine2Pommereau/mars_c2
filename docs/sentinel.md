@@ -548,6 +548,12 @@ Coût réel de chaque travailleur, calculé à sa destruction (création à dest
 jamais lancé tant qu'aucun travailleur n'a abouti sur lui ; il faut alors `SENTINEL_CALCUL_ESSAI` explicite. Aucun type
 de la liste actuelle n'est concerné ; le RENDER-S l'aurait été.
 
+### Sentinel 1 rallumé en automatique (19/10/2026, règles 2026.10.30)
+
+Preuves du lot C5 faites sur le serveur (statistiques reconstruites, `flux_coupe` de l'analyse 97 à false, sélection
+à quai active) : `scenes_max_par_jour` passe de 0 à 2, budget de 6 € par mois inchangé. Remettre 0 arrête tout,
+boucle et commande manuelle (refus clair, aucun appel à Scaleway) ; `config/rules.yaml` est relu à chaque cycle.
+
 ### Budget mensuel attendu
 
 Hypothèse : 2 scènes par jour au plus (`scenes_max_par_jour: 2`), 1 à 2 fenêtres en moyenne, donc presque toujours

@@ -586,6 +586,9 @@ premier : 4 fenêtres au plus sur GP1-S (POP2-8C-32G en secours), au delà GPU, 
 durée de vie calculée (5 + 3 par fenêtre + 15 min) ; `SENTINEL_CALCUL_ESSAI=gpu`. Facturation par type (minute pour
 L4 et L40S, heure entamée sinon : essai 26 facturé 1,23 € pour 0,28 € estimés), coût réel à la destruction, garde des
 types horaires de plus de 0,50 €/h jamais éprouvés.
+**Sentinel 1 automatique (19/10/2026)** (règles 2026.10.30) : preuves du lot C5 faites sur le serveur,
+`scenes_max_par_jour` à 2, budget de 6 € par mois ; `stats-trous` qualifie de vrai arrêt du flux un trou sous 5 % du
+flux habituel.
 
 ## 10. Tests
 

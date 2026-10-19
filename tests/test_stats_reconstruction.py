@@ -154,3 +154,13 @@ def test_guard_failure_is_left_to_grafana_when_it_answers(monkeypatch):
     s = _Secours()
     assert taches.stats_garde(None, s)["reconstruction"] == "echec" and runs == ["stats_reconstruction"]
     assert s.ntfy.envois == []                                   # règle Grafana : une seule notification
+
+
+def test_gap_with_a_trickle_of_positions_is_a_real_outage():
+    """14/10/2026, 10:17 à 12:59 : 154 positions en 162 min pour environ 190 par minute d'habitude (0,5 %)."""
+    sys.path.insert(0, "scripts")
+    import taches
+    assert taches.nature_trou(154, 162, 190).startswith("vrai arrêt")
+    assert taches.nature_trou(0, 30, 190).startswith("vrai arrêt")
+    assert taches.nature_trou(31 * 60 * 180, 31 * 60, 190).startswith("trou des statistiques")    # 18/10 : 95 %
+    assert taches.nature_trou(1600, 162, 190).startswith("trou des statistiques")                 # 5,2 %

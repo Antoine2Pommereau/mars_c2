@@ -632,6 +632,18 @@ def _stats_reconstruire(conn, a):
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
+STATS_ARRET_PART = 0.05      # sous 5 % du flux habituel, un trou est un vrai arrêt du flux, pas un trou des statistiques
+
+
+def nature_trou(positions: int, minutes: float, mediane: float | None) -> str:
+    """Qualifie un trou de stats_minute : « vrai arrêt du flux » si ses positions font moins de 5 % du flux habituel
+    (médiane des positions par minute) sur sa durée, sinon trou des statistiques à reconstruire. Cas du 14/10/2026,
+    10:17 à 12:59 : 154 positions en 162 min, environ 190 par minute d'habitude, soit 0,5 % : arrêt."""
+    if not mediane or positions < STATS_ARRET_PART * mediane * minutes:
+        return "vrai arrêt du flux"
+    return "trou des statistiques, à reconstruire (stats-reconstruire)"
+
+
 @commande("stats-trous")                             # lecture seule : trous de stats_minute
 def _stats_trous(conn, a):
     depuis = _instant(a.args[0]) if a.args else datetime.now(timezone.utc) - timedelta(days=30)
@@ -639,11 +651,22 @@ def _stats_trous(conn, a):
         """SELECT minute AS a, nxt AS b, nxt - minute AS duree FROM (
                SELECT minute, lead(minute) OVER (ORDER BY minute) AS nxt FROM stats_minute WHERE minute >= %s) s
            WHERE nxt - minute > interval '5 minutes' ORDER BY duree DESC""", (depuis,)).fetchall()
-    traces.attributs(**{"stats.trous": len(rows)})
-    print(f"{len(rows)} trou(s) de plus de 5 min dans stats_minute depuis le {depuis:%d/%m/%Y %H:%M} UTC")
+    mediane = conn.execute("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY positions) FROM stats_minute "
+                           "WHERE minute >= %s", (depuis,)).fetchone()[0]
+    print(f"{len(rows)} trou(s) de plus de 5 min dans stats_minute depuis le {depuis:%d/%m/%Y %H:%M} UTC ; flux "
+          f"habituel {mediane or 0:.0f} positions par minute, vrai arrêt sous {STATS_ARRET_PART:.0%}".replace(".", ","))
+    a_reparer = 0
     for a_, b, d in rows[:30]:
-        n = conn.execute("SELECT count(*) FROM positions WHERE ts > %s AND ts < %s", (a_, b)).fetchone()[0]
-        print(f"  {a_:%d/%m/%Y %H:%M} à {b:%d/%m/%Y %H:%M}  {d}  {n} positions dans le trou")
+        # Minutes du trou seulement : la minute `a` a sa ligne, ses positions ne sont pas dans le trou
+        debut = a_ + timedelta(minutes=1)
+        n = conn.execute("SELECT count(*) FROM positions WHERE ts >= %s AND ts < %s", (debut, b)).fetchone()[0]
+        minutes = (b - debut).total_seconds() / 60
+        nature = nature_trou(n, minutes, mediane)
+        a_reparer += not nature.startswith("vrai")
+        print(f"  {debut:%d/%m/%Y %H:%M} à {b:%d/%m/%Y %H:%M}  {minutes:.0f} min  {n} positions : {nature}")
+    traces.attributs(**{"stats.trous": len(rows), "stats.trous_a_reparer": a_reparer})
+    print(f"{a_reparer} trou(s) des statistiques à reconstruire" if a_reparer else
+          "Aucun trou des statistiques : les trous restants sont de vrais arrêts du flux")
 
 
 @commande("viirs-reevaluer")                         # règles VIIRS en vigueur appliquées aux détections en base

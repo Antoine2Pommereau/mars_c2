@@ -14,7 +14,7 @@ from mars import sentinel as S
 from mars.config import ROOT, load_rules
 from mars.travailleurs import Scaleway
 
-VERSIONNEES = load_rules()          # scenes_max_par_jour : 0 versionné (Sentinel arrêté jusqu'au diagnostic au vert)
+VERSIONNEES = load_rules()          # scenes_max_par_jour : 2 versionné depuis le 19/10/2026 (Sentinel automatique)
 RULES = {**VERSIONNEES, "sentinel": {**VERSIONNEES["sentinel"], "scenes_max_par_jour": 2}}
 SR = RULES["sentinel"]
 URL = os.environ.get("MARS_TEST_DATABASE_URL")
@@ -498,16 +498,18 @@ def test_automatic_loop_waits_until_tomorrow_after_a_failure_today(conn, monkeyp
     assert taches.sentinel_suspended(conn) is None
 
 
-def test_versioned_rules_keep_sentinel_stopped(conn, monkeypatch):
-    """Valeur versionnée (12/10/2026) : 0 scène par jour ; refus clair, aucune analyse, aucun appel à Scaleway."""
+def test_versioned_ceiling_is_two_and_zero_stops_everything(conn, monkeypatch):
+    """Valeur versionnée : 2 scènes par jour et 6 € par mois depuis le 19/10/2026 (règles 2026.10.30). Remise à 0, elle
+    arrête tout : refus clair, aucune analyse, aucun appel à Scaleway."""
     from mars import sentinel, travailleurs
-    assert VERSIONNEES["sentinel"]["scenes_max_par_jour"] == 0
+    assert VERSIONNEES["sentinel"]["scenes_max_par_jour"] == 2 and VERSIONNEES["sentinel"]["budget_mensuel_eur"] == 6.0
+    arret = {**VERSIONNEES, "sentinel": {**VERSIONNEES["sentinel"], "scenes_max_par_jour": 0}}
     now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
     pid, _ids, t0 = _setup(conn, now)
     monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
     monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
     monkeypatch.setattr(travailleurs, "launch", lambda *_a, **_k: pytest.fail("Scaleway appelé alors que Sentinel est arrêté"))
-    r = sentinel.launch(conn, None, VERSIONNEES, now, FakeStac([_scene(t0)]))
+    r = sentinel.launch(conn, None, arret, now, FakeStac([_scene(t0)]))
     assert r["refus"].startswith("plafond de 0 scènes par jour")
     assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0
 

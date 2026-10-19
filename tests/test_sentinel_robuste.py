@@ -14,6 +14,8 @@ from mars.config import load_rules
 
 RULES = load_rules()
 S = RULES["sentinel"]
+# Sentinel arrêté (plafond à 0) : les variables d'essai ne valent que pour la commande manuelle
+ARRET = {**RULES, "sentinel": {**S, "scenes_max_par_jour": 0}}
 URL = os.environ.get("MARS_TEST_DATABASE_URL")
 NOW = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
 SCENE = {"type": "Polygon", "coordinates": [[[-6.6, 47.6], [-4.6, 47.6], [-4.6, 49.2], [-6.6, 49.2], [-6.6, 47.6]]]}
@@ -339,10 +341,10 @@ def test_waiting_analysis_is_abandoned_after_the_useful_window(conn, monkeypatch
 def test_manual_trial_ceiling_applies_to_the_manual_command_only(conn, monkeypatch):
     pid, t0, stac = _passage(conn)
     monkeypatch.setattr(T, "launch", lambda *_a, **_k: {"rupture": "rupture de stock", "travailleur": None})
-    assert "plafond de 0 scènes" in sentinel.launch(conn, None, RULES, NOW, stac, pass_id=pid)["refus"]
+    assert "plafond de 0 scènes" in sentinel.launch(conn, None, ARRET, NOW, stac, pass_id=pid)["refus"]
     monkeypatch.setenv("SENTINEL_PLAFOND_ESSAI", "1")                             # essai réel : commande manuelle
-    assert "plafond de 0 scènes" in sentinel.launch(conn, None, RULES, NOW, stac)["refus"]   # la boucle : toujours 0
-    r = sentinel.launch(conn, None, RULES, NOW, stac, pass_id=pid)
+    assert "plafond de 0 scènes" in sentinel.launch(conn, None, ARRET, NOW, stac)["refus"]   # la boucle : toujours 0
+    r = sentinel.launch(conn, None, ARRET, NOW, stac, pass_id=pid)
     assert "attente_gpu" in r and r["fenetres"] >= 1                              # passage choisi : fenêtres seules
 
 
@@ -464,9 +466,9 @@ def test_forced_cpu_trial_launches_the_cpu_type_at_once_for_the_manual_command_o
     monkeypatch.setattr(T, "launch", faux)
     monkeypatch.setenv("SENTINEL_PLAFOND_ESSAI", "1")
     monkeypatch.setenv("SENTINEL_CALCUL_ESSAI", "cpu")
-    # La boucle automatique ignore la variable : plafond versionné de 0
-    assert "plafond de 0 scènes" in sentinel.launch(conn, None, RULES, NOW, stac)["refus"] and essais == []
-    r = sentinel.launch(conn, None, RULES, NOW, stac, pass_id=pid)
+    # La boucle automatique ignore la variable : plafond de 0
+    assert "plafond de 0 scènes" in sentinel.launch(conn, None, ARRET, NOW, stac)["refus"] and essais == []
+    r = sentinel.launch(conn, None, ARRET, NOW, stac, pass_id=pid)
     assert r["calcul"] == "cpu" and r["type"] == "GP1-S" and essais == [("cpu", True)]   # sans attendre 3 h
     motif = conn.execute("SELECT calcul_motif FROM analyses WHERE id = %s", (r["analyses"][0],)).fetchone()[0]
     assert motif.startswith("essai forcé sur processeur")
