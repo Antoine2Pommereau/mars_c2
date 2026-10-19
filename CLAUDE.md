@@ -39,7 +39,7 @@ IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. sat
 passages Sentinel 1 et 2, **fait** ; lot B, VIIRS chaque nuit par travailleurs éphémères, **fait** ; lot C, analyse
 Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1 et C2 faits ; essais des 11 et 12/10 refusés par
 Scaleway avant création (image GPU), corrigés le 12/10 ; Sentinel arrêté (`scenes_max_par_jour: 0`) jusqu'à
-`taches.py sentinel-diagnostic` au vert** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle.
+`taches.py sentinel-diagnostic` au vert** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle. Étape D, supervision (Grafana sur PostgreSQL, alertes sur le téléphone par ntfy, contrôles de santé avec redémarrage automatique) : **faite** (`docs/supervision.md`).
 
 **Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
 plutôt qu'affirmer (une règle silencieuse est prouvée par un test par injection) ; respecter la physique du
@@ -86,6 +86,7 @@ cd web && npm run dev                          # interface de développement
 | http://localhost:5173 | Interface de développement (Vite) |
 | http://localhost:8000/api | API FastAPI |
 | http://localhost:8001/v1 | Service d'inférence (Mac seulement) |
+| http://localhost:3000 | Grafana (serveur seulement, par tunnel : `ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 root@IP`) |
 | localhost:5432 | PostgreSQL (`mars` / `mars`), fermé sur le serveur |
 
 Après une modification : `backend/`, `docker compose up -d --build backend` (attendre quelques secondes) ;
@@ -100,8 +101,9 @@ que sur le serveur.
 | `db` | Docker, PostgreSQL 16, PostGIS 3.4 | Positions, navires et identités, listes, alertes et preuves, radar, masques, archives, tâches |
 | `backend` | Docker, FastAPI, asyncpg | Horloge (direct ou rejeu), flux SSE, navires, radar, règles, décisions, état du direct |
 | `web` | Docker (nginx) ; Vite en développement | Interface React |
-| `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) |
-| `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` |
+| `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) ; contrôle de santé (`scripts/sante.py`) : figée 5 min sans fichier, arrêtée puis relancée (`init`, `restart`) |
+| `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` ; ne s'arrête plus sur une erreur (DiskFull journalisé), boucle figée relancée |
+| `grafana` | Docker, serveur seulement | Grafana 12.4.2 sur PostgreSQL (rôle `grafana_lecture`), 127.0.0.1:3000, 256 Mo ; tableaux, règles et canal ntfy en code (`grafana/provisioning`) |
 | `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine), calendrier des passages satellites ; 06:30 : nuits VIIRS confiées à un travailleur éphémère ; chaque minute : surveillance des travailleurs ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
 | Travailleurs | Instances Scaleway éphémères (API Scaleway, `mars/travailleurs.py`) | Analyse satellite hors du serveur : créées à la demande, script et tâche par cloud-init, résultat renvoyé par le réseau privé (nginx, port 8090, jeton), détruites par le serveur ; DEV1-M pour VIIRS (fr-par-1), L4-1-24G pour Sentinel 1 (fr-par-2, volume bloc) |
 | Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
@@ -136,6 +138,9 @@ mars_c2/
     sar/                             passages, extraction Sentinel Hub, CircleNet
     regions/provision.py             infrastructures EMODnet
   mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
+  mars/supervision.py                signes de vie, mesures du disque, ntfy, alertes de secours, durée des requêtes
+  scripts/sante.py                   contrôle de santé de la collecte et de l'ingestion, redémarrage automatique
+  grafana/generer.py, provisioning/  tableaux (produits en JSON), source, règles, canal ntfy ; config/supervision.env : seuils
   backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo ;
                                      backend/regions.py : région affichée ; backend/satellites.py : passages ;
                                      backend/travailleurs.py : retour des travailleurs, VIIRS, /api/metrics ;
@@ -270,7 +275,7 @@ surveillance du disque.
 | Mesure | Valeur |
 |---|---|
 | Ingestion, collecte du 05/10 | 21 197 positions lues, 11 597 conservées, 9 s pour 460 fichiers |
-| Taille d'une position en base | 282 octets index compris ; équilibre à 30 jours environ 7,5 Go |
+| Taille d'une position en base | 282 octets index compris ; **75 Mo par jour mesurés sur le serveur** (18/10, base 982 Mo dont positions 893 Mo pour 12 jours) ; équilibre à 30 jours environ 2,2 Go de positions, 2,4 Go de base (l'estimation de 7,5 Go était fausse) |
 | Archive R2 | 27,4 octets par position, 22,5 par message statique ; 26 Mo par jour ; 10 Go gratuits en 13 mois |
 | CircleNet | F1 0,942 (ensemble, phase 0), 0,958 avec l'harmonisation Sentinel Hub ; 1,6 s par tuile sur le Mac |
 
@@ -455,6 +460,22 @@ demande sa tâche au démarrage (`tache_par_le_reseau`) et reçoit scènes et pa
 sur jeton, par le réseau privé ; il lit les images COG en S3 avec signature par en tête. `sentinel-diagnostic` lit
 16 octets avec chacune des deux paires et surveille l'expiration de la paire dédiée. `scenes_max_par_jour` reste à 0.
 
+**Supervision, étape D (19/10/2026)** (migration 26, `docs/supervision.md`), après l'incident du 18/10/2026 (pièges) :
+* plus de mort silencieuse : la collecte journalise une écriture en échec et garde les messages en mémoire (120 000 au
+  plus), s'arrête si une tâche interne meurt ; l'ingestion ne s'arrête plus sur une erreur (DiskFull dit en clair,
+  attente croissante jusqu'à 5 min, échec consigné dans `task_runs`) ;
+* contrôle de santé qui arrête un processus figé, relancé par `restart` (`scripts/sante.py`, `init: true`), sans le
+  socket Docker ; redémarrages dans `task_runs` (`redemarrage_collecte`, `redemarrage_ingestion`) ; éprouvé dans
+  Docker (`verifier_images.sh sante` : collecte figée relancée en 75 s, collecte saine laissée en paix) ;
+* alertes sur le téléphone par ntfy (sujet secret `NTFY_SUJET`) : Grafana (disque sous 15 %, collecte sans fichier
+  depuis 5 min, ingestion en retard de plus de 10 min, nuit VIIRS absente à 08:00 UTC, tâche en échec deux fois de
+  suite), au plus une fois par heure, retour à la normale annoncé ; secours par taches pour les trois plus graves si
+  Grafana ne répond pas, sans écrire en base ; `taches.py tester-alerte` ; seuils dans `config/supervision.env` ;
+* Grafana 12.4.2 (214 Mo à télécharger, 763 Mo décompressée, 187 Mo de mémoire mesurés sur le Mac), cinq tableaux
+  (Direct, Disque et base, Tâches, Satellites, Alertes) ; mesures du disque historisées toutes les 10 min
+  (`mesures_disque`), signes de vie chaque minute (`signes_de_vie`) ; `taches.py mesurer-tableaux` : 86 mesures sous
+  0,1 s sur un historique synthétique de 30 jours, à refaire sur le serveur.
+
 **Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
 scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
 recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
@@ -464,11 +485,11 @@ des cellules d'un rail de 30 navires, et le test par injection n'a plus de candi
 
 ## 10. Tests
 
-`python -m pytest tests` : 160 réussis, 30 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 29 sans
+`python -m pytest tests` : 178 réussis, 34 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 33 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
 trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 189 réussis, 1 ignoré (volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
+de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 211 réussis, 1 ignoré (rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `npx knip` et `npm run typecheck` pour
 l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
@@ -625,5 +646,20 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   socket locale ; `pg_isready` sans `-h` le croit prêt et l'API se connecte pendant son arrêt (faux échec,
   ConnectionRefused). Attendre en TCP (`pg_isready -h 127.0.0.1`). La publication s'enchaîne par `&&` après la
   vérification.
+* **Incident du 18/10/2026** : disque plein (8 Go) vers 01:00 UTC ; la collecte s'est figée à 01:27 sans s'arrêter
+  (plus de journal ni de fichier, conteneur « Up ») : l'écriture des fichiers tournait dans une tâche asyncio sans
+  protection, tuée en silence par l'erreur ; l'ingestion a planté en boucle 21 h sur DiskFull (`REFRESH MATERIALIZED
+  VIEW CONCURRENTLY vessel_watch`) ; environ 21 h de données AIS perdues (AISStream ne garde rien) ; l'alerte des 15 %
+  n'était que dans la barre d'état. Désormais : aucune tâche asyncio sans garde, aucun service qui meurt sur une
+  erreur passagère, contrôle de santé qui relance un processus figé, alertes sur le téléphone (étape D). Disque passé à
+  15 Go (13 utilisables).
+* Docker (hors Swarm) ne redémarre jamais un conteneur « unhealthy ». Le contrôle de santé arrête lui même le processus
+  figé, et `restart` relance le conteneur ; il faut `init: true`, car le noyau ignore un signal envoyé au processus
+  numéro 1 depuis son conteneur quand il ne l'a pas prévu. Ne pas donner le socket Docker à un conteneur (droits root).
+* **Grafana 12** remplace les variables d'environnement dans la source de données et le canal d'alerte, **pas dans les
+  règles d'alerte provisionnées** (`$SEUIL_…` restait tel quel dans le SQL) : seuils lus dans `parametres_supervision`.
+  Et l'adresse d'un canal webhook est elle même un gabarit : `{{ "{{.title}}" }}` pour laisser `{{.title}}` à ntfy.
+* Tableaux Grafana : ne jamais lire la table `positions` ; `ingested_files` ne garde que deux jours (les journées
+  archivées en sortent), `task_runs` des règles aussi.
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.

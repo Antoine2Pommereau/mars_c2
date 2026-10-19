@@ -40,7 +40,7 @@ services:
       context: .
       dockerfile: scripts/Dockerfile
     command: ["python", "scripts/taches.py"]
-    env_file: .env
+    env_file: [.env, config/supervision.env]
     environment:
       DATABASE_URL: postgresql://mars:mars@db:5432/mars
       MARS_API: http://backend:8000/api   # scripts/build_masks.py lancé ponctuellement dans ce conteneur
@@ -49,6 +49,7 @@ services:
       CONSERVATION_JOURS: "30"
       SAUVEGARDES_GARDEES: "7"
       ALERTE_DISQUE_PCT: "15"
+      GRAFANA_URL: http://grafana:3000   # Grafana arrêté : taches envoie lui même les alertes les plus graves
     volumes:
       - ./data/ais_live:/app/data/ais_live
       - ./config:/app/config:ro
@@ -58,3 +59,57 @@ services:
     mem_limit: 768m                  # compactage d'une journée par zone : quelques centaines de Mo au plus
     restart: unless-stopped
     logging: *journaux
+
+  # Supervision (étape D) : Grafana branché directement sur PostgreSQL (rôle grafana_lecture, lecture seule), tout en
+  # code dans grafana/provisioning ; alertes sur le téléphone par ntfy. Écoute sur 127.0.0.1 seulement : tunnel SSH
+  # (ssh -L 3000:localhost:3000). Image officielle épinglée par version et par empreinte.
+  grafana:
+    image: grafana/grafana:12.4.2@sha256:83749231c3835e390a3144e5e940203e42b9589761f20ef3169c716e734ad505
+    env_file: config/supervision.env
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_MOT_DE_PASSE:?GRAFANA_ADMIN_MOT_DE_PASSE absent du .env}
+      GRAFANA_PG_MOT_DE_PASSE: ${GRAFANA_PG_MOT_DE_PASSE:?GRAFANA_PG_MOT_DE_PASSE absent du .env}
+      NTFY_SUJET: ${NTFY_SUJET:?NTFY_SUJET absent du .env}
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_DEFAULT_THEME: dark
+      GF_USERS_DEFAULT_LANGUAGE: fr-FR
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/mars/direct.json
+      # Dates à la française (17/06/2024), en UTC comme le reste de MARS C2
+      GF_DATE_FORMATS_USE_BROWSER_LOCALE: "false"
+      GF_DATE_FORMATS_FULL_DATE: DD/MM/YYYY HH:mm:ss
+      GF_DATE_FORMATS_INTERVAL_SECOND: HH:mm:ss
+      GF_DATE_FORMATS_INTERVAL_MINUTE: HH:mm
+      GF_DATE_FORMATS_INTERVAL_HOUR: DD/MM HH:mm
+      GF_DATE_FORMATS_INTERVAL_DAY: DD/MM
+      GF_DATE_FORMATS_INTERVAL_MONTH: MM/YYYY
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: utc
+      # Rien ne sort vers Internet que les alertes : ni statistiques d'usage, ni recherche de mises à jour, ni
+      # téléchargement de greffons au démarrage
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GOMEMLIMIT: 200MiB             # sous la limite de 256 Mo : le ramasse miettes de Go travaille avant
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health | grep -q ok"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    logging: *journaux
+
+volumes:
+  grafana_data:

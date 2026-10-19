@@ -17,7 +17,11 @@ la nuit) : granules des dernières nuits pas encore traitées (rattrapage automa
 éphémère Scaleway (mars/travailleurs.py, mars/viirs.py). Chaque minute : surveillance des travailleurs (résultats
 traités, instances finies ou trop vieilles détruites, orphelins détruits, exécutions journalisées dans task_runs).
 Preuves images (vignettes des détections sur R2), chaque nuit : sans limite si liées à une alerte, 30 jours sinon.
-Toutes les 10 minutes : espace disque, alerte sous ALERTE_DISQUE_PCT (15 %).
+Toutes les 10 minutes : espace disque, alerte sous ALERTE_DISQUE_PCT (15 %), et mesures historisées pour Grafana
+(taille de la base, des positions, du dossier de la collecte, dernier fichier Parquet : mesures_disque).
+Chaque minute : signes de vie (collecte, taches) et, si Grafana ne répond pas, alertes de secours sur le téléphone
+par ntfy pour les trois plus graves (disque, collecte figée, ingestion en échec ou en retard), sans rien écrire en
+base (mars/supervision.py). Chaque étape est isolée : une erreur (disque plein) n'arrête ni la boucle ni les alertes.
 Toutes les 5 minutes (section continu de config/rules.yaml) : règles comportementales sur le flux en direct
 (rendez vous, coupures AIS, navires des listes, changements d'identité), consignées dans task_runs (tâche regles),
 puis statistiques du trafic pour la frise de l'interface (mars/frise.py).
@@ -25,6 +29,8 @@ Une tâche réussie ne rejoue pas le même jour ; une tâche en échec est reten
 
 Usage :
     python scripts/taches.py                          # boucle (service Docker « taches »)
+    python scripts/taches.py tester-alerte            # message d'essai sur le téléphone (ntfy, NTFY_SUJET)
+    python scripts/taches.py mesurer-tableaux         # durée de chaque requête des tableaux Grafana (lecture seule)
     python scripts/taches.py archiver | purger | sauvegarder | disque | regles | listes | passages | viirs
     python scripts/taches.py travailleurs             # état des travailleurs, une surveillance tout de suite
     python scripts/taches.py journal-travailleur [ID] # journal envoyé par un travailleur, état Scaleway s'il est muet
@@ -53,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import psycopg
 
-from mars import archive
+from mars import archive, supervision
 from mars.config import ROOT, database_url, load_env, load_rules
 
 LIVE = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
@@ -101,8 +107,10 @@ def run(conn, task: str, fn, quiet: bool = False) -> dict | None:
             log(f"{task} : {json.dumps(details, default=str, ensure_ascii=False)}")
         return details
     except Exception as e:
+        # refus : attendu (plafond, budget, clés absentes), ignoré par l'alerte « deux échecs de suite »
         conn.execute("UPDATE task_runs SET status = 'echec', finished_at = now(), details = %s WHERE id = %s",
-                     (json.dumps({"erreur": str(e)[:1000]}), rid))
+                     (json.dumps({"erreur": str(e)[:1000], **({"refus": True} if getattr(e, "motif_seul", False) else {})}),
+                      rid))
         log(f"{task} : ÉCHEC, {e}")
         if not getattr(e, "motif_seul", False):   # refus attendu (plafond, clés absentes) : le motif suffit
             traceback.print_exc()
@@ -300,25 +308,72 @@ def loop(conn):
         log(f"{n} tâche(s) interrompue(s) marquée(s) en échec")
     log(f"Tâches planifiées : chaque nuit à {HOUR} UTC (archivage, purge au delà de {KEEP_DAYS} jours, sauvegarde, "
         f"{KEEP_BACKUPS} gardées) ; disque toutes les {DISK_EVERY_S // 60} min, alerte sous {DISK_PCT:.0f} %")
+    step(lambda: supervision.role_grafana(conn), "rôle grafana_lecture")
+    step(lambda: supervision.parametres(conn, load_rules()), "paramètres de supervision")
+    secours = supervision.Secours(supervision.Ntfy.from_env())
+    if secours.ntfy is None:
+        log("NTFY_SUJET absent du .env : aucune alerte de secours ne partira sur le téléphone")
     last_disk = last_rules = last_sentinel = 0.0
     while True:
-        supervise_workers(conn)                     # chaque minute, et dès le démarrage : aucun orphelin
+        if conn.closed:                             # base redémarrée : nouvelle connexion, sans arrêter les alertes
+            conn = step(connect, "connexion à la base") or conn
+        # Alertes de secours d'abord, sans écrire en base : elles doivent partir disque plein (incident du 18/10/2026)
+        step(lambda: alert_if_grafana_down(conn, secours), "alertes de secours")
+        step(lambda: signs_of_life(conn), "signes de vie")
+        step(lambda: supervise_workers(conn), "surveillance des travailleurs")   # chaque minute : aucun orphelin
         if time.time() - last_disk >= DISK_EVERY_S:
-            archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log)
             last_disk = time.time()
+            step(lambda: archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log), "disque")
+            step(lambda: supervision.mesurer(conn, LIVE), "mesures du disque")
+            step(lambda: supervision.parametres(conn, load_rules()), "paramètres de supervision")
         if time.time() - last_rules >= 60 * load_rules()["continu"]["intervalle_min"]:
             last_rules = time.time()
-            run(conn, "regles", rules_cycle, quiet=True)
+            step(lambda: run(conn, "regles", rules_cycle, quiet=True), "règles")
         # Sentinel 1 : passages examinés toutes les 30 minutes (rien n'est lancé sans point d'intérêt ; un refus du
         # plafond ou du budget est consigné dans task_runs, sans trace d'erreur)
         if time.time() - last_sentinel >= 60 * load_rules()["sentinel"]["intervalle_min"]:
             last_sentinel = time.time()
             if os.environ.get("CDSE_TRAVAILLEUR_ACCESS_KEY") and os.environ.get("SCW_SECRET_KEY"):
-                run(conn, "sentinel", lambda: launch_sentinel(conn, auto=True), quiet=True)
+                step(lambda: run(conn, "sentinel", lambda: launch_sentinel(conn, auto=True), quiet=True), "sentinel")
         for task, (fn, every, hour) in tasks(conn).items():
-            if due(conn, task, datetime.now(timezone.utc), every, hour):
-                run(conn, task, fn)
+            if step(lambda: due(conn, task, datetime.now(timezone.utc), every, hour), f"{task} (échéance)"):
+                step(lambda: run(conn, task, fn), task)
         time.sleep(60)
+
+
+_step_errors: dict[str, str] = {}
+
+
+def step(fn, name: str):
+    """Une étape de la boucle : son erreur est journalisée (une fois tant qu'elle se répète) sans arrêter la boucle."""
+    try:
+        out = fn()
+        if _step_errors.pop(name, None):
+            log(f"{name} : rétabli")
+        return out
+    except Exception as e:
+        msg = f"{type(e).__name__}: {str(e).splitlines()[0][:200] if str(e) else ''}"
+        if _step_errors.get(name) != msg:
+            _step_errors[name] = msg
+            log(f"{name} : ÉCHEC, {msg}")
+        return None
+
+
+def signs_of_life(conn):
+    now = datetime.now(timezone.utc)
+    t = supervision.signe_collecte(LIVE)
+    if t is not None:
+        supervision.signe(conn, "collecte", t, {"age_s": round((now - t).total_seconds())})
+    supervision.signe(conn, "taches", now)
+
+
+def alert_if_grafana_down(conn, secours) -> list[str]:
+    """Si Grafana ne répond pas, taches envoie lui même les trois alertes les plus graves ; sinon, il n'annonce que le
+    retour à la normale de celles qu'il avait envoyées (Grafana prend le relais pour les nouvelles)."""
+    etat = supervision.conditions(conn, LIVE)
+    if supervision.grafana_repond():
+        etat = {k: v for k, v in etat.items() if k in secours.actives}
+    return secours.evaluer(etat, log=log)
 
 
 def main():
@@ -327,7 +382,7 @@ def main():
                     choices=["boucle", "archiver", "purger", "sauvegarder", "disque", "regles", "listes", "passages", "viirs",
                              "travailleurs", "journal-travailleur", "detruire-travailleurs", "viirs-reevaluer", "mesures",
                              "coupures-injection", "sentinel", "sentinel-analyser",
-                             "sentinel-diagnostic",
+                             "sentinel-diagnostic", "tester-alerte", "mesurer-tableaux",
                              "sauvegardes", "telecharger", "restaurer-positions"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
@@ -337,6 +392,20 @@ def main():
     ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")
     a = ap.parse_args()
     load_env()
+    if a.commande == "tester-alerte":                   # avant la base : l'envoi doit marcher même base arrêtée
+        n = supervision.Ntfy.from_env()
+        if n is None:
+            print("NTFY_SUJET absent du .env : rien n'est envoyé")
+            sys.exit(1)
+        try:
+            code = n.envoyer("MARS C2 : essai d'alerte", f"Message d'essai envoyé le "
+                             f"{datetime.now(timezone.utc):%d/%m/%Y à %H:%M} UTC. La réception fonctionne.", "default",
+                             "white_check_mark")
+        except RuntimeError as e:
+            print(f"Envoi en échec : {e}")
+            sys.exit(1)
+        print(f"Message d'essai envoyé (HTTP {code}) : il doit apparaître sur le téléphone dans les secondes qui suivent")
+        return
     conn = connect()
     named = {"archiver": "archivage", "purger": "purge", "sauvegarder": "sauvegarde"}
     if a.commande == "boucle":
@@ -415,6 +484,19 @@ def main():
     elif a.commande == "mesures":
         from mesures_calibration import main as mesures
         mesures(a.jours)
+    elif a.commande == "mesurer-tableaux":               # lecture seule, sous le rôle de Grafana, transactions annulées
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("generer", ROOT / "grafana" / "generer.py")
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        rows = supervision.mesurer_requetes(conn, gen.requetes())
+        for r in sorted(rows, key=lambda r: -r["duree_s"]):
+            print(f"{r['duree_s']:7.3f} s  {r['jours']:>2} j  {r['tableau']:<10} {r['panneau']:<48} "
+                  f"{r.get('erreur') or str(r['lignes']) + ' lignes'}")
+        lentes = [r for r in rows if r["duree_s"] > 1 or r.get("erreur")]
+        print(f"\n{len(rows)} mesures, la plus longue {max(r['duree_s'] for r in rows):.3f} s ; "
+              f"{len(lentes)} au dessus de 1 s ou en erreur")
+        sys.exit(1 if lentes else 0)
     elif a.commande == "disque":
         print(archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log))
     elif a.commande == "sauvegardes":

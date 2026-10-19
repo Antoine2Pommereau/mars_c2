@@ -13,8 +13,11 @@
 #                 (config/rules.yaml), en linux/amd64, sans GPU (une minute) ;
 #   ai2-complet : analyse complète sur CPU d'une scène synthétique, quatre cibles à retrouver (environ 7 minutes).
 #   Ajouté après le second essai réel du 14/10/2026 (« No module named 'src' »).
+#   sante       : collecte figée simulée dans l'image des scripts (processus vivant, aucun fichier écrit), lancée comme
+#                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
+#                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet]   (sans argument : les trois premiers)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet] [sante]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -28,9 +31,11 @@ RESEAU=mars_verif_$$
 BASE=mars_verif_db_$$
 API=mars_verif_api_$$
 WEB=mars_verif_web_$$
+FIGEE=mars_verif_figee_$$
+SAINE=mars_verif_saine_$$
 
 nettoyer() {
-  docker rm -f "$API" "$WEB" "$BASE" >/dev/null 2>&1 || true
+  docker rm -f "$API" "$WEB" "$BASE" "$FIGEE" "$SAINE" >/dev/null 2>&1 || true
   docker network rm "$RESEAU" >/dev/null 2>&1 || true
 }
 trap nettoyer EXIT
@@ -124,6 +129,34 @@ verifier_ai2() {
   rm -f "$sortie"
 }
 
+verifier_sante() {
+  local image="$R/mars_c2-scripts:$TAG"
+  docker image inspect "$image" >/dev/null 2>&1 || echec "$image absente : la construire d'abord"
+  # Mêmes réglages que docker-compose.yml (init, contrôle de santé, restart), seuil ramené à 1 minute pour l'essai.
+  # Le processus porte « ais_live.py » dans sa ligne de commande, comme la vraie collecte.
+  local opts=(--platform "$PLATEFORME" --init --restart unless-stopped -e SEUIL_COLLECTE_MIN=1 -e AIS_LIVE_DIR=/tmp/live
+              --health-cmd "python scripts/sante.py collecte" --health-interval 10s --health-timeout 30s
+              --health-retries 1 --health-start-period 0s)
+  docker run -d --name "$FIGEE" "${opts[@]}" "$image" python -c "import time; time.sleep(10 ** 6)" ais_live.py >/dev/null
+  docker run -d --name "$SAINE" "${opts[@]}" "$image" python -c "
+import pathlib, time
+p = pathlib.Path('/tmp/live/.signe_de_vie_collecte'); p.parent.mkdir(parents=True, exist_ok=True)
+while True:
+    p.touch(); time.sleep(20)" ais_live.py >/dev/null
+  for _ in $(seq 1 30); do                   # 1 minute de seuil, puis un contrôle toutes les 10 s
+    [ "$(docker inspect -f '{{.RestartCount}}' "$FIGEE")" -ge 1 ] && break
+    sleep 6
+  done
+  local n m
+  n=$(docker inspect -f '{{.RestartCount}}' "$FIGEE")
+  m=$(docker inspect -f '{{.RestartCount}}' "$SAINE")
+  [ "$n" -ge 1 ] || { docker inspect -f '{{json .State.Health}}' "$FIGEE"; echec "sante : collecte figée non relancée"; }
+  docker logs "$FIGEE" 2>&1 | grep -q "REDÉMARRAGE AUTOMATIQUE de la collecte" \
+    || echec "sante : redémarrage absent du journal du conteneur"
+  [ "$m" -eq 0 ] || echec "sante : une collecte qui écrit a été relancée ($m fois)"
+  ok "sante : collecte figée détectée et relancée ($n redémarrage(s)), collecte saine laissée en paix"
+}
+
 for cible in "${CIBLES[@]}"; do
   case "$cible" in
     backend) verifier_backend ;;
@@ -131,7 +164,8 @@ for cible in "${CIBLES[@]}"; do
     web)     verifier_web ;;
     ai2)     verifier_ai2 --imports ;;
     ai2-complet) verifier_ai2 "" ;;
-    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2 ou ai2-complet)" ;;
+    sante)   verifier_sante ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet ou sante)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."

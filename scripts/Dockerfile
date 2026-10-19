@@ -18,5 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY mars ./mars
 COPY scripts ./scripts
 COPY travailleurs ./travailleurs
+# Requêtes des tableaux Grafana, pour taches.py mesurer-tableaux (durées sur la base du serveur)
+COPY grafana/generer.py ./grafana/generer.py
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app
 CMD ["python", "scripts/ais_ingest.py"]

@@ -1,0 +1,36 @@
+# Alertes de Grafana vers le téléphone, par ntfy (sujet secret NTFY_SUJET du .env, jamais écrit ici). Le message est
+# composé par ntfy à partir du corps JSON envoyé par Grafana (gabarits tpl=yes, t= titre, m= message) : court, sans
+# aucune donnée sensible (ni nom de navire, ni position, ni clé). Grafana remplace ici les variables d'environnement
+# ($NTFY_URL, $NTFY_SUJET), pas dans les règles d'alerte.
+apiVersion: 1
+
+templates:
+  - orgId: 1
+    name: mars
+    template: |
+      {{ define "mars.titre" }}{{ if eq .Status "firing" }}MARS C2 : {{ .CommonLabels.alertname }}{{ else }}MARS C2 : retour à la normale{{ end }}{{ end }}
+      {{ define "mars.message" }}{{ if eq .Status "firing" }}{{ range .Alerts.Firing }}{{ .Annotations.summary }}
+      {{ end }}{{ else }}{{ range .Alerts.Resolved }}{{ .Labels.alertname }} : rétabli.
+      {{ end }}{{ end }}{{ end }}
+
+contactPoints:
+  - orgId: 1
+    name: Téléphone (ntfy)
+    receivers:
+      - uid: ntfy
+        type: webhook
+        disableResolveMessage: false
+        settings:
+          # Grafana interprète aussi l'adresse comme un gabarit : {{ "{{.title}}" }} y laisse {{.title}} intact pour ntfy
+          url: '$NTFY_URL/$NTFY_SUJET?tpl=yes&t={{ "{{.title}}" }}&m={{ "{{.message}}" }}&tags={{ if eq .Status "firing" }}rotating_light&p=high{{ else }}white_check_mark{{ end }}'
+          httpMethod: POST
+          title: '{{ template "mars.titre" . }}'
+          message: '{{ template "mars.message" . }}'
+
+policies:
+  - orgId: 1
+    receiver: Téléphone (ntfy)
+    group_by: ["alertname"]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 1h

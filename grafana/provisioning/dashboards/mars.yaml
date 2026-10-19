@@ -1,0 +1,14 @@
+# Tableaux de MARS C2, produits par grafana/generer.py (jamais modifiés à la main ni depuis l'interface)
+apiVersion: 1
+providers:
+  - name: mars
+    orgId: 1
+    folder: MARS C2
+    folderUid: mars-c2
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /etc/grafana/provisioning/dashboards/mars
+      foldersFromFilesStructure: false

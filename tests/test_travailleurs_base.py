@@ -183,7 +183,8 @@ def test_quota_refusal_shows_only_its_reason(conn, capfd):
     out, err = capfd.readouterr()
     assert "ÉCHEC, plafond de 4 travailleurs par jour atteint" in out and "Traceback" not in out + err
     status, details = conn.execute("SELECT status, details FROM task_runs WHERE task = 'viirs_essai'").fetchone()
-    assert status == "echec" and details == {"erreur": "plafond de 4 travailleurs par jour atteint"}
+    # refus : attendu, ignoré par l'alerte « tâche en échec plusieurs fois de suite » (Grafana)
+    assert status == "echec" and details == {"erreur": "plafond de 4 travailleurs par jour atteint", "refus": True}
     conn.execute("DELETE FROM task_runs WHERE task = 'viirs_essai'")
 
 

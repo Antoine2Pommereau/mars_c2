@@ -1,0 +1,121 @@
+# Règles d'alerte de Grafana (étape D). Seuils dans config/supervision.env, le seul fichier à modifier : taches les
+# recopie toutes les 10 minutes dans la table parametres_supervision, où ces règles les lisent (Grafana 12 ne remplace
+# pas les variables d'environnement dans les règles provisionnées). Valeurs de repli dans les requêtes : celles du
+# fichier, au cas où taches ne les aurait jamais écrites. Chaque règle : A, la mesure (pour le message) ; B, 1 si la
+# condition est remplie ; C, le seuil sur B.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: supervision
+    folder: MARS C2
+    interval: 1m
+    rules:
+      - uid: mars-disque
+        title: Disque presque plein
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {source: grafana}
+        annotations:
+          summary: 'Espace disque libre : {{ printf "%.0f" $values.A.Value }} %.'
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: A, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT libre_pct AS valeur FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1"}
+          - refId: B
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: B, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT CASE WHEN m.libre_pct < coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_disque_pct'), 15) THEN 1 ELSE 0 END AS alerte FROM (SELECT libre_pct FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) m"}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      - uid: mars-collecte
+        title: Collecte AIS figée
+        condition: C
+        for: 0s
+        noDataState: Alerting
+        execErrState: Alerting
+        labels: {source: grafana}
+        annotations:
+          summary: 'Aucun fichier écrit par la collecte depuis {{ printf "%.0f" $values.A.Value }} min (relevé par taches).'
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: A, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT extract(epoch FROM now() - dernier_le) / 60 AS minutes FROM signes_de_vie WHERE service = 'collecte'"}
+          - refId: B
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: B, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT CASE WHEN extract(epoch FROM now() - dernier_le) / 60 > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_collecte_min'), 5) THEN 1 ELSE 0 END AS alerte FROM signes_de_vie WHERE service = 'collecte'"}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      - uid: mars-ingestion
+        title: Ingestion AIS en échec ou en retard
+        condition: C
+        for: 0s
+        noDataState: Alerting
+        execErrState: Alerting
+        labels: {source: grafana}
+        annotations:
+          summary: 'Ingestion en échec ou en retard de {{ printf "%.0f" $values.A.Value }} min.'
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: A, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT greatest(extract(epoch FROM now() - dernier_le), coalesce((detail->>'retard_s')::float8, 0)) / 60 AS minutes FROM signes_de_vie WHERE service = 'ingestion'"}
+          - refId: B
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: B, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT CASE WHEN greatest(extract(epoch FROM now() - dernier_le), coalesce((detail->>'retard_s')::float8, 0)) / 60 > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_ingestion_min'), 10) THEN 1 ELSE 0 END AS alerte FROM signes_de_vie WHERE service = 'ingestion'"}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      - uid: mars-viirs
+        title: Nuit VIIRS absente
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {source: grafana}
+        annotations:
+          summary: 'La nuit précédente n''a aucune granule VIIRS traitée.'
+        data:
+          - refId: B
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: B, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "SELECT CASE WHEN extract(hour FROM now() AT TIME ZONE 'UTC') >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_heure_nuit_viirs'), 8) AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1 AND traite_le IS NOT NULL) THEN 1 ELSE 0 END AS alerte"}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      - uid: mars-taches
+        title: Tâche en échec plusieurs fois de suite
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {source: grafana}
+        annotations:
+          summary: 'La tâche {{ $labels.tache }} échoue plusieurs fois de suite (tableau Tâches).'
+        data:
+          - refId: B
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mars
+            model: {refId: B, editorMode: code, format: table, rawQuery: true,
+                    rawSql: "WITH n AS (SELECT coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int AS v) SELECT task AS tache, 1 AS alerte FROM n, (SELECT task, array_agg(status ORDER BY started_at DESC) AS s FROM task_runs WHERE started_at > now() - interval '7 days' AND status <> 'en_cours' AND NOT (details ? 'refus') GROUP BY task) x WHERE array_length(s, 1) >= n.v AND s[1:n.v] <@ ARRAY['echec']"}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}

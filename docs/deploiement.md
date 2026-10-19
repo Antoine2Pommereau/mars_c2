@@ -535,10 +535,39 @@ GROUP BY 1`.
 
 Ne jamais lancer `docker system prune --volumes` : il effacerait le volume de la base.
 
+## Supervision (étape D, docs/supervision.md)
+
+Grafana sur 127.0.0.1:3000, alertes sur le téléphone par ntfy, contrôles de santé de la collecte et de l'ingestion.
+**Le `.env` du serveur doit contenir, avant tout `docker compose` (sinon Compose refuse de démarrer) :**
+
+```bash
+NTFY_SUJET=<chaîne longue et aléatoire, par exemple : openssl rand -hex 16 préfixé de mars_c2_>
+GRAFANA_ADMIN_MOT_DE_PASSE=<mot de passe de l'interface de Grafana>
+GRAFANA_PG_MOT_DE_PASSE=<mot de passe du rôle grafana_lecture, que taches donne au rôle au démarrage>
+```
+
+Pas de commentaire en fin de ligne. Les seuils sont dans `config/supervision.env` (versionné). Migration 26
+(`db/init/26_supervision.sql` : tables de mesures et de signes de vie, rôle `grafana_lecture`), puis les images.
+
+Tunnel depuis le Mac, interface et Grafana ensemble :
+`ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 root@IP_DU_SERVEUR`, puis http://localhost:3000 (compte
+`admin`).
+
+Vérifier :
+
+```bash
+docker compose ps                                    # collector et ingest « healthy », grafana « healthy »
+docker compose exec taches python scripts/taches.py tester-alerte   # message d'essai sur le téléphone
+docker compose exec taches python scripts/taches.py mesurer-tableaux  # aucune requête au dessus de 1 s
+docker stats --no-stream grafana                     # mémoire, sous 256 Mo
+docker compose exec db psql -U mars -d mars -c "SELECT service, dernier_le, detail FROM signes_de_vie"
+df -h /                                              # au moins 3 Go libres
+```
+
 ## Vérifier
 
 ```bash
-docker compose ps                                   # six services « running »
+docker compose ps                                   # huit services « running » (collector et ingest « healthy »)
 docker compose logs --tail 5 collector              # une ligne par minute : messages, navires par zone
 docker compose logs --tail 5 ingest                 # une ligne par cycle : positions lues, conservées, allégées
 docker compose logs --tail 20 taches                # tâches de la nuit, alertes disque
@@ -614,30 +643,38 @@ le 05/10, exactement le résultat de l'ingestion d'origine.
 
 ## Consulter l'interface
 
-Depuis le Mac : `ssh -N -L 8080:localhost:8080 root@IP_DU_SERVEUR`, puis http://localhost:8080. L'horloge est en
+Depuis le Mac : `ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 root@IP_DU_SERVEUR`, puis http://localhost:8080
+(et Grafana sur http://localhost:3000). L'horloge est en
 direct (vitesse 1) ; la frise permet de revenir sur une période passée (sélecteur de vitesse du rejeu), le bouton
 « Direct » d'y revenir.
 
-## Volumes à l'équilibre (débit du 06/10/2026)
+## Volumes à l'équilibre (mesure du serveur, 18/10/2026)
 
 Débit : environ 680 messages par minute pour les quatre zones, soit 979 000 par jour (76 % de positions, 24 % de
-messages statiques, proportions de la collecte du 05/10), et 34 000 positions conservées par heure en base.
+messages statiques, proportions de la collecte du 05/10).
 
-**Base** (30 jours de positions) :
-* 34 000 × 24 × 30 = 24,5 millions de positions ;
-* 282 octets par position index compris, mesurés sur 2 millions de positions : table 101, index spatial 66, index
-  navire et instant 54, index sur l'instant 39, clé primaire 22 ;
-* soit 6,9 Go, environ **7,5 Go** avec l'espace libéré par la purge quotidienne et les autres tables (navires,
-  identités, registre d'ingestion, listes) ;
+**Base** (30 jours de positions). **Corrigé le 19/10/2026** : l'estimation de 7,5 Go (34 000 positions conservées par
+heure, 282 octets chacune, soit 230 Mo par jour) était fausse. Mesure du serveur le 18/10/2026 : base de 982 Mo,
+dont 893 Mo de positions pour 12 jours, soit **environ 75 Mo par jour**, trois fois moins.
+* positions à l'équilibre : 75 × 30 = **environ 2,2 Go** ; base entière **environ 2,4 Go** (autres tables : 89 Mo le
+  18/10, croissance lente) ;
+* 282 octets par position index compris, mesurés sur 2 millions de positions (table 101, index spatial 66, index
+  navire et instant 54, index sur l'instant 39, clé primaire 22) : 75 Mo par jour font donc environ 11 000 positions
+  conservées par heure, pas 34 000 ;
+* suivi en continu dans Grafana (tableau Disque et base : croissance par jour et jours restants) ;
 * négligeables : calendrier des passages, 3,5 Ko par passage index compris, une dizaine par jour, soit 35 Ko par jour
   (13 Mo par an, gardés) ; statistiques de la frise par région, 576 lignes par jour, environ 2 Mo à 35 jours.
 * VIIRS : 12 granules par nuit (environ 1 Ko chacune) et quelques dizaines de détections (environ 300 octets chacune
   index compris), soit moins de 30 Ko par nuit ; aucune image n'est gardée, ni sur le serveur ni sur le travailleur.
 
-**Disque du serveur** : base 7,5 Go, images Docker et système environ 6 Go, Parquet local de moins de deux jours
-environ 0,3 Go, journaux bornés à 0,2 Go : environ 14 Go sur 40, 65 % libres. **Tant que le disque fait 8 Go, il
-se remplit** : la base croît de 230 Mo par jour jusqu'à l'équilibre, et l'alerte des 15 % se déclenchera en une à
-deux semaines. Agrandir le disque avant.
+**Disque du serveur** : 15 Go depuis le 18/10/2026 (13 Go utilisables), 4,6 Go libres avec une base de 982 Mo. Le
+disque de 8 Go s'est rempli le 18/10/2026 vers 01:00 (incident, docs/supervision.md). Bilan prévisible :
+* Grafana : environ 0,8 Go (image décompressée et données), soit **environ 3,7 Go libres après déploiement** ;
+* la base gagne encore environ 1,35 Go jusqu'à l'équilibre (18 jours à 75 Mo) : **environ 2,4 Go libres à
+  l'équilibre**, soit 16 % de 15 Go, juste au dessus de l'alerte des 15 % et sous les 3 Go souhaités. À surveiller
+  dans le tableau Disque et base ; leviers, dans l'ordre : `docker image prune -af` et `docker builder prune -af`
+  (images et caches sans conteneur), puis l'index spatial de `positions` (23 % de la table, utile aux seules analyses
+  radar), puis un disque de 20 Go.
 
 **R2** :
 * archive : 27,4 octets par position et 22,5 par message statique après compactage (mesuré sur l'archivage de
@@ -653,8 +690,7 @@ rendez vous montaient à 132 s quand la fenêtre de 24 heures se remplissait (4 
 depuis la version 2026.10.18, les positions à moins de 1 km de la terre (`rendezvous.coast_prefilter_m`) sont
 écartées avant de former les paires (mesures dans CLAUDE.md, section 9).
 
-**Compression TimescaleDB** : pas utile à cette échelle. Avec 30 jours en base, 7,5 Go tiennent largement sur
-40 Go ; la compression (de l'ordre de 10 fois) demanderait de changer l'image de la base, de refaire la clé de
+**Compression TimescaleDB** : pas utile à cette échelle. Avec 30 jours en base, environ 2,4 Go ; la compression (de l'ordre de 10 fois) demanderait de changer l'image de la base, de refaire la clé de
 `positions` et de transformer la purge, pour un gain d'espace dont on n'a pas besoin. Elle deviendrait intéressante
 si l'on voulait garder 6 à 12 mois en base. Levier plus simple si l'espace manquait : l'index spatial de
 `positions` (23 % de la taille) n'est utile qu'aux analyses radar, qui filtrent d'abord sur un quart d'heure.

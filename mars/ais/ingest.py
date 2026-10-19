@@ -35,6 +35,7 @@ class Ingestor:
         self.identity: dict[int, dict | None] = {}
         self.touched_days: set = set()
         self.watch_dirty, self.watch_refreshed = True, 0.0
+        self.retard_s = 0.0
 
     # Démarrage
 
@@ -278,7 +279,13 @@ class Ingestor:
 
     def run_once(self, recent_only: bool = True) -> dict:
         totals: dict = {"fichiers": 0}
-        for folder, name in self.pending(recent_only):
+        todo = self.pending(recent_only)
+        # Retard : attente du plus ancien fichier encore à charger au début du passage (supervision, signes_de_vie)
+        try:
+            self.retard_s = max(0.0, time.time() - (self.root / todo[0][0] / todo[0][1]).stat().st_mtime) if todo else 0.0
+        except OSError:
+            self.retard_s = 0.0
+        for folder, name in todo:
             try:
                 s = (self.ingest_statics if folder.startswith("statiques") else self.ingest_positions)(folder, name)
             except (OSError, ValueError) as e:     # fichier illisible : on réessaiera au cycle suivant

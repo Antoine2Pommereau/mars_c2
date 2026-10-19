@@ -79,4 +79,4 @@ selon la latitude.
 ## Volume en base
 
 258 passages (30 jours acquis et 20 jours prévus) occupent 896 Ko index compris, soit 3,5 Ko par passage et environ
-35 Ko par jour (13 Mo par an). Négligeable devant les positions (7,5 Go à l'équilibre).
+35 Ko par jour (13 Mo par an). Négligeable devant les positions (environ 2,2 Go à l'équilibre).

@@ -26,12 +26,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mars.ais.live import SOURCE, ZONES  # noqa: E402  (zones et origine partagées avec l'ingestion en base)
+from mars.supervision import SIGNE_COLLECTE, toucher  # noqa: E402
 
 OUT = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
 URL = "wss://stream.aisstream.io/v0/stream"
 POSITION_TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport"]
 STATIC_TYPES = ["ShipStaticData", "StaticDataReport"]
 FLUSH_S = int(os.environ.get("AIS_FLUSH_S", 60))
+# Messages gardés en mémoire quand l'écriture échoue (disque plein), en attendant la place : environ trois heures
+# au rythme du 06/10/2026 (680 messages par minute) ; au delà, les plus anciens sont abandonnés, et le journal le dit
+MAX_EN_ATTENTE = int(os.environ.get("AIS_MAX_EN_ATTENTE", 120_000))
+ECHEC_ECRITURE = ".echec_ecriture_collecte"      # lu par le contrôle de santé (scripts/sante.py)
 
 
 def zone_of(lat, lon):
@@ -87,9 +92,14 @@ class Buffer:
                 "destination": body.get("Destination"), "source": SOURCE,
             })
 
-    def flush(self):
+    def flush(self) -> int:
+        """Écrit les messages reçus, un fichier par zone et par type ; retourne le nombre de fichiers écrits. Une
+        écriture en échec (disque plein) lève l'erreur et garde tout en mémoire pour l'essai suivant (un fichier déjà
+        écrit est réécrit : l'ingestion écarte les doublons), dans la limite de MAX_EN_ATTENTE messages."""
         stamp = datetime.now(timezone.utc)
-        for table, rows in (("positions", self.pos), ("statiques", self.static)):
+        written = 0
+        for table in ("positions", "statiques"):
+            rows = getattr(self, "pos" if table == "positions" else "static")
             if not rows:
                 continue
             df = pd.DataFrame(rows)
@@ -98,9 +108,28 @@ class Buffer:
                 folder.mkdir(parents=True, exist_ok=True)
                 # Écriture dans un fichier caché puis renommage : l'ingestion ne lit jamais un fichier incomplet
                 tmp = folder / f".{stamp:%H%M%S}.parquet.tmp"
-                g.drop(columns="zone").to_parquet(tmp, index=False)
-                os.replace(tmp, folder / f"{stamp:%H%M%S}.parquet")
+                try:
+                    g.drop(columns="zone").to_parquet(tmp, index=False)
+                    os.replace(tmp, folder / f"{stamp:%H%M%S}.parquet")
+                except Exception:
+                    try:
+                        tmp.unlink(missing_ok=True)      # un fichier partiel occuperait la dernière place libre
+                    except OSError:
+                        pass
+                    self._trim()
+                    raise
+                written += 1
         self.pos, self.static = [], []
+        return written
+
+    def _trim(self):
+        over = len(self.pos) + len(self.static) - MAX_EN_ATTENTE
+        if over > 0:
+            print(f"ÉCRITURE IMPOSSIBLE depuis trop longtemps : {over} messages les plus anciens abandonnés "
+                  f"({MAX_EN_ATTENTE} gardés en mémoire)", flush=True)
+            drop_pos = min(over, len(self.pos))
+            self.pos = self.pos[drop_pos:]
+            self.static = self.static[over - drop_pos:]
 
     def status(self):
         rate = self.n / max(time.time() - self.started, 1) * 60
@@ -116,13 +145,27 @@ async def collect(api_key):
         loop.add_signal_handler(sig, stop.set)
 
     async def flusher():
+        # Incident du 18/10/2026 : disque plein, buf.flush() levait une erreur qui tuait cette tâche en silence ; la
+        # lecture du flux continuait, sans plus aucun fichier ni journal, et Docker voyait le conteneur « Up ».
+        # Désormais : erreur journalisée à chaque minute, messages gardés pour l'essai suivant, et signes de vie lus
+        # par le contrôle de santé (fichier écrit, ou écriture en échec)
         while not stop.is_set():
             try:
                 await asyncio.wait_for(stop.wait(), FLUSH_S)
             except asyncio.TimeoutError:
                 pass
-            buf.flush()
-            print(buf.status(), flush=True)
+            try:
+                if buf.flush():
+                    toucher(OUT / SIGNE_COLLECTE)
+                print(buf.status(), flush=True)
+            except Exception as e:
+                waiting = len(buf.pos) + len(buf.static)
+                print(f"ÉCHEC D'ÉCRITURE des fichiers Parquet ({type(e).__name__}: {str(e)[:200]}) ; "
+                      f"{waiting} messages gardés en mémoire, nouvel essai dans {FLUSH_S} s", flush=True)
+                try:
+                    toucher(OUT / ECHEC_ECRITURE)
+                except OSError:
+                    pass
 
     async def reader():
         delay = 2
@@ -151,10 +194,21 @@ async def collect(api_key):
                 delay = min(delay * 2, 60)
 
     tasks = [asyncio.create_task(flusher()), asyncio.create_task(reader())]
-    await stop.wait()
-    for t in tasks:
+    stopper = asyncio.create_task(stop.wait())
+    done, _ = await asyncio.wait([stopper, *tasks], return_when=asyncio.FIRST_COMPLETED)
+    for t in tasks + [stopper]:
         t.cancel()
-    buf.flush()
+    died = [t for t in done if t is not stopper]
+    try:
+        buf.flush()
+    except Exception as e:
+        print(f"Dernières données NON écrites ({type(e).__name__})", flush=True)
+    if died:
+        # Une tâche interne s'est arrêtée seule : jamais de collecte à moitié vivante, le processus s'arrête et Docker
+        # le relance (restart: unless-stopped)
+        err = died[0].exception() if not died[0].cancelled() else None
+        print(f"ARRÊT : tâche de collecte interrompue ({type(err).__name__ if err else 'sans erreur'}: {err})", flush=True)
+        raise SystemExit(1)
     print("Arrêt, dernières données écrites dans", OUT)
 
 

@@ -58,9 +58,21 @@ services:
       context: .
       dockerfile: scripts/Dockerfile
     command: ["python", "scripts/ais_live.py", "collect"]
-    env_file: .env          # AISSTREAM_API_KEY
+    env_file: [.env, config/supervision.env]        # AISSTREAM_API_KEY ; seuils de la supervision
+    environment:
+      DATABASE_URL: postgresql://mars:mars@db:5432/mars   # redémarrages automatiques consignés dans task_runs
     volumes:
       - ./data/ais_live:/app/data/ais_live
+    # Incident du 18/10/2026 (collecte figée, conteneur « Up ») : le contrôle de santé arrête une collecte sans fichier
+    # écrit depuis SEUIL_COLLECTE_MIN minutes, et restart la relance ; init, pour que le signal atteigne Python
+    # (scripts/sante.py)
+    init: true
+    healthcheck:
+      test: ["CMD", "python", "scripts/sante.py", "collecte"]
+      interval: 60s
+      timeout: 40s
+      retries: 1
+      start_period: 120s
     restart: unless-stopped
     profiles: ["direct"]
 
@@ -70,6 +82,7 @@ services:
       context: .
       dockerfile: scripts/Dockerfile
     command: ["python", "scripts/ais_ingest.py"]
+    env_file: config/supervision.env
     environment:
       DATABASE_URL: postgresql://mars:mars@db:5432/mars
     volumes:
@@ -79,6 +92,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Boucle figée : arrêtée par le contrôle de santé, relancée par restart (une ingestion en échec, elle, reste en
+    # vie, journalise, et l'alerte « ingestion en échec » prévient)
+    init: true
+    healthcheck:
+      test: ["CMD", "python", "scripts/sante.py", "ingestion"]
+      interval: 60s
+      timeout: 40s
+      retries: 1
+      start_period: 300s
     restart: unless-stopped
     profiles: ["direct"]
 

@@ -1,0 +1,26 @@
+# Source de données de Grafana : la base de MARS C2, par le rôle grafana_lecture (migration 26, lecture seule, tables
+# et colonnes utiles seulement ; mot de passe donné par taches depuis le .env). Rien n'est réglé à la main.
+apiVersion: 1
+deleteDatasources:
+  - name: MARS C2
+    orgId: 1
+datasources:
+  - name: MARS C2
+    uid: mars
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: db:5432
+    user: grafana_lecture
+    isDefault: true
+    editable: false
+    jsonData:
+      database: mars
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+      maxOpenConns: 3
+      maxIdleConns: 1
+      connMaxLifetime: 14400
+      timeInterval: 1m
+    secureJsonData:
+      password: $GRAFANA_PG_MOT_DE_PASSE
