@@ -47,10 +47,12 @@ function Image({ preuve, ais, grand }: { preuve: Props; ais: Props[]; grand: boo
 }
 
 /** Preuve image d'une détection satellite : vignette (sur R2, relayée par l'API) avec, en surimpression, les positions
- *  AIS à moins de 5 km à l'heure du passage et le navire apparié ; agrandissable au clic. */
-export default function PreuveImage({ source, detectionId }: { source: string; detectionId: number }) {
+ *  AIS à moins de 5 km à l'heure du passage et le navire apparié ; agrandissable au clic. `contexte` : vignette de
+ *  10 km d'une détection optique liée à une alerte (Sentinel 2). */
+export default function PreuveImage({ source, detectionId, contexte = false }:
+  { source: string; detectionId: number; contexte?: boolean }) {
   const s = sourcePreuve(source);
-  const q = useQuery({ queryKey: ["viirsDetection", detectionId], queryFn: () => fiche(s!.fiche(detectionId)),
+  const q = useQuery({ queryKey: [source, "detection", detectionId], queryFn: () => fiche(s!.fiche(detectionId)),
     enabled: !!s && detectionId > 0, staleTime: 60_000 });
   const [grand, setGrand] = useState(false);
   useEffect(() => {
@@ -59,8 +61,8 @@ export default function PreuveImage({ source, detectionId }: { source: string; d
     window.addEventListener("keydown", k, true);
     return () => window.removeEventListener("keydown", k, true);
   }, [grand]);
-  const preuve = q.data?.preuve;
-  if (!s || !q.data) return null;
+  const preuve = contexte ? q.data?.contexte : q.data?.preuve;
+  if (!s || !q.data || (contexte && !preuve)) return null;
   if (!preuve) return <p className="mb-2 text-[12px] text-muted">{P.aucune}</p>;
   const ais: Props[] = q.data.ais_proches ?? [];
   const apparie = ais.find((a) => a.apparie);
@@ -74,6 +76,7 @@ export default function PreuveImage({ source, detectionId }: { source: string; d
         <span>{P.legende(ais.length, apparie?.name ?? apparie?.mmsi ?? null)}</span>
         <span>{P.taille(Math.round(preuve.octets / 100) / 10)}</span>
       </div>
+      {source === "sentinel2" && <div className="text-[10.5px] text-faint">{P.copernicus}</div>}
       {/* Portail : la fiche (flou d'arrière plan) contiendrait sinon l'élément fixe */}
       {grand && createPortal(
         <div role="dialog" aria-label={P.titre} onClick={() => setGrand(false)}

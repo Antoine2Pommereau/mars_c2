@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { api } from "../lib/api";
 import { utc } from "../lib/format";
 import { L } from "../lib/libelles";
-import type { Feature, Props, Selection } from "../lib/types";
+import type { Feature, Props, Selection, SourceDetection } from "../lib/types";
 import { COULEUR_LISTE, libelleAlerte, typeAlerte } from "../registres/alertes";
 import { COULEUR_PASSAGE, COULEURS_INFRA } from "../registres/couches";
 import { sectionsDe, type Contexte } from "../registres/sections";
@@ -23,7 +23,7 @@ interface PanelProps {
   onPickInfra: (id: number) => void;
   onSuivre: (vesselId: number, on: boolean) => void;
   onRejeu: (vesselId: number) => void;
-  onPickDetection: (source: "sentinel1" | "viirs", id: number) => void;
+  onPickDetection: (source: SourceDetection, id: number) => void;
 }
 
 /** Fiche de l'objet sélectionné (navire, alerte, infrastructure, zone, détection) : un en tête, puis les sections du
@@ -70,8 +70,9 @@ export default function DetailPanel(p: PanelProps) {
     title = L.zones[selection.properties.zone] ?? selection.properties.zone;
   } else {
     Object.assign(ctx, { detection: selection.properties });
-    const viirs = selection.properties.source === "viirs", radar = selection.properties.source === "sentinel1";
-    title = viirs ? L.fiche.viirs.titre : radar ? L.fiche.radar.titre : L.preuves.detection;
+    const viirs = selection.properties.source === "viirs", optique = selection.properties.source === "sentinel2";
+    const radar = selection.properties.source === "sentinel1" || optique;
+    title = viirs ? L.fiche.viirs.titre : optique ? L.fiche.radar.titreOptique : radar ? L.fiche.radar.titre : L.preuves.detection;
     if (viirs || radar) color = selection.properties.statut === "sans_ais" ? typeAlerte("DARK_SHIP").couleur : "#8a93c9";
   }
 

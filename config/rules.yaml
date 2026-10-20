@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.33"
+version: "2026.10.34"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -280,6 +280,57 @@ sentinel:
   # Éoliennes : une détection sans AIS à moins de 150 m d'un parc éolien en mer est un écho fixe probable
   eolien_m: 150
 
+# Sentinel 2 (lot S2, mars/sentinel2.py, docs/sentinel2.md) : détection optique, même mécanique que Sentinel 1 (points
+# de déclenchement de la section sentinel, demandes du tip and cue, fenêtres de 24 km, une session par passage, mêmes
+# plafonds de travailleurs, budget mensuel de la section sentinel partagé). Modèle rslearn d'AI2 (L1C, 13 bandes),
+# image et poids dans travailleurs.types.sentinel2 ; poids recopiés sur R2 (taches.py sentinel2-poids)
+sentinel2:
+  # Livré coupé (20/10/2026) : à 0, ni la sélection automatique ni la commande manuelle ne lancent rien. Essai réel :
+  # SENTINEL_PLAFOND_ESSAI=1 sur la commande manuelle seulement (taches.py sentinel2-analyser <passage>)
+  scenes_max_par_jour: 0
+  passages_recents_h: 36        # passages examinés : acquis depuis moins de 36 heures
+  attente_publication_h: 12     # tuile L1C pas encore au catalogue (publication médiane 3,7 h, 90e centile 8,5 h)
+  # Masque des nuages : SCL du L2A de la même tuile (publication médiane 4,8 h). Attendu jusqu'à 3 h après le passage,
+  # puis analyse sans masque, marquée « masque absent » (aucune fenêtre close, aucune détection masquée, aucune
+  # alerte AIS_UNCONFIRMED : un navire AIS sous un nuage n'est pas un navire absent). Comparer un jour au masque
+  # MSK_CLASSI du L1C, publié plus tôt (amélioration future)
+  l2a_attente_h: 3
+  # Garde des nuages, mesurée du 20/09 au 20/10/2026 : tuile annoncée au delà de 50 %, 3 % des fenêtres dégagées
+  # seulement (passage écarté avant lancement) ; fenêtre au delà de 20 % de pixels nuageux au SCL : close « nuages »,
+  # sans lire les bandes ni lancer l'inférence
+  nuages_annonce_max_pct: 50
+  nuages_fenetre_max_pct: 20
+  masque_classes: [3, 8, 9, 10] # SCL : ombres de nuages, nuages de probabilité moyenne et forte, cirrus
+  # Navire sous un nuage : part masquée dans le kilomètre autour de lui (carré de 2 × 500 m) au delà de 25 %, écarté
+  # « nuages ». Une part et non un seul pixel : le SCL classe en nuage le navire lui même et son sillage (1,1 à 7,5 %
+  # dans 400 m autour de quatre navires dégagés, essai du 20/10/2026). Même seuil pour la grille des navires AIS
+  masque_voisinage_m: 500
+  masque_part_max_pct: 25
+  confiance: 0.8                # seuil d'AI2 (précision 77,2 %, rappel 78,6 % sur sa validation)
+  vignette_km: 2                # couleurs réelles (B04, B03, B02), autour de chaque détection
+  contexte_km: 10               # vignette de contexte, gardée pour une détection liée à une alerte
+  # Fusion sans tolérance Doppler (l'optique ne décale pas les navires en mouvement), à l'heure propre à la tuile
+  # (SENSING_TIME de MTD_TL.xml) : écarts de 8 à 130 m mesurés le 17/10/2026 sur cinq navires
+  fusion_rayon_m: 300
+  # Coût : GP1-S, image de 7,2 Go (environ 2 min 30), poids de 2,2 Go, chargement du modèle ; puis 132 à 142 s par
+  # fenêtre mesurés en émulation (borne haute), comptés 3 min. Une session de 8 fenêtres au plus tient dans l'heure
+  minutes_fixes_cpu: 10
+  minutes_par_fenetre_cpu: 3
+  cpu_marge_min: 15
+  fenetres_max: 8
+  # Poids recopiés sur R2 (2,2 Go) depuis le dépôt public d'AI2 (licence Apache 2.0, README de rslearn_projects) ;
+  # empreintes vérifiées à la copie et par le travailleur après téléchargement
+  poids:
+    - chemin: projects/sentinel2_vessels/data_20250213_02_all_bands/best.ckpt
+      r2: modeles/sentinel2/sentinel2_vessels/data_20250213_02_all_bands/best.ckpt
+      sha256: 2547ad10516cecc2471bfcdfdb0ff195b2a95a7c94385a46a3827025a0621f72
+      octets: 1150160105
+    - chemin: projects/sentinel2_vessel_attribute/data_20250205_regress_00/best.ckpt
+      r2: modeles/sentinel2/sentinel2_vessel_attribute/data_20250205_regress_00/best.ckpt
+      sha256: 303cd443546af079c9ab4e048a628677074d64139fe22edd89b626d96e11837d
+      octets: 1091780861
+  source_poids: https://storage.googleapis.com/ai2-rslearn-projects-data
+
 # Tip and cue (lot T1, mars/tip_and_cue.py, docs/tip_and_cue.md) : un signal suspect (le tip) crée une demande
 # d'observation (le cue). Position prédite au prochain passage Sentinel 1 qui la couvre (ou à un passage acquis dans
 # les dernières heures), fenêtres de 24 km analysées dans la session Sentinel du passage (mêmes plafonds, même budget),
@@ -422,4 +473,28 @@ travailleurs:
           docker_opts: "--shm-size=16g"
       # Tâche remise par le réseau privé (route etat, {"etat": "tache"}), une seule fois, avec la paire de clés
       # Copernicus dédiée aux travailleurs : Copernicus refuse les adresses présignées (14/10/2026)
+      tache_par_le_reseau: true
+    sentinel2:                       # lot S2 : détection optique Sentinel 2 sur processeur (docs/sentinel2.md)
+      commercial_type: GP1-S         # 8 vCPU, 32 Go, disque local : 4,3 Go de mémoire mesurés au plus par fenêtre
+      zone: fr-par-2
+      image_label: ubuntu_noble
+      volume: l_ssd
+      arch: x86_64
+      disque_go: 80                  # image de 19,8 Go installée, poids de 2,2 Go, fenêtres
+      prix_heure: 0.1907
+      facturation: heure_entamee
+      # Image rslearn d'AI2 (étiquette sentinel2_vessels_v0.0.22, 7,2 Go compressés, Python 3.11, PyTorch 2.7 avec
+      # CUDA 12.8), épinglée par empreinte ; poids hors de l'image, remis par adresses R2 présignées avec la tâche
+      image: ghcr.io/allenai/sentinel2-vessel-detection@sha256:0ce4cbee15337138ead556f41aa099eb0512ae4b1bc4b3d4d6773ba90aa3672c
+      script: travailleurs/sentinel2.py
+      docker_opts: "--shm-size=16g"  # 64 Mo par défaut : le chargeur de données de l'inférence meurt
+      repli_cpu:
+        - commercial_type: POP2-8C-32G
+          zone: fr-par-2
+          image_label: ubuntu_noble
+          volume: sbs_volume
+          disque_go: 80
+          prix_heure: 0.29
+          facturation: heure_entamee
+      # Tâche remise par le réseau privé, avec la paire Copernicus des travailleurs et les adresses des poids
       tache_par_le_reseau: true

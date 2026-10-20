@@ -149,24 +149,34 @@ export const TYPES_ALERTE: TypeAlerte[] = [
   },
   {
     type: "DARK_SHIP", Icone: EyeOff, couleur: "#e85bc7", piste: "deux", etape: "3", actif: true, vignette: true,
-    // Deux sources : écho radar sans AIS (Sentinel 1) ou lumière nocturne sans AIS (VIIRS, details.source)
+    // Trois sources : écho radar sans AIS (Sentinel 1), navire vu en optique sans AIS (Sentinel 2) ou lumière nocturne
+    // sans AIS (VIIRS, details.source)
     navires: (d) => [...(d.navire_liste ? [d.navire_liste] : []), ...(d.candidats_ais ?? [])],
-    titre: (d) => d.source === "viirs" ? P.lumiere : P.echo(num(d.longueur_m ?? d.length_m, 0)),
+    titre: (d) => d.source === "viirs" ? P.lumiere : d.source === "sentinel2" ? P.vu(num(d.longueur_m, 0))
+      : P.echo(num(d.longueur_m ?? d.length_m, 0)),
     signe: (d) => d.source === "viirs"
       ? <>{d.a_confirmer && <Tag>{P.aConfirmer}</Tag>}<Tag>{P.viirsDe(num(d.nanowatts, 0))}</Tag></>
-      : d.source === "sentinel1"
-        ? <>{d.a_confirmer && <Tag>{P.aConfirmer}</Tag>}<Tag>{P.radarDe(num(d.longueur_m, 0))}</Tag></>
+      : d.source === "sentinel1" || d.source === "sentinel2"
+        ? <>{d.a_confirmer && <Tag>{P.aConfirmer}</Tag>}
+          <Tag>{(d.source === "sentinel2" ? P.optiqueDe : P.radarDe)(num(d.longueur_m, 0))}</Tag></>
         : <Tag>{P.contrasteDe(num(d.contrast_vv_db, 0))}</Tag>,
     preuves: (p) => {
       const d = p.details ?? {};
-      if (d.source === "sentinel1") return (
+      const optique = d.source === "sentinel2";
+      if (d.source === "sentinel1" || optique) return (
         <>
-          {d.detection_id && <PreuveImage source="sentinel1" detectionId={Number(d.detection_id)} />}
-          <Row label={P.capteur}>{String(d.satellite ?? "").replace(/^S1/, "Sentinel 1")}</Row>
+          {d.detection_id && <PreuveImage source={d.source} detectionId={Number(d.detection_id)} />}
+          {optique && d.detection_id && <PreuveImage source="sentinel2" contexte detectionId={Number(d.detection_id)} />}
+          <Row label={P.capteur}>{String(d.satellite ?? "").replace(/^S(\d)/, "Sentinel $1")}</Row>
           <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
           <Row label={P.longueurEstimee}>{d.longueur_m != null ? `${num(d.longueur_m, 0)} m` : L.commun.nd}</Row>
           <Row label={P.largeurEstimee}>{d.largeur_m != null ? `${num(d.largeur_m, 0)} m` : L.commun.nd}</Row>
-          <Row label={P.contraste}>{d.contraste_db != null ? `${num(d.contraste_db, 1)} dB` : L.commun.nd}</Row>
+          {optique ? <>
+            <Row label={P.cap}>{d.cap_deg != null ? `${num(d.cap_deg, 0)}°` : L.commun.nd}</Row>
+            <Row label={P.vitesseEstimee}>{d.vitesse_kn != null ? `${num(d.vitesse_kn, 1)} ${L.commun.noeuds}` : L.commun.nd}</Row>
+            <Row label={P.typeNavire}>{d.type_navire ? L.fiche.radar.types[d.type_navire] ?? d.type_navire : L.commun.nd}</Row>
+            <Row label={P.nuagesAutour}>{d.masque_nuages === "present" ? `${num(d.nuages_pct ?? 0, 1)} %` : P.masqueAbsent}</Row>
+          </> : <Row label={P.contraste}>{d.contraste_db != null ? `${num(d.contraste_db, 1)} dB` : L.commun.nd}</Row>}
           <Row label={P.distanceCote}>{d.distance_cote_km != null ? `${num(d.distance_cote_km)} km` : L.commun.nd}</Row>
           {d.infrastructure && <Row label={P.infrastructure}>{d.infrastructure.name ?? d.infrastructure.type}, {d.infrastructure.distance_m} m</Row>}
           {d.navire_liste && <Row label={P.navireListe}>{d.navire_liste.name ?? d.navire_liste.mmsi}, {num(d.navire_liste.distance_km)} km</Row>}
@@ -239,7 +249,9 @@ export const TYPES_ALERTE: TypeAlerte[] = [
           <Row label={P.navire}>{vesselText(d.navire)}</Row>
           <Row label={P.vitesseDeclaree}>{num(d.navire?.sog_kn)} {L.commun.noeuds}</Row>
           <Row label={P.positionPassage}>{d.methode_position}</Row>
-          <Row label={P.echoProche}>{d.echo_le_plus_proche_m == null ? P.aucun : `${d.echo_le_plus_proche_m} m`}</Row>
+          {d.source === "sentinel2" && <Row label={P.capteur}>{String(d.satellite ?? "").replace(/^S2/, "Sentinel 2")}</Row>}
+          <Row label={P.echoProche}>{d.echo_le_plus_proche_m == null ? (d.source === "sentinel2" ? P.aucunNavireVu : P.aucun)
+            : `${d.echo_le_plus_proche_m} m`}</Row>
           <Row label={P.tolerance}>{P.toleranceDe(d.tolerance_le_long_m, d.tolerance_en_travers_m)}</Row>
           <Context items={d.contexte} />
         </>
@@ -248,14 +260,15 @@ export const TYPES_ALERTE: TypeAlerte[] = [
   },
   {
     type: "IDENTITY_MISMATCH", Icone: Ruler, couleur: "#c9a0ff", piste: "flotte", etape: "3", actif: true,
-    // Écho Sentinel 1 apparié au navire, mais dont la longueur ou l'orientation contredit la déclaration AIS
+    // Écho Sentinel 1 ou navire vu en optique Sentinel 2, apparié au navire, mais dont la longueur ou l'orientation
+    // contredit la déclaration AIS
     navires: (d) => [d.navire], titre: (d) => nom(d.navire),
     signe: (d) => <Tag>{(d.ecarts ?? []).map((e: string) => e.startsWith("Longueur") ? P.longueurEcart : P.capEcart).join(", ")}</Tag>,
     preuves: (p) => {
       const d = p.details ?? {}, n = d.navire ?? {};
       return (
         <>
-          {d.detection_id && <PreuveImage source="sentinel1" detectionId={Number(d.detection_id)} />}
+          {d.detection_id && <PreuveImage source={d.source === "sentinel2" ? "sentinel2" : "sentinel1"} detectionId={Number(d.detection_id)} />}
           <Row label={P.navire}>{vesselText(n)}</Row>
           <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
           <Row label={P.longueurEstimee}>{d.longueur_m != null ? `${num(d.longueur_m, 0)} m` : L.commun.nd}</Row>

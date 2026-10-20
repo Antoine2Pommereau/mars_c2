@@ -9,7 +9,7 @@ import { Comportement, DemandesObservation, EnTeteAlerteNavire, EnTeteNavire, Ra
 import type { VesselCard } from "../lib/api";
 import { num } from "../lib/format";
 import { L } from "../lib/libelles";
-import type { Feature, Props } from "../lib/types";
+import type { Feature, Props, SourceDetection } from "../lib/types";
 import { zoneOf } from "../lib/zones";
 import { COULEUR_LISTE, naviresAlerte, typeAlerte } from "./alertes";
 
@@ -39,7 +39,7 @@ export interface Contexte {
   onPickInfra: (id: number) => void;
   onSuivre: (vesselId: number, on: boolean) => void;
   onRejeu: (vesselId: number) => void;
-  onPickDetection: (source: "sentinel1" | "viirs", id: number) => void;
+  onPickDetection: (source: SourceDetection, id: number) => void;
 }
 
 interface Section {
@@ -57,8 +57,10 @@ const sejourNavire = (c: Contexte): Props | undefined => (c.carte?.alerts ?? [])
   .filter((a) => a.properties.type === "WATCHLIST" && a.properties.details?.sejour)
   .sort((a, b) => String(b.properties.event_time).localeCompare(String(a.properties.event_time)))[0]?.properties.details.sejour;
 
-// Détections des travailleurs (VIIRS, Sentinel 1) : fiches propres ; les autres sont celles des analyses du Mac
-const SATELLITES = ["viirs", "sentinel1"];
+// Détections des travailleurs (VIIRS, Sentinel 1, Sentinel 2) : fiches propres ; les autres sont celles des analyses du Mac
+const SATELLITES = ["viirs", "sentinel1", "sentinel2"];
+// Radar et optique partagent la fiche de détection (mesures, image, navire apparié, alertes liées)
+const sentinel = (c: Contexte) => c.detection?.source === "sentinel1" || c.detection?.source === "sentinel2";
 
 const zoneOfVessel = (v: Props) => (v.lon == null ? null : zoneOf(v.lon, v.lat));
 const toujours = () => true;
@@ -78,7 +80,7 @@ const SECTIONS: Section[] = [
     rendu: (c) => <p className="text-ink/90">{c.alerte!.properties.details.motif}</p> },
   { id: "vignette", objet: "alerte", ordre: 20, etape: null, titre: false,
     condition: (c) => !!typeAlerte(c.alerte!.properties.type).vignette && !!c.alerte!.properties.event_time
-      && !SATELLITES.includes(c.alerte!.properties.details?.source),       // VIIRS, Sentinel 1 : vignette du travailleur
+      && !SATELLITES.includes(c.alerte!.properties.details?.source),       // VIIRS, Sentinel 1 et 2 : vignette du travailleur
     rendu: (c) => {
       const [lon, lat] = c.alerte!.geometry.coordinates as [number, number];
       return <Chip lon={lon} lat={lat} time={c.alerte!.properties.event_time} />;
@@ -182,14 +184,19 @@ const SECTIONS: Section[] = [
     rendu: (c) => <ViirsAlertes id={Number(c.detection!.id)} onPickAlert={c.onPickAlert} /> },
 
   // Détection radar
-  // Détection radar Sentinel 1 (lot C)
-  { id: "radar", objet: "detection", ordre: 10, etape: null, titre: false, condition: (c) => c.detection?.source === "sentinel1",
+  // Détection radar Sentinel 1 (lot C) ou optique Sentinel 2 (lot S2) : image en grand d'abord pour l'optique
+  { id: "image", objet: "detection", ordre: 5, etape: null, titre: false, condition: (c) => c.detection?.source === "sentinel2",
+    rendu: (c) => <PreuveImage source="sentinel2" detectionId={Number(c.detection!.id)} /> },
+  { id: "radar", objet: "detection", ordre: 10, etape: null, titre: false, condition: sentinel,
     rendu: (c) => <RadarMesures id={Number(c.detection!.id)} /> },
   { id: "image", objet: "detection", ordre: 15, etape: null, titre: false, condition: (c) => c.detection?.source === "sentinel1",
     rendu: (c) => <PreuveImage source="sentinel1" detectionId={Number(c.detection!.id)} /> },
-  { id: "apparie", objet: "detection", ordre: 20, etape: null, titre: true, condition: (c) => c.detection?.source === "sentinel1",
+  { id: "apparie", objet: "detection", ordre: 20, etape: null, titre: true, condition: sentinel,
     rendu: (c) => <RadarNavire id={Number(c.detection!.id)} onPickVessel={c.onPickVessel} /> },
-  { id: "liees", objet: "detection", ordre: 30, etape: null, titre: true, condition: (c) => c.detection?.source === "sentinel1",
+  { id: "contexte_optique", objet: "detection", ordre: 25, etape: null, titre: true,
+    condition: (c) => c.detection?.source === "sentinel2",
+    rendu: (c) => <PreuveImage source="sentinel2" contexte detectionId={Number(c.detection!.id)} /> },
+  { id: "liees", objet: "detection", ordre: 30, etape: null, titre: true, condition: sentinel,
     rendu: (c) => <RadarAlertes id={Number(c.detection!.id)} onPickAlert={c.onPickAlert} /> },
   // Détection d'une analyse du Mac (zone tracée)
   { id: "mesures", objet: "detection", ordre: 10, etape: null, titre: false, condition: (c) => !SATELLITES.includes(c.detection?.source),

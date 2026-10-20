@@ -24,9 +24,10 @@
 #                 jeton (un jeton faux est refusé), résultats traités et instance « détruite » ; la trace doit réunir
 #                 taches, travailleur et API. Vérifie aussi le filtre des données sensibles du collecteur (environ
 #                 3 minutes ; images publiques du collecteur et de Tempo téléchargées au besoin).
-#   s2          : modèle Sentinel 2 d'AI2 (rslearn, image candidate du lot S2, 7,2 Go, poids publics de 2,2 Go gardés
-#                 dans ~/.cache/mars_c2/sentinel2) sur une vraie fenêtre de 24 km de la Manche lue sans clé dans le
-#                 miroir public de Google, sur processeur : quatre navires attendus (environ 3 minutes en émulation).
+#   s2          : travailleur Sentinel 2 (travailleurs/sentinel2.py) dans l'image rslearn d'AI2 (7,2 Go, poids publics
+#                 de 2,2 Go gardés dans ~/.cache/mars_c2/sentinel2), sur une vraie fenêtre de 24 km de la Manche lue
+#                 sans clé dans le miroir public de Google (13 bandes L1C et masque SCL du L2A), sur processeur :
+#                 quatre navires, masque présent, vignettes de 2 et 10 km (environ 3 minutes en émulation).
 #   sante       : collecte figée simulée dans l'image des scripts (processus vivant, aucun fichier écrit), lancée comme
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
@@ -146,11 +147,12 @@ verifier_ai2() {
   rm -f "$sortie"
 }
 
-# Lot S2 (mesures du 20/10/2026, docs/sentinel2.md) : image et poids candidats, pas encore dans config/rules.yaml
-IMAGE_S2=ghcr.io/allenai/sentinel2-vessel-detection@sha256:0ce4cbee15337138ead556f41aa099eb0512ae4b1bc4b3d4d6773ba90aa3672c
+# Lot S2 (docs/sentinel2.md) : image épinglée de config/rules.yaml (travailleurs.types.sentinel2)
 POIDS_S2=https://storage.googleapis.com/ai2-rslearn-projects-data/projects
 verifier_s2() {
-  local cache=${MARS_CACHE_S2:-$HOME/.cache/mars_c2/sentinel2} p
+  local cache=${MARS_CACHE_S2:-$HOME/.cache/mars_c2/sentinel2} p IMAGE_S2
+  IMAGE_S2=$(grep -o 'ghcr.io/allenai/sentinel2-vessel-detection@sha256:[0-9a-f]*' config/rules.yaml | head -1)
+  [ -n "$IMAGE_S2" ] || echec "s2 : image Sentinel 2 introuvable dans config/rules.yaml"
   for p in sentinel2_vessels/data_20250213_02_all_bands sentinel2_vessel_attribute/data_20250205_regress_00; do
     if [ ! -s "$cache/projects/$p/best.ckpt" ]; then
       echo "        téléchargement des poids $p (1,1 Go)"

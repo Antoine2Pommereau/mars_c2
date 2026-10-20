@@ -39,10 +39,12 @@ async def proof_image(request: Request, pid: int):
     return Response(r.content, media_type="image/png", headers={"Cache-Control": "max-age=86400", "X-Source": "R2"})
 
 
-async def proof_of(c, objet: str, objet_id: int) -> dict | None:
-    """Dernière preuve image d'un objet (viirs_detection, detection) : identifiant, taille, géoréférence."""
+async def proof_of(c, objet: str, objet_id: int, role: str = "vignette") -> dict | None:
+    """Dernière preuve image d'un objet (viirs_detection, detection) : identifiant, taille, géoréférence. `role` :
+    vignette, ou contexte (Sentinel 2, 10 km autour d'une détection liée à une alerte)."""
     r = await c.fetchrow("SELECT id, source, octets, largeur, hauteur, geo, prise_le FROM preuves_images "
-                         "WHERE objet = $1 AND objet_id = $2 AND supprime_le IS NULL ORDER BY id DESC LIMIT 1", objet, objet_id)
+                         "WHERE objet = $1 AND objet_id = $2 AND role = $3 AND supprime_le IS NULL ORDER BY id DESC LIMIT 1",
+                         objet, objet_id, role)
     return {**dict(r), "prise_le": r["prise_le"].isoformat(), "url": f"/api/preuves/{r['id']}.png"} if r else None
 
 

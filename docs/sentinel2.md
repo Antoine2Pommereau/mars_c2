@@ -189,5 +189,108 @@ Décisions à prendre avant de construire :
 3. **Heure de la tuile** : la fusion lit `SENSING_TIME` dans `MTD_TL.xml` (quelques Ko) ; à corriger aussi dans le
    calendrier des passages Sentinel 2.
 
-Prochaine étape sur accord : construire les points 2 à 7 du lot avec ce modèle, livré coupé
-(`sentinel2.scenes_max_par_jour: 0`).
+Décisions d'Antoine (20/10/2026) : les trois propositions sont retenues ; masque attendu 3 h puis analyse « masque
+absent » ; comparaison avec `MSK_CLASSI` notée comme amélioration future. Construction ci dessous.
+
+## 8. Licence des poids
+
+Le README de `allenai/rslearn_projects` (dépôt GitHub, vérifié le 20/10/2026) indique : « Model weights and Code :
+Licensed under Apache License 2.0 » ; les annotations d'entraînement sont sous CC BY 4.0. Les poids peuvent donc être
+recopiés sur R2 et utilisés, y compris pour une démonstration publique, à condition de garder la mention de la
+licence et de l'auteur (Allen Institute for AI, projet rslearn). Les images Sentinel 2 sont des données Copernicus,
+libres avec mention de la source : chaque vignette porte dans l'interface « Contient des données Copernicus Sentinel
+modifiées ».
+
+## 9. Poids sur R2 et quota gratuit
+
+Les deux fichiers de poids (1,15 Go et 1,09 Go, soit 2,24 Go) sont recopiés une fois sur R2 par
+`taches.py sentinel2-poids` (copie en flux sans disque, empreinte SHA 256 vérifiée à l'envoi, puis par le travailleur
+après chaque téléchargement ; empreintes versionnées dans `config/rules.yaml`). Ils occupent **22 % des 10 Go gratuits**
+de R2. Avec l'archive (environ 26 Mo par jour depuis le 05/10/2026) et les sauvegardes (moins de 70 Mo), le quota
+gratuit serait atteint vers le **28/07/2027** au lieu du 21/10/2027, soit environ 85 jours plus tôt. Au delà, les poids
+coûtent 0,03 dollar par mois (0,015 dollar par Go et par mois). Les vignettes optiques pèsent environ 30 Ko (2 km,
+gardées 30 jours) et 140 à 180 Ko pour la vignette de contexte (10 km, seulement pour une détection liée à une alerte,
+gardée sans limite) : négligeables.
+
+## 10. Construction (lot S2, règles 2026.10.34, migration 32)
+
+| Partie | Où | Ce qui est fait |
+|---|---|---|
+| Calendrier | `mars/sentinel2.py` (`corriger_heures`), `scripts/taches.py` (`update_passes`) | heure propre des tuiles des trois derniers jours lue chaque nuit (4 Ko de `MTD_TL.xml` par tuile, clés du serveur) ; `acquired_at` et `ended_at` deviennent la première et la dernière tuile sur nos régions, l'heure du catalogue reste dans `heure_prise_de_vue` ; l'upsert du calendrier ne la remplace plus |
+| Sélection | `plan`, `launch` | mêmes points de déclenchement que Sentinel 1 (navires des listes en mer, alertes VIIRS, demandes d'observation), tuiles L1C qui les couvrent, garde des nuages annoncés (au delà de 50 %, tuile écartée avec son motif), masque L2A attendu 3 h puis « absent », heure propre de chaque tuile ; plafond propre (`sentinel2.scenes_max_par_jour`, 0 à la livraison), budget mensuel partagé avec Sentinel 1, GP1-S puis POP2 ; essai manuel avec `SENTINEL_PLAFOND_ESSAI` |
+| Travailleur | `travailleurs/sentinel2.py` | poids téléchargés depuis R2 (adresses présignées de 3 h remises avec la tâche, jamais en base) et vérifiés ; SCL du L2A lu dans chaque fenêtre, fenêtre au delà de 20 % de nuages close « nuages » sans lire les bandes ; 13 bandes du L1C lues par `/vsis3/`, octets comptés dans le journal de GDAL ; inférence d'AI2 une seule fois pour toutes les fenêtres ; pour chaque navire du cœur de la fenêtre, part nuageuse dans le kilomètre autour, vignette de 2 km et de contexte de 10 km (PNG en palette, étirement adapté à la mer), géoréférence ; grille du masque (cellules de 500 m) |
+| Résultats | `ingest`, `fuse_analysis` | détections (longueur, largeur, cap, vitesse, type, part nuageuse, état du masque) ; fusion AIS à l'heure de la tuile, sans tolérance Doppler (cercle de 300 m) ; navire sous un nuage (plus de 25 % masqué autour de lui) écarté « nuages » ; DARK_SHIP, AIS_UNCONFIRMED, IDENTITY_MISMATCH de source `sentinel2`, même évaluation (zone de réception fiable) ; AIS_UNCONFIRMED seulement dans le cœur d'une fenêtre lue, sur une cellule dégagée, jamais sans masque ; sans masque, toute alerte DARK_SHIP est « à confirmer » ; vignette de contexte rangée pour les seules détections liées à une alerte ; résultat de l'analyse (analysée, nuages, sans détection) |
+| Tip and cue | `mars/tip_and_cue.py` | passages Sentinel 2 candidats quand Sentinel 2 est en service ; passage acquis annoncé au delà de 50 % de nuages écarté (motif d'attente) ; cercle sous les nuages au passage optique : la demande repart en attente pour un autre passage (jamais « absent ») ; résultat « vu en optique » sur l'alerte d'origine (`capteur: optique`) |
+| API | `backend/sentinel.py`, `backend/preuves.py`, `backend/satellites.py`, `backend/travailleurs.py` | détections radar et optiques dans la couche, fiche optique (vignette, contexte, nuages de la fenêtre), vérification satellite avec la source, résultat optique des passages, état et part du budget, mesures `mars_sentinel2_*` ; remise de la tâche avec les adresses des poids |
+| Interface | `web/src` | point plein pour l'optique (anneau pour le radar), fiche « Détection optique Sentinel 2 » (image en grand, mesures, nuages, navire apparié, contexte, alertes), vérification satellite radar et optique confondus, frise (passage nuageux estompé, nuages annoncés au survol), panneau Observations (icône du capteur), alertes de source optique, barre d'état |
+| Grafana | tableau Satellites | section « Sentinel 2, optique » : passages dégagés à l'annonce, analyses exploitables, octets lus, coût, analyses par résultat, coût par capteur, table des analyses ; coût et part du budget Sentinel sur les deux capteurs |
+| Traces | serveur et travailleur | `sentinel2.selection`, `sentinel2.garde_nuages_annonce`, `GET S3 eodata MTD_TL.xml`, `sentinel2.fenetres`, `sentinel2.verification_cles`, `sentinel2.choix_calcul`, `travailleur.lancement` ; au travailleur `sentinel2.poids` (`GET R2 poids`), `sentinel2.fenetre`, `GET S3 eodata SCL fenêtre` et `GET S3 eodata 13 bandes fenêtre` (octets, requêtes), `sentinel2.inference`, `sentinel2.detections`, `sentinel2.vignettes` ; puis `sentinel2.fusion_et_alertes`, `sentinel2.vignettes` et la destruction |
+
+Vérifications : `tests/test_sentinel2.py` (18 tests : réglages versionnés, tuile, heure, garde des nuages avant et
+après lecture, masque du L2A attendu puis absent, part nuageuse et grille, vignette, octets lus, fusion sans Doppler,
+chaîne complète sur la base de test, plafond propre et budget partagé, tip and cue sur un passage optique, cercle sous
+les nuages, calendrier) ; `scripts/verifier_images.sh s2` lance le vrai script du travailleur dans l'image d'AI2 sur la
+fenêtre de Beachy Head (essai du 20/10/2026 : 4 navires, masque présent, 0,4 % de nuages, SCL 16 Ko, 13 bandes 33,6 Mo
+en 201 requêtes et 5 s, part nuageuse autour des navires 0 à 1,3 %, vignettes de 29 à 30 Ko, contextes de 136 à
+177 Ko, 141 s dont 133 s d'inférence en émulation).
+
+## 11. Essai réel pas à pas
+
+Sentinel 2 reste coupé (`scenes_max_par_jour: 0`) : l'essai passe par la commande manuelle et le plafond d'essai.
+
+1. **Préalables** (une fois, après le déploiement) : migration 32 appliquée, poids sur R2, heures des tuiles :
+   ```bash
+   docker compose exec taches python scripts/taches.py sentinel2-poids      # 2,24 Go copiés et vérifiés, quelques minutes
+   docker compose exec taches python scripts/taches.py sentinel2-heures 3   # {"passages": N, "tuiles": …, "decalage_max_s": …}
+   ```
+   On doit lire deux lignes « copié et vérifié (… octets, SHA 256 conforme) », puis un décalage maximal de plusieurs
+   minutes (387 s attendus pour une tuile de la Manche).
+2. **Choisir un passage dégagé récent** (lecture seule, rien n'est lancé) :
+   ```bash
+   docker compose exec taches python scripts/taches.py sentinel2-candidats 72
+   ```
+   Prendre un passage dont une tuile est annoncée sous 20 %, « masque present », sans « heure du catalogue », avec une
+   ou deux fenêtres (environ 0,19 €). Sans candidat (nuages, aucun navire des listes en mer), réessayer le lendemain
+   vers 16:00 UTC, quand les produits du jour sont publiés.
+3. **Lancer** :
+   ```bash
+   docker compose exec -e SENTINEL_PLAFOND_ESSAI=1 taches python scripts/taches.py sentinel2-analyser <passage>
+   ```
+   On doit lire le travailleur créé (GP1-S en fr-par-2), le coût estimé et la durée de vie.
+4. **Suivre** : barre d'état (Satellites, « Dernier passage Sentinel 2 analysé »), Grafana Satellites (section
+   Sentinel 2, table « Analyses Sentinel 2 », colonne Trace), puis la trace dans Tempo. Spans attendus, dans l'ordre :
+   `sentinel2.selection`, `GET S3 eodata MTD_TL.xml`, `sentinel2.garde_nuages_annonce`, `travailleur.lancement`,
+   étapes du démarrage (Docker, image de 7,2 Go), `GET R2 poids` (deux), `GET S3 eodata SCL fenêtre`,
+   `GET S3 eodata 13 bandes fenêtre`, `sentinel2.inference`, `sentinel2.vignettes`, `travailleur.renvoi_resultats`,
+   `sentinel2.fusion_et_alertes`, destruction de l'instance.
+   ```bash
+   docker compose exec db psql -U mars -d mars -c "SELECT id, etat, commercial_type, cree_le, detruit_le, cout_reel_eur, left(erreur, 200) FROM travailleurs WHERE tache = 'sentinel2' ORDER BY id DESC LIMIT 1"
+   ```
+5. **Mesures à relever** (à reporter dans ce document, puis dans `config/rules.yaml`) :
+   ```bash
+   docker compose exec db psql -U mars -d mars -c "SELECT a.id, a.status, a.summary->>'resultat' AS resultat, a.octets_lus, f->>'etat' AS etat, f->>'nuages_pct' AS nuages, f->>'octets' AS octets_bandes, f->>'requetes' AS requetes, f->>'lecture_s' AS lecture_s, f->>'analyse_s' AS inference_s, t->>'octets_scl' AS octets_scl FROM analyses a, jsonb_each(a.timings) AS x(k, t), jsonb_array_elements(t->'fenetres') AS f WHERE a.source = 'sentinel2' ORDER BY a.id DESC LIMIT 6"
+   docker compose exec db psql -U mars -d mars -c "SELECT mesures->'mesures_travailleur' FROM travailleurs WHERE tache = 'sentinel2' ORDER BY id DESC LIMIT 1"
+   ```
+   * octets lus par `/vsis3/` sur eodata pour les 13 bandes et pour le SCL (attendus près de 33,6 Mo et 16 à 450 Ko,
+     mesurés sur le miroir de Google) ;
+   * durée de la création à la destruction, téléchargement de l'image, poids (`poids_s`), inférence par fenêtre sur un
+     vrai GP1-S (133 s en émulation), mémoire (`rss_max_mo`, 4,3 Go en émulation), coût réel ;
+   * dans l'interface : fiche de chaque navire (longueur, cap, vitesse, type contre l'AIS), écart de position au navire
+     apparié (8 à 130 m attendus à l'heure de la tuile), vignettes en couleurs réelles avec l'AIS superposé.
+6. **Ensuite** : recaler `minutes_fixes_cpu` et `minutes_par_fenetre_cpu` sur les durées mesurées, puis décider d'un
+   plafond (`scenes_max_par_jour: 1` ou `2`, nouvelle version des règles).
+
+## 12. Limites
+
+* Masque des nuages : le SCL classe en nuage le navire lui même et son sillage ; la règle porte donc sur une part
+  (25 % du kilomètre autour), pas sur un pixel. Un petit nuage sur le navire seul n'est pas vu. Les ombres de nuages
+  sur la mer sont rarement classées : le masque ne les couvre presque pas.
+* Sans masque (L2A publié plus de 3 h après la prise de vue), un nuage brillant peut passer pour un navire : alertes
+  « à confirmer », aucune absence déclarée.
+* Le modèle manque environ un navire sur cinq (rappel de 78,6 % chez AI2) et les petites unités ; l'absence d'un navire
+  AIS dans une fenêtre dégagée reste un indice, comme au radar.
+* L'heure propre des tuiles prévues (plans de l'ESA) reste celle du plan : seule celle des passages acquis est
+  corrigée.
+* Les octets lus sur eodata ne sont pas encore mesurés (essai réel) ; le comptage ajoute 16 Ko par fichier ouvert,
+  lecture d'ouverture que GDAL ne journalise pas.
+* Le rejeu du tip and cue (`tip-rejeu`) ne compte encore que les passages Sentinel 1.

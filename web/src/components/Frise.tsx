@@ -143,13 +143,18 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
           const analyse = f.properties.analyse as string | undefined;
           const analyseOk = analyse === "done";
           const demandes = Number(f.properties.demandes ?? 0);    // demandes d'observation (tip and cue, lot T1)
+          // Sentinel 2 (lot S2) : passage nuageux (annonce au delà de la moitié, ou fenêtres closes) estompé
+          const optique = f.properties.mission === "S2";
+          const nuageux = optique && (f.properties.resultat === "nuages" || Number(f.properties.nuages ?? 0) > 50);
           return (
             <span key={f.properties.id}
               title={F.passage(f.properties.satellite, utc(f.properties.acquired_at), prevu,
-                L.fiche.passage.analyses[analyse ?? ""] ?? undefined, demandes)}
+                L.fiche.passage.analyses[analyse ?? ""] ?? undefined, demandes, optique ? f.properties.nuages : null,
+                f.properties.resultat)}
               onPointerDown={(e) => { e.stopPropagation(); onPickPassage(f); }}
               className={`absolute bottom-0 w-[5px] -translate-x-1/2 cursor-pointer rounded-sm border ${prevu ? "border-dashed" : ""} ${analyseOk ? "h-4 ring-1 ring-ink/80" : "h-2.5"}`}
-              style={{ left: `${pct(t)}%`, borderColor: COULEUR_PASSAGE, background: prevu ? "transparent" : COULEUR_PASSAGE }}>
+              style={{ left: `${pct(t)}%`, borderColor: COULEUR_PASSAGE, background: prevu ? "transparent" : COULEUR_PASSAGE,
+                opacity: nuageux ? 0.35 : undefined }}>
               {demandes > 0 && <span className="absolute -top-2 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-signal" />}
             </span>
           );

@@ -141,6 +141,13 @@ export const INDICATEURS: Indicateur[] = [
       if (attente) detail.push([E.analyseSentinel, E.attenteGpu(duree(Math.max(0, Date.parse(attente.prochain_essai) - now)))]);
       if (s1) detail.push([E.coutMois, E.euros(s1.euros_mois ?? 0)]);
       if (ls?.statut === "echec") detail.push([E.lancementSentinel, `${date(ls.le)}${ls.erreur ? ` : ${ls.erreur}` : ""}`]);
+      // Sentinel 2 (lot S2) : dernière analyse optique et son résultat, part de chaque capteur dans le budget partagé
+      const s2 = s1?.optique, o = s2?.dernier;
+      if (o) detail.push([E.sentinel2, E.sentinel2De(String(o.satellite ?? "").replace(/^S2/, "Sentinel 2"), date(o.acquis_le),
+        E.resultatsOptique[o.resultat] ?? L.fiche.passage.analyses[o.statut] ?? o.statut, o.detections ?? 0)]);
+      if (s2?.travailleur?.erreur) detail.push([E.motif, s2.travailleur.erreur]);
+      if (s2 && (s2.euros_mois.optique || s2.euros_mois.radar)) detail.push([E.budgetPartage,
+        E.coutParSource(s2.euros_mois.radar ?? 0, s2.euros_mois.optique ?? 0)]);
       // Tip and cue (lot T1) : demandes en attente ou planifiées, prochaine observation prévue
       const tc = sat.tip_and_cue;
       if (tc) {

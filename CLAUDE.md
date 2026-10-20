@@ -616,7 +616,16 @@ Sentinel 2, large compris (un passage tous les 1,7 jours en Atlantique, 3,3 en M
 0,8 passage dégagé par semaine et par point au large en Atlantique et Manche, 1,15 en Méditerranée (SCL de la fenêtre) ;
 annonce du catalogue utile comme premier tri seulement ; JP2 sur eodata, 47 Mo lus par fenêtre (15 %). Détecteur
 Sentinel 2 absent de l'image d'AI2 épinglée et de toutes ses étiquettes ; modèle rslearn d'AI2 essayé (L1C, 13 bandes,
-longueurs à 4 % près sur quatre navires de l'AIS sur cinq), `verifier_images.sh s2`. Suite en attente de décision.
+longueurs à 4 % près sur quatre navires de l'AIS sur cinq), `verifier_images.sh s2`.
+
+**Lot S2, Sentinel 2 construit et livré coupé (20/10/2026)** (migration 32, règles 2026.10.34, `docs/sentinel2.md`) :
+modèle rslearn d'AI2 épinglé par empreinte, poids sur R2 (licence Apache 2.0, 22 % du quota gratuit, dépassement vers
+le 28/07/2027) ; travailleur GP1-S (`travailleurs/sentinel2.py`) : SCL du L2A par fenêtre (close « nuages » au delà de
+20 %), 13 bandes du L1C, inférence, vignettes en couleurs réelles de 2 et 10 km ; heure propre des tuiles au calendrier
+et dans la fusion (sans Doppler) ; garde des nuages annoncés (50 %), masque attendu 3 h puis « masque absent » ; navire
+sous un nuage écarté, aucune absence déclarée sous les nuages ; alertes de source `sentinel2` ; plafond propre, budget
+partagé avec Sentinel 1 ; tip and cue sur les passages optiques ; couche, fiche optique, vérification satellite, frise,
+Observations, Grafana. Essai réel pas à pas : `docs/sentinel2.md`, section 11.
 
 ## 10. Tests
 
@@ -800,6 +809,10 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * **Heure d'une tuile Sentinel 2** : l'heure du catalogue et du nom de produit est le début de la prise de vue sur
   toute l'orbite ; la tuile est vue plusieurs minutes plus tard (387 s pour T30UXA le 17/10/2026, soit 2 km de
   décalage à 10 nœuds). Lire `SENSING_TIME` dans `MTD_TL.xml` pour la fusion.
+* **Masque SCL et navires** : le SCL du L2A classe en nuage le navire lui même et son sillage (1 à 8 % des pixels
+  autour d'un navire dégagé) : juger une part du voisinage, jamais un seul pixel.
+* GDAL ne journalise pas le premier bloc de 16 Ko lu à l'ouverture d'un fichier par `/vsicurl/` ou `/vsis3/` : le
+  compter à part (`travailleurs/sentinel2.py`, `octets_journal`).
 * L'image `vessel-detection-sentinels` d'AI2 n'a pas les poids de son détecteur Sentinel 2 (seulement `cfg.json`) ; le
   modèle Sentinel 2 d'AI2 est celui de rslearn (`sentinel2-vessel-detection`), poids hors de l'image. Lancer avec
   `--shm-size=2g` et un dossier des poids accessible en écriture.

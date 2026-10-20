@@ -399,22 +399,28 @@ def candidats_essai(conn, session, rules: dict, now: datetime, heures: int = 36)
     return out
 
 
-def usage(conn, now: datetime) -> tuple[int, float]:
-    """Scènes déjà engagées aujourd'hui (analyses Sentinel non échouées) et euros engagés ce mois ci (coût mesuré des
-    sessions finies, coût estimé de celles en cours)."""
+# Budget mensuel partagé (lot S2) : Sentinel 1 et Sentinel 2 puisent dans sentinel.budget_mensuel_eur ; chacun garde
+# son plafond quotidien de scènes
+TACHES_BUDGET = ("sentinel", "sentinel2")
+SOURCES_BUDGET = ("sentinel1", "sentinel2")
+
+
+def usage(conn, now: datetime, source: str = "sentinel1") -> tuple[int, float]:
+    """Scènes de `source` déjà engagées aujourd'hui (analyses non échouées) et euros engagés ce mois ci par Sentinel 1 et
+    Sentinel 2 ensemble (coût mesuré des sessions finies, coût estimé de celles en cours)."""
     day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     month = day.replace(day=1)
     scenes = conn.execute(
         "SELECT coalesce(sum(jsonb_array_length(scenes)), 0) FROM analyses "
-        "WHERE source = 'sentinel1' AND status <> 'failed' AND requested_at >= %s", (day,)).fetchone()[0]
+        "WHERE source = %s AND status <> 'failed' AND requested_at >= %s", (source, day)).fetchone()[0]
     # Coût réel de chaque travailleur Sentinel du mois (journal, une fois détruit : un GPU inutilisable compte, une
     # rupture de stock vaut 0), plus le coût estimé des analyses dont le travailleur tourne encore (lot C4)
     spent = conn.execute(
         """SELECT coalesce((SELECT sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)) FROM travailleurs
-                            WHERE tache = 'sentinel' AND cree_le >= %(m)s AND detruit_le IS NOT NULL), 0)
+                            WHERE tache = ANY(%(t)s) AND cree_le >= %(m)s AND detruit_le IS NOT NULL), 0)
                 + coalesce((SELECT sum(a.cout_estime_eur) FROM analyses a JOIN travailleurs t ON t.id = a.travailleur_id
-                            WHERE a.source = 'sentinel1' AND t.detruit_le IS NULL AND t.cree_le >= %(m)s), 0)""",
-        {"m": month}).fetchone()[0]
+                            WHERE a.source = ANY(%(s)s) AND t.detruit_le IS NULL AND t.cree_le >= %(m)s), 0)""",
+        {"m": month, "t": list(TACHES_BUDGET), "s": list(SOURCES_BUDGET)}).fetchone()[0]
     return int(scenes), float(spent)
 
 
@@ -1155,9 +1161,25 @@ def _record_fixed(conn, det, hits, t0) -> int:
     return len(hits)
 
 
-def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading, rules) -> dict:
+# Capteur d'une fusion (lot S2) : source, textes, clés des alertes et règles propres. Sentinel 1 garde ses valeurs.
+RADAR = {
+    "source": "sentinel1", "cles": ("s1", "s1m", "s1u"),
+    "dark": "Écho radar de navire sans navire AIS compatible, alors que l'AIS est reçu dans la zone",
+    "incoherence": "Écho radar apparié au navire, mais sa longueur ou son orientation contredit la déclaration AIS : "
+                   "identité possiblement usurpée",
+    "non_confirme": "Grand navire déclaré par l'AIS dans la scène radar, sans aucun écho compatible à l'instant du "
+                    "passage : position possiblement falsifiée",
+    "masque": None,            # détection → motif de masque propre au capteur (Sentinel 2 : nuages)
+    "visible": None,           # navire AIS (lon, lat) → visible par le capteur ? (Sentinel 2 : fenêtre dégagée)
+    "contexte": [],            # phrases ajoutées au contexte de chaque alerte
+    "a_confirmer": False,      # toute alerte DARK_SHIP à confirmer (Sentinel 2 sans masque des nuages)
+}
+
+
+def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading, rules, capteur=None) -> dict:
     """Écriture de la fusion sur les détections, éoliennes, côtes, évaluation, puis alertes de la scène."""
     from mars.viirs import severity
+    cap = {**RADAR, **(capteur or {})}
     s, v = rules["sentinel"], rules["viirs"]
     out = {"alertes_dark_ship": 0, "alertes_non_confirme": 0, "alertes_incoherence": 0, "non_evaluables": 0}
     ais = extras["ais"]
@@ -1179,6 +1201,8 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
         eolien, cote_m, inside, around = geo
         if mask is None and vid is None and eolien:
             mask = "eolienne probable"
+        if mask is None and vid is None and cap["masque"]:
+            mask = cap["masque"](d)                   # Sentinel 2 : navire sous un nuage, « nuages »
         motif = None
         if mask is None and vid is None:
             motif = motif_non_evaluable(cut, cells, inside, around, v)
@@ -1188,16 +1212,21 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
         conn.execute("UPDATE detections SET mask_reason = %s, matched_vessel_id = %s, match_cost = %s, "
                      "distance_cote_m = %s, non_evaluable = %s, ais_navires_rayon = %s WHERE id = %s",
                      (mask, vid, _r(d.match_cost, 3), cote_m, motif, around, did))
-        common = {"source": "sentinel1", "analysis_id": aid, "scene": scene, "satellite": sc.get("satellite"),
+        common = {"source": cap["source"], "analysis_id": aid, "scene": scene, "satellite": sc.get("satellite"),
                   "heure": t0.isoformat(), "detection_id": did, "direction_de_vol_deg": heading}
         attrs = {"longueur_m": _r(d.length_m), "largeur_m": _r(d.width_m), "cap_deg": _r(d.heading_deg),
                  "cap_prob": _r(d.heading_prob, 2), "score": _r(d.objectness, 3), "contraste_db": _r(d.contrast_vv_db, 1)}
+        if cap["source"] == "sentinel2":
+            attrs.update({"vitesse_kn": _r(getattr(d, "speed_kn", None), 1), "type_navire": getattr(d, "type_navire", None),
+                          "nuages_pct": _r(getattr(d, "nuages_pct", None), 1), "masque_nuages": sc.get("masque")})
+            attrs.pop("contraste_db")
         if mask is None and vid is None:
             # Écho sans AIS compatible, évaluable : DARK_SHIP de source radar, gravité comme pour VIIRS
             infra, liste = _context(conn, did, t0, v)
             coast_km = None if cote_m is None else cote_m / 1000
             sev, to_confirm = severity(bool(infra), bool(liste), coast_km, rules)
-            ctx = []
+            to_confirm = to_confirm or cap["a_confirmer"]
+            ctx = list(cap["contexte"])
             if to_confirm:
                 ctx.append("À confirmer : l'AIS peut être incomplet (un point par minute, réception partielle) et la "
                            "petite pêche n'a pas l'obligation d'AIS")
@@ -1210,17 +1239,21 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
             details = {**common, **attrs, "distance_cote_km": None if coast_km is None else round(coast_km, 1),
                        "infrastructure": infra, "navire_liste": liste, "candidats_ais": cands, "contexte": ctx,
                        "a_confirmer": to_confirm, "critere_evaluation": critere(cells), "ais_navires_rayon": around,
-                       "motif": "Écho radar de navire sans navire AIS compatible, alors que l'AIS est reçu dans la zone",
+                       "motif": cap["dark"],
                        "parametres": {"rayon_base_m": rules["fusion"]["base_radius_m"],
-                                      "doppler_s": rules["fusion"]["doppler_s"], "confiance": s["confiance"]}}
+                                      "doppler_s": rules["fusion"]["doppler_s"], "confiance": cap.get("confiance",
+                                                                                                     s["confiance"])}}
             _alert(conn, "DARK_SHIP", sev, t0, float(d.lon), float(d.lat), details, rules,
-                   f"s1:{scene}:{float(d.lon):.4f}:{float(d.lat):.4f}",
+                   f"{cap['cles'][0]}:{scene}:{float(d.lon):.4f}:{float(d.lat):.4f}",
                    [("detection", did), ("analysis", aid)] + ([("vessel", liste["vessel_id"])] if liste else []))
             out["alertes_dark_ship"] += 1
         elif vid is not None and len(ais):
             # Écho apparié : longueur et cap mesurés contre la déclaration AIS
             a = ais[ais.vessel_id == vid].iloc[0]
-            found = mismatches({"longueur_m": _r(d.length_m), "cap_deg": _r(d.heading_deg), "cap_prob": _r(d.heading_prob, 2)},
+            # Optique (lot S2) : cap mesuré sur la forme et le sillage, sans classe ni probabilité ; écart à 3 à 8° de
+            # l'AIS sur cinq navires (17/10/2026), compté comme certain
+            prob = _r(d.heading_prob, 2) if cap["source"] == "sentinel1" else 1.0
+            found = mismatches({"longueur_m": _r(d.length_m), "cap_deg": _r(d.heading_deg), "cap_prob": prob},
                                {"length_m": _r(a.length_m), "cog": _r(a.cog), "sog": _r(a.sog)}, s)
             if found:
                 listed = conn.execute("SELECT level FROM vessel_watch WHERE vessel_id = %s AND level <> 'autre_risque'",
@@ -1230,17 +1263,19 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
                                       "length_m": _r(a.length_m), "cog": _r(a.cog), "sog_kn": _r(a.sog, 1),
                                       "methode_position": a.method},
                            "ecarts": found, "contexte": found + ([f"Navire des listes ({listed[0]})"] if listed else []),
-                           "motif": "Écho radar apparié au navire, mais sa longueur ou son orientation contredit la "
-                                    "déclaration AIS : identité possiblement usurpée",
+                           "motif": cap["incoherence"],
                            "parametres": {k: s[k] for k in ("ecart_longueur_m", "ecart_longueur_relatif",
                                                             "cap_ecart_min_deg", "cap_ecart_max_deg")}}
                 _alert(conn, "IDENTITY_MISMATCH", "moyenne" if listed else "faible", t0, float(d.lon), float(d.lat),
-                       details, rules, f"s1m:{scene}:{vid}", [("detection", did), ("analysis", aid), ("vessel", vid)])
+                       details, rules, f"{cap['cles'][1]}:{scene}:{vid}", [("detection", did), ("analysis", aid),
+                                                                            ("vessel", vid)])
                 out["alertes_incoherence"] += 1
     # Grands navires AIS sans écho : seulement dans l'emprise réelle de la scène, au large, là où l'AIS est fiable
     for x in extras["unconfirmed"]:
         if sc.get("emprise") and not covers(sc["emprise"], x["lon"], x["lat"], 0):
             continue
+        if cap["visible"] and not cap["visible"](x["lon"], x["lat"]):
+            continue                                  # Sentinel 2 : hors des fenêtres lues, sous un nuage, sans masque
         ok = conn.execute(
             """SELECT NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, g, %s)),
                       EXISTS (SELECT 1 FROM reception_cells c WHERE ST_Intersects(c.geom, g))
@@ -1249,17 +1284,16 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
         if not ok[0] or cut or (cells and not ok[1]):
             continue
         big = x["length_m"] >= rules["unconfirmed"]["high_length_m"]
-        details = {"source": "sentinel1", "analysis_id": aid, "scene": scene, "satellite": sc.get("satellite"),
+        details = {"source": cap["source"], "analysis_id": aid, "scene": scene, "satellite": sc.get("satellite"),
                    "heure": t0.isoformat(), "navire": {k: x[k] for k in ("vessel_id", "mmsi", "name", "length_m", "sog_kn")},
                    "methode_position": x["methode_position"], "echo_le_plus_proche_m": x["echo_le_plus_proche_m"],
                    "tolerance_le_long_m": x["tolerance_le_long_m"], "tolerance_en_travers_m": x["tolerance_en_travers_m"],
                    "critere_evaluation": critere(cells),
-                   "motif": "Grand navire déclaré par l'AIS dans la scène radar, sans aucun écho compatible à l'instant "
-                            "du passage : position possiblement falsifiée",
+                   "motif": cap["non_confirme"],
                    "contexte": ["Le détecteur manque une partie des navires : indice à recouper, pas une preuve"],
                    "parametres": dict(rules["unconfirmed"])}
         _alert(conn, "AIS_UNCONFIRMED", "moyenne" if big else "faible", t0, x["lon"], x["lat"], details, rules,
-               f"s1u:{scene}:{x['vessel_id']}", [("analysis", aid), ("vessel", x["vessel_id"])])
+               f"{cap['cles'][2]}:{scene}:{x['vessel_id']}", [("analysis", aid), ("vessel", x["vessel_id"])])
         out["alertes_non_confirme"] += 1
     return out
 

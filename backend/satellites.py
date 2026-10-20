@@ -13,6 +13,9 @@ COLS = """s.id, s.mission, s.satellite, s.mode, s.orbit_direction, s.relative_or
           s.acquired_at, s.ended_at, s.statut, s.source, s.produits, s.regions, s.nuages,
           cardinality(coalesce(s.infra_ids, '{}')) AS n_infra, cardinality(coalesce(s.watch_ids, '{}')) AS n_listes,
           (SELECT a.status FROM analyses a WHERE a.pass_id = s.id ORDER BY a.id DESC LIMIT 1) AS analyse,
+          -- Sentinel 2 (lot S2) : résultat de l'analyse optique (analysee, nuages, sans_detection)
+          (SELECT a.summary->>'resultat' FROM analyses a WHERE a.pass_id = s.id AND a.source = 'sentinel2'
+             ORDER BY a.id DESC LIMIT 1) AS resultat,
           (SELECT count(*) FROM demandes_observation d WHERE d.pass_id = s.id
              AND d.etat IN ('planifiee', 'analysee'))::int AS demandes"""
 
@@ -65,7 +68,8 @@ async def pass_card(request: Request, pass_id: int):
             "SELECT v.id AS vessel_id, v.mmsi, v.name, v.flag, w.level AS watch FROM vessels v "
             "LEFT JOIN vessel_watch w ON w.vessel_id = v.id WHERE v.id = ANY($1::bigint[]) ORDER BY w.rank, v.name",
             r["watch_ids"] or [])
-        analyses = await c.fetch("SELECT id, status, completed_at FROM analyses WHERE pass_id = $1 ORDER BY id DESC", pass_id)
+        analyses = await c.fetch("SELECT id, status, completed_at, source, summary->>'resultat' AS resultat FROM analyses "
+                                 "WHERE pass_id = $1 ORDER BY id DESC", pass_id)
     props = {k: v for k, v in _props(r).items() if k not in ("infra_ids", "watch_ids", "x0", "y0", "x1", "y1")}
     return {**props, "geometry": r["geometry"], "bbox": [r["x0"], r["y0"], r["x1"], r["y1"]],
             "infrastructures": [dict(x) for x in infra], "navires": [dict(x) for x in vessels],

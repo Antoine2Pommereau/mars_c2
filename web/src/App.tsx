@@ -36,7 +36,8 @@ const selKey = (s: Selection | null) => !s ? null : s.kind === "alert" ? `alerte
   : s.kind === "vessel" ? `navire:${s.properties.vessel_id}` : s.kind === "infrastructure" ? `infrastructure:${s.properties.id}`
   : s.kind === "zone" ? `zone:${s.properties.zone}` : s.kind === "passage" ? `passage:${s.properties.id}`
   : s.kind === "detection" && s.properties.source === "viirs" ? `viirs:${s.properties.id}`
-  : s.kind === "detection" && s.properties.source === "sentinel1" ? `s1:${s.properties.id}` : null;
+  : s.kind === "detection" && s.properties.source === "sentinel1" ? `s1:${s.properties.id}`
+  : s.kind === "detection" && s.properties.source === "sentinel2" ? `s2:${s.properties.id}` : null;
 type Focus = { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] };
 
 /** Emprise d'une géométrie GeoJSON */
@@ -160,7 +161,7 @@ export default function App() {
   // Détections nocturnes VIIRS (couche) et nuits traitées (piste de la frise)
   const viirsQ = useQuery({ queryKey: ["viirs", qDebut, qFin, region], queryFn: () => api.viirs(qDebut, qFin, region),
     enabled: actives.includes("viirs"), refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData });
-  // Échos radar Sentinel 1 (couche « Détections radar et optiques »)
+  // Échos radar Sentinel 1 et navires vus en optique Sentinel 2 (couche « Détections radar et optiques »)
   const sentinelQ = useQuery({ queryKey: ["sentinel", qDebut, qFin, region], queryFn: () => api.sentinel(qDebut, qFin, region),
     enabled: actives.includes("detections"), refetchInterval: direct ? 300_000 : false, placeholderData: keepPreviousData });
   const nuitsQ = useQuery({ queryKey: ["nuits", qDebut, qFin], queryFn: () => api.viirsNuits(qDebut, qFin),
@@ -200,8 +201,8 @@ export default function App() {
     } else if (kind === "viirs") {
       setSelection({ kind: "detection", properties: { id: Number(id), source: "viirs" } });
       setPendingSel(null);
-    } else if (kind === "s1") {
-      setSelection({ kind: "detection", properties: { id: Number(id), source: "sentinel1" } });
+    } else if (kind === "s1" || kind === "s2") {
+      setSelection({ kind: "detection", properties: { id: Number(id), source: kind === "s2" ? "sentinel2" : "sentinel1" } });
       setPendingSel(null);
     } else setPendingSel(null);
   }, [pendingSel, rangeAlerts, alertsQ.isFetched, vessels]);

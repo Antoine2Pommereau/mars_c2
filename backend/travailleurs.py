@@ -16,6 +16,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 from preuves import ais_near, proof_of
 from regions import dans_region, region_ewkt
+from mars.r2_signature import r2_get_url
 from sentinel import sentinel_metrics
 
 router = APIRouter()
@@ -49,7 +50,11 @@ log = logging.getLogger("mars.travailleurs")
 # Clés remises par le réseau privé avec la tâche, par type de travailleur (lues dans le .env du serveur, jamais en base) :
 # Copernicus refuse les adresses présignées (14/10/2026), le travailleur Sentinel lit donc les images S3 lui même, avec
 # une paire qui lui est dédiée ; la paire du serveur (CDSE_ACCESS_KEY) ne quitte jamais le serveur
-IDENTIFIANTS = {"sentinel": ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY")}
+IDENTIFIANTS = {"sentinel": ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY"),
+                "sentinel2": ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY")}
+# Poids du modèle Sentinel 2 (lot S2), recopiés sur R2 : adresses présignées de 3 heures, ajoutées à la remise
+# seulement (jamais en base ni dans le cloud-init)
+POIDS_EXPIRE_S = 3 * 3600
 S3_COPERNICUS = "eodata.dataspace.copernicus.eu"
 
 
@@ -103,13 +108,18 @@ async def _deliver_task(c, wid: int) -> dict:
         if not key or not secret:                       # rien n'est marqué remis : la demande peut être refaite
             raise HTTPException(503, f"clés absentes du .env du serveur ({names[0]}, {names[1]})")
         creds = {"endpoint": S3_COPERNICUS, "region": "default", "access_key": key, "secret_key": secret}
+    if tache == "sentinel2" and r2_get_url("modeles") is None:     # vérifié avant de marquer la tâche remise
+        raise HTTPException(503, "R2 non configuré : poids du modèle Sentinel 2 inaccessibles")
     row = await c.fetchrow(
         "UPDATE travailleurs SET mesures = coalesce(mesures, '{}'::jsonb) || jsonb_build_object('tache_remise_le', now()) "
         "WHERE id = $1 AND NOT (coalesce(mesures, '{}'::jsonb) ? 'tache_remise_le') RETURNING parametres", wid)
     if row is None:
         raise HTTPException(409, "Tâche déjà remise")
     log.warning("travailleur %s : tâche remise par le réseau privé%s", wid, " avec sa paire de clés" if creds else "")
-    return {**(row["parametres"] or {}), **({"identifiants": {"s3": creds}} if creds else {})}
+    params = dict(row["parametres"] or {})
+    if params.get("poids"):
+        params["poids"] = [{**p, "url": r2_get_url(p["r2"], expires=POIDS_EXPIRE_S)} for p in params["poids"]]
+    return {**params, **({"identifiants": {"s3": creds}} if creds else {})}
 
 
 # États d'un travailleur dont les spans sont encore acceptés : ses derniers spans partent juste après ses résultats

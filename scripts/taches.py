@@ -37,6 +37,10 @@ Usage :
     python scripts/taches.py viirs-reevaluer          # détections VIIRS en base réévaluées (gravité, non évaluables)
     python scripts/taches.py sentinel                 # passages Sentinel 1 à analyser maintenant (sélection automatique)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
+    python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
+    SENTINEL_PLAFOND_ESSAI=1 python scripts/taches.py sentinel2-analyser ID   # essai réel Sentinel 2 (coupé sinon)
+    python scripts/taches.py sentinel2-poids          # poids du modèle Sentinel 2 recopiés sur R2 (une fois)
+    python scripts/taches.py sentinel2-heures [J]     # heure propre des tuiles Sentinel 2 du calendrier
     python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? lecture seule, aucune création, aucun coût
     python scripts/taches.py sentinel-candidats [H]    # passages des H (36) dernières heures avec un navire des listes
     python scripts/taches.py sentinel-lever-incompatible TYPE ZONE   # lève le marquage d'un GPU inutilisable
@@ -231,14 +235,36 @@ def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False) -> dic
     return r
 
 
+def launch_sentinel2(conn, pass_id: int | None = None) -> dict:
+    """Passages Sentinel 2 à analyser (mêmes points de déclenchement que Sentinel 1), ou un passage choisi à la main :
+    une session sur processeur, plafond propre et budget partagé (mars/sentinel2.py). Coupé tant que
+    sentinel2.scenes_max_par_jour vaut 0 (essai : SENTINEL_PLAFOND_ESSAI=1 sur la commande manuelle)."""
+    import requests
+    from mars import sentinel2, travailleurs
+    rules = load_rules()
+    scw = travailleurs.Scaleway.from_env()
+    missing = [k for k in ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY") if not os.environ.get(k)]
+    if scw is None or missing:
+        raise travailleurs.RefusLancement("clés absentes du .env : " + ", ".join(
+            (["SCW_SECRET_KEY, SCW_PROJECT_ID"] if scw is None else []) + missing))
+    busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'sentinel2' AND detruit_le IS NULL").fetchone()
+    if busy:
+        return {"en_cours": busy[0]}
+    r = sentinel2.launch(conn, scw, rules, datetime.now(timezone.utc), requests.Session(), pass_id, log=log)
+    if "refus" in r:
+        raise travailleurs.RefusLancement(r["refus"])
+    return r
+
+
 def supervise_workers(conn, quiet: bool = True) -> dict | None:
     """Une minute de surveillance des travailleurs ; une erreur (API Scaleway injoignable) n'arrête pas la boucle."""
-    from mars import sentinel, travailleurs, viirs
+    from mars import sentinel, sentinel2, travailleurs, viirs
     rules = load_rules()
     try:
         out = travailleurs.supervise(conn, travailleurs.Scaleway.from_env(), rules,
                                      {"viirs": lambda c, w: viirs.ingest(c, w, rules),
-                                      "sentinel": lambda c, w: sentinel.ingest(c, w, rules)}, log=log)
+                                      "sentinel": lambda c, w: sentinel.ingest(c, w, rules),
+                                      "sentinel2": lambda c, w: sentinel2.ingest(c, w, rules)}, log=log)
     except Exception as e:
         log(f"surveillance des travailleurs : ÉCHEC, {e}")
         return None
@@ -248,8 +274,16 @@ def supervise_workers(conn, quiet: bool = True) -> dict | None:
 
 
 def update_passes(conn) -> dict:
-    from mars import satellites
-    return satellites.update(conn)
+    """Calendrier des passages, puis heure propre des tuiles Sentinel 2 des trois derniers jours (lot S2)."""
+    import requests
+    from mars import satellites, sentinel2
+    out = satellites.update(conn)
+    try:
+        out["heures_sentinel2"] = sentinel2.corriger_heures(conn, requests.Session(), datetime.now(timezone.utc))
+    except Exception as e:                             # le calendrier reste à jour même si Copernicus refuse la lecture
+        traces.erreur(f"heures Sentinel 2 : {e}")
+        out["heures_sentinel2"] = {"erreur": str(e)[:300]}
+    return out
 
 
 def update_list(conn, source: str) -> dict:
@@ -435,6 +469,10 @@ def minute(conn, secours, last: dict):
             last["sentinel"] = time.time()
             if os.environ.get("CDSE_TRAVAILLEUR_ACCESS_KEY") and os.environ.get("SCW_SECRET_KEY"):
                 step(lambda: run(conn, "sentinel", lambda: launch_sentinel(conn, auto=True), quiet=True), "sentinel")
+                # Sentinel 2 (lot S2) : même rythme, seulement en service (plafond quotidien non nul)
+                from mars import sentinel2
+                if sentinel2.actif(load_rules()):
+                    step(lambda: run(conn, "sentinel2", lambda: launch_sentinel2(conn), quiet=True), "sentinel2")
         for task, (fn, every, hour) in tasks(conn).items():
             if step(lambda: due(conn, task, datetime.now(timezone.utc), every, hour), f"{task} (échéance)"):
                 step(lambda: run(conn, task, fn), task)
@@ -801,6 +839,77 @@ def _sentinel_candidats(conn, a):
 
 commande("sentinel")(_sentinel(False))
 commande("sentinel-analyser")(_sentinel(True))
+
+
+@commande("sentinel2-analyser")                      # essai réel : SENTINEL_PLAFOND_ESSAI=1 (Sentinel 2 coupé)
+def _sentinel2_analyser(conn, a):
+    if not a.args:
+        raise SystemExit("Préciser l'identifiant du passage Sentinel 2 : taches.py sentinel2-analyser ID (sar_passes)")
+    if run(conn, "sentinel2", lambda: launch_sentinel2(conn, int(a.args[0])), parent=traces.traceparent()) is None:
+        sys.exit(1)
+
+
+@commande("sentinel2-candidats")                     # lecture seule : passages Sentinel 2 récents utilisables
+def _sentinel2_candidats(conn, a):
+    import requests
+    from mars import sentinel2
+    heures = int(a.args[0]) if a.args else 72
+    rows = sentinel2.candidats_essai(conn, requests.Session(), load_rules(), datetime.now(timezone.utc), heures)
+    if not rows:
+        print(f"Aucun passage Sentinel 2 acquis dans les {heures} dernières heures ne couvre un navire des listes ou une "
+              "demande d'observation")
+    for r in rows:
+        if "rien" in r:
+            print(f"passage {r['passage']:>6}  rien à analyser : {r['rien']}")
+            continue
+        tuiles = ", ".join(f"{t['tuile']} {t['nuages_annonce'] or 0:.0f} % annoncés, masque {t['masque']}"
+                           + ("" if t["heure_tuile"] else ", heure du catalogue") for t in r["tuiles"])
+        print(f"passage {r['passage']:>6}  {r['acquis_le']:%d/%m/%Y %H:%M} UTC  {r['satellite']}  {r['points']} point(s), "
+              f"{r['fenetres']} fenêtre(s), environ {r['cout_estime_eur']:.2f} € ; tuiles : {tuiles}".replace(".", ","))
+
+
+@commande("sentinel2-heures")                        # heure propre des tuiles Sentinel 2 du calendrier (MTD_TL.xml)
+def _sentinel2_heures(conn, a):
+    import requests
+    from mars import sentinel2
+    r = sentinel2.corriger_heures(conn, requests.Session(), datetime.now(timezone.utc), int(a.args[0]) if a.args else 3)
+    print(json.dumps(r, ensure_ascii=False))
+
+
+@commande("sentinel2-poids", base=False)             # poids du modèle Sentinel 2 recopiés sur R2 (2,2 Go, une fois)
+def _sentinel2_poids(_conn, _a):
+    """Copie en flux, sans disque, des poids publics d'AI2 vers R2, empreinte SHA 256 vérifiée pendant l'envoi ; un
+    objet déjà présent à la bonne taille n'est pas renvoyé. Objet faux supprimé aussitôt."""
+    import hashlib
+    import requests
+    from mars.r2 import R2
+    s2 = load_rules()["sentinel2"]
+    r2 = R2()
+    for p in s2["poids"]:
+        try:
+            taille = r2.s3.head_object(Bucket=r2.bucket, Key=p["r2"])["ContentLength"]
+        except Exception:
+            taille = None
+        if taille == p["octets"]:
+            print(f"{p['r2']} : déjà sur R2 ({taille} octets)")
+            continue
+        with traces.span("sentinel2.copie_poids", **{"sentinel2.poids": p["chemin"], "sentinel2.octets": p["octets"]}):
+            url = f"{s2['source_poids']}/{p['chemin'].replace('/best.ckpt', '/checkpoints/best.ckpt')}"
+            with requests.get(url, stream=True, timeout=120) as resp:
+                resp.raise_for_status()
+                h = hashlib.sha256()
+
+                class Flux:
+                    def read(self, n=-1):
+                        b = resp.raw.read(n)
+                        h.update(b)
+                        return b
+                envoi = r2.put_stream(Flux(), p["r2"])
+            if h.hexdigest() != p["sha256"] or envoi["bytes"] != p["octets"]:
+                r2.delete(p["r2"])
+                raise SystemExit(f"{p['chemin']} : empreinte ou taille fausse ({envoi['bytes']} octets), objet retiré")
+            print(f"{p['r2']} : copié et vérifié ({envoi['bytes']} octets, SHA 256 conforme)")
+    traces.attributs(**{"sentinel2.poids_verifies": len(s2["poids"])})
 
 
 @commande("coupures-injection", base=False)          # coupures simulées dans des transactions annulées

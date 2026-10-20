@@ -40,7 +40,7 @@
    "id": 1,
    "type": "stat",
    "title": "Coût Sentinel du mois",
-   "description": "",
+   "description": "Radar (Sentinel 1) et optique (Sentinel 2) : un seul budget mensuel.",
    "datasource": {
     "type": "grafana-postgresql-datasource",
     "uid": "mars"
@@ -62,7 +62,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())"
+     "rawSql": "SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs WHERE tache IN ('sentinel', 'sentinel2') AND cree_le >= date_trunc('month', now())"
     }
    ],
    "fieldConfig": {
@@ -105,7 +105,7 @@
    "id": 2,
    "type": "stat",
    "title": "Part du budget Sentinel",
-   "description": "Coût estimé du mois rapporté au budget de config/rules.yaml (sentinel.budget_mensuel_eur).",
+   "description": "Coût du mois, radar et optique, rapporté au budget partagé de config/rules.yaml (sentinel.budget_mensuel_eur).",
    "datasource": {
     "type": "grafana-postgresql-datasource",
     "uid": "mars"
@@ -127,7 +127,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT 100 * coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) / nullif((SELECT valeur FROM parametres_supervision WHERE cle = 'budget_sentinel_eur'), 0) AS part FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())"
+     "rawSql": "SELECT 100 * coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) / nullif((SELECT valeur FROM parametres_supervision WHERE cle = 'budget_sentinel_eur'), 0) AS part FROM travailleurs WHERE tache IN ('sentinel', 'sentinel2') AND cree_le >= date_trunc('month', now())"
     }
    ],
    "fieldConfig": {
@@ -1534,7 +1534,7 @@
   },
   {
    "type": "row",
-   "title": "Tip and cue (lot T1)",
+   "title": "Sentinel 2, optique (lot S2)",
    "collapsed": false,
    "id": 19,
    "gridPos": {
@@ -1548,6 +1548,666 @@
   {
    "id": 20,
    "type": "stat",
+   "title": "Passages dégagés à l'annonce, 30 jours",
+   "description": "Passages Sentinel 2 acquis dont la couverture nuageuse annoncée (moyenne des tuiles) reste sous le seuil de lancement (sentinel2.nuages_annonce_max_pct, 50 %).",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 50,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT 100.0 * count(*) FILTER (WHERE nuages <= 50) / nullif(count(*), 0) AS part FROM sar_passes WHERE mission = 'S2' AND statut = 'acquis' AND nuages IS NOT NULL AND acquired_at > now() - interval '30 days'"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 21,
+   "type": "stat",
+   "title": "Analyses exploitables, 30 jours",
+   "description": "Analyses Sentinel 2 dont au moins une fenêtre a été lue (les autres closes « nuages » au masque de scène, sans inférence).",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 50,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT 100.0 * count(*) FILTER (WHERE summary->>'resultat' IN ('analysee', 'sans_detection')) / nullif(count(*), 0) AS part FROM analyses WHERE source = 'sentinel2' AND status = 'done' AND requested_at > now() - interval '30 days'"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 22,
+   "type": "stat",
+   "title": "Octets lus ce mois (optique)",
+   "description": "Masques de scène et 13 bandes du L1C, lus par fenêtre dans les JP2 (requêtes partielles).",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 50,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT coalesce(sum(octets_lus), 0) AS octets FROM analyses WHERE source = 'sentinel2' AND requested_at >= date_trunc('month', now())"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 23,
+   "type": "stat",
+   "title": "Coût Sentinel 2 du mois",
+   "description": "Part optique du budget partagé avec Sentinel 1.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 50,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs WHERE tache = 'sentinel2' AND cree_le >= date_trunc('month', now())"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "currencyEUR",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       }
+      ]
+     },
+     "decimals": 2
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 24,
+   "type": "timeseries",
+   "title": "Analyses Sentinel 2 par résultat",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 54,
+    "w": 12,
+    "h": 8
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT date_trunc('day', requested_at) AS time, CASE WHEN status = 'failed' THEN 'échec' WHEN status <> 'done' THEN 'en cours' WHEN summary->>'resultat' = 'nuages' THEN 'nuages' WHEN summary->>'resultat' = 'sans_detection' THEN 'sans détection' ELSE 'analysée' END AS metric, count(*) AS value FROM analyses WHERE source = 'sentinel2' AND $__timeFilter(requested_at) GROUP BY 1, 2 ORDER BY 1"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#7c8b97"
+     },
+     "custom": {
+      "drawStyle": "bars",
+      "lineWidth": 1,
+      "fillOpacity": 60,
+      "pointSize": 3,
+      "showPoints": "never",
+      "spanNulls": false,
+      "axisBorderShow": false,
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "analysée"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#4fb6c8"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "sans détection"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#c2ccd3"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "nuages"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#7c8b97"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "en cours"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#f0a84b"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "échec"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#ef6461"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 25,
+   "type": "timeseries",
+   "title": "Coût du mois par capteur",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 54,
+    "w": 12,
+    "h": 8
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "time_series",
+     "rawSql": "SELECT date_trunc('day', cree_le) AS time, CASE tache WHEN 'sentinel' THEN 'radar' ELSE 'optique' END AS metric, sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)) AS value FROM travailleurs WHERE tache IN ('sentinel', 'sentinel2') AND $__timeFilter(cree_le) GROUP BY 1, 2 ORDER BY 1"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#7c8b97"
+     },
+     "custom": {
+      "drawStyle": "bars",
+      "lineWidth": 1,
+      "fillOpacity": 60,
+      "pointSize": 3,
+      "showPoints": "never",
+      "spanNulls": false,
+      "axisBorderShow": false,
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "radar"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#4fb6c8"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "optique"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#c2ccd3"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 26,
+   "type": "table",
+   "title": "Analyses Sentinel 2",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 62,
+    "w": 24,
+    "h": 8
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT a.requested_at AS \"Demandée le\", a.pass_id AS \"Passage\", a.status AS \"Statut\", coalesce(a.summary->>'resultat', '') AS \"Résultat\", (a.summary->>'fenetres_nuages')::int AS \"Fenêtres nuageuses\", array_to_string(ARRAY(SELECT jsonb_array_elements_text(a.summary->'masque')), ', ') AS \"Masque\", a.octets_lus AS \"Octets lus\", a.cout_estime_eur AS \"Coût estimé\", left(coalesce(a.calcul_motif, a.error, ''), 140) AS \"Motif\", a.trace_id AS \"Trace\" FROM analyses a WHERE a.source = 'sentinel2' AND $__timeFilter(a.requested_at) ORDER BY 1 DESC LIMIT 100"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Trace"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Ouvrir la trace dans Tempo (vue Gantt)",
+          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+         }
+        ]
+       },
+       {
+        "id": "custom.width",
+        "value": 120
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Statut"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "failed": {
+            "text": "échec",
+            "color": "#ef6461",
+            "index": 0
+           },
+           "attente_gpu": {
+            "text": "attente processeur",
+            "color": "#f0a84b",
+            "index": 1
+           },
+           "running": {
+            "text": "en cours",
+            "color": "#4fb6c8",
+            "index": 2
+           },
+           "done": {
+            "text": "analysée",
+            "color": "#7c8b97",
+            "index": 3
+           },
+           "pending": {
+            "text": "demandée",
+            "color": "#4fb6c8",
+            "index": 4
+           }
+          }
+         }
+        ]
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Octets lus"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "bytes"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Coût estimé"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "currencyEUR"
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
+  },
+  {
+   "type": "row",
+   "title": "Tip and cue (lot T1)",
+   "collapsed": false,
+   "id": 27,
+   "gridPos": {
+    "x": 0,
+    "y": 70,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 28,
+   "type": "stat",
    "title": "Demandes en cours",
    "description": "Demandes d'observation en attente d'un passage ou planifiées sur un passage Sentinel 1.",
    "datasource": {
@@ -1556,7 +2216,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 50,
+    "y": 71,
     "w": 6,
     "h": 4
    },
@@ -1611,7 +2271,7 @@
    }
   },
   {
-   "id": 21,
+   "id": 29,
    "type": "stat",
    "title": "Délai médian du tip à l'observation",
    "description": "Heures entre la création de la demande et le passage analysé (négatif : passage déjà acquis au moment du tip).",
@@ -1621,7 +2281,7 @@
    },
    "gridPos": {
     "x": 6,
-    "y": 50,
+    "y": 71,
     "w": 6,
     "h": 4
    },
@@ -1676,7 +2336,7 @@
    }
   },
   {
-   "id": 22,
+   "id": 30,
    "type": "stat",
    "title": "Présents sans AIS",
    "description": "Écho radar sans AIS dans le cercle d'incertitude : preuve forte, gravité de l'alerte d'origine relevée selon la table de config/rules.yaml.",
@@ -1686,7 +2346,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 50,
+    "y": 71,
     "w": 6,
     "h": 4
    },
@@ -1745,7 +2405,7 @@
    }
   },
   {
-   "id": 23,
+   "id": 31,
    "type": "stat",
    "title": "Coût des analyses portant une demande",
    "description": "Coût estimé des sessions Sentinel 1 qui portaient au moins une demande (partagé avec les autres points du passage).",
@@ -1755,7 +2415,7 @@
    },
    "gridPos": {
     "x": 18,
-    "y": 50,
+    "y": 71,
     "w": 6,
     "h": 4
    },
@@ -1810,7 +2470,7 @@
    }
   },
   {
-   "id": 24,
+   "id": 32,
    "type": "table",
    "title": "Demandes par source et par état",
    "description": "",
@@ -1820,7 +2480,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 54,
+    "y": 75,
     "w": 12,
     "h": 7
    },
@@ -1862,7 +2522,7 @@
    }
   },
   {
-   "id": 25,
+   "id": 33,
    "type": "table",
    "title": "Résultats par catégorie",
    "description": "",
@@ -1872,7 +2532,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 54,
+    "y": 75,
     "w": 12,
     "h": 7
    },
@@ -1914,7 +2574,7 @@
    }
   },
   {
-   "id": 26,
+   "id": 34,
    "type": "table",
    "title": "Dernières demandes",
    "description": "",
@@ -1924,7 +2584,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 61,
+    "y": 82,
     "w": 24,
     "h": 9
    },

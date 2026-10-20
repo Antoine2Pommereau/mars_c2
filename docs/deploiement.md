@@ -806,6 +806,30 @@ docker compose rm -sf web && docker image prune -af
 docker compose pull web && docker compose up -d --no-build web
 ```
 
+## Sentinel 2, détection optique (lot S2, règles 2026.10.34, migration 32, docs/sentinel2.md)
+
+Livré coupé (`sentinel2.scenes_max_par_jour: 0`) : rien n'est lancé automatiquement. La migration passe **avant**
+l'API (colonne `role` des preuves lue par toutes les fiches de détection). Les trois images changent : API (fiche
+optique, remise des poids, passages), scripts (calendrier, sélection, fusion, travailleur) et interface.
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose exec -T db psql -U mars -d mars < db/init/32_sentinel2.sql
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf backend && docker image prune -af
+docker compose pull backend && docker compose up -d --no-build backend
+docker compose rm -sf web && docker image prune -af
+docker compose pull web && docker compose up -d --no-build web
+docker compose restart grafana
+docker compose exec taches python scripts/taches.py sentinel2-poids      # une fois : 2,24 Go en flux vers R2, sans disque
+docker compose exec taches python scripts/taches.py sentinel2-heures 3   # heure propre des tuiles des trois derniers jours
+```
+
+Aucune nouvelle clé : le travailleur Sentinel 2 utilise la paire Copernicus des travailleurs et le serveur ses clés R2
+(adresses présignées des poids, 3 h). L'image d'analyse (7,2 Go) n'est téléchargée que par le travailleur, jamais par
+le serveur. Essai réel : `docs/sentinel2.md`, section 11.
+
 ## Vérifier
 
 ```bash
@@ -945,7 +969,9 @@ n'est plus tracé, le collecteur reçoit environ dix fois moins de spans. À con
 * archive : 27,4 octets par position et 22,5 par message statique après compactage (mesuré sur l'archivage de
   test), soit environ 26 Mo par jour, 0,77 Go par mois, 9,4 Go par an ;
 * sauvegardes sans positions : moins de 10 Mo chacune, moins de 70 Mo pour les 7 ;
-* les 10 Go gratuits sont atteints après **environ 13 mois** de collecte. Au delà, 0,015 dollar par Go et par mois.
+* poids du modèle Sentinel 2 (lot S2, `taches.py sentinel2-poids`) : 2,24 Go, soit 22 % du quota gratuit ;
+* les 10 Go gratuits sont atteints vers le **28/07/2027** (21/10/2027 sans les poids Sentinel 2), soit environ 10 mois
+  de collecte depuis le 05/10/2026. Au delà, 0,015 dollar par Go et par mois (0,03 dollar par mois pour les poids).
 
 **Règles en continu** : un cycle sur 867 000 positions (24 heures au débit actuel), mesuré sur le Mac en émulation
 linux/amd64, donc une borne haute : 1,4 s pour les coupures AIS, presque rien pour les listes et les identités, et

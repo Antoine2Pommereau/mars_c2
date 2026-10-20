@@ -1,4 +1,4 @@
-import { Check, CircleHelp, Crosshair, EyeOff, Minus } from "lucide-react";
+import { Aperture, Check, CircleHelp, Crosshair, EyeOff, Minus, Radar } from "lucide-react";
 import { useMemo, useState } from "react";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
@@ -52,7 +52,17 @@ export default function ObservationsPanel({ demandes, selectedId, onPick }:
           <span className="min-w-0 flex-1 truncate text-ink">{d.vessel_id != null ? (d.navire ?? `MMSI ${d.mmsi ?? ""}`) : O.point}</span>
           <span className="shrink-0 text-right text-[11.5px] leading-tight">
             <span className="block text-muted">{O.etats[d.etat] ?? d.etat}</span>
-            {d.heure_passage && <span className="block text-ink/80 tabular-nums">{jourHeure(d.heure_passage)}</span>}
+            {d.heure_passage && (
+              <span className="flex items-center justify-end gap-1 text-ink/80 tabular-nums">
+                {/* Capteur du passage retenu : radar (Sentinel 1) ou optique (Sentinel 2, lot S2) */}
+                {(() => {
+                  const optique = String(d.satellite ?? "").startsWith("S2");
+                  const C = optique ? Aperture : Radar;
+                  return <span title={L.fiche.observation.capteurs[optique ? "optique" : "radar"]}><C size={10} className="text-faint" /></span>;
+                })()}
+                {jourHeure(d.heure_passage)}
+              </span>
+            )}
           </span>
           <span className="w-4 shrink-0" title={signe ? L.fiche.observation.resultats[d.resultat] : undefined}>
             {signe && <signe.Icone size={13} strokeWidth={2.2} style={{ color: signe.couleur }} />}

@@ -6,7 +6,7 @@ import { auteurMemorise, memoriserAuteur } from "../lib/auteur";
 import { dayLabel, jourHeure, num, utc } from "../lib/format";
 import { L } from "../lib/libelles";
 import { appel } from "../lib/traces";
-import type { Feature, Props } from "../lib/types";
+import type { Feature, Props, SourceDetection } from "../lib/types";
 import { zoneAlerte } from "../lib/fil";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
 import { Row, Tag } from "./Elements";
@@ -441,7 +441,8 @@ export function Vignette({ vesselId, taille = "moyenne", source = false }:
   );
 }
 
-// Détection radar Sentinel 1 (lot C) : mesures, navire apparié (longueur mesurée contre déclarée), alertes liées
+// Détection radar Sentinel 1 (lot C) ou optique Sentinel 2 (lot S2) : mesures, navire apparié (longueur mesurée contre
+// déclarée), alertes liées ; pour l'optique, cap, vitesse et type estimés, nuages de la fenêtre
 
 function useRadar(id: number) {
   return useQuery({ queryKey: ["sentinelDetection", id], queryFn: () => api.sentinelDetection(id), staleTime: 60_000, enabled: id > 0 });
@@ -451,6 +452,25 @@ export function RadarMesures({ id }: { id: number }) {
   const d = useRadar(id).data;
   if (!d) return null;
   const R = F.radar, V = F.viirs;
+  if (d.source === "sentinel2") {
+    const f = d.fenetre;
+    return (
+      <div>
+        <Row label={R.heureTuile}>{utc(d.ts)}</Row>
+        <Row label={R.capteur}>{String(d.satellite ?? "").replace(/^S2/, "Sentinel 2")}</Row>
+        <Row label={R.statut}>{V.statuts[d.statut] ?? d.statut}{d.mask_reason && d.mask_reason !== "non_evaluable" ? ` (${R.motifs[d.mask_reason] ?? d.mask_reason})` : ""}</Row>
+        <Row label={R.longueur}>{d.length_m != null ? `${num(d.length_m, 0)} m` : L.commun.nd}</Row>
+        <Row label={R.largeur}>{d.width_m != null ? `${num(d.width_m, 0)} m` : L.commun.nd}</Row>
+        <Row label={R.capOptique}>{d.heading_deg != null ? `${num(d.heading_deg, 0)}°` : L.commun.nd}</Row>
+        <Row label={R.vitesse}>{d.speed_kn != null ? `${num(d.speed_kn, 1)} ${L.commun.noeuds}` : L.commun.nd}</Row>
+        <Row label={R.type}>{d.type_navire ? R.types[d.type_navire] ?? d.type_navire : L.commun.nd}</Row>
+        <Row label={R.score}>{num(d.score, 2)}</Row>
+        <Row label={R.nuagesFenetre}>{f ? R.nuagesDe(num(f.nuages_pct ?? 0, 1), f.masque !== "present") : L.commun.nd}</Row>
+        <Row label={R.cote}>{d.distance_cote_m != null ? `${num(d.distance_cote_m / 1000, 1)} km` : L.commun.nd}</Row>
+        {d.non_evaluable && <Row label={R.motifNonEvaluable}>{d.non_evaluable}</Row>}
+      </div>
+    );
+  }
   return (
     <div>
       <Row label={R.heure}>{utc(d.ts)}</Row>
@@ -506,27 +526,30 @@ function AlertesListe({ alertes, onPickAlert }: { alertes: Props[]; onPickAlert:
   );
 }
 
-/** Vérification satellite d'un navire : échos radar et lumières VIIRS appariés, longueur mesurée contre déclarée. */
+/** Vérification satellite d'un navire : passages radar et optiques confondus (avec leur source) et lumières VIIRS
+ *  appariés, longueur mesurée contre déclarée. */
 export function VerificationSatellite({ vesselId, onPickDetection }:
-  { vesselId: number; onPickDetection: (source: "sentinel1" | "viirs", id: number) => void }) {
+  { vesselId: number; onPickDetection: (source: SourceDetection, id: number) => void }) {
   const q = useQuery({ queryKey: ["verification", vesselId], queryFn: () => api.verification(vesselId), staleTime: 60_000 });
   const d = q.data;
   if (!d) return null;
   const V = F.verification;
   if (!d.radar.length && !d.viirs.length) return <p className="text-[12px] text-muted">{V.aucun}</p>;
-  const ligne = (src: "sentinel1" | "viirs", x: Props, texte: string) => (
+  const ligne = (src: SourceDetection, x: Props, texte: string) => (
     <li key={`${src}${x.id}`}>
       <button onClick={() => onPickDetection(src, x.id)} className="flex w-full items-center gap-2 text-left hover:text-ink">
         {x.preuve ? <img src={x.preuve} alt="" className="h-8 w-8 shrink-0 rounded-sm border border-hair object-cover" />
           : <span className="h-8 w-8 shrink-0 rounded-sm border border-hair bg-abyss" />}
-        <span className="text-muted">{jourHeure(x.ts)}</span><span className="ml-auto text-ink">{texte}</span>
+        <span className="text-muted">{jourHeure(x.ts)}</span>
+        {src !== "viirs" && <span className="text-faint">{V.sources[src]}</span>}
+        <span className="ml-auto text-ink">{texte}</span>
       </button>
     </li>
   );
   return (
     <div className="space-y-2 text-[12px]">
       {d.radar.length > 0 && <div><div className="mb-1 text-muted">{V.radar}</div><ul className="space-y-1">
-        {d.radar.map((x) => ligne("sentinel1", x, x.longueur_declaree_m != null
+        {d.radar.map((x) => ligne(x.source === "sentinel2" ? "sentinel2" : "sentinel1", x, x.longueur_declaree_m != null
           ? V.longueurs(num(x.longueur_m, 0), num(x.longueur_declaree_m, 0)) : `${num(x.longueur_m, 0)} m`))}</ul></div>}
       {d.viirs.length > 0 && <div><div className="mb-1 text-muted">{V.viirs}</div><ul className="space-y-1">
         {d.viirs.map((x) => ligne("viirs", x, V.lumiere(num(x.nanowatts, 1))))}</ul></div>}
@@ -567,7 +590,7 @@ export function BoutonObservation({ cible }: { cible: Cible }) {
  *  vignette radar et gravité ajustée ; bouton de demande manuelle en bas. */
 export function DemandesObservation({ alerteId, vesselId, verification, onPickDetection }: {
   alerteId?: number; vesselId?: number; verification?: Props;
-  onPickDetection: (source: "sentinel1" | "viirs", id: number) => void;
+  onPickDetection: (source: SourceDetection, id: number) => void;
 }) {
   const O = F.observation;
   const qc = useQueryClient();
@@ -596,11 +619,15 @@ export function DemandesObservation({ alerteId, vesselId, verification, onPickDe
               <div className="pt-1 text-muted">{O.gravite(verification.gravite_avant, verification.gravite_ajustee)}</div>}
             {!d.resultat && d.motif && ["sans_passage", "expiree", "refusee_budget"].includes(d.etat) &&
               <div className="pt-1 text-faint">{d.motif}</div>}
-            {d.detection_id != null && (
-              <button onClick={() => onPickDetection("sentinel1", d.detection_id)} className="mt-2 block w-full text-left">
-                <PreuveImage source="sentinel1" detectionId={Number(d.detection_id)} />
-              </button>
-            )}
+            {d.detection_id != null && (() => {
+              // Passage retenu radar (S1) ou optique (S2) : la preuve vient de la détection de ce capteur
+              const src: SourceDetection = String(d.satellite ?? "").startsWith("S2") ? "sentinel2" : "sentinel1";
+              return (
+                <button onClick={() => onPickDetection(src, d.detection_id)} className="mt-2 block w-full text-left">
+                  <PreuveImage source={src} detectionId={Number(d.detection_id)} />
+                </button>
+              );
+            })()}
             {ouverte && <button onClick={() => annuler.mutate(d.id)} className="mt-1.5 text-[11.5px] text-muted hover:text-ink">{O.annuler}</button>}
           </div>
         );

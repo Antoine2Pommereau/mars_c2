@@ -171,6 +171,14 @@ Correctifs :
 4. Panneau Observations : le motif d'une demande en attente ou close s'affiche au survol de la ligne.
 5. Rejeu : même estime bornée, colonne « transit » ; mêmes filtres sur les coupures.
 
+## Passages optiques (lot S2, 20/10/2026, docs/sentinel2.md)
+
+Quand Sentinel 2 est en service (`sentinel2.scenes_max_par_jour` non nul), ses passages sont candidats dans
+`choisir_passage` : un passage acquis annoncé au delà de 50 % de nuages est écarté avec son motif d'attente ; si le
+cercle d'une demande est sous les nuages au passage analysé, la demande repart en attente pour un autre passage (jamais
+« absent ») ; sinon le résultat est « vu en optique » sur l'alerte d'origine (`verification_satellite.capteur`).
+Sentinel 2 étant livré coupé, rien ne change tant qu'il n'est pas allumé.
+
 ## Propositions avant l'activation (20/10/2026, retenues sauf le budget, porté à 8 €)
 
 1. `tip_and_cue.actif: true`, avec `tips.watchlist.actif: false` : la sélection directe des navires des listes dans un

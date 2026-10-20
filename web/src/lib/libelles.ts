@@ -49,6 +49,12 @@ export const L = {
     sentinel: "Dernier passage Sentinel 1 analysé", travailleurGpu: "Dernier travailleur GPU", lancementSentinel: "Dernier lancement Sentinel 1",
     sentinelDe: (sat: string, le: string, etat: string, n: number) => `${sat}, ${le}, ${etat}, ${n} détections`,
     coutMois: "Coût Sentinel du mois", euros: (e: number) => `${e.toFixed(2).replace(".", ",")} €`,
+    sentinel2: "Dernier passage Sentinel 2 analysé",
+    sentinel2De: (sat: string, le: string, resultat: string, n: number) => `${sat}, ${le}, ${resultat}, ${n} navires`,
+    resultatsOptique: { analysee: "analysé", nuages: "sous les nuages", sans_detection: "aucun navire" } as Record<string, string>,
+    coutParSource: (radar: number, optique: number) =>
+      `radar ${radar.toFixed(2).replace(".", ",")} €, optique ${optique.toFixed(2).replace(".", ",")} €`,
+    budgetPartage: "Budget partagé du mois",
     nuitDe: (d: string, g: number, n: number, e: number) => `${d}, ${g} granules${e ? ` dont ${e} en échec` : ""}, ${n} détections`,
     etatsTravailleur: { demande: "demandé", cree: "créé", demarre: "en cours", resultats: "résultats reçus",
       termine: "terminé", echec: "en échec" } as Record<string, string>,
@@ -56,7 +62,7 @@ export const L = {
     analyseSentinel: "Analyse Sentinel 1",
     demandes: "Demandes d'observation", prochaineObservation: "Prochaine observation",
     demandesDe: (attente: number, planifiees: number) => `${attente} en attente, ${planifiees} planifiée${planifiees > 1 ? "s" : ""}`,
-    observationDe: (sat: string, quand: string, objet: string) => `${sat.replace(/^S1/, "Sentinel 1")} ${quand}, ${objet}`,
+    observationDe: (sat: string, quand: string, objet: string) => `${sat.replace(/^S(\d)/, "Sentinel $1")} ${quand}, ${objet}`,
     tipCoupe: "tip and cue coupé",
     attenteGpu: (dans: string) => `GPU indisponible chez Scaleway, nouvel essai dans ${dans}`,
     services: { interface: "Interface", api: "API", taches: "Tâches", ingestion: "Ingestion", collecte: "Collecte" } as Record<string, string>,
@@ -88,8 +94,10 @@ export const L = {
     vitesse: "Vitesse du rejeu", instant: "Instant affiché", densite: "Navires suivis",
     pistes: { alertes: "Alertes", coupures: "Coupures du flux AIS", passages: "Passages satellites", viirs: "Nuits VIIRS" },
     coupure: (debut: string, fin: string) => `Flux AIS coupé de ${debut} à ${fin}`,
-    passage: (sat: string, t: string, prevu: boolean, analyse?: string, demandes?: number) =>
-      `${sat}, ${t}${prevu ? ", prévu" : ""}${analyse && analyse !== "non_analyse" ? `, analyse ${analyse}` : ""}${
+    passage: (sat: string, t: string, prevu: boolean, analyse?: string, demandes?: number, nuages?: number | null,
+              resultat?: string) =>
+      `${sat}, ${t}${prevu ? ", prévu" : ""}${nuages != null ? `, ${Math.round(nuages)} % de nuages annoncés` : ""}${
+        analyse && analyse !== "non_analyse" ? `, analyse ${analyse}` : ""}${resultat === "nuages" ? ", fenêtres sous les nuages" : ""}${
         demandes ? `, ${demandes} demande${demandes > 1 ? "s" : ""} d'observation` : ""}`,
     nuit: (d: string, g: number, n: number, sans: number, nonEval: number, lune: number | null) =>
       `Nuit VIIRS du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} : ${g} granules, ${n} détections dont ${sans} sans AIS et ${nonEval} non évaluables${lune != null ? `, lune ${lune} %` : ""}`,
@@ -162,6 +170,9 @@ export const L = {
     sansAis: "Sans AIS", detection: "Détection radar", statut: "Statut",
     lumiere: "Lumière en mer sans AIS", viirsDe: (nw: string) => `VIIRS, ${nw} nW`, aConfirmer: "à confirmer", capteur: "Capteur",
     radarDe: (m: string) => `radar, ${m} m`, largeurEstimee: "Largeur estimée", orientation: "Orientation de l'écho",
+    optiqueDe: (m: string) => `optique, ${m} m`, vu: (m: string) => `Navire de ${m} m vu sans AIS`,
+    vitesseEstimee: "Vitesse estimée", typeNavire: "Type", nuagesAutour: "Nuages autour du navire",
+    masqueAbsent: "Masque des nuages absent", cap: "Cap mesuré", aucunNavireVu: "aucun navire vu",
     longueurDeclaree: "Longueur déclarée", routeDeclaree: "Route déclarée", ecarts: "Écarts",
     incoherence: "Écho contraire à la déclaration", longueurEcart: "longueur", capEcart: "orientation",
     intensite: "Intensité", lune: "Éclairement lunaire", infrastructure: "Infrastructure proche",
@@ -175,6 +186,7 @@ export const L = {
     legende: (n: number, apparie: string | number | null) =>
       `${n ? `${n} AIS à moins de 5 km` : "Aucun AIS à moins de 5 km"}${apparie ? `, apparié : ${apparie}` : ""}`,
     taille: (ko: number) => `${String(ko).replace(".", ",")} Ko`,
+    copernicus: "Contient des données Copernicus Sentinel modifiées",
   },
 
   // Fiche (registre : registres/sections.tsx)
@@ -188,7 +200,7 @@ export const L = {
       passes: "Navires passés à moins de 2 milles", liees: "Alertes liées", resume: "Zone", trafic: "Trafic",
       passage: "Passage", infrastructures: "Infrastructures couvertes", listes_couvertes: "Navires des listes couverts",
       viirs: "Détection", apparie: "Navire AIS apparié", sejour: "Séjour prolongé", navire: "Navire",
-      observation: "Vérification satellite demandée",
+      observation: "Vérification satellite demandée", contexte_optique: "Contexte, 10 km",
     } as Record<string, string>,
     etat: { route: "en route", immobile: "immobile", silencieux: "silencieux" } as Record<string, string>,
     dernierMessageIlYa: (t: string) => `dernier message il y a ${t}`, horsTrafic: "hors du trafic affiché",
@@ -236,8 +248,14 @@ export const L = {
       motifNonEvaluable: "Non évaluable", capDe: (deg: string, p: string) => `${deg}°, probabilité ${p}`,
       motifs: { terre: "sur la terre", "echo fixe": "écho fixe (revu ailleurs dans le temps)",
                 "eolienne probable": "éolienne probable", "contraste faible": "contraste faible",
-                "non navire": "non navire" } as Record<string, string>,
+                "non navire": "non navire", nuages: "sous un nuage" } as Record<string, string>,
       declaree: (m: string) => `${m} m déclarés`, aucunNavire: "Aucun navire AIS compatible à l'heure de la scène",
+      // Sentinel 2 (lot S2) : détection optique
+      titreOptique: "Détection optique Sentinel 2", heureTuile: "Heure de la tuile", capOptique: "Cap mesuré",
+      type: "Type", nuagesFenetre: "Nuages de la fenêtre", masqueAbsent: "masque des nuages absent",
+      nuagesDe: (pct: string, absent: boolean) => absent ? "masque des nuages absent" : `${pct} %`,
+      types: { cargo: "cargo", tanker: "pétrolier", fishing: "pêche", passenger: "passagers", tug: "remorqueur",
+        pleasure: "plaisance", military: "militaire", high_speed: "grande vitesse", unknown: "indéterminé" } as Record<string, string>,
     },
     // Tip and cue (lot T1) : demande d'observation satellite
     observation: {
@@ -248,9 +266,11 @@ export const L = {
         annulee: "annulée" } as Record<string, string>,
       tips: { operateur: "demande manuelle", coupure_ais: "coupure AIS", viirs: "lumière VIIRS", rendezvous: "rendez vous",
         watchlist: "navire des listes", identite: "changement d'identité" } as Record<string, string>,
-      resultats: { present_apparie: "présent, AIS cohérent", present_sans_ais: "présent sans AIS", absent: "aucun écho",
+      resultats: { present_apparie: "présent, AIS cohérent", present_sans_ais: "présent sans AIS", absent: "absent",
         non_evaluable: "non évaluable" } as Record<string, string>,
-      passage: (sat: string, t: string, retro: boolean) => `${sat.replace(/^S1/, "Sentinel 1")}, ${t}${retro ? ", déjà acquis" : ""}`,
+      passage: (sat: string, t: string, retro: boolean) =>
+        `${sat.replace(/^S(\d)/, "Sentinel $1")}, ${t}${retro ? ", déjà acquis" : ""}`,
+      capteurs: { radar: "radar", optique: "optique" } as Record<string, string>,
       cercle: (km: string, mode: string) => `cercle de ${km} km, ${mode}`,
       modes: { estime: "à l'estime", arret: "navire à l'arrêt", point: "position du signal" } as Record<string, string>,
       distance: (m: number) => `écho à ${m} m de la position prédite`,
@@ -258,7 +278,8 @@ export const L = {
       passageLabel: "Passage", resultat: "Résultat", incertitude: "Incertitude",
     },
     verification: {
-      radar: "Échos radar Sentinel 1", viirs: "Lumières VIIRS", aucun: "Aucune détection satellite appariée à ce navire",
+      radar: "Radar et optique", viirs: "Lumières VIIRS", aucun: "Aucune détection satellite appariée à ce navire",
+      sources: { sentinel1: "radar", sentinel2: "optique" } as Record<string, string>,
       longueurs: (mesuree: string, declaree: string) => `${mesuree} m mesurés, ${declaree} m déclarés`,
       lumiere: (nw: string) => `${nw} nW/cm²/sr`,
     },

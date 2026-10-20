@@ -218,7 +218,10 @@ SELECT %(key)s, %(platform)s, %(start)s, %(end)s, %(orbit_direction)s, fp.g::geo
              AND ST_Intersects(r.geom::geometry, fp.g) ORDER BY 1), now(), %(nuages)s
 FROM fp WHERE NOT ST_IsEmpty(fp.g)
 ON CONFLICT (product_name) DO UPDATE SET
-    platform = EXCLUDED.platform, acquired_at = EXCLUDED.acquired_at, ended_at = EXCLUDED.ended_at,
+    platform = EXCLUDED.platform,
+    -- Heure propre des tuiles Sentinel 2 déjà lue (lot S2, MTD_TL.xml) : jamais remplacée par celle du catalogue
+    acquired_at = CASE WHEN sar_passes.heure_tuiles IS NULL THEN EXCLUDED.acquired_at ELSE sar_passes.acquired_at END,
+    ended_at = CASE WHEN sar_passes.heure_tuiles IS NULL THEN EXCLUDED.ended_at ELSE sar_passes.ended_at END,
     orbit_direction = EXCLUDED.orbit_direction, footprint = EXCLUDED.footprint, mode = EXCLUDED.mode,
     relative_orbit = EXCLUDED.relative_orbit, absolute_orbit = EXCLUDED.absolute_orbit,
     datatake = EXCLUDED.datatake, statut = EXCLUDED.statut, source = EXCLUDED.source, produits = EXCLUDED.produits,

@@ -40,3 +40,6 @@ export type Selection =
   | { kind: "passage"; properties: Props };
 
 export const EMPTY: FC = { type: "FeatureCollection", features: [] };
+
+/** Source d'une détection satellite des travailleurs : radar Sentinel 1, optique Sentinel 2, lumière VIIRS */
+export type SourceDetection = "sentinel1" | "sentinel2" | "viirs";

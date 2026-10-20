@@ -16,7 +16,7 @@ from mars import traces
 ACTIFS = ("en_attente", "planifiee")
 SEVERITES = ["faible", "moyenne", "elevee", "critique"]
 TIPS = ("operateur", "coupure_ais", "viirs", "rendezvous", "watchlist", "identite")
-MASQUES_IGNORES = ("terre", "eolienne probable", "echo fixe")
+MASQUES_IGNORES = ("terre", "eolienne probable", "echo fixe", "nuages")
 TERRE_M = 6371000.0
 
 
@@ -350,21 +350,27 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
     {"passage": …, "prediction": …, "centres": …, "retro": bool} ; {"sans_passage": motif} si aucun passage ne sera
     utile (côte, incertitude, délai, navire muet en transit hors de portée) ; sinon {"attente": motif}, la raison
     d'attendre encore (estime hors des emprises, aucun passage au calendrier) : jamais une attente sans motif."""
+    from mars import sentinel2
     from mars.sentinel import covers, distance_emprise_m
     tc, s = rules["tip_and_cue"], rules["sentinel"]
+    # Lot S2 : passages optiques candidats quand Sentinel 2 est en service (jamais la nuit, garde des nuages)
+    missions = ["S1", "S2"] if sentinel2.actif(rules) else ["S1"]
     p = tc["prediction"]
     cote = cote or (lambda lon, lat: distance_cote_m(conn, lon, lat, s["point_cote_min_km"] * 1000.0))
     debut = max(d["position_le"] - timedelta(minutes=30), now - timedelta(hours=tc["heures_retro"]))
     rows = conn.execute(
-        """SELECT id, satellite, acquired_at, statut, ST_AsGeoJSON(footprint)::json FROM sar_passes
-           WHERE mission = 'S1' AND coalesce(mode, 'IW') = 'IW' AND footprint IS NOT NULL
+        """SELECT id, satellite, acquired_at, statut, ST_AsGeoJSON(footprint)::json, mission, nuages FROM sar_passes
+           WHERE mission = ANY(%s) AND (mission = 'S2' OR coalesce(mode, 'IW') = 'IW') AND footprint IS NOT NULL
              AND acquired_at BETWEEN %s AND %s AND (statut = 'acquis' OR acquired_at > %s)
-           ORDER BY acquired_at""", (debut, d["expire_le"], now)).fetchall()
+           ORDER BY acquired_at""", (missions, debut, d["expire_le"], now)).fetchall()
     motif = transit = None           # raisons terminales
-    proche = deja = None             # raisons d'attendre : emprise la plus proche, passage déjà analysé ailleurs
+    proche = deja = nuageux = None   # raisons d'attendre : emprise la plus proche, passage déjà analysé, nuages
     navire = d.get("vessel_id") is not None
     delai = (tc["tips"].get(d.get("tip")) or {}).get("delai_max_h")
-    for pid, sat, t, statut, emprise in rows:
+    for pid, sat, t, statut, emprise, mission, nuages in rows:
+        if mission == "S2" and nuages is not None and nuages > rules["sentinel2"]["nuages_annonce_max_pct"]:
+            nuageux = nuageux or (t, nuages)          # passage optique annoncé nuageux : écarté, motif gardé
+            continue
         # Navire qui émet encore : dernière position reçue avant le passage (petit cercle) ; navire muet : la dernière
         # connue, et l'estime bornée fait le reste
         base = (d["lon"], d["lat"], d["position_le"], d.get("sog_kn"), d.get("cog_deg"))
@@ -399,8 +405,12 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
             continue
         retro = statut == "acquis" and t <= now
         if retro:
-            an = conn.execute("SELECT id, status, fenetres FROM analyses WHERE pass_id = %s AND source = 'sentinel1' "
-                              "AND status <> 'failed'", (pid,)).fetchone()
+            source = "sentinel2" if mission == "S2" else "sentinel1"
+            an = conn.execute("SELECT id, status, fenetres FROM analyses WHERE pass_id = %s AND source = %s "
+                              "AND status <> 'failed'", (pid, source)).fetchone()
+            if an is not None and source == "sentinel2" and sentinel2.nuageux(conn, an[0], pr["lon"], pr["lat"]):
+                nuageux = nuageux or (t, None)        # cercle sous les nuages au passage optique : un autre passage
+                continue
             if an is not None:
                 # Passage déjà analysé (une analyse par passage) : utile seulement si ses fenêtres couvrent le cercle
                 if not _fenetres_couvrent(an[2] or {}, pr["lon"], pr["lat"]):
@@ -430,6 +440,9 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
     if deja:
         return {"attente": f"passage du {deja:%d/%m %H:%M} déjà analysé sans fenêtre sur le cercle : prochain passage "
                            "attendu"}
+    if nuageux:
+        quoi = f"{nuageux[1]:.0f} % de nuages annoncés" if nuageux[1] is not None else "cercle sous les nuages"
+        return {"attente": f"passage optique du {nuageux[0]:%d/%m %H:%M} écarté ({quoi}) : prochain passage attendu"}
     return {"attente": f"aucun passage Sentinel 1 prévu au calendrier avant l'expiration le {d['expire_le']:%d/%m %H:%M}"}
 
 
@@ -583,7 +596,8 @@ def evaluer(conn, aid: int, rules: dict, demande_ids: list[int] | None = None, n
                    pass_id, heure_passage, traceparent FROM demandes_observation WHERE {where}""", args).fetchall()
     if not rows:
         return []
-    an = conn.execute("SELECT status, trace_id, error FROM analyses WHERE id = %s", (aid,)).fetchone()
+    an = conn.execute("SELECT status, trace_id, error, source FROM analyses WHERE id = %s", (aid,)).fetchone()
+    optique = bool(an and an[3] == "sentinel2")
     out = []
     for did, tip, vid, plon, plat, rayon, pid, t, tp in rows:
         with traces.span("tip_and_cue.resultat", liens=[tp, an[1] if an else None],
@@ -600,17 +614,31 @@ def evaluer(conn, aid: int, rules: dict, demande_ids: list[int] | None = None, n
                    FROM detections d WHERE d.analysis_id = %s
                      AND ST_DWithin(d.geom, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
                    ORDER BY 2""", (plon, plat, aid, plon, plat, rayon)).fetchall()]
+            if optique and an[0] == "done":
+                from mars import sentinel2
+                if sentinel2.nuageux(conn, aid, plon, plat):
+                    # Cercle sous les nuages au passage optique : rien à conclure, la demande attend un autre passage
+                    quand = f" du {t:%d/%m %H:%M}" if t else ""
+                    m = f"passage optique{quand} sous les nuages au cercle : replanifiée"
+                    conn.execute("UPDATE demandes_observation SET etat = 'en_attente', pass_id = NULL, analysis_id = NULL, "
+                                 "heure_passage = NULL, fenetres = NULL, motif = %s, mis_a_jour_le = now() WHERE id = %s",
+                                 (m, did))
+                    sp.set_attributes({"tip.resultat": "nuages", "tip.etat": "en_attente"})
+                    continue
             if an is None or an[0] != "done":
                 res, det = "non_evaluable", None
                 motif = f"analyse {aid} en échec : {(an[2] if an else '') or 'sans résultat'}"[:300]
             else:
                 res, det = categorie(dets, attendus, vid is not None)
-                motif = {"present_apparie": "écho apparié au navire attendu, AIS cohérent",
-                         "present_sans_ais": "écho sans AIS dans le cercle : navire présent mais muet",
-                         "absent": "aucun écho dans le cercle : navire absent ou parti (les petites unités échappent "
-                                   "au radar)",
-                         "non_evaluable": "écho dans le cercle, mais zone non évaluable pour l'AIS"}[res]
+                quoi = "navire vu en optique" if optique else "écho"
+                motif = {"present_apparie": f"{quoi} apparié au navire attendu, AIS cohérent",
+                         "present_sans_ais": f"{quoi} sans AIS dans le cercle : navire présent mais muet",
+                         "absent": ("aucun navire vu dans le cercle dégagé : navire absent ou parti" if optique else
+                                    "aucun écho dans le cercle : navire absent ou parti (les petites unités échappent "
+                                    "au radar)"),
+                         "non_evaluable": f"{quoi} dans le cercle, mais zone non évaluable pour l'AIS"}[res]
             detail = {"resultat": res, "motif": motif, "detections_dans_le_cercle": len(dets), "rayon_m": round(rayon),
+                      "capteur": "optique" if optique else "radar",
                       "position_predite": [round(plon, 5), round(plat, 5)], "analyse": aid, "passage": pid,
                       "heure_passage": t.isoformat() if t else None,
                       "detection": det and {k: det[k] for k in ("id", "matched_vessel_id", "length_m")},

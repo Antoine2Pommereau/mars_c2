@@ -334,13 +334,16 @@ def satellites() -> Tableau:
                 de="now-30d")
     t.chiffre("Coût Sentinel du mois",
               """SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs
-                 WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())""", "currencyEUR", decimales=2)
+                 WHERE tache IN ('sentinel', 'sentinel2') AND cree_le >= date_trunc('month', now())""", "currencyEUR",
+              decimales=2, description="Radar (Sentinel 1) et optique (Sentinel 2) : un seul budget mensuel.")
     t.chiffre("Part du budget Sentinel",
               """SELECT 100 * coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) /
                         nullif((SELECT valeur FROM parametres_supervision WHERE cle = 'budget_sentinel_eur'), 0)
-                        AS part FROM travailleurs WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())""",
+                        AS part FROM travailleurs WHERE tache IN ('sentinel', 'sentinel2')
+                                                  AND cree_le >= date_trunc('month', now())""",
               "percent", ((None, NEUTRE), (80, ORANGE), (100, ROUGE)), decimales=0,
-              description="Coût estimé du mois rapporté au budget de config/rules.yaml (sentinel.budget_mensuel_eur).")
+              description="Coût du mois, radar et optique, rapporté au budget partagé de config/rules.yaml "
+                          "(sentinel.budget_mensuel_eur).")
     t.chiffre("Coût VIIRS du mois",
               """SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs
                  WHERE tache = 'viirs' AND cree_le >= date_trunc('month', now())""", "currencyEUR", decimales=2)
@@ -434,6 +437,56 @@ def satellites() -> Tableau:
                                                     AND source = 'sentinel1' ORDER BY id DESC LIMIT 1) a ON true
                WHERE p.mission = 'S1' AND $__timeFilter(p.acquired_at) ORDER BY 1 DESC LIMIT 200""",
             h=9, etats={"failed": ("échec", ROUGE), "done": ("analysé", SIGNAL)}, colonne_etat="Analyse")
+    t.section("Sentinel 2, optique (lot S2)")
+    t.chiffre("Passages dégagés à l'annonce, 30 jours",
+              """SELECT 100.0 * count(*) FILTER (WHERE nuages <= 50) / nullif(count(*), 0) AS part FROM sar_passes
+                 WHERE mission = 'S2' AND statut = 'acquis' AND nuages IS NOT NULL
+                   AND acquired_at > now() - interval '30 days'""", "percent", w=6, decimales=0,
+              description="Passages Sentinel 2 acquis dont la couverture nuageuse annoncée (moyenne des tuiles) reste "
+                          "sous le seuil de lancement (sentinel2.nuages_annonce_max_pct, 50 %).")
+    t.chiffre("Analyses exploitables, 30 jours",
+              """SELECT 100.0 * count(*) FILTER (WHERE summary->>'resultat' IN ('analysee', 'sans_detection'))
+                        / nullif(count(*), 0) AS part FROM analyses
+                 WHERE source = 'sentinel2' AND status = 'done' AND requested_at > now() - interval '30 days'""",
+              "percent", w=6, decimales=0,
+              description="Analyses Sentinel 2 dont au moins une fenêtre a été lue (les autres closes « nuages » au "
+                          "masque de scène, sans inférence).")
+    t.chiffre("Octets lus ce mois (optique)",
+              """SELECT coalesce(sum(octets_lus), 0) AS octets FROM analyses WHERE source = 'sentinel2'
+                 AND requested_at >= date_trunc('month', now())""", "bytes", w=6, decimales=None,
+              description="Masques de scène et 13 bandes du L1C, lus par fenêtre dans les JP2 (requêtes partielles).")
+    t.chiffre("Coût Sentinel 2 du mois",
+              """SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs
+                 WHERE tache = 'sentinel2' AND cree_le >= date_trunc('month', now())""", "currencyEUR", w=6,
+              decimales=2, description="Part optique du budget partagé avec Sentinel 1.")
+    t.courbe("Analyses Sentinel 2 par résultat",
+             """SELECT date_trunc('day', requested_at) AS time,
+                       CASE WHEN status = 'failed' THEN 'échec' WHEN status <> 'done' THEN 'en cours'
+                            WHEN summary->>'resultat' = 'nuages' THEN 'nuages'
+                            WHEN summary->>'resultat' = 'sans_detection' THEN 'sans détection' ELSE 'analysée' END
+                           AS metric, count(*) AS value
+                FROM analyses WHERE source = 'sentinel2' AND $__timeFilter(requested_at) GROUP BY 1, 2 ORDER BY 1""",
+             w=12, barres=True, empile=True,
+             couleurs={"analysée": SIGNAL, "sans détection": CLAIR, "nuages": NEUTRE, "en cours": ORANGE, "échec": ROUGE})
+    t.courbe("Coût du mois par capteur",
+             """SELECT date_trunc('day', cree_le) AS time,
+                       CASE tache WHEN 'sentinel' THEN 'radar' ELSE 'optique' END AS metric,
+                       sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)) AS value
+                FROM travailleurs WHERE tache IN ('sentinel', 'sentinel2') AND $__timeFilter(cree_le)
+                GROUP BY 1, 2 ORDER BY 1""", w=12, barres=True, empile=True,
+             couleurs={"radar": SIGNAL, "optique": CLAIR})
+    t.table("Analyses Sentinel 2",
+            """SELECT a.requested_at AS "Demandée le", a.pass_id AS "Passage", a.status AS "Statut",
+                      coalesce(a.summary->>'resultat', '') AS "Résultat",
+                      (a.summary->>'fenetres_nuages')::int AS "Fenêtres nuageuses",
+                      array_to_string(ARRAY(SELECT jsonb_array_elements_text(a.summary->'masque')), ', ') AS "Masque",
+                      a.octets_lus AS "Octets lus", a.cout_estime_eur AS "Coût estimé",
+                      left(coalesce(a.calcul_motif, a.error, ''), 140) AS "Motif", a.trace_id AS "Trace"
+               FROM analyses a WHERE a.source = 'sentinel2' AND $__timeFilter(a.requested_at)
+               ORDER BY 1 DESC LIMIT 100""", w=24, h=8,
+            etats={"failed": ("échec", ROUGE), "attente_gpu": ("attente processeur", ORANGE), "running": ("en cours", SIGNAL),
+                   "done": ("analysée", NEUTRE), "pending": ("demandée", SIGNAL)},
+            colonne_etat="Statut", unites={"Octets lus": "bytes", "Coût estimé": "currencyEUR"}, trace="Trace")
     t.section("Tip and cue (lot T1)")
     t.chiffre("Demandes en cours",
               "SELECT count(*) AS demandes FROM demandes_observation WHERE etat IN ('en_attente', 'planifiee')", w=6,
