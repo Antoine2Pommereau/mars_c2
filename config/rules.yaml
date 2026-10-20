@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.32"
+version: "2026.10.33"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -302,6 +302,12 @@ tip_and_cue:
     arret_kn: 1.0               # sous 1 nœud, ou au mouillage : position fixe
     rayon_arret_m: 1500
     rayon_point_m: 3000         # détection VIIRS ou point de la carte sans navire : position du tip, rayon fixe
+    # Navire muet (aucune position depuis muet_min) : lent ou à l'arrêt, position fixe et petit cercle ; en route,
+    # estime bornée (au delà, ou hors de nos zones collectées : « sans_passage », navire en transit hors de portée).
+    # Constat du 20/10/2026 : sept coupures en transit attendaient sans motif jusqu'à l'expiration
+    muet_min: 30
+    lent_kn: 3.0
+    estime_max_h: 6
   tips:                         # priorité : la plus haute passe d'abord dans le plafond quotidien ; actif: false coupe
     operateur: {actif: true, priorite: 6}
     coupure_ais:                # coupure de gravité élevée près d'une infrastructure ; règle en observation : la
@@ -309,6 +315,8 @@ tip_and_cue:
       priorite: 5
       gravite_min: elevee
       corridor_m: 3704
+      types_exclus: [30]        # pêche (type AIS 30) : coupures fréquentes, sans rapport avec les infrastructures
+      exclure_declassees: true  # coupure déclassée en sortie de couverture (point de disparition collectif) : écartée
     viirs:                      # DARK_SHIP de source VIIRS ; au delà de 12 h entre la lumière et le passage, un navire
       actif: true               # sombre qui fait route est parti : passage écarté avec son motif
       priorite: 4

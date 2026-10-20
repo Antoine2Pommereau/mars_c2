@@ -793,6 +793,19 @@ docker compose restart grafana
 docker compose exec taches python scripts/taches.py tip-rejeu 7
 ```
 
+## Tip and cue : navires muets en transit (règles 2026.10.33)
+
+Aucune migration. Seule l'image des scripts change (planification, filtres, rejeu) et celle de l'interface (motif au
+survol). Les demandes en attente sont replanifiées au premier cycle de la nouvelle image (5 minutes au plus).
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf web && docker image prune -af
+docker compose pull web && docker compose up -d --no-build web
+```
+
 ## Vérifier
 
 ```bash

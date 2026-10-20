@@ -61,6 +61,32 @@ def predire(lon: float, lat: float, t_pos: datetime, sog: float | None, cog: flo
     return {"lon": plon, "lat": plat, "rayon_m": float(rayon), "mode": "estime"}
 
 
+def dans_zones(lon: float, lat: float) -> bool:
+    """Point dans l'une de nos zones collectées (mars/ais/live.py) : au delà, aucun AIS ne confirmerait l'estime."""
+    from mars.ais.live import ZONES
+    return any(a <= lat <= c and b <= lon <= d for a, b, c, d in ZONES.values())
+
+
+def predire_bornee(base: tuple, t: datetime, quand: datetime, p: dict, navire: bool = True,
+                   a_l_arret: bool = False) -> dict:
+    """predire, bornée pour un navire muet (aucune position depuis muet_min à l'instant `quand`) : lent (sous lent_kn)
+    ou à l'arrêt, position fixe et petit cercle ; en route, l'estime ne vaut que estime_max_h après la dernière
+    position et dans nos zones collectées, sinon la prédiction porte `hors_portee` (sa raison)."""
+    lon, lat, ts, sog, cog = base
+    muet = navire and quand - ts > timedelta(minutes=p["muet_min"])
+    lent = sog is None or sog < p["lent_kn"]
+    pr = predire(lon, lat, ts, sog, cog, t, p, navire=navire, a_l_arret=a_l_arret or (muet and lent))
+    if muet and pr["mode"] == "estime":
+        h = (t - ts).total_seconds() / 3600
+        if h > p["estime_max_h"]:
+            pr["hors_portee"] = (f"muet depuis le {ts:%d/%m %H:%M} à {sog:.0f} nœuds, passage du {t:%d/%m %H:%M} "
+                                 f"{h:.0f} h plus tard, au delà des {p['estime_max_h']:g} h de l'estime")
+        elif not dans_zones(pr["lon"], pr["lat"]):
+            pr["hors_portee"] = (f"muet depuis le {ts:%d/%m %H:%M} à {sog:.0f} nœuds, position prédite hors de nos zones "
+                                 f"collectées au passage du {t:%d/%m %H:%M}")
+    return pr
+
+
 def centres_fenetres(lon: float, lat: float, rayon_m: float, s: dict) -> list[list[float]]:
     """Centres des fenêtres de 24 km (mécanique du lot C3) qui couvrent le cercle : une seule si le cercle tient dans
     le cœur d'une fenêtre (sa marge exclue), sinon une grille au pas du cœur, sans les fenêtres hors du cercle."""
@@ -173,12 +199,31 @@ def collecter(conn, rules: dict, now: datetime) -> dict:
     (dernier cycle des règles). Retourne le nombre de tips par type et de demandes créées ou regroupées."""
     tc = rules["tip_and_cue"]
     tips, depuis = tc["tips"], now - timedelta(hours=tc["fenetre_tips_h"])
-    out = {"tips": {}, "nouvelles": 0, "regroupees": 0}
+    out = {"tips": {}, "nouvelles": 0, "regroupees": 0, "ecartes": {}, "ecartes_detail": []}
 
     def compter(tip, r):
         out["tips"][tip] = out["tips"].get(tip, 0) + 1
         out["nouvelles"] += bool(r.get("nouvelle"))
         out["regroupees"] += r.get("nouvelle") is False
+
+    def ecarter(vid, motif, cle):
+        # Tip écarté d'emblée, avec son motif (task_runs et trace du cycle) ; aucune demande créée
+        out["ecartes"][cle] = out["ecartes"].get(cle, 0) + 1
+        if len(out["ecartes_detail"]) < 20:
+            out["ecartes_detail"].append({"vessel_id": vid, "motif": motif})
+
+    gap = tips.get("coupure_ais") or {}
+
+    def coupure_exclue(vid, details) -> bool:
+        """Coupure sur un navire d'un type écarté (pêche), ou déclassée en sortie de couverture : écartée."""
+        code = conn.execute("SELECT ship_type_code FROM vessels WHERE id = %s", (vid,)).fetchone()
+        if code and code[0] in (gap.get("types_exclus") or []):
+            ecarter(vid, motif_type(code[0]), "type")
+            return True
+        if gap.get("exclure_declassees") and declassee(details):
+            ecarter(vid, MOTIF_DECLASSEE, "declassee")
+            return True
+        return False
 
     recente = ("greatest(a.detected_at, a.event_time, coalesce((a.details->>'fin')::timestamptz, a.event_time)) >= %s "
                "AND a.status <> 'classee'")
@@ -208,14 +253,16 @@ def collecter(conn, rules: dict, now: datetime) -> dict:
                                      coalesce(a.details->>'trace_id_creation', a.details->>'trace_id')
                               FROM alerts a WHERE a.type = 'WATCHLIST' AND {recente}""", lambda _t: (depuis,)),
             ("coupure_ais", f"""SELECT a.id, (a.details->'navire'->>'vessel_id')::bigint,
-                                       coalesce(a.details->>'trace_id_creation', a.details->>'trace_id')
-                                FROM alerts a WHERE a.type = 'AIS_GAP' AND a.severity = ANY(%s) AND {recente}""",
-             lambda t: (_gravites(t["gravite_min"]), depuis))):
+                                       coalesce(a.details->>'trace_id_creation', a.details->>'trace_id'),
+                                       a.details || jsonb_build_object('gravite', a.severity)
+                                FROM alerts a WHERE a.type = 'AIS_GAP' AND {recente} AND
+                                  coalesce(a.details->>'gravite_avant_declassement', a.severity) = ANY(%s)""",
+             lambda t: (depuis, _gravites(t["gravite_min"])))):
         t = tips.get(tip) or {}
         if not t.get("actif"):
             continue
-        for aid, vid, tr in conn.execute(sql, args(t)).fetchall():
-            if vid is None:
+        for aid, vid, tr, *det in conn.execute(sql, args(t)).fetchall():
+            if vid is None or (tip == "coupure_ais" and coupure_exclue(vid, det[0] or {})):
                 continue
             pos = _derniere_position(conn, vid, now)
             if pos is None:
@@ -237,10 +284,12 @@ def collecter(conn, rules: dict, now: datetime) -> dict:
     t = tips.get("coupure_ais") or {}
     if t.get("actif") and (rules.get("ais_gap") or {}).get("mode") == "observation":
         for ep in episodes_observes(conn, depuis):
-            if ep.get("gravite") not in _gravites(t["gravite_min"]) or not ep.get("derniere_position"):
+            # gravité avant un éventuel déclassement : une coupure déclassée est écartée avec son motif, pas ignorée
+            if (ep.get("gravite_avant_declassement") or ep.get("gravite")) not in _gravites(t["gravite_min"]) \
+                    or not ep.get("derniere_position"):
                 continue
             lon, lat = ep["derniere_position"]
-            if not _pres_infrastructure(conn, lon, lat, t["corridor_m"]):
+            if not _pres_infrastructure(conn, lon, lat, t["corridor_m"]) or coupure_exclue(ep["vessel_id"], ep):
                 continue
             t_last = datetime.fromisoformat(ep["dernier_message"])
             pos = _derniere_position(conn, ep["vessel_id"], t_last)
@@ -249,7 +298,16 @@ def collecter(conn, rules: dict, now: datetime) -> dict:
                                          tip="coupure_ais", lon=lon, lat=lat, position_le=t_last,
                                          vessel_id=ep["vessel_id"], sog=sog, cog=cog, motif="coupure observée",
                                          trace_origine=ep.get("trace_id")))
+    if out["ecartes"]:
+        traces.attributs(**{f"tip.ecartes.{k}": n for k, n in out["ecartes"].items()})
     return out
+
+
+def declassee(details: dict) -> bool:
+    """Coupure déclassée par la règle (point de disparition collectif sans indice propre au navire : signature d'une
+    sortie de notre couverture)."""
+    avant = details.get("gravite_avant_declassement")
+    return avant is not None and avant != details.get("gravite")
 
 
 def episodes_observes(conn, depuis: datetime) -> list[dict]:
@@ -283,13 +341,18 @@ def _a_l_arret(conn, vessel_id: int | None, t: datetime) -> bool:
     return bool(r and r[0] in (1, 5))
 
 
+TRANSIT = "navire en transit, hors de portée au prochain passage"
+
+
 def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dict:
     """Passage retenu pour une demande : d'abord un passage acquis dans les heures_retro dernières heures qui couvre la
     position prédite à son heure, puis le prochain passage prévu qui la couvre, avant l'expiration. Retourne
-    {"passage": …, "prediction": …, "centres": …, "retro": bool} ; {"sans_passage": motif} si le seul passage
-    possible est inutile (côte, incertitude trop grande) ; {} si aucun passage ne couvre encore la position."""
-    from mars.sentinel import covers
+    {"passage": …, "prediction": …, "centres": …, "retro": bool} ; {"sans_passage": motif} si aucun passage ne sera
+    utile (côte, incertitude, délai, navire muet en transit hors de portée) ; sinon {"attente": motif}, la raison
+    d'attendre encore (estime hors des emprises, aucun passage au calendrier) : jamais une attente sans motif."""
+    from mars.sentinel import covers, distance_emprise_m
     tc, s = rules["tip_and_cue"], rules["sentinel"]
+    p = tc["prediction"]
     cote = cote or (lambda lon, lat: distance_cote_m(conn, lon, lat, s["point_cote_min_km"] * 1000.0))
     debut = max(d["position_le"] - timedelta(minutes=30), now - timedelta(hours=tc["heures_retro"]))
     rows = conn.execute(
@@ -297,19 +360,27 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
            WHERE mission = 'S1' AND coalesce(mode, 'IW') = 'IW' AND footprint IS NOT NULL
              AND acquired_at BETWEEN %s AND %s AND (statut = 'acquis' OR acquired_at > %s)
            ORDER BY acquired_at""", (debut, d["expire_le"], now)).fetchall()
-    motif = None
+    motif = transit = None           # raisons terminales
+    proche = deja = None             # raisons d'attendre : emprise la plus proche, passage déjà analysé ailleurs
+    navire = d.get("vessel_id") is not None
     delai = (tc["tips"].get(d.get("tip")) or {}).get("delai_max_h")
     for pid, sat, t, statut, emprise in rows:
         # Navire qui émet encore : dernière position reçue avant le passage (petit cercle) ; navire muet : la dernière
-        # connue, et l'estime fait le reste
+        # connue, et l'estime bornée fait le reste
         base = (d["lon"], d["lat"], d["position_le"], d.get("sog_kn"), d.get("cog_deg"))
-        if d.get("vessel_id") is not None:
+        if navire:
             r = _derniere_position(conn, d["vessel_id"], min(t, now))
             if r is not None and r[2] > d["position_le"]:
-                base = r
-        pr = predire(base[0], base[1], base[2], base[3], base[4], t, tc["prediction"],
-                     navire=d.get("vessel_id") is not None, a_l_arret=_a_l_arret(conn, d.get("vessel_id"), base[2]))
+                base = tuple(r)
+        pr = predire_bornee(base, t, min(t, now), p, navire=navire,
+                            a_l_arret=_a_l_arret(conn, d.get("vessel_id"), base[2]))
+        if pr.get("hors_portee"):
+            transit = transit or pr["hors_portee"]
+            continue
         if not covers(emprise, pr["lon"], pr["lat"], 0):
+            km = distance_emprise_m(emprise, pr["lon"], pr["lat"]) / 1000
+            if proche is None or km < proche[0]:
+                proche = (km, t)
             continue
         if delai is not None and t - d["position_le"] > timedelta(hours=delai):
             # Lumière VIIRS : au delà du délai, un navire sombre qui fait route a quitté la zone
@@ -333,11 +404,33 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
             if an is not None:
                 # Passage déjà analysé (une analyse par passage) : utile seulement si ses fenêtres couvrent le cercle
                 if not _fenetres_couvrent(an[2] or {}, pr["lon"], pr["lat"]):
+                    deja = deja or t
                     continue
                 return {"passage": (pid, sat, t), "prediction": pr, "centres": centres, "retro": True, "analyse": an[0],
                         "analyse_status": an[1]}
         return {"passage": (pid, sat, t), "prediction": pr, "centres": centres, "retro": retro}
-    return {"sans_passage": motif} if motif else {}
+    if motif:
+        return {"sans_passage": motif}
+    if transit is None and navire:
+        # Aucun passage examiné au delà de la portée, mais l'estime est déjà épuisée maintenant : aucun passage à venir
+        # ne la retrouvera (les passages acquis qui ne couvraient pas l'estime ne changeront plus)
+        r = _derniere_position(conn, d["vessel_id"], now)
+        base = tuple(r) if r is not None and r[2] > d["position_le"] else \
+            (d["lon"], d["lat"], d["position_le"], d.get("sog_kn"), d.get("cog_deg"))
+        pr = predire_bornee(base, now, now, p, a_l_arret=_a_l_arret(conn, d["vessel_id"], base[2]))
+        if pr.get("hors_portee"):
+            transit = (f"muet depuis le {base[2]:%d/%m %H:%M} à {base[3]:.0f} nœuds, estime épuisée"
+                       if now - base[2] > timedelta(hours=p["estime_max_h"]) else pr["hors_portee"])
+    if transit:
+        # Navire muet qui fait route : l'estime ne le retrouvera plus, attendre l'expiration ne servirait à rien
+        return {"sans_passage": f"{TRANSIT} ({transit})"}
+    if proche:
+        return {"attente": f"estime hors des passages : position prédite à {proche[0]:.0f} km de nos emprises au passage "
+                           f"du {proche[1]:%d/%m %H:%M}"}
+    if deja:
+        return {"attente": f"passage du {deja:%d/%m %H:%M} déjà analysé sans fenêtre sur le cercle : prochain passage "
+                           "attendu"}
+    return {"attente": f"aucun passage Sentinel 1 prévu au calendrier avant l'expiration le {d['expire_le']:%d/%m %H:%M}"}
 
 
 def _fenetres_couvrent(fenetres: dict, lon: float, lat: float) -> bool:
@@ -360,6 +453,25 @@ def _demandes(conn, where: str, args: tuple) -> list[dict]:
             FROM demandes_observation WHERE {where} ORDER BY priorite DESC, id""", args).fetchall()]
 
 
+def _type_exclu(conn, rules: dict, d: dict) -> str | None:
+    """Demande née seulement de coupures AIS sur un navire d'un type écarté (pêche : coupures fréquentes et sans
+    rapport avec une menace sur les infrastructures) : motif, sinon None. Couvre les demandes créées avant le filtre."""
+    exclus = (rules["tip_and_cue"]["tips"].get("coupure_ais") or {}).get("types_exclus") or []
+    if d["tip"] != "coupure_ais" or d.get("vessel_id") is None or not exclus:
+        return None
+    r = conn.execute("SELECT v.ship_type_code FROM vessels v WHERE v.id = %s AND NOT EXISTS (SELECT 1 FROM "
+                     "demandes_origines o WHERE o.demande_id = %s AND o.tip <> 'coupure_ais')",
+                     (d["vessel_id"], d["id"])).fetchone()
+    return motif_type(r[0]) if r and r[0] in exclus else None
+
+
+def motif_type(code: int) -> str:
+    return f"{'navire de pêche' if code == 30 else 'type de navire écarté'} (type AIS {code}) : coupure AIS écartée du tip and cue"
+
+
+MOTIF_DECLASSEE = "coupure déclassée en sortie de couverture (point de disparition collectif) : écartée du tip and cue"
+
+
 def planifier(conn, rules: dict, now: datetime, cote=None) -> dict:
     """Demandes en attente : passage retenu (planifiee), sans passage utile (sans_passage), expirées ; demandes
     planifiées dont le passage est passé sans analyse : expirées à leur échéance. Chaque décision est un span relié à
@@ -374,15 +486,21 @@ def planifier(conn, rules: dict, now: datetime, cote=None) -> dict:
     for d in _demandes(conn, "etat = 'en_attente' OR (etat = 'planifiee' AND analysis_id IS NULL)", ()):
         with traces.span("tip_and_cue.planification", liens=[d["traceparent"]],
                          **{"tip.demande": d["id"], "tip.type": d["tip"]}) as sp:
-            c = choisir_passage(conn, rules, d, now, cote)
+            exclu = _type_exclu(conn, rules, d)
+            c = {"sans_passage": exclu} if exclu else choisir_passage(conn, rules, d, now, cote)
             if "sans_passage" in c:
                 conn.execute("UPDATE demandes_observation SET etat = 'sans_passage', motif = %s, fini_le = now(), "
                              "mis_a_jour_le = now() WHERE id = %s", (c["sans_passage"], d["id"]))
                 sp.set_attributes({"tip.etat": "sans_passage", "tip.motif": c["sans_passage"]})
                 out["sans_passage"] += 1
                 continue
-            if not c:
-                sp.set_attribute("tip.etat", "en_attente")
+            if "attente" in c:
+                # Toujours un motif : la demande dit pourquoi elle attend ; une demande planifiée dont le passage ne
+                # convient plus revient en attente
+                conn.execute("UPDATE demandes_observation SET etat = 'en_attente', motif = %s, pass_id = NULL, "
+                             "heure_passage = NULL, passage_retro = NULL, fenetres = NULL, mis_a_jour_le = now() "
+                             "WHERE id = %s", (c["attente"], d["id"]))
+                sp.set_attributes({"tip.etat": "en_attente", "tip.motif": c["attente"]})
                 out["en_attente"] += 1
                 continue
             pid, sat, t = c["passage"]
@@ -578,8 +696,12 @@ def rejeu(tips: list[dict], passages: list[dict], rules: dict, cote, suivi=None)
                 r = suivi(tp["vessel_id"], ps["t"])
                 if r is not None and r[2] > tp["t"]:
                     base = r
-            pr = predire(*base, ps["t"], tc["prediction"], navire=tp.get("vessel_id") is not None,
-                         a_l_arret=bool(tp.get("a_l_arret")) and base[2] == tp["t"])
+            pr = predire_bornee(tuple(base), ps["t"], min(ps["t"], connu), tc["prediction"],
+                                navire=tp.get("vessel_id") is not None,
+                                a_l_arret=bool(tp.get("a_l_arret")) and base[2] == tp["t"])
+            if pr.get("hors_portee"):
+                motif = motif or "transit"
+                continue
             if not covers(ps["emprise"], pr["lon"], pr["lat"], 0):
                 continue
             if delai is not None and ps["t"] - tp["t"] > timedelta(hours=delai):
@@ -605,7 +727,7 @@ def rejeu(tips: list[dict], passages: list[dict], rules: dict, cote, suivi=None)
     par_tip: dict = {}
     for ligne in lignes:
         d = par_tip.setdefault(ligne["tip"], {"tips": 0, "regroupees": 0, "passage": 0, "cote": 0, "incertitude": 0,
-                                              "delai": 0, "sans_passage_36h": 0})
+                                              "delai": 0, "transit": 0, "sans_passage_36h": 0})
         d["tips"] += 1
         cle = {"regroupee": "regroupees"}.get(ligne["issue"], ligne["issue"])
         d[cle if cle in d else "sans_passage_36h"] += 1
@@ -652,6 +774,9 @@ def tips_periode(conn, rules: dict, debut: datetime, fin: datetime) -> list[dict
             for ep in eps if isinstance(eps, list) else []:
                 cle = (ep.get("vessel_id"), ep.get("dernier_message"))
                 if cle in vus or ep.get("gravite") not in _gravites(t["gravite_min"]) or not ep.get("derniere_position"):
+                    continue
+                code = conn.execute("SELECT ship_type_code FROM vessels WHERE id = %s", (ep["vessel_id"],)).fetchone()
+                if (code and code[0] in (t.get("types_exclus") or [])) or (t.get("exclure_declassees") and declassee(ep)):
                     continue
                 vus.add(cle)
                 lon, lat = ep["derniere_position"]

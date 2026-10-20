@@ -145,6 +145,32 @@ rendez vous 1, identité 0, navires des listes coupés : 2 sessions en 7 jours, 
 coupures à passage du rejeu serveur, au plus 8 sessions en 7 jours : **de 1,60 à 6,50 € par mois** selon que les
 coupures partagent ou non leurs passages, à confirmer par `tip-rejeu 7` sur le serveur (colonne « délai » ajoutée).
 
+## Premier jour en service : navires muets en transit (20/10/2026, règles 2026.10.33)
+
+Constat : sept demandes `coupure_ais` (2 à 8) et la demande manuelle 9 restaient « en attente » sans motif ; seule la 1
+(rendez vous, navire qui émet) était planifiée. Un navire muet en transit était prolongé par l'estime à son cap et sa
+vitesse jusqu'à l'heure de chaque passage, sortait de toutes les emprises, et `choisir_passage` ne rendait rien : la
+demande attendait sans raison jusqu'à l'expiration (36 h).
+
+Correctifs :
+
+1. **Jamais d'attente sans motif.** `choisir_passage` rend toujours une raison : `sans_passage` (côte, incertitude,
+   délai VIIRS, navire en transit) ou `attente` avec son motif, écrit dans la demande et en attribut `tip.motif` du span
+   `tip_and_cue.planification` : « estime hors des passages : position prédite à X km de nos emprises au passage du
+   … », « passage du … déjà analysé sans fenêtre sur le cercle », « aucun passage Sentinel 1 prévu au calendrier
+   avant l'expiration le … ». Une demande planifiée dont le passage ne convient plus revient en attente, avec son motif.
+2. **Estime bornée pour un navire muet** (aucune position depuis `prediction.muet_min`, 30 min) : en route, l'estime ne
+   vaut que `estime_max_h` (6 h) après la dernière position et dans nos zones collectées ; au delà, la demande passe
+   `sans_passage` avec le motif « navire en transit, hors de portée au prochain passage (muet depuis le …, à N nœuds,
+   …) ». Un navire muet lent (sous `lent_kn`, 3 nœuds) ou à l'arrêt garde sa position et le petit cercle (1,5 km). Un
+   navire qui émet encore n'est pas borné : il est replanifié à chaque cycle sur sa dernière position.
+3. **Tip coupure_ais** : navires de pêche (`types_exclus`, type AIS 30) et coupures déclassées en sortie de couverture
+   (point de disparition collectif, `exclure_declassees`) écartés d'emblée ; compte et motif dans `task_runs`
+   (`ecartes`, `ecartes_detail`) et sur la trace du cycle (`tip.ecartes.type`, `tip.ecartes.declassee`). Une demande
+   déjà créée sur un pêcheur, née seulement de coupures, est close au cycle suivant avec son motif.
+4. Panneau Observations : le motif d'une demande en attente ou close s'affiche au survol de la ligne.
+5. Rejeu : même estime bornée, colonne « transit » ; mêmes filtres sur les coupures.
+
 ## Propositions avant l'activation (20/10/2026, retenues sauf le budget, porté à 8 €)
 
 1. `tip_and_cue.actif: true`, avec `tips.watchlist.actif: false` : la sélection directe des navires des listes dans un
@@ -167,8 +193,10 @@ tour, aucun redémarrage).
 
 ## Limites
 
-* La replanification suit la dernière position reçue ; un navire qui sort de notre collecte sans être muet (transit
-  vers le large) est prédit à l'estime comme un navire sombre.
+* La replanification suit la dernière position reçue ; un navire muet n'est suivi à l'estime que 6 h et dans nos
+  zones : un navire sombre qui file au delà n'est plus cherché (motif « navire en transit »).
+* La distance aux emprises du motif d'attente est approchée sur un plan tangent : quelques pour cent d'écart au delà
+  de 200 km.
 * Le résultat « absent » ne distingue pas un navire parti d'une petite unité invisible au radar (moins de 20 à 30 m).
 * Un passage déjà analysé ne l'est pas une seconde fois (une analyse par passage) : utile seulement si ses fenêtres
   couvrent le cercle.

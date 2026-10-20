@@ -139,6 +139,16 @@ def covers(geometry: dict, lon: float, lat: float, margin_m: float) -> bool:
     return False
 
 
+def distance_emprise_m(geometry: dict, lon: float, lat: float) -> float:
+    """Distance du point à l'emprise (GeoJSON), 0 dedans ; plan tangent local, approché au delà de quelques centaines
+    de km (motif d'une demande d'observation)."""
+    if covers(geometry, lon, lat, 0):
+        return 0.0
+    polys = geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
+    return min(_segment_m(lon, lat, ring[k], ring[(k + 1) % len(ring)])
+               for ring in ([tuple(p[:2]) for p in poly[0]] for poly in polys) for k in range(len(ring)))
+
+
 def pick_scenes(scenes: list[dict], points: list[dict], margin_m: float) -> list[dict]:
     """Scènes qui couvrent au moins un point d'intérêt, chacune avec ses points, les plus riches d'abord."""
     out = []

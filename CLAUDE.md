@@ -607,6 +607,10 @@ sur 43 tips, 6 sessions, environ 4,90 € par mois ; navires des listes en trans
 passage), rendezvous, identite et demande manuelle ; watchlist coupé ; budget Sentinel 8 € par mois. Panneau
 « Observations » du rail (`/api/observations` : ordre planifiées, en attente, analysées, closes repliées ; région et
 plage ; cercle d'incertitude dessiné au clic ; compteur des actives).
+**Navires muets en transit (20/10/2026)** (règles 2026.10.33) : une demande n'attend jamais sans motif ; estime d'un
+navire muet bornée à 6 h et à nos zones (au delà, « navire en transit, hors de portée au prochain passage »), muet lent
+sous 3 nœuds à position fixe ; pêcheurs et coupures déclassées écartés du tip coupure_ais ; motif au survol dans le
+panneau Observations.
 
 ## 10. Tests
 

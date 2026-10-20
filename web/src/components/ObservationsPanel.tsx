@@ -40,9 +40,11 @@ export default function ObservationsPanel({ demandes, selectedId, onPick }:
   const ligne = (d: Props) => {
     const { Icone, couleur } = styleTip(d.tip), signe = d.resultat ? SIGNES[d.resultat] : null;
     const close = CLOSES.includes(d.etat);
+    // Motif d'une demande en attente ou close (pourquoi elle attend, pourquoi elle s'est close), au survol
+    const motif = d.motif && (close || d.etat === "en_attente") ? d.motif : null;
     return (
-      <li key={d.id}>
-        <button onClick={() => onPick(d)} title={d.motif ?? undefined}
+      <li key={d.id} className="group relative">
+        <button onClick={() => onPick(d)} aria-description={motif ?? undefined}
           className={`flex w-full items-center gap-2 border-b border-hair/70 px-4 py-2 text-left hover:bg-raised/60
             ${selectedId === d.id ? "bg-raised" : ""} ${close ? "opacity-60" : ""}`}>
           <Icone size={13} strokeWidth={2} style={{ color: couleur }} className="shrink-0" />
@@ -56,6 +58,12 @@ export default function ObservationsPanel({ demandes, selectedId, onPick }:
             {signe && <signe.Icone size={13} strokeWidth={2.2} style={{ color: signe.couleur }} />}
           </span>
         </button>
+        {motif && (
+          <div role="tooltip" className="pointer-events-none absolute inset-x-3 top-full z-10 hidden rounded-md border
+            border-hair bg-raised px-2.5 py-1.5 text-[11.5px] leading-snug text-muted shadow-lg group-hover:block">
+            {motif}
+          </div>
+        )}
       </li>
     );
   };

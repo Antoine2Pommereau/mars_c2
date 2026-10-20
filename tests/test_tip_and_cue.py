@@ -27,10 +27,12 @@ MARSEILLE = {"type": "Polygon", "coordinates": [[[4.8, 43.0], [5.8, 43.0], [5.8,
 
 
 def test_versioned_settings_of_the_activation():
-    """Activé le 20/10/2026 (règles 2026.10.32) : watchlist coupé, VIIRS à 12 h au plus, budget de 8 €."""
+    """Activé le 20/10/2026 (règles 2026.10.32) : watchlist coupé, VIIRS à 12 h au plus, budget de 8 € ; estime d'un
+    navire muet bornée et pêcheurs écartés des coupures (2026.10.33)."""
     t = VERSIONNEES["tip_and_cue"]
     assert t["actif"] is True and t["tips"]["watchlist"]["actif"] is False and t["tips"]["viirs"]["delai_max_h"] == 12
     assert all(t["tips"][k]["actif"] for k in ("coupure_ais", "viirs", "rendezvous", "identite", "operateur"))
+    assert t["tips"]["coupure_ais"]["types_exclus"] == [30] and t["tips"]["coupure_ais"]["exclure_declassees"] is True
     assert VERSIONNEES["sentinel"]["budget_mensuel_eur"] == 8.0 and VERSIONNEES["sentinel"]["scenes_max_par_jour"] == 2
     assert tc.cycle(None, COUPE, NOW) == {"inactif": True} and tc.points_passage(None, COUPE, 1) == []
 
@@ -54,6 +56,28 @@ def test_stopped_or_anchored_vessel_and_point_without_vessel():
         assert (pr["lon"], pr["lat"], pr["rayon_m"], pr["mode"]) == (*LARGE, P["rayon_arret_m"], "arret")
     pr = tc.predire(*LARGE, NOW, None, None, NOW + timedelta(hours=10), P, navire=False)
     assert (pr["rayon_m"], pr["mode"]) == (P["rayon_point_m"], "point")
+
+
+def test_mute_vessel_estimate_is_bounded_and_slow_mute_vessel_stays_put():
+    """Navire muet (dernière position il y a 3 h) : en route, estime valable 6 h et dans nos zones seulement ; lent
+    (moins de 3 nœuds), position fixe et petit cercle ; navire qui émet encore : estime sans borne."""
+    t0 = NOW - timedelta(hours=3)
+    assert P["muet_min"] == 30 and P["lent_kn"] == 3.0 and P["estime_max_h"] == 6
+    loin = tc.predire_bornee((*LARGE, t0, 12.0, 0.0), NOW + timedelta(hours=4), NOW, P)
+    assert "au delà des 6 h de l'estime" in loin["hors_portee"]                           # 7 h après la position
+    dehors = tc.predire_bornee((*LARGE, t0, 12.0, 270.0), NOW + timedelta(hours=2), NOW, P)
+    assert "hors de nos zones collectées" in dehors["hors_portee"]                       # 110 km à l'ouest
+    assert not tc.dans_zones(dehors["lon"], dehors["lat"]) and tc.dans_zones(*LARGE)
+    dedans = tc.predire_bornee((*LARGE, t0, 12.0, 90.0), NOW + timedelta(hours=2), NOW, P)
+    assert dedans["mode"] == "estime" and "hors_portee" not in dedans
+    lent = tc.predire_bornee((*LARGE, t0, 2.5, 270.0), NOW + timedelta(hours=20), NOW, P)
+    assert (lent["lon"], lent["lat"], lent["rayon_m"], lent["mode"]) == (*LARGE, P["rayon_arret_m"], "arret")
+    emet = tc.predire_bornee((*LARGE, NOW - timedelta(minutes=5), 12.0, 270.0), NOW + timedelta(hours=10), NOW, P)
+    assert emet["mode"] == "estime" and "hors_portee" not in emet                         # replanifié à chaque cycle
+    r = tc.rejeu([{"tip": "coupure_ais", "lon": LARGE[0], "lat": LARGE[1], "t": t0, "connu": NOW, "vessel_id": 7,
+                   "sog": 12.0, "cog": 270.0}], [{"id": 1, "t": NOW + timedelta(hours=2), "emprise": EMPRISE}], RULES,
+                 lambda _x, _y: None)
+    assert r["par_tip"]["coupure_ais"]["transit"] == 1 and r["sessions"] == 0
 
 
 def test_circle_becomes_24_km_windows():
@@ -209,10 +233,83 @@ def test_waiting_request_expires_after_36_hours(conn):
     _alerte(conn, "DARK_SHIP", "elevee", *LARGE, {"source": "viirs"})
     tc.cycle(conn, RULES, NOW)
     did = conn.execute("SELECT id FROM demandes_observation").fetchone()[0]
-    assert _demande(conn, did)["etat"] == "en_attente"                          # aucun passage ne couvre encore le point
+    d = _demande(conn, did)
+    assert d["etat"] == "en_attente" and d["motif"].startswith("aucun passage Sentinel 1 prévu au calendrier")
     tc.planifier(conn, RULES, NOW + timedelta(hours=37))
     d = _demande(conn, did)
     assert d["etat"] == "expiree" and "36 h" in d["motif"]
+
+
+@pytest.mark.parametrize("cog, heures, attendu", [
+    (270.0, 2, "hors de nos zones collectées"),             # route vers l'ouest : sort de la zone Bretagne
+    (90.0, 5, "au delà des 6 h de l'estime"),                # passage 8 h après la dernière position
+])
+def test_mute_fast_vessel_in_transit_has_no_pass_and_says_why(conn, cog, heures, attendu):
+    _passage(conn, "TIP_TRANSIT", NOW + timedelta(hours=heures))
+    vid = _navire(conn, 636999711, *LARGE, sog=12.0, cog=cog, t=NOW - timedelta(hours=3))
+    r = tc.creer(conn, RULES, NOW, cle="coupure:essai", tip="coupure_ais", lon=LARGE[0], lat=LARGE[1],
+                 position_le=NOW - timedelta(hours=3), vessel_id=vid, sog=12.0, cog=cog, motif="coupure observée")
+    out = tc.planifier(conn, RULES, NOW)
+    d = _demande(conn, r["demande"])
+    assert out["sans_passage"] == 1 and d["etat"] == "sans_passage"
+    assert d["motif"].startswith("navire en transit, hors de portée au prochain passage") and attendu in d["motif"]
+
+
+def test_mute_slow_vessel_keeps_its_position_and_is_planned(conn):
+    pid = _passage(conn, "TIP_LENT", NOW + timedelta(hours=9))
+    vid = _navire(conn, 636999712, *LARGE, sog=2.0, cog=270.0, t=NOW - timedelta(hours=3))
+    r = tc.creer(conn, RULES, NOW, cle="coupure:lent", tip="coupure_ais", lon=LARGE[0], lat=LARGE[1],
+                 position_le=NOW - timedelta(hours=3), vessel_id=vid, sog=2.0, cog=270.0, motif="coupure observée")
+    tc.planifier(conn, RULES, NOW)
+    d = _demande(conn, r["demande"])
+    assert d["etat"] == "planifiee" and d["pass_id"] == pid
+    assert d["prediction"] == "arret" and d["rayon"] == P["rayon_arret_m"] and len(d["fenetres"]) == 1
+
+
+def test_fishing_vessel_and_downgraded_gap_are_dropped_with_their_reason(conn, monkeypatch):
+    monkeypatch.setattr(tc, "_pres_infrastructure", lambda *_a: True)
+    peche = _navire(conn, 636999713, *LARGE, sog=4.0, t=NOW - timedelta(hours=3))
+    conn.execute("UPDATE vessels SET ship_type_code = 30 WHERE id = %s", (peche,))
+    sortie = _navire(conn, 636999714, *LARGE, sog=11.0, t=NOW - timedelta(hours=3))
+    cargo = _navire(conn, 636999715, -5.5, 48.2, sog=0.5, t=NOW - timedelta(hours=3))
+    ep = {"dernier_message": (NOW - timedelta(hours=3)).isoformat(), "derniere_position": list(LARGE), "gravite": "elevee"}
+    conn.execute("DELETE FROM task_runs WHERE task = 'regles'")
+    conn.execute("INSERT INTO task_runs (task, run_day, status, started_at, details) VALUES ('regles', %s, 'ok', %s, %s)",
+                 (NOW.date(), NOW - timedelta(minutes=2), json.dumps({"ais_gap": {"episodes": [
+                     {**ep, "vessel_id": peche},
+                     {**ep, "vessel_id": sortie, "gravite": "faible", "gravite_avant_declassement": "elevee",
+                      "point_collectif": 6},
+                     {**ep, "vessel_id": cargo, "derniere_position": [-5.5, 48.2]}]}})))
+    out = tc.collecter(conn, RULES, NOW)
+    assert out["tips"] == {"coupure_ais": 1} and out["ecartes"] == {"type": 1, "declassee": 1}
+    motifs = {e["vessel_id"]: e["motif"] for e in out["ecartes_detail"]}
+    assert motifs[peche].startswith("navire de pêche (type AIS 30)") and "sortie de couverture" in motifs[sortie]
+    assert [r[0] for r in conn.execute("SELECT vessel_id FROM demandes_observation")] == [cargo]
+    # Demande créée avant le filtre sur un pêcheur : close au cycle suivant, avec le motif
+    r = tc.creer(conn, RULES, NOW, cle="coupure:ancienne", tip="coupure_ais", lon=LARGE[0], lat=LARGE[1],
+                 position_le=NOW - timedelta(hours=3), vessel_id=peche, sog=4.0, cog=90.0, motif="coupure observée")
+    tc.planifier(conn, RULES, NOW)
+    d = _demande(conn, r["demande"])
+    assert d["etat"] == "sans_passage" and d["motif"].startswith("navire de pêche")
+
+
+def test_no_request_waits_without_a_reason(conn):
+    """Point sans passage au calendrier, navire qui émet hors des emprises, navire muet lent hors des emprises : en
+    attente, chacun avec la raison d'attendre ; la planification n'écrit jamais d'attente sans motif."""
+    _passage(conn, "TIP_MARSEILLE", NOW + timedelta(hours=3), MARSEILLE)
+    tc.creer(conn, RULES, NOW, cle="op:point", tip="operateur", lon=-4.0, lat=46.5, position_le=NOW, motif="demande manuelle")
+    emet = _navire(conn, 636999716, -4.5, 46.0, sog=11.0, cog=180.0, t=NOW - timedelta(minutes=5))
+    tc.creer(conn, RULES, NOW, cle="op:emet", tip="operateur", lon=-4.5, lat=46.0, position_le=NOW - timedelta(minutes=5),
+             vessel_id=emet, sog=11.0, cog=180.0, motif="demande manuelle")
+    out = tc.planifier(conn, RULES, NOW)
+    rows = conn.execute("SELECT etat, motif FROM demandes_observation ORDER BY id").fetchall()
+    assert out["en_attente"] == 2 and [r[0] for r in rows] == ["en_attente", "en_attente"]
+    assert all(r[1].startswith("estime hors des passages : position prédite à ") and "km de nos emprises au passage du"
+               in r[1] for r in rows)
+    conn.execute("DELETE FROM sar_passes WHERE product_name LIKE 'TIP_%'")
+    tc.planifier(conn, RULES, NOW)
+    assert {r[0] for r in conn.execute("SELECT motif FROM demandes_observation")} == {
+        f"aucun passage Sentinel 1 prévu au calendrier avant l'expiration le {NOW + timedelta(hours=36):%d/%m %H:%M}"}
 
 
 def test_requests_go_first_under_the_daily_ceiling_and_budget_refusal_is_recorded(conn, monkeypatch):
