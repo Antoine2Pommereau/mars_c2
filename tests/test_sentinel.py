@@ -60,7 +60,7 @@ def test_daily_cap_and_monthly_budget():
     assert est == round((SR["minutes_fixes"] + 2 * SR["minutes_par_scene"]) / 60 * t["prix_heure"], 3)
     assert S.guard(2, 0, 0.0, est, SR) is None
     assert S.guard(1, 2, 0.0, est, SR).startswith("plafond de 2 scènes par jour")
-    assert S.guard(1, 0, SR["budget_mensuel_eur"] - 0.05, est, SR).startswith("budget mensuel de 6,00 €")
+    assert S.guard(1, 0, SR["budget_mensuel_eur"] - 0.05, est, SR).startswith("budget mensuel de 8,00 €")
 
 
 SQUARE = {"type": "Polygon", "coordinates": [[[-6.5, 47.8], [-5.5, 47.8], [-5.5, 48.4], [-6.5, 48.4], [-6.5, 47.8]]]}
@@ -499,10 +499,11 @@ def test_automatic_loop_waits_until_tomorrow_after_a_failure_today(conn, monkeyp
 
 
 def test_versioned_ceiling_is_two_and_zero_stops_everything(conn, monkeypatch):
-    """Valeur versionnée : 2 scènes par jour et 6 € par mois depuis le 19/10/2026 (règles 2026.10.30). Remise à 0, elle
+    """Valeur versionnée : 2 scènes par jour depuis le 19/10/2026, 8 € par mois depuis le 20/10 (règles 2026.10.32).
+    Remise à 0, elle
     arrête tout : refus clair, aucune analyse, aucun appel à Scaleway."""
     from mars import sentinel, travailleurs
-    assert VERSIONNEES["sentinel"]["scenes_max_par_jour"] == 2 and VERSIONNEES["sentinel"]["budget_mensuel_eur"] == 6.0
+    assert VERSIONNEES["sentinel"]["scenes_max_par_jour"] == 2 and VERSIONNEES["sentinel"]["budget_mensuel_eur"] == 8.0
     arret = {**VERSIONNEES, "sentinel": {**VERSIONNEES["sentinel"], "scenes_max_par_jour": 0}}
     now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
     pid, _ids, t0 = _setup(conn, now)

@@ -453,4 +453,4 @@ def test_measures_and_parameters_are_written(tmp_path):
         params = dict(c.execute("SELECT cle, valeur FROM parametres_supervision").fetchall())
         c.execute("DELETE FROM mesures_disque WHERE mesure_le >= now() - interval '1 minute'")
     assert row == (1000, 1, True, True) and m["positions_octets"] > 0
-    assert params["seuil_disque_pct"] == 15 and params["budget_sentinel_eur"] == 6 and params["ratio_coupure"] == 0.2
+    assert params["seuil_disque_pct"] == 15 and params["budget_sentinel_eur"] == 8 and params["ratio_coupure"] == 0.2

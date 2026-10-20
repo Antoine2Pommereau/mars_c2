@@ -18,7 +18,15 @@ export const L = {
   // Rail et panneaux
   rail: {
     alertes: "Alertes", analyses: "Analyses satellites", couches: "Couches et légende",
-    suivis: "Navires suivis", recherche: "Recherche",
+    suivis: "Navires suivis", recherche: "Recherche", observations: "Observations satellites",
+  },
+  // Panneau « Observations » (tip and cue, lot T1)
+  observations: {
+    titre: "Observations", point: "point", filtre: "État", aucune: "Aucune demande d'observation",
+    filtres: { toutes: "Toutes", planifiee: "Planifiées", en_attente: "En attente", analysee: "Analysées", closes: "Closes" },
+    etats: { en_attente: "en attente", planifiee: "planifiée", analysee: "analysée", sans_passage: "sans passage",
+      expiree: "expirée", refusee_budget: "refusée", annulee: "annulée" } as Record<string, string>,
+    closes: (n: number) => `${n} sans résultat`,
   },
 
   // Barre d'état

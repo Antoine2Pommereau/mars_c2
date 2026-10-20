@@ -1,13 +1,14 @@
-import { Bell, Eye, Layers, Radar, Search } from "lucide-react";
+import { Bell, Eye, Layers, Radar, Satellite, Search } from "lucide-react";
 import { L } from "../lib/libelles";
 
-export type PanelId = "alertes" | "analyses" | "couches" | "suivis";
+export type PanelId = "alertes" | "analyses" | "couches" | "suivis" | "observations";
 
 const ITEMS: { id: PanelId; label: string; Icon: typeof Bell; aVenir?: boolean }[] = [
   { id: "alertes", label: L.rail.alertes, Icon: Bell },
   { id: "couches", label: L.rail.couches, Icon: Layers },
   { id: "analyses", label: L.rail.analyses, Icon: Radar },
   { id: "suivis", label: L.rail.suivis, Icon: Eye },
+  { id: "observations", label: L.rail.observations, Icon: Satellite },
 ];
 
 interface Props {
@@ -16,9 +17,10 @@ interface Props {
   onSearch: () => void;
   alertCount: number;
   running: boolean;
+  observationCount: number;          // demandes d'observation actives (tip and cue)
 }
 
-export default function Rail({ active, onSelect, onSearch, alertCount, running }: Props) {
+export default function Rail({ active, onSelect, onSearch, alertCount, running, observationCount }: Props) {
   return (
     <nav className="flex h-full w-14 shrink-0 flex-col items-center border-r border-hair bg-panel py-2">
       {ITEMS.map(({ id, label, Icon, aVenir }) => {
@@ -33,6 +35,11 @@ export default function Rail({ active, onSelect, onSearch, alertCount, running }
             {id === "alertes" && alertCount > 0 && (
               <span className="absolute right-1 top-1 min-w-4 rounded-full bg-dark px-1 text-[10px] font-semibold leading-4 text-abyss">
                 {alertCount}
+              </span>
+            )}
+            {id === "observations" && observationCount > 0 && (
+              <span className="absolute right-1 top-1 min-w-4 rounded-full bg-signal px-1 text-[10px] font-semibold leading-4 text-abyss">
+                {observationCount}
               </span>
             )}
             {id === "analyses" && running && <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-signal" />}

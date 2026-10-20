@@ -775,6 +775,24 @@ docker compose restart grafana
 docker compose exec taches python scripts/taches.py tip-rejeu 7
 ```
 
+## Tip and cue activé, panneau Observations (règles 2026.10.32)
+
+Aucune migration. `config/rules.yaml` est relu à chaque tour de taches : l'activation prend effet au `git pull`, avant
+même les nouvelles images. Images qui changent : API (route `/api/observations`), scripts (délai VIIRS, rejeu) et
+interface (panneau Observations).
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf backend && docker image prune -af
+docker compose pull backend && docker compose up -d --no-build backend
+docker compose rm -sf web && docker image prune -af
+docker compose pull web && docker compose up -d --no-build web
+docker compose restart grafana
+docker compose exec taches python scripts/taches.py tip-rejeu 7
+```
+
 ## Vérifier
 
 ```bash

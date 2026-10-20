@@ -603,9 +603,14 @@ vérification gardée par les mises à jour en place des règles (`GARDE_VERIFIC
 demande et analyse (`traces.span(liens=…)`). Livré coupé. Rejeu sur le serveur (7 jours, API) : 7 demandes avec passage
 sur 43 tips, 6 sessions, environ 4,90 € par mois ; navires des listes en transit presque jamais observables.
 
+**Tip and cue activé (20/10/2026)** (règles 2026.10.32) : coupure_ais, viirs (12 h au plus entre la lumière et le
+passage), rendezvous, identite et demande manuelle ; watchlist coupé ; budget Sentinel 8 € par mois. Panneau
+« Observations » du rail (`/api/observations` : ordre planifiées, en attente, analysées, closes repliées ; région et
+plage ; cercle d'incertitude dessiné au clic ; compteur des actives).
+
 ## 10. Tests
 
-`python -m pytest tests` (lot T1 : 244 réussis, 63 ignorés sans base ; 306 réussis, 1 ignoré avec la base de test) :
+`python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :
 227 réussis, 46 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 45 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans

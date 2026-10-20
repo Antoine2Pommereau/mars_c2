@@ -635,10 +635,11 @@ def _tip_rejeu(conn, a):
     r = tip_and_cue.rejeu_base(conn, rules, fin - timedelta(days=jours), fin)
     traces.attributs(**{"tip.rejeu_jours": jours, "tip.rejeu_sessions": r["sessions"], "tip.rejeu_fenetres": r["fenetres"]})
     print(f"Rejeu du tip and cue sur {r['jours']} jours ({r['passages_examines']} passages Sentinel 1 examinés) :")
-    print(f"  {'tip':<12} {'tips':>5} {'regroupés':>10} {'passage':>8} {'côte':>5} {'incertitude':>12} {'sans 36 h':>10}")
+    print(f"  {'tip':<12} {'tips':>5} {'regroupés':>10} {'passage':>8} {'côte':>5} {'incertitude':>12} {'délai':>6} "
+          f"{'sans 36 h':>10}")
     for tip, d in sorted(r["par_tip"].items()):
         print(f"  {tip:<12} {d['tips']:>5} {d['regroupees']:>10} {d['passage']:>8} {d['cote']:>5} {d['incertitude']:>12} "
-              f"{d['sans_passage_36h']:>10}")
+              f"{d['delai']:>6} {d['sans_passage_36h']:>10}")
     delais = sorted(x["delai_h"] for x in r["lignes"] if x["issue"] == "passage")
     if delais:
         print(f"  délai du tip au passage : médiane {delais[len(delais) // 2]} h, de {delais[0]} à {delais[-1]} h")

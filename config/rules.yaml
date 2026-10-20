@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.31"
+version: "2026.10.32"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -229,7 +229,7 @@ sentinel:
   # session (GP1-S, 0,19 €) ; le budget de 6 € par mois arrête proprement au delà d'une session par jour en moyenne.
   # À 0, ni la sélection automatique ni la commande manuelle ne lancent rien (refus clair, sans appel à Scaleway).
   scenes_max_par_jour: 2
-  budget_mensuel_eur: 6.0
+  budget_mensuel_eur: 8.0      # 20/10/2026 : 6 € portés à 8 €, partagés entre tip and cue et la sélection
   # Coût estimé avant lancement (refus si le budget du mois serait dépassé) : démarrage, pilotes et image d'analyse
   # (5 Go), puis téléchargement et analyse par scène (307 s sur un T4 selon AI2 ; L4 au moins aussi rapide)
   minutes_fixes: 12
@@ -285,7 +285,9 @@ sentinel:
 # les dernières heures), fenêtres de 24 km analysées dans la session Sentinel du passage (mêmes plafonds, même budget),
 # résultat ajouté comme preuve à l'alerte d'origine. Jamais de retrait automatique d'une alerte.
 tip_and_cue:
-  actif: false                  # livré coupé (20/10/2026) : activation après le rejeu sur les données du serveur
+  # Activé le 20/10/2026 après le rejeu sur le serveur (7 jours : 73 tips, 17 avec passage, délai médian 8,6 h) ;
+  # watchlist coupé : la sélection directe des navires des listes dans un corridor reste en place
+  actif: true
   intervalle_min: 5             # tips relevés et demandes planifiées toutes les 5 minutes (après les règles)
   fenetre_tips_h: 6             # alertes créées ou mises à jour depuis 6 h
   expiration_h: 36              # demande expirée 36 h après sa création sans passage utile
@@ -307,10 +309,14 @@ tip_and_cue:
       priorite: 5
       gravite_min: elevee
       corridor_m: 3704
-    viirs: {actif: true, priorite: 4, gravite_min: moyenne}      # DARK_SHIP de source VIIRS
+    viirs:                      # DARK_SHIP de source VIIRS ; au delà de 12 h entre la lumière et le passage, un navire
+      actif: true               # sombre qui fait route est parti : passage écarté avec son motif
+      priorite: 4
+      gravite_min: moyenne
+      delai_max_h: 12
     rendezvous: {actif: true, priorite: 4, cote_min_km: 5}       # rendez vous au large
-    watchlist:                  # navire des listes en mer près d'une infrastructure : remplace, quand tip and cue est
-      actif: true               # actif, le point « navire des listes dans un corridor » de la sélection Sentinel
+    watchlist:                  # navire des listes en mer près d'une infrastructure : remplacerait, actif, le point
+      actif: false              # « navire des listes dans un corridor » de la sélection (rejeu : surtout des transits)
       priorite: 3
       corridor_m: 3704
     identite: {actif: true, priorite: 2, gravite_min: moyenne}   # IDENTITY_CHANGE

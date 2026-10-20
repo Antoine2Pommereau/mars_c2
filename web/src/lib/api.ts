@@ -124,4 +124,7 @@ export const api = {
   demander: (body: { vessel_id?: number; alerte_id?: number; lon?: number; lat?: number; author?: string }) =>
     post<{ id: number; regroupee: boolean; etat: string }>("/demandes", body),
   annulerDemande: (id: number) => post<Props>(`/demandes/${id}/annuler`, {}),
+  /** Panneau « Observations » : demandes de la plage et de la région, compteur des actives */
+  observations: (start: string, end: string, region: string | null) =>
+    get<{ actives: number; demandes: Props[] }>(`/observations?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
 };

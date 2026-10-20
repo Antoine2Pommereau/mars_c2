@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from mars import traces
 from mars.config import load_rules
+from regions import dans_region, region_ewkt
 
 router = APIRouter()
 
@@ -47,6 +48,44 @@ async def demandes(request: Request, alerte_id: int | None = None, vessel_id: in
                   AND ($1::bigint IS NOT NULL OR $2::bigint IS NOT NULL OR d.cree_le BETWEEN $3 AND $4)
                 ORDER BY d.id DESC LIMIT $5::int""", alerte_id, vessel_id, start, end, limit)
     return [_row(r) for r in rows]
+
+
+# Panneau « Observations » : rang d'affichage (planifiées par passage le plus proche, en attente, analysées les plus
+# récentes, puis closes sans résultat repliées en bas)
+RANG = """CASE d.etat WHEN 'planifiee' THEN 0 WHEN 'en_attente' THEN 1 WHEN 'analysee' THEN 2 ELSE 3 END"""
+ACTIVES = "d.etat IN ('en_attente', 'planifiee')"
+
+
+@router.get("/api/observations")
+async def observations(request: Request, start: datetime | None = None, end: datetime | None = None,
+                       region: str | None = None, etat: str | None = None, limit: int = 300):
+    """Demandes d'observation pour le panneau du rail : navire (pavillon, nom), alerte d'origine et son type, passage,
+    résultat, position prédite et cercle d'incertitude. Les demandes actives sont toujours listées ; les closes,
+    seulement si elles ont vécu sur la plage. Région : position prédite, sinon dernière position connue. Ordre : voir
+    RANG. `actives` : demandes en attente ou planifiées de la région (compteur de l'icône)."""
+    end = end or datetime.now(timezone.utc)
+    start = start or end - timedelta(hours=24)
+    geo = "coalesce(d.position_predite, d.position)::geometry"
+    async with request.app.state.pool.acquire() as c:
+        ewkt = await region_ewkt(c, region)
+        rows = await c.fetch(
+            f"""SELECT d.id, d.tip, d.etat, d.vessel_id, v.name AS navire, v.flag, v.mmsi, d.heure_passage, d.resultat,
+                       d.rayon_m, d.cree_le, d.fini_le, d.motif, p.satellite, {RANG} AS rang,
+                       ST_X({geo}) AS lon, ST_Y({geo}) AS lat, o.alerte_id, a.type AS alerte_type
+                FROM demandes_observation d
+                LEFT JOIN vessels v ON v.id = d.vessel_id LEFT JOIN sar_passes p ON p.id = d.pass_id
+                LEFT JOIN LATERAL (SELECT alerte_id FROM demandes_origines WHERE demande_id = d.id
+                                   AND alerte_id IS NOT NULL ORDER BY priorite DESC, cree_le LIMIT 1) o ON true
+                LEFT JOIN alerts a ON a.id = o.alerte_id
+                WHERE ({ACTIVES} OR (d.cree_le <= $2 AND coalesce(d.fini_le, d.mis_a_jour_le) >= $1))
+                  AND {dans_region(geo, 3)} AND ($4::text IS NULL OR d.etat = $4::text)
+                ORDER BY rang, CASE WHEN d.etat = 'planifiee' THEN d.heure_passage END ASC NULLS LAST,
+                         coalesce(d.fini_le, d.cree_le) DESC, d.id DESC
+                LIMIT $5::int""", start, end, ewkt, etat, limit)
+        actives = await c.fetchval(f"SELECT count(*) FROM demandes_observation d WHERE {ACTIVES} AND {dans_region(geo, 1)}",
+                                   ewkt)
+    traces.attributs(**{"observations.lignes": len(rows), "observations.actives": actives, "observations.region": region})
+    return {"actives": actives, "demandes": [_row(r) for r in rows]}
 
 
 @router.get("/api/demandes/{did}")

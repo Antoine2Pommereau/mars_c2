@@ -13,10 +13,11 @@ import NewAnalysis from "./components/NewAnalysis";
 import Rail, { type PanelId } from "./components/Rail";
 import Recherche, { type Resultat } from "./components/Recherche";
 import SuivisPanel from "./components/SuivisPanel";
+import ObservationsPanel from "./components/ObservationsPanel";
 import { api, type Pass } from "./lib/api";
 import { FILTRES_DEFAUT, dansPlage, filtrer, naviresEnAlerte, statutDe, trier, type Filtres } from "./lib/fil";
 import { auteurMemorise } from "./lib/auteur";
-import { nearInfra } from "./lib/geo";
+import { cercle, nearInfra } from "./lib/geo";
 import { L } from "./lib/libelles";
 import { avecPlage, iso, resolve, type Temps } from "./lib/temps";
 import { decodeTraffic } from "./lib/trafic";
@@ -210,6 +211,26 @@ export default function App() {
     ecrireAdresse({ temps, sel: selKey(selection) ?? pendingSel, couches: actives, region });
   }, [temps, selection, pendingSel, actives, region]);
 
+  // Panneau « Observations » (tip and cue) : demandes de la plage et de la région, compteur sur l'icône du rail
+  const observationsQ = useQuery({ queryKey: ["demandes", "observations", qDebut, qFin, region],
+    queryFn: () => api.observations(qDebut, qFin, region), refetchInterval: 60_000, retry: 2 });
+  const [observation, setObservation] = useState<{ id: number; sel: Selection | null; geom: FC } | null>(null);
+  const pickObservation = useCallback((d: Props) => {
+    const c = cercle(Number(d.lon), Number(d.lat), Number(d.rayon_m ?? 3000));
+    const geom: FC = { type: "FeatureCollection", features: [c as any,
+      { type: "Feature", geometry: { type: "Point", coordinates: [Number(d.lon), Number(d.lat)] }, properties: {} }] };
+    const montrer = (sel: Selection | null) => {
+      setSelection(sel);
+      setObservation({ id: Number(d.id), sel, geom });
+      setFocus({ bounds: c.bbox });
+    };
+    if (d.vessel_id != null) {
+      const v = vessels.get(Number(d.vessel_id));
+      montrer({ kind: "vessel", properties: { vessel_id: d.vessel_id, name: d.navire, flag: d.flag, mmsi: d.mmsi, ...(v ?? {}) } });
+    } else if (d.alerte_id != null) {
+      api.alert(Number(d.alerte_id)).then((f) => montrer({ kind: "alert", feature: f })).catch(() => montrer(null));
+    } else montrer(null);
+  }, [vessels]);
   const pickAlert = useCallback((f: Feature) => {
     setSelection({ kind: "alert", feature: f });
     setFocus({ center: f.geometry.coordinates as [number, number], zoom: 9 });
@@ -295,6 +316,8 @@ export default function App() {
     return { alertId: selection.feature.properties.id as number, vesselIds: naviresAlerte(selection.feature).map((v) => v.vessel_id) };
   }, [selection, infraCardQ.data]);
   const focusGeom = useMemo<FC>(() => {
+    // Demande d'observation choisie dans le panneau : position prédite et cercle d'incertitude
+    if (observation && observation.sel === selection) return observation.geom;
     if (selection?.kind === "infrastructure") {
       const f = infraQ.data?.features.find((x) => x.properties.id === Number(selection.properties.id));
       return f ? { type: "FeatureCollection", features: [f] } : EMPTY;
@@ -307,7 +330,7 @@ export default function App() {
       return f ? { type: "FeatureCollection", features: [f] } : EMPTY;
     }
     return EMPTY;
-  }, [selection, infraQ.data, passagesQ.data]);
+  }, [selection, infraQ.data, passagesQ.data, observation]);
 
   // Infrastructures concernées : liées à une alerte ouverte, ou à moins de 2 milles de la sélection
   const concernedInfra = useMemo(() => {
@@ -358,11 +381,14 @@ export default function App() {
         region={region} regions={regionsQ.data ?? null} onRegion={choisirRegion} />
       <div className="flex min-h-0 flex-1">
         <Rail active={panel} onSelect={setPanel} onSearch={() => setSearching(true)} alertCount={todo}
-          running={jobs.some((a) => a.status === "pending" || a.status === "running")} />
+          running={jobs.some((a) => a.status === "pending" || a.status === "running")}
+          observationCount={observationsQ.data?.actives ?? 0} />
         {panel && (
           <aside className="h-full w-[350px] shrink-0 border-r border-hair bg-panel">
             {panel === "alertes" && <AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels}
               suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />}
+            {panel === "observations" && <ObservationsPanel demandes={observationsQ.data?.demandes ?? []}
+              selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} />}
             {panel === "suivis" && <SuivisPanel suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
             {panel === "analyses" && (
               <AnalysesPanel jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0} history={done.slice(0, 8)}

@@ -298,6 +298,7 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
              AND acquired_at BETWEEN %s AND %s AND (statut = 'acquis' OR acquired_at > %s)
            ORDER BY acquired_at""", (debut, d["expire_le"], now)).fetchall()
     motif = None
+    delai = (tc["tips"].get(d.get("tip")) or {}).get("delai_max_h")
     for pid, sat, t, statut, emprise in rows:
         # Navire qui émet encore : dernière position reçue avant le passage (petit cercle) ; navire muet : la dernière
         # connue, et l'estime fait le reste
@@ -309,6 +310,11 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
         pr = predire(base[0], base[1], base[2], base[3], base[4], t, tc["prediction"],
                      navire=d.get("vessel_id") is not None, a_l_arret=_a_l_arret(conn, d.get("vessel_id"), base[2]))
         if not covers(emprise, pr["lon"], pr["lat"], 0):
+            continue
+        if delai is not None and t - d["position_le"] > timedelta(hours=delai):
+            # Lumière VIIRS : au delà du délai, un navire sombre qui fait route a quitté la zone
+            motif = motif or (f"premier passage qui couvre le point le {t:%d/%m %H:%M}, plus de {delai} h après le signal : "
+                              "le navire a pu partir")
             continue
         c = cote(pr["lon"], pr["lat"])
         if c is not None:
@@ -561,6 +567,7 @@ def rejeu(tips: list[dict], passages: list[dict], rules: dict, cote, suivi=None)
         actives[cle] = quand + exp
         issue, motif = "sans_passage_36h", None
         connu = tp.get("connu") or tp["t"]
+        delai = (tc["tips"].get(tp["tip"]) or {}).get("delai_max_h")
         for ps in passages:
             # comme planifier : passage acquis au plus heures_retro avant le tip, jamais avant la position, et avant
             # l'expiration de la demande
@@ -574,6 +581,9 @@ def rejeu(tips: list[dict], passages: list[dict], rules: dict, cote, suivi=None)
             pr = predire(*base, ps["t"], tc["prediction"], navire=tp.get("vessel_id") is not None,
                          a_l_arret=bool(tp.get("a_l_arret")) and base[2] == tp["t"])
             if not covers(ps["emprise"], pr["lon"], pr["lat"], 0):
+                continue
+            if delai is not None and ps["t"] - tp["t"] > timedelta(hours=delai):
+                motif = motif or "delai"
                 continue
             c = cote(pr["lon"], pr["lat"])
             if c is not None:
@@ -595,7 +605,7 @@ def rejeu(tips: list[dict], passages: list[dict], rules: dict, cote, suivi=None)
     par_tip: dict = {}
     for ligne in lignes:
         d = par_tip.setdefault(ligne["tip"], {"tips": 0, "regroupees": 0, "passage": 0, "cote": 0, "incertitude": 0,
-                                              "sans_passage_36h": 0})
+                                              "delai": 0, "sans_passage_36h": 0})
         d["tips"] += 1
         cle = {"regroupee": "regroupees"}.get(ligne["issue"], ligne["issue"])
         d[cle if cle in d else "sans_passage_36h"] += 1

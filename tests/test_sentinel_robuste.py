@@ -392,6 +392,9 @@ def test_unusable_gpu_destroys_requeues_marks_and_skips_the_type(conn, spans, mo
     scw = FakeScw()
     wid, aid, sid = _travailleur(conn, scw, "gpu_inutilisable", erreur="GPU inutilisable : NVML Driver Not Loaded",
                                  mesures={"fin_signalee": "gpu_inutilisable"})
+    # Passage daté de maintenant : la reprise ci dessous se fait à l'heure réelle, dans la fenêtre utile de 24 h
+    conn.execute("UPDATE sar_passes SET acquired_at = now() - interval '3 hours', ended_at = now() - interval '178 minutes' "
+                 "WHERE id = (SELECT pass_id FROM analyses WHERE id = %s)", (aid,))
     T.supervise(conn, scw, RULES, {})
     assert sid in scw.destroyed                                                   # détruite à cette minute même
     etat, detruit, couts = conn.execute("SELECT etat, detruit_le IS NOT NULL, mesures->>'cout_estime_eur' FROM travailleurs "

@@ -16,6 +16,7 @@ from mars.config import load_rules
 
 VERSIONNEES = load_rules()
 RULES = {**VERSIONNEES, "tip_and_cue": {**VERSIONNEES["tip_and_cue"], "actif": True}}
+COUPE = {**VERSIONNEES, "tip_and_cue": {**VERSIONNEES["tip_and_cue"], "actif": False}}
 P, S = RULES["tip_and_cue"]["prediction"], RULES["sentinel"]
 URL = os.environ.get("MARS_TEST_DATABASE_URL")
 NOW = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
@@ -25,10 +26,13 @@ EMPRISE = {"type": "Polygon", "coordinates": [[[-7.0, 47.5], [-5.0, 47.5], [-5.0
 MARSEILLE = {"type": "Polygon", "coordinates": [[[4.8, 43.0], [5.8, 43.0], [5.8, 43.6], [4.8, 43.6], [4.8, 43.0]]]}
 
 
-def test_shipped_switched_off():
-    assert VERSIONNEES["tip_and_cue"]["actif"] is False
-    assert tc.cycle(None, VERSIONNEES, NOW) == {"inactif": True}
-    assert tc.points_passage(None, VERSIONNEES, 1) == []
+def test_versioned_settings_of_the_activation():
+    """Activé le 20/10/2026 (règles 2026.10.32) : watchlist coupé, VIIRS à 12 h au plus, budget de 8 €."""
+    t = VERSIONNEES["tip_and_cue"]
+    assert t["actif"] is True and t["tips"]["watchlist"]["actif"] is False and t["tips"]["viirs"]["delai_max_h"] == 12
+    assert all(t["tips"][k]["actif"] for k in ("coupure_ais", "viirs", "rendezvous", "identite", "operateur"))
+    assert VERSIONNEES["sentinel"]["budget_mensuel_eur"] == 8.0 and VERSIONNEES["sentinel"]["scenes_max_par_jour"] == 2
+    assert tc.cycle(None, COUPE, NOW) == {"inactif": True} and tc.points_passage(None, COUPE, 1) == []
 
 
 # Calculs purs
@@ -190,6 +194,17 @@ def test_point_too_close_to_the_coast_has_no_useful_pass(conn):
     assert d["etat"] == "sans_passage" and "invisible au radar" in d["motif"] and "92 m" in d["motif"]
 
 
+def test_viirs_light_older_than_12_hours_at_the_pass_is_dropped_with_its_reason(conn):
+    _passage(conn, "TIP_TARDIF", NOW + timedelta(hours=14))
+    _alerte(conn, "DARK_SHIP", "elevee", *LARGE, {"source": "viirs"})
+    tc.cycle(conn, RULES, NOW)
+    d = _demande(conn, conn.execute("SELECT id FROM demandes_observation").fetchone()[0])
+    assert d["etat"] == "sans_passage" and "plus de 12 h après le signal" in d["motif"]
+    r = tc.rejeu([{"tip": "viirs", "lon": LARGE[0], "lat": LARGE[1], "t": NOW, "vessel_id": None}],
+                 [{"id": 1, "t": NOW + timedelta(hours=14), "emprise": EMPRISE}], RULES, lambda _x, _y: None)
+    assert r["par_tip"]["viirs"]["delai"] == 1 and r["sessions"] == 0
+
+
 def test_waiting_request_expires_after_36_hours(conn):
     _alerte(conn, "DARK_SHIP", "elevee", *LARGE, {"source": "viirs"})
     tc.cycle(conn, RULES, NOW)
@@ -224,8 +239,7 @@ def test_requests_go_first_under_the_daily_ceiling_and_budget_refusal_is_recorde
     sc = {"id": "S1C_IW_GRDH_1SDV_TIP_COG", "debut": t0.isoformat(), "fin": (t0 + timedelta(seconds=25)).isoformat(),
           "emprise": EMPRISE}
     stac = FakeStac([sc])
-    assert [p["pass_id"] for p in sentinel.plan(conn, stac, {**RULES, "tip_and_cue": VERSIONNEES["tip_and_cue"]},
-                                                NOW)["passages"]] == [p_habituel]
+    assert [p["pass_id"] for p in sentinel.plan(conn, stac, COUPE, NOW)["passages"]] == [p_habituel]
     p = sentinel.plan(conn, stac, RULES, NOW)
     assert [x["pass_id"] for x in p["passages"]] == [p_demande, p_habituel]          # la demande d'abord
     lances = []
@@ -346,7 +360,7 @@ def test_manual_request_through_the_api_is_planned_by_the_next_cycle(conn, monke
             await Req.app.state.pool.close()
     try:
         with pytest.raises(Exception) as refus:                                 # tip and cue coupé : refus clair
-            asyncio.run(go(VERSIONNEES))
+            asyncio.run(go(COUPE))
         assert "coupé" in str(refus.value.detail)
         r = asyncio.run(go(RULES))
         assert r["etat"] == "en_attente" and not r["regroupee"]
@@ -396,3 +410,67 @@ def test_replay_on_the_database_reads_tips_passes_and_costs(conn):
     assert r["par_tip"]["viirs"]["passage"] == 1 and r["par_tip"]["identite"]["cote"] == 1
     assert r["sessions"] == 1 and r["fenetres"] == 1 and r["cout_eur"] == pytest.approx(0.19, abs=0.01)
     assert conn.execute("SELECT count(*) FROM demandes_observation").fetchone()[0] == avant
+
+
+def test_observations_route_order_region_and_active_count(conn):
+    """Panneau « Observations » : planifiées par passage le plus proche, puis en attente, puis analysées les plus
+    récentes, closes sans résultat en bas ; région de la barre d'état ; compteur des demandes actives."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+    import asyncpg
+    import demandes as api
+    conn.rollback()                                   # l'essai écrit pour de vrai (pool asyncpg), puis nettoie
+    vid = _navire(conn, 636999706, *LARGE)
+    aid = _alerte(conn, "DARK_SHIP", "elevee", 5.2, 43.0, {"source": "viirs"})
+    ids = {}
+    for nom, etat, heure, lon, lat, fini in (
+            ("plan_tard", "planifiee", NOW + timedelta(hours=9), *LARGE, None),
+            ("plan_tot", "planifiee", NOW + timedelta(hours=2), *LARGE, None),
+            ("attente", "en_attente", None, *LARGE, None),
+            ("analysee_vieille", "analysee", NOW - timedelta(hours=10), *LARGE, NOW - timedelta(hours=9)),
+            ("analysee_recente", "analysee", NOW - timedelta(hours=3), *LARGE, NOW - timedelta(hours=2)),
+            ("expiree", "expiree", None, *LARGE, NOW - timedelta(hours=1)),
+            ("marseille", "planifiee", NOW + timedelta(hours=1), 5.2, 43.0, None),
+            ("ancienne", "expiree", None, *LARGE, NOW - timedelta(days=5))):
+        ids[nom] = conn.execute(
+            """INSERT INTO demandes_observation (cree_le, mis_a_jour_le, tip, priorite, vessel_id, position, position_le,
+                                                 etat, expire_le, heure_passage, fini_le, resultat)
+               VALUES (%s, %s, %s, 4, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s, %s, %s)
+               RETURNING id""",
+            (NOW - timedelta(days=6 if nom == "ancienne" else 12 / 24), fini or NOW, "viirs" if nom == "marseille" else
+             "coupure_ais", None if nom == "marseille" else vid, lon, lat, NOW, etat, NOW + timedelta(hours=30), heure,
+             fini, "present_sans_ais" if etat == "analysee" else None)).fetchone()[0]
+    conn.execute("INSERT INTO demandes_origines (cle, demande_id, tip, priorite, alerte_id) VALUES ('essai:obs', %s, "
+                 "'viirs', 4, %s)", (ids["marseille"], aid))
+    conn.commit()
+
+    class Req:
+        class app:
+            class state:
+                pool = None
+
+    async def go(**kw):
+        Req.app.state.pool = await asyncpg.create_pool(URL, min_size=1, max_size=2)
+        try:
+            return await api.observations(Req, start=NOW - timedelta(hours=24), end=NOW, **kw)
+        finally:
+            await Req.app.state.pool.close()
+    try:
+        r = asyncio.run(go())
+        noms = {v: k for k, v in ids.items()}
+        ordre = [noms[d["id"]] for d in r["demandes"]]
+        assert ordre == ["marseille", "plan_tot", "plan_tard", "attente", "analysee_recente", "analysee_vieille",
+                         "expiree"]                                   # « ancienne » hors de la plage
+        assert r["actives"] == 4
+        m = next(d for d in r["demandes"] if d["id"] == ids["marseille"])
+        assert m["alerte_id"] == aid and m["alerte_type"] == "DARK_SHIP" and m["navire"] is None
+        b = asyncio.run(go(region="bretagne"))
+        assert ids["marseille"] not in [d["id"] for d in b["demandes"]] and b["actives"] == 3
+        assert [noms[d["id"]] for d in asyncio.run(go(etat="analysee"))["demandes"]] == ["analysee_recente",
+                                                                                      "analysee_vieille"]
+    finally:
+        conn.rollback()
+        conn.execute("DELETE FROM demandes_observation WHERE id = ANY(%s)", (list(ids.values()),))
+        conn.execute("DELETE FROM alerts WHERE id = %s", (aid,))
+        conn.execute("DELETE FROM positions WHERE vessel_id = %s", (vid,))
+        conn.execute("DELETE FROM vessels WHERE id = %s", (vid,))
+        conn.commit()

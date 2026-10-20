@@ -37,3 +37,14 @@ export function nearInfra(fc: { features: { properties: any; geometry: any }[] }
   }
   return out;
 }
+
+/** Cercle d'incertitude (lot T1) : polygone de `n` sommets autour d'un point, rayon en mètres. */
+export function cercle(lon: number, lat: number, rayonM: number, n = 64) {
+  const dLat = rayonM / 110_574, dLon = rayonM / (111_320 * Math.cos((lat * Math.PI) / 180));
+  const ring = Array.from({ length: n + 1 }, (_, i) => {
+    const a = (2 * Math.PI * i) / n;
+    return [lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)];
+  });
+  return { type: "Feature" as const, properties: {}, geometry: { type: "Polygon", coordinates: [ring] },
+    bbox: [lon - dLon, lat - dLat, lon + dLon, lat + dLat] as [number, number, number, number] };
+}
