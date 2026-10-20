@@ -822,13 +822,31 @@ docker compose pull backend && docker compose up -d --no-build backend
 docker compose rm -sf web && docker image prune -af
 docker compose pull web && docker compose up -d --no-build web
 docker compose restart grafana
-docker compose exec taches python scripts/taches.py sentinel2-poids      # une fois : 2,24 Go en flux vers R2, sans disque
+docker compose exec taches python scripts/taches.py sentinel2-poids      # une fois : 2,24 Go en flux, seau des modèles
 docker compose exec taches python scripts/taches.py sentinel2-heures 3   # heure propre des tuiles des trois derniers jours
 ```
 
-Aucune nouvelle clé : le travailleur Sentinel 2 utilise la paire Copernicus des travailleurs et le serveur ses clés R2
-(adresses présignées des poids, 3 h). L'image d'analyse (7,2 Go) n'est téléchargée que par le travailleur, jamais par
+Le travailleur Sentinel 2 utilise la paire Copernicus des travailleurs et le seau des modèles (adresses présignées des
+poids, 3 h, section suivante). L'image d'analyse (7,2 Go) n'est téléchargée que par le travailleur, jamais par
 le serveur. Essai réel : `docs/sentinel2.md`, section 11.
+
+## Seau des modèles (20/10/2026, docs/sentinel2.md, section 9)
+
+Les poids des modèles sont dans un seau R2 à part, `mars-c2-modeles` (juridiction UE, même adresse `R2_ENDPOINT`),
+avec un jeton dédié « Object Read & Write » limité à ce seau. Variables du `.env` du serveur : `R2_MODELES_BUCKET`,
+`R2_MODELES_ACCESS_KEY_ID`, `R2_MODELES_SECRET_ACCESS_KEY` ; tout le `.env` arrive dans les conteneurs backend (qui
+présigne les adresses remises aux travailleurs) et taches (`env_file`), après recréation du conteneur.
+
+* **Le jeton des modèles ne doit jamais être filtré par IP** : les travailleurs sortent par des IP variables (essai du
+  20/10/2026 : 403 AccessDenied depuis le travailleur 29).
+* **Le jeton principal doit rester filtré sur l'IP du serveur** : il ne présigne plus jamais pour un travailleur.
+* Quota gratuit de 10 Go **par compte** : une seule copie des poids (`sentinel2-poids --nettoyer` retire l'ancienne).
+
+```bash
+docker compose exec taches python scripts/taches.py sentinel2-poids            # copie vers mars-c2-modeles, vérifiée
+docker compose exec taches python scripts/taches.py sentinel2-poids --nettoyer # relit la copie, retire l'ancienne
+docker compose exec taches python scripts/taches.py sentinel2-diagnostic       # MANQUE si une variable n'arrive pas
+```
 
 ## Vérifier
 

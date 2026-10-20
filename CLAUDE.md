@@ -627,6 +627,14 @@ sous un nuage écarté, aucune absence déclarée sous les nuages ; alertes de s
 partagé avec Sentinel 1 ; tip and cue sur les passages optiques ; couche, fiche optique, vérification satellite, frise,
 Observations, Grafana. Essai réel pas à pas : `docs/sentinel2.md`, section 11.
 
+**Premier essai réel Sentinel 2 et seau des modèles (20/10/2026)** (règles 2026.10.35, aucune migration) : passage
+325, analyse 98, travailleur 29 : réseau privé, Docker et image rslearn (7,2 Go en 4 min 23 s) fonctionnent, échec
+403 AccessDenied au téléchargement des poids (jeton R2 principal filtré sur l'IP du serveur). Poids dans un seau dédié
+`mars-c2-modeles` à jeton sans filtre IP (`R2_MODELES_*`), seul à présigner pour un travailleur ; `sentinel2-poids`
+copie et `--nettoyer` retire l'ancienne copie ; contrôle d'un octet de chaque adresse R2 dès le réseau privé joint,
+avant Docker (étape `controle_r2`, état « acces ») ; `sentinel2-diagnostic` (variables dans taches et dans backend,
+seau, poids, adresse présignée).
+
 ## 10. Tests
 
 `python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :
@@ -660,6 +668,12 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * **R2 et boto3** : `request_checksum_calculation="when_required"`, MD5 fourni ; l'ETag d'un envoi simple est le MD5,
   celui d'un envoi en plusieurs morceaux (sauvegardes en flux) ne l'est pas : `R2.verify` relit alors l'objet.
 * **Seau R2 européen** : adresse en `https://<compte>.eu.r2.cloudflarestorage.com`, sinon tout accès est refusé.
+* **Deux jetons R2, deux seaux** (essai Sentinel 2 du 20/10/2026, 403 AccessDenied au travailleur 29) : le jeton
+  principal (`mars-c2`) est filtré sur l'IP du serveur et doit le rester ; une adresse qu'il présigne est refusée depuis
+  toute autre IP. Toute adresse R2 remise à un travailleur vient du seau des modèles (`R2_MODELES_*`, jeton jamais
+  filtré par IP : les travailleurs sortent par des IP variables), par `r2_modeles_get_url` ; ne jamais présigner pour
+  un travailleur avec `r2_get_url`. Un test depuis le serveur ne révèle pas un filtre IP : seul le contrôle du
+  travailleur (étape `controle_r2`) le fait.
 * Pas de commentaire en fin de ligne dans `.env` : `mars/config.py` ne les retire pas.
 * **Noms d'images fixes** (`mars_c2-backend`, `mars_c2-web`, `mars_c2-scripts`) : sans eux, le nom dépend du dossier
   du projet, et une image construite sur le Mac n'aurait pas le nom attendu sur le serveur.

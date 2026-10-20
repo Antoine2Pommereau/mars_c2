@@ -26,7 +26,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    env_file: .env          # identifiants Sentinel Hub
+    env_file: .env          # Sentinel Hub ; clés des travailleurs et seau des modèles (R2_MODELES_*), remis par l'API
     environment:
       DATABASE_URL: postgresql://mars:mars@db:5432/mars
       # Service d'inférence lancé sur le Mac (GPU Apple) ; avec le profil "conteneur" : http://inference:8001

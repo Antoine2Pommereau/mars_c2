@@ -305,6 +305,86 @@ def run(rules: dict, session, scw, now: datetime | None = None, show=print,
     return lines
 
 
+def _refus(e: Exception) -> str:
+    """Motif d'un refus de R2 par boto3 : code et message de sa réponse, sinon le type de l'erreur."""
+    err = getattr(e, "response", {}).get("Error", {}) if hasattr(e, "response") else {}
+    return (f"{err.get('Code')} : {err.get('Message')}" if err else f"{type(e).__name__} {str(e)[:160]}")[:300]
+
+
+def sentinel2(rules: dict, session, api_variables, modeles=None, principal=None) -> list[tuple[str, str, str]]:
+    """Poids du modèle Sentinel 2 dans le seau des modèles (`taches.py sentinel2-diagnostic`), en lecture seule.
+
+    1. Variables du seau des modèles dans ce conteneur (taches), puis dans le conteneur backend, qui présigne les
+       adresses remises aux travailleurs (`api_variables` : présence lue par GET /api/travailleurs/variables, jamais
+       les valeurs) ; 2. seau joignable par son jeton ; 3. chaque poids présent à sa taille ; 4. un octet lu par une
+       adresse présignée de ce jeton, depuis le serveur ; 5. ancienne copie dans le seau principal (doublon à retirer).
+    Le filtre IP du jeton ne peut pas se vérifier depuis le serveur (son IP est toujours admise) : le travailleur lit
+    un octet de chaque adresse avant Docker et l'image (travailleurs/demarrage.sh, étape controle_r2)."""
+    from mars.r2_signature import MODELES, modeles_manquantes, r2_modeles_get_url
+    s2 = rules["sentinel2"]
+    out = []
+    manque = modeles_manquantes()
+    for k in MODELES:
+        out.append((MANQUE, f"{k} (taches)", "absente du conteneur taches : .env du serveur, puis recréer le conteneur")
+                   if k in manque else (PRET, f"{k} (taches)", "présente"))
+    try:
+        vus = api_variables()
+        for k in MODELES:
+            out.append((PRET, f"{k} (backend)", "présente") if vus.get(k) else
+                       (MANQUE, f"{k} (backend)", "absente du conteneur backend : aucune adresse des poids ne serait "
+                                                  "remise aux travailleurs ; .env du serveur, puis recréer backend"))
+    except Exception as e:
+        out.append((MANQUE, "Variables du backend", f"API injoignable ou trop ancienne : {type(e).__name__} "
+                                                    f"{str(e)[:160]}"))
+    if manque:
+        return out
+    nom = os.environ["R2_MODELES_BUCKET"].strip()
+    try:
+        if modeles is None:
+            from mars.r2 import R2
+            modeles = R2(seau="modeles")
+        objets = modeles.list("modeles/")
+        out.append((PRET, "Seau des modèles", f"{nom} joignable par son jeton ({len(objets)} objet(s) sous modeles/)"))
+    except Exception as e:
+        return out + [(MANQUE, "Seau des modèles", f"{nom} : {_refus(e)}")]
+    complets = []
+    for p in s2["poids"]:
+        rubrique = f"Poids {p['chemin'].split('/')[1]}"
+        try:
+            taille = modeles.taille(p["r2"])
+        except Exception as e:
+            out.append((MANQUE, rubrique, _refus(e)))
+            continue
+        if taille == p["octets"]:
+            complets.append(p)
+            out.append((PRET, rubrique, f"{taille / 1e9:.2f} Go dans {nom}".replace(".", ",")))
+        else:
+            out.append((MANQUE, rubrique, ("absent" if taille is None else f"{taille} octets au lieu de {p['octets']}")
+                        + " : taches.py sentinel2-poids"))
+    if complets:
+        p = complets[0]
+        try:
+            r = session.get(r2_modeles_get_url(p["r2"], expires=60), headers={"Range": "bytes=0-0"}, timeout=30)
+            out.append((PRET, "Adresse présignée des poids", f"1 octet lu depuis le serveur (HTTP {r.status_code})")
+                       if r.status_code in (200, 206) else
+                       (MANQUE, "Adresse présignée des poids", f"HTTP {r.status_code} : {r.text[:200]}"))
+        except Exception as e:
+            out.append((MANQUE, "Adresse présignée des poids", f"{type(e).__name__} {str(e)[:160]}"))
+    out.append((INFO, "Filtre IP du jeton des modèles", "invérifiable depuis le serveur : il ne doit jamais être filtré "
+                                                        "par IP ; le travailleur lit un octet avant Docker"))
+    if principal is not None:
+        doublons = 0
+        for p in s2["poids"]:
+            try:
+                doublons += principal.taille(p["r2"]) is not None
+            except Exception:
+                pass
+        if doublons:
+            out.append((INFO, "Ancienne copie des poids", f"{doublons} objet(s) encore dans le seau principal : "
+                                                          "taches.py sentinel2-poids --nettoyer"))
+    return out
+
+
 def report(lines: list[tuple[str, str, str]]) -> str:
     width = max(len(r) for _s, r, _d in lines)
     txt = [f"{s:<10} {r:<{width}}  {d}" for s, r, d in lines]

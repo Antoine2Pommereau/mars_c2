@@ -202,6 +202,14 @@ def send(task: dict, path: str, body: dict, traceparent: str | None = None):
 
 # Poids et lecture des images
 
+def refus_r2(code: int, corps: bytes) -> str:
+    """Refus de R2 lisible : code HTTP, puis code et message de sa réponse XML (<Code>, <Message>), comme le contrôle
+    d'accès du script de démarrage (travailleurs/demarrage.sh). Jamais l'adresse, qui porte la signature."""
+    texte = corps.decode("utf-8", "replace")
+    champs = [m.group(1) for m in (re.search(f"<{b}>([^<]*)</{b}>", texte) for b in ("Code", "Message")) if m]
+    return f"R2 refuse la lecture (HTTP {code}" + (f" {' : '.join(champs)}" if champs else "") + ")"
+
+
 def poids(task: dict, dossier: str, tr) -> dict:
     """Poids d'AI2 dans `dossier` (RSLP_PREFIX) : téléchargés depuis R2 (adresses présignées) et vérifiés par leur
     empreinte, ou déjà présents (essai local). Une empreinte fausse arrête tout."""
@@ -218,7 +226,13 @@ def poids(task: dict, dossier: str, tr) -> dict:
             h = hashlib.sha256()
             n = 0
             req = urllib.request.Request(p["url"], headers={"User-Agent": "mars-c2-travailleur"})
-            with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+            try:
+                r = urllib.request.urlopen(req, timeout=120)
+            except urllib.error.HTTPError as e:
+                motif = refus_r2(e.code, e.read(2000))
+                sp.erreur(motif)
+                raise Arret(f"poids {p['chemin']} : {motif}")
+            with r, open(dest, "wb") as f:
                 while True:
                     b = r.read(8 << 20)
                     if not b:

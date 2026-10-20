@@ -201,10 +201,10 @@ licence et de l'auteur (Allen Institute for AI, projet rslearn). Les images Sent
 libres avec mention de la source : chaque vignette porte dans l'interface « Contient des données Copernicus Sentinel
 modifiées ».
 
-## 9. Poids sur R2 et quota gratuit
+## 9. Poids dans le seau des modèles et quota gratuit
 
-Les deux fichiers de poids (1,15 Go et 1,09 Go, soit 2,24 Go) sont recopiés une fois sur R2 par
-`taches.py sentinel2-poids` (copie en flux sans disque, empreinte SHA 256 vérifiée à l'envoi, puis par le travailleur
+Les deux fichiers de poids (1,15 Go et 1,09 Go, soit 2,24 Go) sont recopiés une fois dans le seau R2 des modèles
+`mars-c2-modeles` par `taches.py sentinel2-poids` (copie en flux sans disque, empreinte SHA 256 vérifiée à l'envoi, puis par le travailleur
 après chaque téléchargement ; empreintes versionnées dans `config/rules.yaml`). Ils occupent **22 % des 10 Go gratuits**
 de R2. Avec l'archive (environ 26 Mo par jour depuis le 05/10/2026) et les sauvegardes (moins de 70 Mo), le quota
 gratuit serait atteint vers le **28/07/2027** au lieu du 21/10/2027, soit environ 85 jours plus tôt. Au delà, les poids
@@ -212,13 +212,43 @@ coûtent 0,03 dollar par mois (0,015 dollar par Go et par mois). Les vignettes o
 gardées 30 jours) et 140 à 180 Ko pour la vignette de contexte (10 km, seulement pour une détection liée à une alerte,
 gardée sans limite) : négligeables.
 
+### Un seau et un jeton propres aux poids (correctif du 20/10/2026)
+
+Premier essai réel (passage 325, analyse 98, travailleur 29) : le travailleur a reçu **403 AccessDenied** en
+téléchargeant les poids. L'adresse présignée était valide (HTTP 206 depuis le serveur), mais le jeton R2 principal est
+**filtré sur l'IP du serveur**, volontairement : refusée depuis toute autre IP (vérifié depuis le Mac). Tout le reste
+du travailleur avait fonctionné (réseau privé, Docker, image rslearn de 7,2 Go en 4 min 23 s, échec signalé,
+destruction).
+
+| Seau | Jeton | Filtre IP | Rôle |
+|---|---|---|---|
+| `mars-c2` (`R2_BUCKET`) | `R2_ACCESS_KEY_ID` | **oui, IP du serveur, à garder** | archives, sauvegardes, preuves ; ne présigne jamais pour un travailleur |
+| `mars-c2-modeles` (`R2_MODELES_BUCKET`) | `R2_MODELES_ACCESS_KEY_ID`, Object Read & Write limité à ce seau | **jamais** (les travailleurs sortent par des IP variables) | poids des modèles, seule source des adresses remises aux travailleurs |
+
+Même adresse R2 (`R2_ENDPOINT`, juridiction UE) pour les deux. Le jeton des modèles ne donne accès qu'à des poids
+publics d'AI2 : sans filtre IP, son exposition ne livrerait rien de sensible.
+
+* **Copie** : `taches.py sentinel2-poids` lit l'ancienne copie de `mars-c2/modeles/` (ou, à défaut, le dépôt d'AI2) et
+  l'écrit en flux dans le seau des modèles, empreinte vérifiée ; `--nettoyer` relit ensuite toute la nouvelle copie,
+  vérifie son empreinte, puis supprime l'ancienne. Le quota gratuit de 10 Go est **par compte** : garder les deux
+  copies coûterait 2,24 Go de plus (44 % du quota au lieu de 22 %).
+* **Échec rapide** : dès le réseau privé joint, le script de démarrage demande au serveur (état « acces ») les adresses
+  R2 que la tâche remettra, présignées pour 5 minutes, et lit **un octet** de chacune, avant d'installer Docker et de
+  tirer l'image. Un refus est signalé aussitôt (étape `controle_r2`) avec la réponse de R2, par exemple « poids
+  projects/sentinel2_vessels/… : R2 refuse la lecture (HTTP 403 AccessDenied : Access Denied) » ; l'instance est
+  détruite à la minute suivante. Le même motif est rendu si le téléchargement complet échoue ensuite.
+* **Diagnostic** : `taches.py sentinel2-diagnostic` (lecture seule) contrôle les quatre variables dans le conteneur
+  taches et dans le conteneur backend (qui présigne), le seau joignable, chaque poids à sa taille, un octet lu par une
+  adresse présignée, et signale une ancienne copie restée dans `mars-c2`. Le filtre IP ne se vérifie pas depuis le
+  serveur, dont l'IP est toujours admise : c'est le contrôle du travailleur qui le révèle.
+
 ## 10. Construction (lot S2, règles 2026.10.34, migration 32)
 
 | Partie | Où | Ce qui est fait |
 |---|---|---|
 | Calendrier | `mars/sentinel2.py` (`corriger_heures`), `scripts/taches.py` (`update_passes`) | heure propre des tuiles des trois derniers jours lue chaque nuit (4 Ko de `MTD_TL.xml` par tuile, clés du serveur) ; `acquired_at` et `ended_at` deviennent la première et la dernière tuile sur nos régions, l'heure du catalogue reste dans `heure_prise_de_vue` ; l'upsert du calendrier ne la remplace plus |
 | Sélection | `plan`, `launch` | mêmes points de déclenchement que Sentinel 1 (navires des listes en mer, alertes VIIRS, demandes d'observation), tuiles L1C qui les couvrent, garde des nuages annoncés (au delà de 50 %, tuile écartée avec son motif), masque L2A attendu 3 h puis « absent », heure propre de chaque tuile ; plafond propre (`sentinel2.scenes_max_par_jour`, 0 à la livraison), budget mensuel partagé avec Sentinel 1, GP1-S puis POP2 ; essai manuel avec `SENTINEL_PLAFOND_ESSAI` |
-| Travailleur | `travailleurs/sentinel2.py` | poids téléchargés depuis R2 (adresses présignées de 3 h remises avec la tâche, jamais en base) et vérifiés ; SCL du L2A lu dans chaque fenêtre, fenêtre au delà de 20 % de nuages close « nuages » sans lire les bandes ; 13 bandes du L1C lues par `/vsis3/`, octets comptés dans le journal de GDAL ; inférence d'AI2 une seule fois pour toutes les fenêtres ; pour chaque navire du cœur de la fenêtre, part nuageuse dans le kilomètre autour, vignette de 2 km et de contexte de 10 km (PNG en palette, étirement adapté à la mer), géoréférence ; grille du masque (cellules de 500 m) |
+| Travailleur | `travailleurs/sentinel2.py` | poids téléchargés depuis le seau des modèles (adresses présignées de 3 h par son jeton dédié, remises avec la tâche, jamais en base ; un octet de chacune lu par le démarrage avant Docker) et vérifiés ; SCL du L2A lu dans chaque fenêtre, fenêtre au delà de 20 % de nuages close « nuages » sans lire les bandes ; 13 bandes du L1C lues par `/vsis3/`, octets comptés dans le journal de GDAL ; inférence d'AI2 une seule fois pour toutes les fenêtres ; pour chaque navire du cœur de la fenêtre, part nuageuse dans le kilomètre autour, vignette de 2 km et de contexte de 10 km (PNG en palette, étirement adapté à la mer), géoréférence ; grille du masque (cellules de 500 m) |
 | Résultats | `ingest`, `fuse_analysis` | détections (longueur, largeur, cap, vitesse, type, part nuageuse, état du masque) ; fusion AIS à l'heure de la tuile, sans tolérance Doppler (cercle de 300 m) ; navire sous un nuage (plus de 25 % masqué autour de lui) écarté « nuages » ; DARK_SHIP, AIS_UNCONFIRMED, IDENTITY_MISMATCH de source `sentinel2`, même évaluation (zone de réception fiable) ; AIS_UNCONFIRMED seulement dans le cœur d'une fenêtre lue, sur une cellule dégagée, jamais sans masque ; sans masque, toute alerte DARK_SHIP est « à confirmer » ; vignette de contexte rangée pour les seules détections liées à une alerte ; résultat de l'analyse (analysée, nuages, sans détection) |
 | Tip and cue | `mars/tip_and_cue.py` | passages Sentinel 2 candidats quand Sentinel 2 est en service ; passage acquis annoncé au delà de 50 % de nuages écarté (motif d'attente) ; cercle sous les nuages au passage optique : la demande repart en attente pour un autre passage (jamais « absent ») ; résultat « vu en optique » sur l'alerte d'origine (`capteur: optique`) |
 | API | `backend/sentinel.py`, `backend/preuves.py`, `backend/satellites.py`, `backend/travailleurs.py` | détections radar et optiques dans la couche, fiche optique (vignette, contexte, nuages de la fenêtre), vérification satellite avec la source, résultat optique des passages, état et part du budget, mesures `mars_sentinel2_*` ; remise de la tâche avec les adresses des poids |
@@ -238,13 +268,17 @@ en 201 requêtes et 5 s, part nuageuse autour des navires 0 à 1,3 %, vignettes 
 
 Sentinel 2 reste coupé (`scenes_max_par_jour: 0`) : l'essai passe par la commande manuelle et le plafond d'essai.
 
-1. **Préalables** (une fois, après le déploiement) : migration 32 appliquée, poids sur R2, heures des tuiles :
+1. **Préalables** (une fois, après le déploiement) : migration 32 appliquée, poids dans le seau des modèles (section
+   9), diagnostic sans manque, heures des tuiles :
    ```bash
-   docker compose exec taches python scripts/taches.py sentinel2-poids      # 2,24 Go copiés et vérifiés, quelques minutes
+   docker compose exec taches python scripts/taches.py sentinel2-poids            # 2,24 Go copiés et vérifiés
+   docker compose exec taches python scripts/taches.py sentinel2-poids --nettoyer # ancienne copie retirée de mars-c2
+   docker compose exec taches python scripts/taches.py sentinel2-diagnostic       # 0 manquant
    docker compose exec taches python scripts/taches.py sentinel2-heures 3   # {"passages": N, "tuiles": …, "decalage_max_s": …}
    ```
-   On doit lire deux lignes « copié et vérifié (… octets, SHA 256 conforme) », puis un décalage maximal de plusieurs
-   minutes (387 s attendus pour une tuile de la Manche).
+   On doit lire deux lignes « copié depuis le seau principal et vérifié (… octets, SHA 256 conforme) », puis deux
+   lignes « ancienne copie retirée du seau principal », un diagnostic « 0 manquants », puis un décalage maximal de
+   plusieurs minutes (387 s attendus pour une tuile de la Manche).
 2. **Choisir un passage dégagé récent** (lecture seule, rien n'est lancé) :
    ```bash
    docker compose exec taches python scripts/taches.py sentinel2-candidats 72
@@ -260,7 +294,8 @@ Sentinel 2 reste coupé (`scenes_max_par_jour: 0`) : l'essai passe par la comman
 4. **Suivre** : barre d'état (Satellites, « Dernier passage Sentinel 2 analysé »), Grafana Satellites (section
    Sentinel 2, table « Analyses Sentinel 2 », colonne Trace), puis la trace dans Tempo. Spans attendus, dans l'ordre :
    `sentinel2.selection`, `GET S3 eodata MTD_TL.xml`, `sentinel2.garde_nuages_annonce`, `travailleur.lancement`,
-   étapes du démarrage (Docker, image de 7,2 Go), `GET R2 poids` (deux), `GET S3 eodata SCL fenêtre`,
+   étapes du démarrage (`demarrage.controle_r2` avec `r2.adresses` à 2, Docker, image de 7,2 Go), `GET R2 poids`
+   (deux), `GET S3 eodata SCL fenêtre`,
    `GET S3 eodata 13 bandes fenêtre`, `sentinel2.inference`, `sentinel2.vignettes`, `travailleur.renvoi_resultats`,
    `sentinel2.fusion_et_alertes`, destruction de l'instance.
    ```bash

@@ -496,6 +496,79 @@ def _calculer(conn, scw, rules: dict, s2: dict, now: datetime, analyses: list, s
         return {"attente": ids, "motif": motif}
 
 
+# Poids du modèle dans le seau des modèles (taches.py sentinel2-poids)
+
+def _sha256_flux(flux, h=None):
+    """Lecteur qui calcule l'empreinte SHA 256 de ce qui passe (copie en flux, sans disque)."""
+    import hashlib
+    h = h or hashlib.sha256()
+
+    class Lecteur:
+        empreinte = h
+
+        def read(self, n=-1):
+            b = flux.read(n)
+            h.update(b)
+            return b
+    return Lecteur()
+
+
+def copier_poids(s2: dict, principal, modeles, session, nettoyer: bool = False, log=print) -> dict:
+    """Poids dans le seau des modèles (jeton dédié, sans filtre IP, seul à présigner pour un travailleur) : copiés en
+    flux depuis l'ancienne copie du seau principal si elle est complète, sinon depuis le dépôt public d'AI2, empreinte
+    SHA 256 vérifiée pendant l'envoi (objet faux retiré). `nettoyer` : l'ancienne copie du seau principal est
+    supprimée, après relecture complète de la nouvelle et vérification de son empreinte (le quota gratuit de 10 Go
+    de R2 est par compte : pas de doublon de 2,2 Go)."""
+    out = {"copies": 0, "deja": 0, "retires": 0, "octets": 0}
+    for p in s2["poids"]:
+        cle = p["r2"]
+        with traces.span("sentinel2.poids_seau_modeles", **{"sentinel2.poids": p["chemin"], "r2.objet": cle,
+                                                              "sentinel2.octets": p["octets"]}) as sp:
+            verifie = False
+            if modeles.taille(cle) == p["octets"]:
+                log(f"{cle} : déjà dans le seau des modèles ({p['octets']} octets)")
+                out["deja"] += 1
+            else:
+                ancienne = principal.taille(cle) if principal is not None else None
+                if ancienne == p["octets"]:
+                    source, flux, ferme = "seau principal", principal.flux(cle), None
+                else:
+                    url = f"{s2['source_poids']}/{p['chemin'].replace('/best.ckpt', '/checkpoints/best.ckpt')}"
+                    resp = session.get(url, stream=True, timeout=120)
+                    resp.raise_for_status()
+                    source, flux, ferme = "dépôt public d'AI2", resp.raw, resp
+                sp.set_attribute("sentinel2.source", source)
+                lecteur = _sha256_flux(flux)
+                try:
+                    envoi = modeles.put_stream(lecteur, cle)
+                finally:
+                    if ferme is not None:
+                        ferme.close()
+                if lecteur.empreinte.hexdigest() != p["sha256"] or envoi["bytes"] != p["octets"]:
+                    modeles.delete(cle)
+                    traces.erreur("empreinte ou taille fausse")
+                    raise RuntimeError(f"{p['chemin']} : empreinte ou taille fausse ({envoi['bytes']} octets copiés "
+                                       f"depuis le {source}), objet retiré du seau des modèles")
+                log(f"{cle} : copié depuis le {source} et vérifié ({envoi['bytes']} octets, SHA 256 conforme)")
+                out["copies"] += 1
+                out["octets"] += envoi["bytes"]
+                verifie = True
+            if nettoyer and principal is not None and principal.taille(cle) is not None:
+                if not verifie:
+                    lecteur = _sha256_flux(modeles.flux(cle))
+                    while lecteur.read(8 << 20):
+                        pass
+                    if lecteur.empreinte.hexdigest() != p["sha256"]:
+                        traces.erreur("copie du seau des modèles fausse")
+                        raise RuntimeError(f"{cle} : la copie du seau des modèles a une empreinte fausse, ancienne "
+                                           "copie gardée ; relancer sans --nettoyer pour la refaire")
+                principal.delete(cle)
+                log(f"{cle} : ancienne copie retirée du seau principal (nouvelle copie relue et vérifiée)")
+                out["retires"] += 1
+    traces.attributs(**{f"sentinel2.poids_{k}": v for k, v in out.items()})
+    return out
+
+
 # Résultats du travailleur
 
 def ingest(conn, w: dict, rules: dict) -> dict:

@@ -61,3 +61,26 @@ def r2_get_url(key: str, expires: int = 300) -> str | None:
     u = urlparse(env["R2_ENDPOINT"])
     return presign("GET", u.netloc, f"/{env['R2_BUCKET']}/{key}", env["R2_ACCESS_KEY_ID"], env["R2_SECRET_ACCESS_KEY"],
                    expires=expires, scheme=u.scheme or "https")
+
+
+# Seau des poids des modèles (mars-c2-modeles, même adresse R2) et son jeton dédié, en lecture et écriture sur ce seau
+# seulement, SANS filtre IP : lui seul présigne une adresse remise à un travailleur, qui sort par une IP variable. Le
+# jeton principal reste filtré sur l'IP du serveur et ne présigne jamais pour un travailleur (essai Sentinel 2 du
+# 20/10/2026 : 403 AccessDenied depuis le travailleur 29, adresse valide mais IP refusée).
+MODELES = ("R2_ENDPOINT", "R2_MODELES_BUCKET", "R2_MODELES_ACCESS_KEY_ID", "R2_MODELES_SECRET_ACCESS_KEY")
+
+
+def modeles_manquantes() -> list[str]:
+    """Noms (jamais les valeurs) des variables du seau des modèles absentes de l'environnement de ce conteneur."""
+    return [k for k in MODELES if not (os.environ.get(k) or "").strip()]
+
+
+def r2_modeles_get_url(key: str, expires: int = 300) -> str | None:
+    """Adresse de lecture présignée d'un objet du seau des modèles, par son jeton dédié, ou None s'il manque une
+    variable. Seule forme d'adresse R2 remise à un travailleur."""
+    if modeles_manquantes():
+        return None
+    env = {k: os.environ[k].strip() for k in MODELES}
+    u = urlparse(env["R2_ENDPOINT"])
+    return presign("GET", u.netloc, f"/{env['R2_MODELES_BUCKET']}/{key}", env["R2_MODELES_ACCESS_KEY_ID"],
+                   env["R2_MODELES_SECRET_ACCESS_KEY"], expires=expires, scheme=u.scheme or "https")

@@ -30,7 +30,21 @@ exit 9
 '''
 
 
-def _outils(tmp: Path, nvidia: str, docker_code: int, docker_sortie: str) -> Path:
+def _curl_r2(tmp: Path, code_r2: str) -> str:
+    """Faux curl : l'état « acces » rend une adresse R2, que R2 sert (206) ou refuse (403 et son XML)."""
+    return ('#!/bin/bash\nurl=""; data=""; out=""\nwhile [ $# -gt 0 ]; do case "$1" in -d|--data-binary) data="$2"; '
+            'shift 2;; -o) out="$2"; shift 2;; http*) url="$1"; shift;; *) shift;; esac; done\n'
+            f'echo "$url $data" >> {tmp}/curl.log\n'
+            'case "$data" in @*) cp "${data#@}" ' + f'{tmp}/envoi_$(date +%s%N).json;; esac\n'
+            'case "$data" in *acces*) printf \'{"adresses": [{"nom": "poids projects/a/best.ckpt", '
+            '"url": "https://r2.test/mars-c2-modeles/a?X-Amz-Signature=abc"}]}\\n200\'; exit 0;; esac\n'
+            'case "$url" in https://r2.test/*) '
+            + (f'echo -n x > "$out"; echo -n {code_r2}' if code_r2 == "206" else
+               'echo -n \'<?xml version="1.0"?><Error><Code>AccessDenied</Code><Message>Access Denied</Message>'
+               f'</Error>\' > "$out"; echo -n {code_r2}') + '; exit 0;; esac\necho -n 200\n')
+
+
+def _outils(tmp: Path, nvidia: str, docker_code: int, docker_sortie: str, curl: str | None = None) -> Path:
     b = tmp / "bin"
     b.mkdir()
     outils = {
@@ -40,6 +54,7 @@ def _outils(tmp: Path, nvidia: str, docker_code: int, docker_sortie: str) -> Pat
                  f'echo "$url $data" >> {tmp}/curl.log\n'
                  'case "$data" in @*) cp "${data#@}" ' + f'{tmp}/envoi_$(date +%s%N).json;; esac\necho -n 200\n'),
         "nvidia-smi": nvidia,
+        **({"curl": curl} if curl else {}),
         "docker": (f'#!/bin/bash\necho "$*" >> {tmp}/docker.log\n'
                    f'[ "$1" = "run" ] && {{ echo "{docker_sortie}"; exit {docker_code}; }}\nexit 0\n'),
         "dmesg": '#!/bin/bash\necho "[   12.3] NVRM: The NVIDIA Tesla P100 GPU is not supported by the open kernel modules"\n',
@@ -54,7 +69,7 @@ def _outils(tmp: Path, nvidia: str, docker_code: int, docker_sortie: str) -> Pat
 
 
 def _lancer(tmp: Path, gpu: str = "--gpus all --shm-size=16g", nvidia: str = NVIDIA_OK, docker_code: int = 0,
-            docker_sortie: str = "analyse terminée") -> dict:
+            docker_sortie: str = "analyse terminée", code_r2: str | None = None) -> dict:
     mars = tmp / "mars"
     mars.mkdir()
     shutil.copy(ROOT / "travailleurs" / "traces.sh", mars / "traces.sh")
@@ -65,7 +80,7 @@ def _lancer(tmp: Path, gpu: str = "--gpus all --shm-size=16g", nvidia: str = NVI
     net = tmp / "net" / "eth9"
     net.mkdir(parents=True)
     (net / "address").write_text(MAC + "\n")
-    b = _outils(tmp, nvidia, docker_code, docker_sortie)
+    b = _outils(tmp, nvidia, docker_code, docker_sortie, _curl_r2(tmp, code_r2) if code_r2 else None)
     env = {**os.environ, "PATH": f"{b}:{os.environ['PATH']}", "MARS_DIR": str(mars), "MARS_LOG": str(tmp / "log"),
            "MARS_CONSOLE": "/dev/null", "MARS_NET_DIR": str(tmp / "net"), "SPANS": str(tmp / "spans.json")}
     p = subprocess.run(["bash", str(ROOT / "travailleurs" / "demarrage.sh")], env=env, capture_output=True, text=True,
@@ -102,7 +117,7 @@ def test_nvidia_smi_failure_reports_unusable_gpu_without_docker_run(tmp_path):
 
 def test_working_gpu_is_described_then_analysed(tmp_path):
     r = _lancer(tmp_path)
-    assert r["code"] == 0 and [e["etat"] for e in r["etats"]] == ["reseau"]
+    assert r["code"] == 0 and [e["etat"] for e in r["etats"]] == ["reseau", "acces"]
     assert "run --rm --gpus all" in r["docker"]
     a = _attrs(r["spans"]["demarrage.controle_gpu"])
     assert a == {"gpu.nom": "NVIDIA L4", "gpu.pilote": "570.124.06", "gpu.memoire": "23034 MiB", "gpu.cuda": "12.8"}
@@ -134,3 +149,23 @@ def test_analysis_failure_reports_the_analysis_step(tmp_path):
     fin = r["etats"][-1]
     assert fin["etat"] == "echec" and fin["etape"] == "analyse" and "CUDA out of memory" in fin["message"]
     assert r["spans"]["demarrage.analyse"]["status"]["code"] == 2
+
+
+def test_refused_r2_address_stops_the_worker_before_docker(tmp_path):
+    """Essai Sentinel 2 du 20/10/2026 (travailleur 29) : 403 AccessDenied découvert après l'image de 7,2 Go ; désormais
+    un octet est lu de chaque adresse R2 dès le réseau privé joint, et le refus part au serveur avec la réponse de R2."""
+    r = _lancer(tmp_path, gpu="--shm-size=16g", code_r2="403")
+    assert r["code"] == 1 and r["shutdown"] and r["docker"] == ""                # ni installation, ni image, ni analyse
+    fin = r["etats"][-1]
+    assert fin["etat"] == "echec" and fin["etape"] == "controle_r2"
+    assert fin["message"] == "poids projects/a/best.ckpt : R2 refuse la lecture (HTTP 403 AccessDenied : Access Denied)"
+    assert "Signature" not in json.dumps(r["etats"])                              # jamais l'adresse signée
+    sp = r["spans"]["demarrage.controle_r2"]
+    assert sp["status"]["code"] == 2 and _attrs(sp)["r2.code"] == "AccessDenied"
+
+
+def test_readable_r2_address_lets_the_analysis_run(tmp_path):
+    r = _lancer(tmp_path, gpu="--shm-size=16g", code_r2="206")
+    assert r["code"] == 0 and "pull -q img" in r["docker"] and "run --rm" in r["docker"]
+    assert _attrs(r["spans"]["demarrage.controle_r2"])["r2.adresses"] == "1"
+    assert "R2 : 1 adresse(s) lisible(s) depuis le travailleur" in r["log"]

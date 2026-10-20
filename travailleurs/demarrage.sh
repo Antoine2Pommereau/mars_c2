@@ -2,7 +2,9 @@
 # Démarrage d'un travailleur MARS C2, lancé par cloud-init (mars/travailleurs.py) :
 #   1. interface du réseau privé trouvée par son adresse MAC, configurée en DHCP si le système ne l'a pas fait ;
 #   2. contact du serveur sur son adresse privée (état « reseau »), journal envoyé dès que le réseau fonctionne ;
-#   3. image d'analyse tirée du registre GitHub, script du travailleur exécuté, journal final envoyé, arrêt.
+#   3. adresses R2 remises au travailleur (poids du modèle) : un octet lu de chacune, avant Docker et l'image ;
+#   4. contrôle du GPU s'il est demandé ;
+#   5. image d'analyse tirée du registre GitHub, script du travailleur exécuté, journal final envoyé, arrêt.
 # Chaque étape est écrite dans /var/log/mars-travailleur.log et sur la console série (lignes « MARS »), lisible depuis
 # la console Scaleway même si le réseau privé ne fonctionne pas. En cas d'échec, la machine s'arrête au bout de
 # 10 minutes (le temps de lire la console) ; le serveur la détruit au plus tard 10 minutes après sa création.
@@ -106,7 +108,43 @@ fin_etape
 envoyer_journal
 envoyer_spans
 
-# 3. GPU demandé : contrôle avant tout téléchargement (nvidia-smi : nom, pilote, mémoire, CUDA)
+# 3. Adresses R2 que la tâche remettra (poids du modèle Sentinel 2) : un octet lu de chacune dès le réseau privé
+#    joint, avant Docker et l'image (7,2 Go, plus de 4 min). Essai du 20/10/2026 (travailleur 29) : 403 AccessDenied
+#    découvert seulement au téléchargement des poids, jeton R2 filtré sur l'IP du serveur. Un refus est signalé au
+#    serveur avec la réponse de R2 (code HTTP, <Code> et <Message> du XML), jamais avec l'adresse (signature).
+etape controle_r2
+REPONSE=$(curl -s -m 20 -X POST -H "Authorization: Bearer $JETON" -H "Content-Type: application/json" \
+               -d '{"etat": "acces"}' -w '\n%{http_code}' "$RETOUR/etat")
+CODE_ACCES=${REPONSE##*$'\n'}
+CORPS_ACCES=${REPONSE%$'\n'*}
+[ "$CODE_ACCES" = "200" ] || echec "adresses R2 refusées par le serveur (HTTP $CODE_ACCES) : $(echo "$CORPS_ACCES" | head -c 400)"
+ADRESSES=$(echo "$CORPS_ACCES" | python3 -c '
+import json, sys
+try:
+    for a in json.load(sys.stdin).get("adresses") or []:
+        print(a["nom"] + "\t" + a["url"])
+except Exception:
+    pass' 2>/dev/null)
+N_R2=0
+REPONSE_R2=$(mktemp)
+while IFS=$'\t' read -r NOM_R2 URL_R2; do
+  [ -n "$URL_R2" ] || continue
+  CODE_R2=$(curl -s -m 30 -r 0-0 -o "$REPONSE_R2" -w '%{http_code}' "$URL_R2")
+  if [ "$CODE_R2" != "206" ] && [ "$CODE_R2" != "200" ]; then
+    XML=$(tr -d '\n' < "$REPONSE_R2" | head -c 2000)
+    R2_CODE=$(echo "$XML" | sed -n 's:.*<Code>\([^<]*\)</Code>.*:\1:p')
+    R2_MESSAGE=$(echo "$XML" | sed -n 's:.*<Message>\([^<]*\)</Message>.*:\1:p')
+    attribut r2.code "${R2_CODE:-$CODE_R2}"
+    echec "$NOM_R2 : R2 refuse la lecture (HTTP $CODE_R2${R2_CODE:+ $R2_CODE}${R2_MESSAGE:+ : $R2_MESSAGE})"
+  fi
+  N_R2=$((N_R2 + 1))
+done <<< "$ADRESSES"
+rm -f "$REPONSE_R2"
+attribut r2.adresses "$N_R2"
+[ "$N_R2" = "0" ] || log "R2 : $N_R2 adresse(s) lisible(s) depuis le travailleur"
+fin_etape
+
+# 4. GPU demandé : contrôle avant tout téléchargement (nvidia-smi : nom, pilote, mémoire, CUDA)
 case "$GPU" in
   *--gpus*)
     etape controle_gpu
@@ -124,7 +162,7 @@ case "$GPU" in
     ;;
 esac
 
-# 4. Analyse : Docker installé s'il manque (image Ubuntu officielle), puis image d'analyse
+# 5. Analyse : Docker installé s'il manque (image Ubuntu officielle), puis image d'analyse
 log "système : $(. /etc/os-release && echo "$PRETTY_NAME"), disque $(df -h / | awk 'NR==2 {print $2 " dont " $4 " libres"}')"
 if ! command -v docker > /dev/null; then
   etape installation_docker

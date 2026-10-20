@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.34"
+version: "2026.10.35"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -318,7 +318,8 @@ sentinel2:
   minutes_par_fenetre_cpu: 3
   cpu_marge_min: 15
   fenetres_max: 8
-  # Poids recopiés sur R2 (2,2 Go) depuis le dépôt public d'AI2 (licence Apache 2.0, README de rslearn_projects) ;
+  # Poids recopiés (2,2 Go) depuis le dépôt public d'AI2 (licence Apache 2.0, README de rslearn_projects) dans le seau
+  # des modèles (R2_MODELES_BUCKET, jeton dédié sans filtre IP, taches.py sentinel2-poids) ; `r2` : clé dans ce seau ;
   # empreintes vérifiées à la copie et par le travailleur après téléchargement
   poids:
     - chemin: projects/sentinel2_vessels/data_20250213_02_all_bands/best.ckpt
@@ -484,7 +485,7 @@ travailleurs:
       prix_heure: 0.1907
       facturation: heure_entamee
       # Image rslearn d'AI2 (étiquette sentinel2_vessels_v0.0.22, 7,2 Go compressés, Python 3.11, PyTorch 2.7 avec
-      # CUDA 12.8), épinglée par empreinte ; poids hors de l'image, remis par adresses R2 présignées avec la tâche
+      # CUDA 12.8), épinglée par empreinte ; poids hors de l'image, remis par adresses présignées du seau des modèles
       image: ghcr.io/allenai/sentinel2-vessel-detection@sha256:0ce4cbee15337138ead556f41aa099eb0512ae4b1bc4b3d4d6773ba90aa3672c
       script: travailleurs/sentinel2.py
       docker_opts: "--shm-size=16g"  # 64 Mo par défaut : le chargeur de données de l'inférence meurt

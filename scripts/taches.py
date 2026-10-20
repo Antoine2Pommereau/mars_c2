@@ -40,7 +40,8 @@ Usage :
     python scripts/taches.py sentinel-non-confirmees [--appliquer]   # AIS_UNCONFIRMED hors des fenêtres lues
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
     SENTINEL_PLAFOND_ESSAI=1 python scripts/taches.py sentinel2-analyser ID   # essai réel Sentinel 2 (coupé sinon)
-    python scripts/taches.py sentinel2-poids          # poids du modèle Sentinel 2 recopiés sur R2 (une fois)
+    python scripts/taches.py sentinel2-poids [--nettoyer] # poids Sentinel 2 dans le seau des modèles (une fois)
+    python scripts/taches.py sentinel2-diagnostic     # seau des modèles, variables des conteneurs, poids (lecture seule)
     python scripts/taches.py sentinel2-heures [J]     # heure propre des tuiles Sentinel 2 du calendrier
     python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? lecture seule, aucune création, aucun coût
     python scripts/taches.py sentinel-candidats [H]    # passages des H (36) dernières heures avec un navire des listes
@@ -891,40 +892,44 @@ def _sentinel2_heures(conn, a):
     print(json.dumps(r, ensure_ascii=False))
 
 
-@commande("sentinel2-poids", base=False)             # poids du modèle Sentinel 2 recopiés sur R2 (2,2 Go, une fois)
-def _sentinel2_poids(_conn, _a):
-    """Copie en flux, sans disque, des poids publics d'AI2 vers R2, empreinte SHA 256 vérifiée pendant l'envoi ; un
-    objet déjà présent à la bonne taille n'est pas renvoyé. Objet faux supprimé aussitôt."""
-    import hashlib
+@commande("sentinel2-poids", base=False)             # poids Sentinel 2 dans le seau des modèles (--nettoyer)
+def _sentinel2_poids(_conn, a):
+    """Poids du modèle Sentinel 2 copiés en flux, sans disque, dans le seau des modèles (jeton dédié sans filtre IP,
+    seul à présigner pour un travailleur), depuis l'ancienne copie du seau principal ou le dépôt public d'AI2,
+    empreinte SHA 256 vérifiée ; --nettoyer retire ensuite l'ancienne copie du seau principal (quota par compte)."""
     import requests
+    from mars import sentinel2
     from mars.r2 import R2
-    s2 = load_rules()["sentinel2"]
-    r2 = R2()
-    for p in s2["poids"]:
-        try:
-            taille = r2.s3.head_object(Bucket=r2.bucket, Key=p["r2"])["ContentLength"]
-        except Exception:
-            taille = None
-        if taille == p["octets"]:
-            print(f"{p['r2']} : déjà sur R2 ({taille} octets)")
-            continue
-        with traces.span("sentinel2.copie_poids", **{"sentinel2.poids": p["chemin"], "sentinel2.octets": p["octets"]}):
-            url = f"{s2['source_poids']}/{p['chemin'].replace('/best.ckpt', '/checkpoints/best.ckpt')}"
-            with requests.get(url, stream=True, timeout=120) as resp:
-                resp.raise_for_status()
-                h = hashlib.sha256()
+    try:
+        r = sentinel2.copier_poids(load_rules()["sentinel2"], R2(), R2(seau="modeles"), requests.Session(),
+                                   nettoyer="--nettoyer" in a.args)
+    except RuntimeError as e:
+        raise SystemExit(str(e))
+    print(f"{r['copies']} copié(s) ({r['octets'] / 1e9:.2f} Go), {r['deja']} déjà présent(s), {r['retires']} ancienne(s) "
+          "copie(s) retirée(s) du seau principal".replace(".", ",", 1))
 
-                class Flux:
-                    def read(self, n=-1):
-                        b = resp.raw.read(n)
-                        h.update(b)
-                        return b
-                envoi = r2.put_stream(Flux(), p["r2"])
-            if h.hexdigest() != p["sha256"] or envoi["bytes"] != p["octets"]:
-                r2.delete(p["r2"])
-                raise SystemExit(f"{p['chemin']} : empreinte ou taille fausse ({envoi['bytes']} octets), objet retiré")
-            print(f"{p['r2']} : copié et vérifié ({envoi['bytes']} octets, SHA 256 conforme)")
-    traces.attributs(**{"sentinel2.poids_verifies": len(s2["poids"])})
+
+@commande("sentinel2-diagnostic", base=False)        # lecture seule : seau des modèles, variables, poids
+def _sentinel2_diagnostic(_conn, _a):
+    import requests
+    from mars import diagnostic
+    from mars.r2 import R2
+    session = requests.Session()
+    api = os.environ.get("MARS_API", "http://backend:8000/api")
+
+    def variables():
+        r = session.get(f"{api}/travailleurs/variables", timeout=10)
+        r.raise_for_status()
+        return r.json()
+    try:
+        principal = R2()
+    except Exception:
+        principal = None
+    lines = diagnostic.sentinel2(load_rules(), session, variables, principal=principal)
+    print(diagnostic.report(lines))
+    manque = [r for st, r, _d in lines if st == diagnostic.MANQUE]
+    traces.attributs(**{"diagnostic.manques": len(manque)})
+    sys.exit(1 if manque else 0)
 
 
 @commande("coupures-injection", base=False)          # coupures simulées dans des transactions annulées

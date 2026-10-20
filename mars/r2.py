@@ -1,6 +1,7 @@
 """Stockage objet Cloudflare R2 (compatible S3) : envoi vérifié, envoi en flux, liste, suppression, téléchargement.
 
-Identifiants dans le .env du serveur : R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET.
+Identifiants dans le .env du serveur : R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET ; seau des poids
+des modèles : R2_MODELES_BUCKET, R2_MODELES_ACCESS_KEY_ID, R2_MODELES_SECRET_ACCESS_KEY (même adresse).
 """
 import base64
 import hashlib
@@ -12,12 +13,12 @@ from mars import traces
 
 
 VERBES = {"envoi": "PUT", "envoi_en_flux": "PUT", "verification": "HEAD", "liste": "LIST", "suppression": "DELETE",
-          "telechargement": "GET"}
+          "telechargement": "GET", "taille": "HEAD", "lecture": "GET"}
 
 
 def genre(key: str) -> str:
     """Nature d'un objet R2 d'après son chemin : archive de la collecte, sauvegarde, preuve image."""
-    for prefixe, nom in (("ais", "archive"), ("sauvegardes", "sauvegarde"), ("vignettes", "preuve")):
+    for prefixe, nom in (("ais", "archive"), ("sauvegardes", "sauvegarde"), ("vignettes", "preuve"), ("modeles", "poids")):
         if key.startswith(prefixe):
             return nom
     return "objet"
@@ -29,26 +30,33 @@ def _span(op: str, key: str = "", **attrs):
                                                          **attrs})
 
 
+# Variables de chaque seau : clé, secret, nom du seau (adresse commune R2_ENDPOINT)
+SEAUX = {"principal": ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"),
+         "modeles": ("R2_MODELES_ACCESS_KEY_ID", "R2_MODELES_SECRET_ACCESS_KEY", "R2_MODELES_BUCKET")}
+
+
 class R2:
-    def __init__(self, client=None, bucket: str | None = None):
-        """`client` et `bucket` permettent d'injecter un client S3 (tests) ; sinon, lus dans l'environnement."""
+    def __init__(self, client=None, bucket: str | None = None, seau: str = "principal"):
+        """`client` et `bucket` permettent d'injecter un client S3 (tests) ; sinon, lus dans l'environnement.
+        `seau` : « principal » (archives, sauvegardes, preuves ; jeton filtré sur l'IP du serveur) ou « modeles »
+        (poids des modèles, jeton dédié sans filtre IP, mars/r2_signature.py)."""
         if client is not None:
             self.s3, self.bucket = client, bucket
             return
         import boto3
         from botocore.config import Config
 
-        missing = [k for k in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ENDPOINT", "R2_BUCKET")
-                   if not os.environ.get(k)]
+        cle, secret, nom = SEAUX[seau]
+        missing = [k for k in (cle, secret, "R2_ENDPOINT", nom) if not (os.environ.get(k) or "").strip()]
         if missing:
             raise RuntimeError(f"Identifiants R2 absents du .env : {', '.join(missing)}")
-        self.bucket = os.environ["R2_BUCKET"]
+        self.bucket = os.environ[nom].strip()
         # Les sommes de contrôle automatiques des versions récentes de boto3 ne sont pas toutes acceptées par R2 :
         # on ne les calcule que si l'opération l'exige, et on fournit nous mêmes le MD5 des envois.
         # Un seau en juridiction européenne a une adresse en https://<compte>.eu.r2.cloudflarestorage.com.
         self.s3 = boto3.client(
             "s3", endpoint_url=os.environ["R2_ENDPOINT"], region_name="auto",
-            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"], aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+            aws_access_key_id=os.environ[cle].strip(), aws_secret_access_key=os.environ[secret].strip(),
             config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"},
                           request_checksum_calculation="when_required", response_checksum_validation="when_required"))
 
@@ -106,6 +114,22 @@ class R2:
     def _list(self, prefix: str, out: list):
         for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix):
             out += [{"key": o["Key"], "bytes": o["Size"], "modified": o["LastModified"]} for o in page.get("Contents", [])]
+
+    def taille(self, key: str) -> int | None:
+        """Taille d'un objet, ou None s'il n'existe pas ; tout autre refus (403 d'un jeton sans droit) est levé."""
+        from botocore.exceptions import ClientError
+        with _span("taille", key):
+            try:
+                return self.s3.head_object(Bucket=self.bucket, Key=key)["ContentLength"]
+            except ClientError as e:
+                if str(e.response.get("Error", {}).get("Code")) in ("404", "NoSuchKey", "NotFound"):
+                    return None
+                raise
+
+    def flux(self, key: str):
+        """Contenu d'un objet en flux (méthode read), sans disque ni mémoire au delà d'un bloc."""
+        with _span("lecture", key):
+            return self.s3.get_object(Bucket=self.bucket, Key=key)["Body"]
 
     def delete(self, key: str):
         with _span("suppression", key):

@@ -16,7 +16,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 from preuves import ais_near, proof_of
 from regions import dans_region, region_ewkt
-from mars.r2_signature import r2_get_url
+from mars.r2_signature import MODELES, modeles_manquantes, r2_modeles_get_url
 from sentinel import sentinel_metrics
 
 router = APIRouter()
@@ -52,9 +52,11 @@ log = logging.getLogger("mars.travailleurs")
 # une paire qui lui est dédiée ; la paire du serveur (CDSE_ACCESS_KEY) ne quitte jamais le serveur
 IDENTIFIANTS = {"sentinel": ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY"),
                 "sentinel2": ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY")}
-# Poids du modèle Sentinel 2 (lot S2), recopiés sur R2 : adresses présignées de 3 heures, ajoutées à la remise
-# seulement (jamais en base ni dans le cloud-init)
+# Poids du modèle Sentinel 2 (lot S2), dans le seau des modèles : adresses présignées de 3 heures par son jeton dédié
+# (jamais le jeton principal, filtré sur l'IP du serveur), ajoutées à la remise seulement (jamais en base ni dans le
+# cloud-init) ; adresses de 5 minutes pour le contrôle d'accès du démarrage (état « acces »)
 POIDS_EXPIRE_S = 3 * 3600
+ACCES_EXPIRE_S = 300
 S3_COPERNICUS = "eodata.dataspace.copernicus.eu"
 
 
@@ -62,6 +64,10 @@ S3_COPERNICUS = "eodata.dataspace.copernicus.eu"
 async def worker_state(request: Request, wid: int, authorization: str | None = Header(None)):
     """Signe de vie : « reseau » (le script de démarrage a joint le serveur sur le réseau privé), puis « demarre »
     (le script d'analyse commence). Le premier fixe demarre_le : le délai de démarrage est tenu.
+
+    « acces » : adresses R2 que la tâche remettra (poids du modèle), présignées pour 5 minutes, sans marquer la tâche
+    remise : le script de démarrage en lit un octet dès le réseau privé joint, avant Docker et l'image (7,2 Go pour
+    Sentinel 2), et signale aussitôt un refus de R2 avec son code et son message.
 
     « tache » : remise de la tâche par le réseau privé (types `tache_par_le_reseau`, config/rules.yaml), même route
     pour ne pas changer le relais nginx (web/nginx.conf, port 8090 : etat, resultats, journal). Une seule fois, au
@@ -74,6 +80,9 @@ async def worker_state(request: Request, wid: int, authorization: str | None = H
         await _check(c, wid, authorization)
         if isinstance(body, dict) and body.get("etat") == "tache":
             return await _deliver_task(c, wid)
+        if isinstance(body, dict) and body.get("etat") == "acces":
+            params = await c.fetchval("SELECT parametres FROM travailleurs WHERE id = $1", wid) or {}
+            return {"adresses": _adresses_r2(params, ACCES_EXPIRE_S)}
         if isinstance(body, dict) and body.get("etat") in ("echec", "gpu_inutilisable"):
             return await _fin_signalee(c, wid, body)
         await c.execute("UPDATE travailleurs SET etat = 'demarre', demarre_le = coalesce(demarre_le, now()) WHERE id = $1", wid)
@@ -97,6 +106,29 @@ async def _fin_signalee(c, wid: int, body: dict) -> dict:
     return {"ok": True}
 
 
+def _adresses_r2(params: dict, expires: int) -> list[dict]:
+    """Toute adresse R2 remise à un travailleur, présignée par le jeton du seau des modèles (sans filtre IP) : poids
+    du modèle. Refus 503 (noms des variables manquantes, jamais leurs valeurs) si ce seau n'est pas configuré dans ce
+    conteneur."""
+    poids = (params or {}).get("poids") or []
+    if not poids:
+        return []
+    manque = modeles_manquantes()
+    if manque:
+        raise HTTPException(503, f"seau des modèles non configuré dans le conteneur backend : {', '.join(manque)} "
+                                 "absente(s) ; poids du modèle inaccessibles aux travailleurs")
+    return [{"nom": f"poids {p['chemin']}", "url": r2_modeles_get_url(p["r2"], expires=expires)} for p in poids]
+
+
+@router.get("/api/travailleurs/variables")
+async def worker_variables():
+    """Présence (oui ou non, jamais la valeur) des variables dont l'API a besoin pour équiper un travailleur, lue
+    dans le conteneur backend lui même : taches.py sentinel2-diagnostic dit MANQUE si l'une n'y arrive pas. Pas de
+    relais par le port 8090 (nginx n'y laisse passer que etat, resultats, journal et traces)."""
+    noms = (*MODELES, *sorted({n for pair in IDENTIFIANTS.values() for n in pair}))
+    return {n: bool((os.environ.get(n) or "").strip()) for n in noms}
+
+
 async def _deliver_task(c, wid: int) -> dict:
     """Tâche du travailleur (paramètres en base, sans secret) et, pour son type, la paire de clés lue dans le .env.
     La remise est notée dans `mesures` (tache_remise_le) dans la même requête que sa vérification : une seconde demande
@@ -108,8 +140,8 @@ async def _deliver_task(c, wid: int) -> dict:
         if not key or not secret:                       # rien n'est marqué remis : la demande peut être refaite
             raise HTTPException(503, f"clés absentes du .env du serveur ({names[0]}, {names[1]})")
         creds = {"endpoint": S3_COPERNICUS, "region": "default", "access_key": key, "secret_key": secret}
-    if tache == "sentinel2" and r2_get_url("modeles") is None:     # vérifié avant de marquer la tâche remise
-        raise HTTPException(503, "R2 non configuré : poids du modèle Sentinel 2 inaccessibles")
+    params = await c.fetchval("SELECT parametres FROM travailleurs WHERE id = $1", wid) or {}
+    _adresses_r2(params, ACCES_EXPIRE_S)                          # vérifié avant de marquer la tâche remise
     row = await c.fetchrow(
         "UPDATE travailleurs SET mesures = coalesce(mesures, '{}'::jsonb) || jsonb_build_object('tache_remise_le', now()) "
         "WHERE id = $1 AND NOT (coalesce(mesures, '{}'::jsonb) ? 'tache_remise_le') RETURNING parametres", wid)
@@ -118,7 +150,8 @@ async def _deliver_task(c, wid: int) -> dict:
     log.warning("travailleur %s : tâche remise par le réseau privé%s", wid, " avec sa paire de clés" if creds else "")
     params = dict(row["parametres"] or {})
     if params.get("poids"):
-        params["poids"] = [{**p, "url": r2_get_url(p["r2"], expires=POIDS_EXPIRE_S)} for p in params["poids"]]
+        urls = _adresses_r2(params, POIDS_EXPIRE_S)
+        params["poids"] = [{**p, "url": u["url"]} for p, u in zip(params["poids"], urls)]
     return {**params, **({"identifiants": {"s3": creds}} if creds else {})}
 
 
