@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from mars.ais.live import ZONES
 from mars.ais.mid import flag_of
+from mars.evaluation import GARDE_VERIFICATION
 
 WATCH_SEVERITY = {"fort": "critique", "sanctionne": "elevee", "flotte_fantome": "elevee", "suspect_gur": "moyenne"}
 SEVERITIES = ["faible", "moyenne", "elevee", "critique"]
@@ -38,8 +39,8 @@ async def save_alerts(c, kind: str, items: list[dict], prune_from=None, prune_to
                 """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
                    VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography, $6, $7, $8)
                    ON CONFLICT (type, rule_key) WHERE rule_key IS NOT NULL DO UPDATE
-                   SET severity = EXCLUDED.severity, event_time = EXCLUDED.event_time, geom = EXCLUDED.geom,
-                       details = EXCLUDED.details, rule_version = EXCLUDED.rule_version
+                   SET event_time = EXCLUDED.event_time, geom = EXCLUDED.geom, rule_version = EXCLUDED.rule_version,
+                       """ + GARDE_VERIFICATION + """
                    RETURNING id, (xmax = 0) AS created""",
                 kind, it["severity"], it["event_time"], float(it["lon"]), float(it["lat"]), it["details"],
                 rule_version, it["key"])

@@ -8,6 +8,7 @@ import Frise from "./components/Frise";
 import Garde from "./components/Garde";
 import LayersPanel from "./components/LayersPanel";
 import MapView from "./components/MapView";
+import MenuCarte from "./components/MenuCarte";
 import NewAnalysis from "./components/NewAnalysis";
 import Rail, { type PanelId } from "./components/Rail";
 import Recherche, { type Resultat } from "./components/Recherche";
@@ -62,6 +63,8 @@ export default function App() {
   const [highlight, setHighlight] = useState<FC>(EMPTY);
   const [focus, setFocus] = useState<Focus | null>(null);
   const [drawing, setDrawing] = useState(false);
+  // Clic droit sur la carte : menu de demande d'observation satellite (lot T1)
+  const [menu, setMenu] = useState<{ lon: number; lat: number; x: number; y: number } | null>(null);
   const [draft, setDraft] = useState<number[] | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
   const [searching, setSearching] = useState(false);
@@ -378,8 +381,10 @@ export default function App() {
             analysisAlerts={analysisAlertsQ.data ?? EMPTY} liveAlerts={mapAlerts} zones={zonesQ.data ?? null}
             reception={receptionQ.data ?? null} infrastructure={infraQ.data ?? null} highlight={highlight} actives={actives}
             byType={byType} region={region} passages={passagesQ.data ?? EMPTY} viirs={viirsQ.data ?? EMPTY} sentinel={sentinelQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
-            drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom} />
+            drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom}
+            onContexte={setMenu} />
           </Garde>
+          {menu && <MenuCarte key={`${menu.lon},${menu.lat}`} point={menu} onClose={() => setMenu(null)} />}
           <button onClick={drawing || draft ? cancelDraw : startDraw}
             className={`absolute left-4 top-4 z-10 rounded-md border px-3 py-1.5 text-[12.5px] backdrop-blur
               ${drawing ? "border-signal bg-panel/95 text-ink" : "border-hair bg-panel/90 text-ink hover:border-signal"}`}>

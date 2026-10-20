@@ -1,0 +1,398 @@
+"""Tip and cue (lot T1) : un signal suspect crée une demande d'observation satellite. Calculs purs (estime, cercle,
+fenêtres, résultat, gravité, rejeu), puis sur la base de test (MARS_TEST_DATABASE_URL) : tips relevés et regroupés,
+passage rétroactif ou futur, point trop près de la côte, expiration, priorité dans le plafond, refus de budget,
+résultat rattaché à l'alerte et gravité ajustée, demande manuelle par l'API."""
+import asyncio
+import json
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from mars import tip_and_cue as tc
+from mars.config import load_rules
+
+VERSIONNEES = load_rules()
+RULES = {**VERSIONNEES, "tip_and_cue": {**VERSIONNEES["tip_and_cue"], "actif": True}}
+P, S = RULES["tip_and_cue"]["prediction"], RULES["sentinel"]
+URL = os.environ.get("MARS_TEST_DATABASE_URL")
+NOW = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
+LARGE = (-6.1, 48.01)                          # au large d'Ouessant, à plus de 50 km de la côte
+QUAI = (5.341, 43.333)                         # bassins nord de Marseille, à 92 m de la côte
+EMPRISE = {"type": "Polygon", "coordinates": [[[-7.0, 47.5], [-5.0, 47.5], [-5.0, 48.8], [-7.0, 48.8], [-7.0, 47.5]]]}
+MARSEILLE = {"type": "Polygon", "coordinates": [[[4.8, 43.0], [5.8, 43.0], [5.8, 43.6], [4.8, 43.6], [4.8, 43.0]]]}
+
+
+def test_shipped_switched_off():
+    assert VERSIONNEES["tip_and_cue"]["actif"] is False
+    assert tc.cycle(None, VERSIONNEES, NOW) == {"inactif": True}
+    assert tc.points_passage(None, VERSIONNEES, 1) == []
+
+
+# Calculs purs
+
+def test_dead_reckoning_and_growing_circle():
+    pr = tc.predire(*LARGE, NOW, 10.0, 90.0, NOW + timedelta(hours=3), P)
+    assert pr["mode"] == "estime"
+    assert tc.distance_m(*LARGE, pr["lon"], pr["lat"]) == pytest.approx(3 * 10 * 1852, rel=1e-3)
+    assert pr["lon"] > LARGE[0] and pr["lat"] == pytest.approx(LARGE[1], abs=0.01)          # plein est
+    assert pr["rayon_m"] == pytest.approx(P["rayon_depart_m"] + P["part_vitesse_par_h"] * 3 * 10 * 1852)
+    loin = tc.predire(*LARGE, NOW, 15.0, 0.0, NOW + timedelta(hours=30), P)
+    assert loin["rayon_m"] == P["rayon_max_m"]                                             # borné
+
+
+def test_stopped_or_anchored_vessel_and_point_without_vessel():
+    for kw in ({"sog": 0.3, "cog": 120.0, "a_l_arret": False}, {"sog": 12.0, "cog": 120.0, "a_l_arret": True},
+               {"sog": None, "cog": None, "a_l_arret": False}):
+        pr = tc.predire(*LARGE, NOW, kw["sog"], kw["cog"], NOW + timedelta(hours=10), P, a_l_arret=kw["a_l_arret"])
+        assert (pr["lon"], pr["lat"], pr["rayon_m"], pr["mode"]) == (*LARGE, P["rayon_arret_m"], "arret")
+    pr = tc.predire(*LARGE, NOW, None, None, NOW + timedelta(hours=10), P, navire=False)
+    assert (pr["rayon_m"], pr["mode"]) == (P["rayon_point_m"], "point")
+
+
+def test_circle_becomes_24_km_windows():
+    assert len(tc.centres_fenetres(*LARGE, 5000, S)) == 1
+    assert len(tc.centres_fenetres(*LARGE, 18000, S)) == 4
+    assert len(tc.centres_fenetres(*LARGE, 30000, S)) == 9          # au delà de fenetres_max_par_demande (4)
+    # chaque point du cercle est dans le cœur d'une fenêtre (24 km moins la marge)
+    centres = tc.centres_fenetres(*LARGE, 18000, S)
+    for cap in range(0, 360, 15):
+        lon, lat = tc.destination(*LARGE, cap, 17500)
+        assert min(max(abs(lon - c[0]) * 111_320 * 0.668, abs(lat - c[1]) * 110_574) for c in centres) <= 10_050
+
+
+def test_result_categories():
+    apparie = {"id": 1, "matched_vessel_id": 7, "mask_reason": None}
+    muet = {"id": 2, "matched_vessel_id": None, "mask_reason": None}
+    terre = {"id": 3, "matched_vessel_id": None, "mask_reason": "terre"}
+    autre = {"id": 4, "matched_vessel_id": 9, "mask_reason": None}
+    assert tc.categorie([muet, apparie], {7}, True) == ("present_apparie", apparie)
+    assert tc.categorie([terre, muet], {7}, True) == ("present_sans_ais", muet)
+    assert tc.categorie([terre], {7}, True) == ("absent", None)
+    assert tc.categorie([autre], {7}, True) == ("absent", None)                 # un autre navire, pas le nôtre
+    assert tc.categorie([autre], set(), False)[0] == "present_apparie"         # lumière VIIRS : un navire AIS
+    assert tc.categorie([{"id": 5, "matched_vessel_id": None, "mask_reason": "non_evaluable"}], set(), False)[0] == \
+        "non_evaluable"
+
+
+def test_severity_table_raises_or_lowers_never_removes():
+    t = RULES["tip_and_cue"]["ajustements"]
+    assert tc.ajustement("coupure_ais", "present_sans_ais", "moyenne", t) == "elevee"
+    assert tc.ajustement("viirs", "present_apparie", "elevee", t) == "faible"
+    assert tc.ajustement("viirs", "absent", "elevee", t) is None
+    assert tc.ajustement("coupure_ais", "present_sans_ais", "elevee", t) is None          # déjà à ce niveau
+
+
+def test_replay_groups_finds_passes_and_excludes_the_coast():
+    passages = [{"id": 1, "t": NOW + timedelta(hours=5), "emprise": EMPRISE},
+                {"id": 2, "t": NOW + timedelta(hours=8), "emprise": MARSEILLE}]
+    tips = [{"tip": "viirs", "lon": LARGE[0], "lat": LARGE[1], "t": NOW, "vessel_id": None},
+            {"tip": "identite", "lon": QUAI[0], "lat": QUAI[1], "t": NOW, "vessel_id": 11, "sog": 0, "cog": 0},
+            {"tip": "watchlist", "lon": QUAI[0], "lat": QUAI[1], "t": NOW + timedelta(hours=1), "vessel_id": 11},
+            {"tip": "rendezvous", "lon": 0.0, "lat": 60.0, "t": NOW, "vessel_id": 12}]
+    r = tc.rejeu(tips, passages, RULES, lambda lon, _lat: 90.0 if lon > 5 else None)
+    issues = {(x["tip"], x["issue"]) for x in r["lignes"]}
+    assert issues == {("viirs", "passage"), ("identite", "cote"), ("watchlist", "regroupee"),
+                      ("rendezvous", "sans_passage_36h")}
+    assert r["sessions"] == 1 and r["fenetres"] == 1 and r["par_tip"]["watchlist"]["regroupees"] == 1
+
+
+# Sur la base de test
+
+@pytest.fixture
+def conn():
+    if not URL:
+        pytest.skip("MARS_TEST_DATABASE_URL absente : base de test requise")
+    import psycopg
+    c = psycopg.connect(URL)
+    # Transaction annulée en fin de test : les alertes laissées par d'autres essais (heure réelle) sont écartées
+    for sql in ("DELETE FROM demandes_origines", "DELETE FROM demandes_observation",
+                "DELETE FROM sar_passes WHERE product_name LIKE 'TIP_%'", "DELETE FROM alerts"):
+        c.execute(sql)
+    yield c
+    c.rollback()
+    c.close()
+
+
+def _passage(conn, nom, t, emprise=EMPRISE, statut="prevu"):
+    return conn.execute(
+        "INSERT INTO sar_passes (product_name, platform, acquired_at, ended_at, footprint, mission, satellite, mode, "
+        "statut) VALUES (%s, 'sentinel-1c', %s, %s, ST_GeomFromGeoJSON(%s)::geography, 'S1', 'S1C', 'IW', %s) "
+        "RETURNING id", (nom, t, t + timedelta(minutes=1), json.dumps(emprise), statut)).fetchone()[0]
+
+
+def _alerte(conn, typ, sev, lon, lat, details, vessel=None, t=NOW):
+    aid = conn.execute(
+        "INSERT INTO alerts (type, severity, event_time, detected_at, geom, details, rule_version) VALUES (%s, %s, %s, "
+        "%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, 'essai') RETURNING id",
+        (typ, sev, t, t, lon, lat, json.dumps(details))).fetchone()[0]
+    if vessel:
+        conn.execute("INSERT INTO alert_evidence VALUES (%s, 'vessel', %s)", (aid, vessel))
+    return aid
+
+
+def _navire(conn, mmsi, lon, lat, sog=10.0, cog=90.0, t=NOW - timedelta(minutes=10)):
+    conn.execute("DELETE FROM positions WHERE vessel_id IN (SELECT id FROM vessels WHERE mmsi = %s)", (mmsi,))
+    conn.execute("DELETE FROM vessels WHERE mmsi = %s", (mmsi,))
+    vid = conn.execute("INSERT INTO vessels (mmsi, name, ais_class) VALUES (%s, %s, 'A') RETURNING id",
+                       (mmsi, f"ESSAI {mmsi}")).fetchone()[0]
+    conn.execute("INSERT INTO positions (vessel_id, ts, geom, sog_kn, cog_deg) VALUES (%s, %s, "
+                 "ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s)", (vid, t, lon, lat, sog, cog))
+    return vid
+
+
+def _demande(conn, did):
+    return dict(zip(("etat", "pass_id", "retro", "rayon", "prediction", "fenetres", "motif", "priorite"), conn.execute(
+        "SELECT etat, pass_id, passage_retro, rayon_m, prediction, fenetres, motif, priorite FROM demandes_observation "
+        "WHERE id = %s", (did,)).fetchone()))
+
+
+def test_viirs_tip_is_planned_on_the_next_covering_pass(conn):
+    _passage(conn, "TIP_AILLEURS", NOW + timedelta(hours=2), MARSEILLE)
+    pid = _passage(conn, "TIP_FUTUR", NOW + timedelta(hours=7))
+    aid = _alerte(conn, "DARK_SHIP", "moyenne", *LARGE, {"source": "viirs", "detection_id": 1, "trace_id_creation": "a" * 32})
+    _alerte(conn, "DARK_SHIP", "faible", -6.0, 48.0, {"source": "viirs"})               # sous la gravité minimale
+    out = tc.cycle(conn, RULES, NOW)
+    assert out["tips"] == {"viirs": 1} and out["planifiees"] == 1
+    did = conn.execute("SELECT demande_id FROM demandes_origines WHERE alerte_id = %s", (aid,)).fetchone()[0]
+    d = _demande(conn, did)
+    assert d["etat"] == "planifiee" and d["pass_id"] == pid and d["retro"] is False
+    assert d["prediction"] == "point" and d["rayon"] == P["rayon_point_m"] and len(d["fenetres"]) == 1
+    assert tc.cycle(conn, RULES, NOW)["tips"] == {"viirs": 1} and \
+        conn.execute("SELECT count(*) FROM demandes_observation").fetchone()[0] == 1       # clé déjà vue
+    pts = tc.points_passage(conn, RULES, pid)
+    assert pts == [{"motif": "tip_and_cue", "tip": "viirs", "demande": did, "priorite": 4, "lon": LARGE[0],
+                    "lat": LARGE[1]}]
+
+
+def test_recent_acquired_pass_is_used_at_once_and_vessel_tips_are_grouped(conn):
+    pid = _passage(conn, "TIP_RETRO", NOW - timedelta(hours=2), statut="acquis")
+    vid = _navire(conn, 636999701, *LARGE, sog=8.0, cog=0.0, t=NOW - timedelta(hours=4))
+    a1 = _alerte(conn, "IDENTITY_CHANGE", "moyenne", *LARGE, {"navire": {"vessel_id": vid}}, vid)
+    a2 = _alerte(conn, "RENDEZVOUS", "moyenne", *LARGE, {"navires": [{"vessel_id": vid}], "distance_cote_km": 40}, vid)
+    out = tc.cycle(conn, RULES, NOW)
+    assert out["nouvelles"] == 1 and out["regroupees"] == 1
+    did = conn.execute("SELECT id FROM demandes_observation").fetchone()[0]
+    assert {r[0] for r in conn.execute("SELECT alerte_id FROM demandes_origines WHERE demande_id = %s", (did,))} == {a1, a2}
+    d = _demande(conn, did)
+    assert d["etat"] == "planifiee" and d["pass_id"] == pid and d["retro"] is True and d["priorite"] == 4
+    assert d["prediction"] == "estime" and d["rayon"] == pytest.approx(P["rayon_depart_m"] + P["part_vitesse_par_h"] * 2 * 8 * 1852)
+
+
+def test_point_too_close_to_the_coast_has_no_useful_pass(conn):
+    _passage(conn, "TIP_MARSEILLE", NOW + timedelta(hours=3), MARSEILLE)
+    vid = _navire(conn, 636999702, *QUAI, sog=0.0)
+    _alerte(conn, "IDENTITY_CHANGE", "elevee", *QUAI, {"navire": {"vessel_id": vid}}, vid)
+    tc.cycle(conn, RULES, NOW)
+    d = _demande(conn, conn.execute("SELECT id FROM demandes_observation").fetchone()[0])
+    assert d["etat"] == "sans_passage" and "invisible au radar" in d["motif"] and "92 m" in d["motif"]
+
+
+def test_waiting_request_expires_after_36_hours(conn):
+    _alerte(conn, "DARK_SHIP", "elevee", *LARGE, {"source": "viirs"})
+    tc.cycle(conn, RULES, NOW)
+    did = conn.execute("SELECT id FROM demandes_observation").fetchone()[0]
+    assert _demande(conn, did)["etat"] == "en_attente"                          # aucun passage ne couvre encore le point
+    tc.planifier(conn, RULES, NOW + timedelta(hours=37))
+    d = _demande(conn, did)
+    assert d["etat"] == "expiree" and "36 h" in d["motif"]
+
+
+def test_requests_go_first_under_the_daily_ceiling_and_budget_refusal_is_recorded(conn, monkeypatch):
+    """Deux passages acquis : l'un porte une demande d'observation, l'autre seulement la sélection habituelle (alerte
+    VIIRS) ; avec une seule scène par jour, la demande passe d'abord. Puis budget nul : refus enregistré."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_sentinel import FakeStac
+    from mars import sentinel, travailleurs
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
+    conn.execute("DELETE FROM analyses")
+    t0 = NOW - timedelta(hours=1)
+    p_habituel = _passage(conn, "TIP_HABITUEL", t0 - timedelta(minutes=30), statut="acquis")
+    ouest = {"type": "Polygon", "coordinates": [[[-7.0, 47.5], [-5.8, 47.5], [-5.8, 48.8], [-7.0, 48.8], [-7.0, 47.5]]]}
+    p_demande = _passage(conn, "TIP_DEMANDE", t0, ouest, statut="acquis")     # ne couvre pas l'alerte VIIRS
+    _alerte(conn, "DARK_SHIP", "moyenne", -5.5, 48.5, {"source": "viirs"}, t=t0 - timedelta(hours=2))
+    did = conn.execute(
+        """INSERT INTO demandes_observation (tip, priorite, position, position_le, etat, expire_le, pass_id, heure_passage,
+                                             position_predite, rayon_m, prediction, fenetres)
+           VALUES ('coupure_ais', 5, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, 'planifiee', %s, %s, %s,
+                   ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, 3000, 'point', %s) RETURNING id""",
+        (*LARGE, t0, NOW + timedelta(hours=30), p_demande, t0, *LARGE, json.dumps([list(LARGE)]))).fetchone()[0]
+    # Sans tip and cue actif, le passage de la demande n'a aucun point : seule la sélection habituelle
+    sc = {"id": "S1C_IW_GRDH_1SDV_TIP_COG", "debut": t0.isoformat(), "fin": (t0 + timedelta(seconds=25)).isoformat(),
+          "emprise": EMPRISE}
+    stac = FakeStac([sc])
+    assert [p["pass_id"] for p in sentinel.plan(conn, stac, {**RULES, "tip_and_cue": VERSIONNEES["tip_and_cue"]},
+                                                NOW)["passages"]] == [p_habituel]
+    p = sentinel.plan(conn, stac, RULES, NOW)
+    assert [x["pass_id"] for x in p["passages"]] == [p_demande, p_habituel]          # la demande d'abord
+    lances = []
+
+    def faux(c, _scw, _rules, _tache, params, _env, **_kw):
+        lances.append(params)
+        wid = c.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres) VALUES "
+                        "('sentinel', 'GP1-S', 'fr-par-2', 'x', '{}') RETURNING id").fetchone()[0]
+        return {"travailleur": wid}
+    monkeypatch.setattr(travailleurs, "launch", faux)
+    un = {**RULES, "sentinel": {**S, "scenes_max_par_jour": 1}}
+    r = sentinel.launch(conn, None, un, NOW, stac)
+    aid = r["analyses"][0]
+    assert conn.execute("SELECT pass_id FROM analyses WHERE id = %s", (aid,)).fetchone()[0] == p_demande
+    assert conn.execute("SELECT analysis_id, etat FROM demandes_observation WHERE id = %s", (did,)).fetchone() == \
+        (aid, "planifiee")
+    # Budget : une nouvelle demande sur le passage restant est refusée avec le motif
+    conn.execute("UPDATE demandes_observation SET analysis_id = NULL WHERE id = %s", (did,))
+    conn.execute("DELETE FROM analyses WHERE id = %s", (aid,))                 # le passage est de nouveau libre
+    zero = {**RULES, "sentinel": {**S, "scenes_max_par_jour": 2, "budget_mensuel_eur": 0.0}}
+    r = sentinel.launch(conn, None, zero, NOW, stac)
+    assert "budget" in r["refus"]
+    d = _demande(conn, did)
+    assert d["etat"] == "refusee_budget" and "budget" in d["motif"]
+
+
+def _analyse(conn, pid, t, detections):
+    aid = conn.execute("INSERT INTO analyses (pass_id, aoi, mode, status, model_version, source) VALUES (%s, "
+                       "ST_MakeEnvelope(-7, 47, -5, 49, 4326)::geography, 'full', 'done', 'essai', 'sentinel1') "
+                       "RETURNING id", (pid,)).fetchone()[0]
+    for lon, lat, vid, mask in detections:
+        conn.execute("INSERT INTO detections (analysis_id, geom, scene, ts, matched_vessel_id, mask_reason, length_m) "
+                     "VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, 'SC', %s, %s, %s, 150)",
+                     (aid, lon, lat, t, vid, mask))
+    return aid
+
+
+@pytest.mark.parametrize("cas, attendu, gravite", [
+    ("muet", "present_sans_ais", "elevee"), ("apparie", "present_apparie", "moyenne"), ("rien", "absent", "moyenne")])
+def test_result_is_attached_to_the_alert_and_severity_adjusted(conn, cas, attendu, gravite):
+    t = NOW + timedelta(hours=2)
+    pid = _passage(conn, "TIP_RESULTAT", t, statut="acquis")
+    vid = _navire(conn, 636999703, *LARGE, sog=0.2)
+    aid_alerte = _alerte(conn, "AIS_GAP", "moyenne", *LARGE, {"navire": {"vessel_id": vid}}, vid)
+    did = tc.creer(conn, RULES, NOW, cle=f"alerte:{aid_alerte}", tip="coupure_ais", lon=LARGE[0], lat=LARGE[1],
+                   position_le=NOW, vessel_id=vid, sog=0.2, cog=0.0, alerte_id=aid_alerte)["demande"]
+    conn.execute("UPDATE demandes_observation SET etat = 'planifiee', pass_id = %s, heure_passage = %s, rayon_m = 1500, "
+                 "position_predite = position WHERE id = %s", (pid, t, did))
+    proche = tc.destination(*LARGE, 45, 600)
+    dets = {"muet": [(*proche, None, None), (LARGE[0] + 0.001, LARGE[1], None, "terre")],
+            "apparie": [(*proche, vid, None)], "rien": [(LARGE[0] + 0.5, LARGE[1], None, None)]}[cas]
+    an = _analyse(conn, pid, t, dets)
+    conn.execute("UPDATE demandes_observation SET analysis_id = %s WHERE id = %s", (an, did))
+    envois = []
+    out = tc.evaluer(conn, an, RULES, notifier=lambda titre, msg: envois.append((titre, msg)))
+    assert out == [{"alerte": aid_alerte, "gravite_avant": "moyenne", "gravite_apres": gravite}]
+    etat, res, dist = conn.execute("SELECT etat, resultat, distance_m FROM demandes_observation WHERE id = %s",
+                                   (did,)).fetchone()
+    assert (etat, res) == ("analysee", attendu)
+    sev, det = conn.execute("SELECT severity, details FROM alerts WHERE id = %s", (aid_alerte,)).fetchone()
+    v = det["verification_satellite"]
+    assert sev == gravite and v["resultat"] == attendu and v["demande"] == did and v["gravite_avant"] == "moyenne"
+    preuves = {r[0] for r in conn.execute("SELECT evidence_type FROM alert_evidence WHERE alert_id = %s", (aid_alerte,))}
+    assert "demande" in preuves and ("detection" in preuves) == (cas != "rien")
+    if cas == "muet":
+        assert dist == pytest.approx(600, abs=5) and v["gravite_ajustee"] == "elevee"
+        assert len(envois) == 1 and "relevée à elevee" in envois[0][0]                    # notification
+    else:
+        assert envois == []
+    assert conn.execute("SELECT count(*) FROM alerts WHERE id = %s", (aid_alerte,)).fetchone()[0] == 1   # jamais retirée
+
+
+def test_rules_cycle_keeps_the_satellite_verification(conn):
+    """Une alerte mise à jour en place par sa règle (toutes les 5 minutes) garde sa vérification et sa gravité."""
+    from mars.rules import save_alerts
+    import asyncpg
+    conn.rollback()                                   # rien de la fixture n'est validé ; l'essai nettoie après lui
+
+    async def go():
+        c = await asyncpg.connect(URL)
+        await c.set_type_codec("jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+        try:
+            item = {"key": "essai:tip", "severity": "moyenne", "event_time": NOW, "lon": LARGE[0], "lat": LARGE[1],
+                    "details": {"motif": "essai"}, "vessels": []}
+            await save_alerts(c, "RENDEZVOUS", [item], rule_version="essai")
+            await c.execute("UPDATE alerts SET severity = 'elevee', details = details || '{\"verification_satellite\": "
+                            "{\"resultat\": \"present_sans_ais\", \"gravite_ajustee\": \"elevee\"}}' WHERE rule_key = 'essai:tip'")
+            await save_alerts(c, "RENDEZVOUS", [{**item, "details": {"motif": "essai, cycle suivant"}}], rule_version="essai")
+            return await c.fetchrow("SELECT severity, details FROM alerts WHERE rule_key = 'essai:tip'")
+        finally:
+            await c.execute("DELETE FROM alerts WHERE rule_key = 'essai:tip'")
+            await c.close()
+    r = asyncio.run(go())
+    assert r["severity"] == "elevee" and r["details"]["motif"] == "essai, cycle suivant"
+    assert r["details"]["verification_satellite"]["resultat"] == "present_sans_ais"
+
+
+def test_manual_request_through_the_api_is_planned_by_the_next_cycle(conn, monkeypatch):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+    import asyncpg
+    import demandes as api
+    conn.rollback()                                   # nettoyage de la fixture annulé : seul l'essai est validé
+    vid = _navire(conn, 636999704, *LARGE, sog=0.1)
+    pid = _passage(conn, "TIP_MANUEL", NOW + timedelta(hours=4))
+    conn.commit()
+
+    class Req:
+        class app:
+            class state:
+                pool = None
+
+    async def go(rules):
+        monkeypatch.setattr(api, "load_rules", lambda: rules)
+        Req.app.state.pool = await asyncpg.create_pool(URL, min_size=1, max_size=2)
+        try:
+            return await api.demander(Req, api.NouvelleDemande(vessel_id=vid, author="Antoine"))
+        finally:
+            await Req.app.state.pool.close()
+    try:
+        with pytest.raises(Exception) as refus:                                 # tip and cue coupé : refus clair
+            asyncio.run(go(VERSIONNEES))
+        assert "coupé" in str(refus.value.detail)
+        r = asyncio.run(go(RULES))
+        assert r["etat"] == "en_attente" and not r["regroupee"]
+        assert asyncio.run(go(RULES))["id"] == r["id"]                           # même navire : regroupée
+        tc.planifier(conn, RULES, NOW)
+        d = _demande(conn, r["id"])
+        assert d["etat"] == "planifiee" and d["pass_id"] == pid and d["priorite"] == 6
+        assert conn.execute("SELECT count(*) FROM demandes_origines WHERE demande_id = %s AND tip = 'operateur'",
+                            (r["id"],)).fetchone()[0] == 2
+    finally:
+        conn.rollback()
+        conn.execute("DELETE FROM demandes_origines WHERE demande_id IN (SELECT id FROM demandes_observation "
+                     "WHERE vessel_id = %s)", (vid,))
+        conn.execute("DELETE FROM demandes_observation WHERE vessel_id = %s", (vid,))
+        conn.execute("DELETE FROM sar_passes WHERE product_name = 'TIP_MANUEL'")
+        conn.execute("DELETE FROM positions WHERE vessel_id = %s", (vid,))
+        conn.execute("DELETE FROM vessels WHERE id = %s", (vid,))
+        conn.commit()
+
+
+def test_request_trace_links_the_alert_and_the_analysis():
+    """La trace d'une demande relie celle de l'alerte (identifiant seul) et celle de l'analyse (traceparent complet)."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from mars import traces
+    mem = InMemorySpanExporter()
+    traces.init("mars-test", exportateur=mem)
+    alerte, analyse = "a" * 32, "00-" + "b" * 32 + "-" + "c" * 16 + "-01"
+    with traces.span("tip_and_cue.resultat", nouvelle_trace=True, liens=[alerte, analyse, None, "pas une trace"]):
+        pass
+    s = [x for x in mem.get_finished_spans() if x.name == "tip_and_cue.resultat"][-1]
+    assert [(format(link.context.trace_id, "032x"), format(link.context.span_id, "016x")) for link in s.links] == [
+        ("a" * 32, "a" * 16), ("b" * 32, "c" * 16)]
+    mem.clear()
+
+
+def test_replay_on_the_database_reads_tips_passes_and_costs(conn):
+    """Rejeu (taches.py tip-rejeu) : une alerte VIIRS au large avec un passage 8 h plus tard, un navire à quai ;
+    rien n'est écrit."""
+    conn.execute("DELETE FROM task_runs WHERE task = 'regles' AND started_at > %s", (NOW - timedelta(days=2),))
+    _passage(conn, "TIP_REJEU", NOW + timedelta(hours=8), statut="acquis")
+    _passage(conn, "TIP_REJEU_M", NOW + timedelta(hours=9), MARSEILLE, statut="acquis")
+    _alerte(conn, "DARK_SHIP", "elevee", *LARGE, {"source": "viirs"})
+    vid = _navire(conn, 636999705, *QUAI, sog=0.0)
+    _alerte(conn, "IDENTITY_CHANGE", "moyenne", *QUAI, {"navire": {"vessel_id": vid}}, vid)
+    avant = conn.execute("SELECT count(*) FROM demandes_observation").fetchone()[0]
+    r = tc.rejeu_base(conn, RULES, NOW - timedelta(hours=1), NOW + timedelta(hours=1))
+    assert r["par_tip"]["viirs"]["passage"] == 1 and r["par_tip"]["identite"]["cote"] == 1
+    assert r["sessions"] == 1 and r["fenetres"] == 1 and r["cout_eur"] == pytest.approx(0.19, abs=0.01)
+    assert conn.execute("SELECT count(*) FROM demandes_observation").fetchone()[0] == avant

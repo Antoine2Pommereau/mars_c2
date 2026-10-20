@@ -30,7 +30,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from mars import traces
-from mars.evaluation import MOTIF_COUPURE, critere, motif_non_evaluable
+from mars.evaluation import GARDE_VERIFICATION, MOTIF_COUPURE, critere, motif_non_evaluable
 
 STAC = "https://stac.dataspace.copernicus.eu/v1/search"
 S3_HOST = "eodata.dataspace.copernicus.eu"
@@ -285,8 +285,13 @@ def en_mer(conn, points: list[dict], rules: dict) -> tuple[list[dict], list[dict
 def interest_points(conn, pass_id: int, rules: dict, ecartes: list | None = None) -> list[dict]:
     """Points d'intérêt dans l'emprise d'un passage : navires des listes à moins de `corridor_m` d'une infrastructure,
     à `liste_fenetre_min` près de l'acquisition ; alertes DARK_SHIP VIIRS ouvertes, assez graves, récentes."""
+    from mars import tip_and_cue
     s = rules["sentinel"]
-    rows = conn.execute(
+    # Lot T1 : quand tip and cue est actif, le navire des listes près d'une infrastructure est un tip (watchlist) ; ses
+    # points arrivent par les demandes d'observation planifiées sur ce passage, la recherche directe ci dessous est
+    # alors coupée (un seul mécanisme)
+    par_tips = tip_and_cue.actif(rules) and (rules["tip_and_cue"]["tips"].get("watchlist") or {}).get("actif")
+    rows = [] if par_tips else conn.execute(
         """SELECT DISTINCT ON (p.vessel_id) 'liste', p.vessel_id, ST_X(p.geom::geometry), ST_Y(p.geom::geometry),
                   v.name, i.id, coalesce(i.name, i.attrs->>'type')
            FROM sar_passes sp
@@ -318,7 +323,7 @@ def interest_points(conn, pass_id: int, rules: dict, ecartes: list | None = None
     out, dropped = en_mer(conn, out, rules)
     if ecartes is not None:
         ecartes += dropped
-    return out
+    return tip_and_cue.points_passage(conn, rules, pass_id) + out     # demandes d'observation : déjà en mer
 
 
 def points_liste(conn, pass_id: int, rules: dict, ecartes: list | None = None) -> list[dict]:
@@ -457,7 +462,13 @@ def plan(conn, session, rules: dict, now: datetime, pass_id: int | None = None) 
         else:
             chosen = pick_scenes(scenes, points, s["interet_rayon_m"])
         if chosen:
+            # Scènes des demandes d'observation d'abord (par priorité du tip), puis les plus riches en points
+            from mars.tip_and_cue import priorite
+            chosen.sort(key=lambda sc: -priorite(sc["points"]))
             out.append({"pass_id": pid, "satellite": sat, "acquired_at": t0, "scenes": chosen, "points": points})
+    # Plafond quotidien : passages portant une demande d'observation d'abord, par priorité du tip (lot T1)
+    from mars.tip_and_cue import priorite
+    out.sort(key=lambda ps: (-priorite(ps["points"]), ps["acquired_at"]))
     return {"passages": out, "en_attente_de_publication": waiting, "sans_interet": skipped,
             "points_ecartes": ecartes_par}
 
@@ -657,6 +668,16 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
         if keep:
             selected.append({**ps, "scenes": keep})
     n, asked = sum(len(x["scenes"]) for x in selected), sum(len(x["scenes"]) for x in p["passages"])
+    # Demandes d'observation (lot T1) : celles dont aucune fenêtre n'a trouvé place sous le plafond sont refusées avec
+    # leur motif ; les autres seront portées par l'analyse de leur passage
+    from mars import tip_and_cue
+
+    def demandes(scenes):
+        return sorted({pt["demande"] for sc in scenes for pt in sc.get("points") or [] if pt.get("demande")})
+    gardees = {ps["pass_id"]: demandes(ps["scenes"]) for ps in selected}
+    toutes = sorted({d for ps in p["passages"] for d in demandes(ps["scenes"])})
+    tip_and_cue.refuser(conn, [d for d in toutes if d not in {x for v in gardees.values() for x in v}],
+                        f"plafond de {s['scenes_max_par_jour']} scènes par jour atteint")
     # Fenêtres utiles de chaque scène (passage choisi à la main sans point d'intérêt : scène entière)
     with traces.span("sentinel.fenetres") as sp:
         for ps in selected:
@@ -676,6 +697,7 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     estimate = estimation(rules, s, n_fen, n_full, calculs[0])
     motif = guard(n or asked, scenes_today, spent, estimate, s)       # aucune place : le plafond est le motif
     if motif:
+        tip_and_cue.refuser(conn, toutes, motif)                       # plafond ou budget : refus avec son motif
         return {"refus": motif, "scenes_demandees": asked}
     import psycopg
     # Paire dédiée aux travailleurs : présente, non expirée, et acceptée par Copernicus (lecture réelle de 16 octets),
@@ -702,6 +724,7 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                      round(estimate * len(ps["scenes"]) / n, 3), now, traces.trace_id(),
                      json.dumps({sc["id"]: sc["fenetres"] for sc in ps["scenes"]}), now)).fetchone()[0]
                 analyses.append((aid, ps["scenes"]))
+                tip_and_cue.rattacher(conn, ps["pass_id"], aid, gardees.get(ps["pass_id"], []))
     except psycopg.errors.UniqueViolation:
         return {"en_cours": "passage déjà en analyse (lancement concurrent)"}
     r = _calculer(conn, scw, rules, s, now, analyses, now, spent, log)
@@ -856,6 +879,7 @@ def ingest(conn, w: dict, rules: dict) -> dict:
     out = {"scenes": 0, "detections": 0, "vignettes": 0, "appariees": 0, "alertes_dark_ship": 0,
            "alertes_non_confirme": 0, "alertes_incoherence": 0, "non_evaluables": 0, "echos_fixes": 0}
     by_analysis: dict[int, list[dict]] = {}
+    termines: list[int] = []                       # analyses finies : résultat des demandes d'observation (lot T1)
     for sc in res.get("scenes", []):
         by_analysis.setdefault(int(sc["analyse"]), []).append(sc)
     images = []
@@ -923,6 +947,7 @@ def ingest(conn, w: dict, rules: dict) -> dict:
             out[k] += summary.get(k, 0)
         conn.execute("UPDATE analyses SET fenetres_faites = %s WHERE id = %s", (json.dumps(faites), aid))
         status = "done" if len(errors) < len(scenes) else "failed"
+        termines.append(aid)
         conn.execute("UPDATE analyses SET status = %s, completed_at = now(), summary = %s, timings = %s, error = %s, "
                      "octets_lus = %s WHERE id = %s", (status, json.dumps(summary, default=str), json.dumps(mes),
                                                        "; ".join(errors)[:1000] or None, octets, aid))
@@ -930,9 +955,13 @@ def ingest(conn, w: dict, rules: dict) -> dict:
     with traces.span("sentinel.vignettes", **{"sentinel.vignettes": len(images)}):
         out.update(_store_images(conn, images))
     # Analyses de ce travailleur sans aucun résultat (travailleur arrêté avant) : en échec, avec le motif
-    conn.execute("UPDATE analyses SET status = 'failed', completed_at = now(), error = coalesce(error, %s) "
-                 "WHERE travailleur_id = %s AND status IN ('pending', 'running')",
-                 (res.get("erreur") or "aucun résultat du travailleur pour cette analyse", w["id"]))
+    termines += [r[0] for r in conn.execute(
+        "UPDATE analyses SET status = 'failed', completed_at = now(), error = coalesce(error, %s) "
+        "WHERE travailleur_id = %s AND status IN ('pending', 'running') RETURNING id",
+        (res.get("erreur") or "aucun résultat du travailleur pour cette analyse", w["id"])).fetchall()]
+    from mars import tip_and_cue
+    for aid in termines:
+        out.setdefault("demandes_evaluees", []).extend(tip_and_cue.evaluer(conn, aid, rules))
     out["mesures_travailleur"] = res.get("mesures", {})
     return out
 
@@ -1256,7 +1285,7 @@ def _alert(conn, kind, sev, t0, lon, lat, details, rules, key, evidence):
         """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
            VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s)
            ON CONFLICT (type, rule_key) WHERE rule_key IS NOT NULL DO UPDATE
-           SET severity = EXCLUDED.severity, details = EXCLUDED.details, rule_version = EXCLUDED.rule_version
+           SET rule_version = EXCLUDED.rule_version, """ + GARDE_VERIFICATION + """
            RETURNING id""",
         (kind, sev, t0, lon, lat, json.dumps(details, default=str), rules["version"], key)).fetchone()[0]
     for et, eid in evidence:

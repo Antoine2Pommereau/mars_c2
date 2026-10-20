@@ -278,13 +278,27 @@ async def requete_httpx_async(span, info):
 # Spans
 
 @contextmanager
-def span(nom: str, parent: str | None = None, nouvelle_trace: bool = False, **attributs):
+def span(nom: str, parent: str | None = None, nouvelle_trace: bool = False, liens: list | None = None, **attributs):
     """Span métier courant. `parent` : contexte W3C (traceparent) d'une trace commencée ailleurs (travailleur) ;
-    `nouvelle_trace` : racine d'une trace propre (chaque tâche)."""
+    `nouvelle_trace` : racine d'une trace propre (chaque tâche) ; `liens` : traces apparentées (traceparent W3C, ou
+    identifiant de trace seul), reliées par des liens de spans (lot T1 : alerte, demande d'observation, analyse)."""
     from opentelemetry.context import Context
     ctx = contexte(parent) if parent else (Context() if nouvelle_trace else None)
-    with _tracer.start_as_current_span(nom, context=ctx, attributes=propres(attributs)) as s:
+    links = [x for x in (lien(v) for v in (liens or [])) if x is not None]
+    with _tracer.start_as_current_span(nom, context=ctx, links=links, attributes=propres(attributs)) as s:
         yield s
+
+
+def lien(ref: str | None):
+    """Lien de span vers une autre trace : traceparent W3C complet, ou identifiant de trace seul (une alerte ne garde
+    que celui de sa trace de création) ; le span visé est alors repéré par les 16 premiers chiffres de l'identifiant,
+    Tempo ouvre la trace. None si la référence est vide ou invalide."""
+    from opentelemetry.trace import Link, SpanContext, TraceFlags
+    m = re.fullmatch(r"(?:00-)?([0-9a-f]{32})(?:-([0-9a-f]{16})-[0-9a-f]{2})?", (ref or "").strip())
+    if not m or int(m.group(1), 16) == 0:
+        return None
+    span_id = int(m.group(2) or m.group(1)[:16], 16) or 1
+    return Link(SpanContext(int(m.group(1), 16), span_id, is_remote=True, trace_flags=TraceFlags(1)))
 
 
 def attributs(**kw):

@@ -46,6 +46,10 @@ export const L = {
       termine: "terminé", echec: "en échec" } as Record<string, string>,
     version: "Version", differente: "version différente de l'interface",
     analyseSentinel: "Analyse Sentinel 1",
+    demandes: "Demandes d'observation", prochaineObservation: "Prochaine observation",
+    demandesDe: (attente: number, planifiees: number) => `${attente} en attente, ${planifiees} planifiée${planifiees > 1 ? "s" : ""}`,
+    observationDe: (sat: string, quand: string, objet: string) => `${sat.replace(/^S1/, "Sentinel 1")} ${quand}, ${objet}`,
+    tipCoupe: "tip and cue coupé",
     attenteGpu: (dans: string) => `GPU indisponible chez Scaleway, nouvel essai dans ${dans}`,
     services: { interface: "Interface", api: "API", taches: "Tâches", ingestion: "Ingestion", collecte: "Collecte" } as Record<string, string>,
     travailleurDe: (etat: string, type: string, le: string, s: number | null, eur: number | null) =>
@@ -76,8 +80,9 @@ export const L = {
     vitesse: "Vitesse du rejeu", instant: "Instant affiché", densite: "Navires suivis",
     pistes: { alertes: "Alertes", coupures: "Coupures du flux AIS", passages: "Passages satellites", viirs: "Nuits VIIRS" },
     coupure: (debut: string, fin: string) => `Flux AIS coupé de ${debut} à ${fin}`,
-    passage: (sat: string, t: string, prevu: boolean, analyse?: string) =>
-      `${sat}, ${t}${prevu ? ", prévu" : ""}${analyse && analyse !== "non_analyse" ? `, analyse ${analyse}` : ""}`,
+    passage: (sat: string, t: string, prevu: boolean, analyse?: string, demandes?: number) =>
+      `${sat}, ${t}${prevu ? ", prévu" : ""}${analyse && analyse !== "non_analyse" ? `, analyse ${analyse}` : ""}${
+        demandes ? `, ${demandes} demande${demandes > 1 ? "s" : ""} d'observation` : ""}`,
     nuit: (d: string, g: number, n: number, sans: number, nonEval: number, lune: number | null) =>
       `Nuit VIIRS du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} : ${g} granules, ${n} détections dont ${sans} sans AIS et ${nonEval} non évaluables${lune != null ? `, lune ${lune} %` : ""}`,
     navires: (n: number) => `${n} navires`, limite: "Au delà de 30 jours : archive R2",
@@ -175,6 +180,7 @@ export const L = {
       passes: "Navires passés à moins de 2 milles", liees: "Alertes liées", resume: "Zone", trafic: "Trafic",
       passage: "Passage", infrastructures: "Infrastructures couvertes", listes_couvertes: "Navires des listes couverts",
       viirs: "Détection", apparie: "Navire AIS apparié", sejour: "Séjour prolongé", navire: "Navire",
+      observation: "Vérification satellite demandée",
     } as Record<string, string>,
     etat: { route: "en route", immobile: "immobile", silencieux: "silencieux" } as Record<string, string>,
     dernierMessageIlYa: (t: string) => `dernier message il y a ${t}`, horsTrafic: "hors du trafic affiché",
@@ -224,6 +230,24 @@ export const L = {
                 "eolienne probable": "éolienne probable", "contraste faible": "contraste faible",
                 "non navire": "non navire" } as Record<string, string>,
       declaree: (m: string) => `${m} m déclarés`, aucunNavire: "Aucun navire AIS compatible à l'heure de la scène",
+    },
+    // Tip and cue (lot T1) : demande d'observation satellite
+    observation: {
+      demander: "Demander une observation", envoi: "Demande en cours", enregistree: "Demande enregistrée",
+      regroupee: "Ajoutée à la demande en cours", aucune: "Aucune demande", annuler: "Annuler",
+      etats: { en_attente: "en attente d'un passage", planifiee: "planifiée", analysee: "analysée",
+        sans_passage: "sans passage utile", expiree: "expirée", refusee_budget: "refusée (plafond ou budget)",
+        annulee: "annulée" } as Record<string, string>,
+      tips: { operateur: "demande manuelle", coupure_ais: "coupure AIS", viirs: "lumière VIIRS", rendezvous: "rendez vous",
+        watchlist: "navire des listes", identite: "changement d'identité" } as Record<string, string>,
+      resultats: { present_apparie: "présent, AIS cohérent", present_sans_ais: "présent sans AIS", absent: "aucun écho",
+        non_evaluable: "non évaluable" } as Record<string, string>,
+      passage: (sat: string, t: string, retro: boolean) => `${sat.replace(/^S1/, "Sentinel 1")}, ${t}${retro ? ", déjà acquis" : ""}`,
+      cercle: (km: string, mode: string) => `cercle de ${km} km, ${mode}`,
+      modes: { estime: "à l'estime", arret: "navire à l'arrêt", point: "position du signal" } as Record<string, string>,
+      distance: (m: number) => `écho à ${m} m de la position prédite`,
+      gravite: (avant: string, apres: string) => `gravité ${avant} portée à ${apres}`,
+      passageLabel: "Passage", resultat: "Résultat", incertitude: "Incertitude",
     },
     verification: {
       radar: "Échos radar Sentinel 1", viirs: "Lumières VIIRS", aucun: "Aucune détection satellite appariée à ce navire",

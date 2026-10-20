@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.30"
+version: "2026.10.31"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -279,6 +279,51 @@ sentinel:
   cap_vitesse_min_kn: 3
   # Éoliennes : une détection sans AIS à moins de 150 m d'un parc éolien en mer est un écho fixe probable
   eolien_m: 150
+
+# Tip and cue (lot T1, mars/tip_and_cue.py, docs/tip_and_cue.md) : un signal suspect (le tip) crée une demande
+# d'observation (le cue). Position prédite au prochain passage Sentinel 1 qui la couvre (ou à un passage acquis dans
+# les dernières heures), fenêtres de 24 km analysées dans la session Sentinel du passage (mêmes plafonds, même budget),
+# résultat ajouté comme preuve à l'alerte d'origine. Jamais de retrait automatique d'une alerte.
+tip_and_cue:
+  actif: false                  # livré coupé (20/10/2026) : activation après le rejeu sur les données du serveur
+  intervalle_min: 5             # tips relevés et demandes planifiées toutes les 5 minutes (après les règles)
+  fenetre_tips_h: 6             # alertes créées ou mises à jour depuis 6 h
+  expiration_h: 36              # demande expirée 36 h après sa création sans passage utile
+  heures_retro: 6               # passage déjà acquis dans les 6 dernières heures : analyse immédiate
+  regroupement_m: 10000         # tips sans navire (VIIRS, point de la carte) à moins de 10 km : une seule demande
+  fenetres_max_par_demande: 4   # au delà (incertitude trop grande au passage), demande « sans_passage »
+  # Centre à moins de sentinel.point_cote_min_km (2 km) de la côte : « sans_passage », invisible au radar
+  prediction:                   # estime à partir du dernier cap et de la dernière vitesse AIS
+    rayon_depart_m: 2000        # incertitude de départ
+    part_vitesse_par_h: 0.3     # le rayon croît de 30 % de la distance parcourue à la vitesse déclarée
+    rayon_max_m: 30000
+    arret_kn: 1.0               # sous 1 nœud, ou au mouillage : position fixe
+    rayon_arret_m: 1500
+    rayon_point_m: 3000         # détection VIIRS ou point de la carte sans navire : position du tip, rayon fixe
+  tips:                         # priorité : la plus haute passe d'abord dans le plafond quotidien ; actif: false coupe
+    operateur: {actif: true, priorite: 6}
+    coupure_ais:                # coupure de gravité élevée près d'une infrastructure ; règle en observation : la
+      actif: true               # demande porte le motif « coupure observée », aucune alerte de coupure n'est créée
+      priorite: 5
+      gravite_min: elevee
+      corridor_m: 3704
+    viirs: {actif: true, priorite: 4, gravite_min: moyenne}      # DARK_SHIP de source VIIRS
+    rendezvous: {actif: true, priorite: 4, cote_min_km: 5}       # rendez vous au large
+    watchlist:                  # navire des listes en mer près d'une infrastructure : remplace, quand tip and cue est
+      actif: true               # actif, le point « navire des listes dans un corridor » de la sélection Sentinel
+      priorite: 3
+      corridor_m: 3704
+    identite: {actif: true, priorite: 2, gravite_min: moyenne}   # IDENTITY_CHANGE
+  # Gravité de l'alerte d'origine selon le résultat (relevée ou abaissée, jamais retirée). Résultats : present_apparie
+  # (écho apparié au navire, AIS cohérent), present_sans_ais (écho sans AIS dans le cercle : preuve forte), absent
+  # (aucun écho : absent ou parti), non_evaluable
+  ajustements:
+    viirs: {present_sans_ais: elevee, present_apparie: faible}   # la lumière était un navire AIS
+    coupure_ais: {present_sans_ais: elevee}
+    rendezvous: {present_sans_ais: elevee}
+    identite: {present_sans_ais: elevee}
+    watchlist: {present_sans_ais: critique}
+  ntfy_gravites: [elevee, critique]   # une notification quand un résultat relève une alerte à ces gravités
 
 # Travailleurs éphémères (mars/travailleurs.py) : instances Scaleway créées à la demande, détruites par le serveur.
 # Garde fous : durée de vie, plafonds quotidiens, destruction des orphelins à chaque minute et au redémarrage.

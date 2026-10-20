@@ -141,6 +141,14 @@ export const INDICATEURS: Indicateur[] = [
       if (attente) detail.push([E.analyseSentinel, E.attenteGpu(duree(Math.max(0, Date.parse(attente.prochain_essai) - now)))]);
       if (s1) detail.push([E.coutMois, E.euros(s1.euros_mois ?? 0)]);
       if (ls?.statut === "echec") detail.push([E.lancementSentinel, `${date(ls.le)}${ls.erreur ? ` : ${ls.erreur}` : ""}`]);
+      // Tip and cue (lot T1) : demandes en attente ou planifiées, prochaine observation prévue
+      const tc = sat.tip_and_cue;
+      if (tc) {
+        detail.push([E.demandes, tc.actif ? E.demandesDe(tc.en_attente ?? 0, tc.planifiees ?? 0) : E.tipCoupe]);
+        const n = tc.prochaine;
+        if (n) detail.push([E.prochaineObservation, E.observationDe(n.satellite ?? "", quand(n.heure_passage),
+          n.navire ?? L.fiche.observation.tips[n.tip] ?? n.tip)]);
+      }
       return { niveau, resume: premier ? E.dans(duree(Date.parse(premier.acquired_at) - now)) : L.commun.nd, detail };
     },
   },

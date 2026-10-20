@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from mars import traces
 from mars.ais.live import ZONES
-from mars.evaluation import critere, motif_non_evaluable
+from mars.evaluation import GARDE_VERIFICATION, critere, motif_non_evaluable
 from mars.satellites import extent
 
 CMR = "https://cmr.earthdata.nasa.gov/search/granules.json"
@@ -543,7 +543,7 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
             """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
                VALUES ('DARK_SHIP', %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s)
                ON CONFLICT (type, rule_key) WHERE rule_key IS NOT NULL DO UPDATE
-               SET severity = EXCLUDED.severity, details = EXCLUDED.details, rule_version = EXCLUDED.rule_version
+               SET rule_version = EXCLUDED.rule_version, """ + GARDE_VERIFICATION + """
                RETURNING id""",
             (sev, ts, lon, lat, json.dumps(details, default=str), rules["version"],
              f"viirs:{nom}:{lon:.4f}:{lat:.4f}")).fetchone()[0]

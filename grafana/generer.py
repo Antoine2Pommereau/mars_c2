@@ -434,6 +434,50 @@ def satellites() -> Tableau:
                                                     AND source = 'sentinel1' ORDER BY id DESC LIMIT 1) a ON true
                WHERE p.mission = 'S1' AND $__timeFilter(p.acquired_at) ORDER BY 1 DESC LIMIT 200""",
             h=9, etats={"failed": ("échec", ROUGE), "done": ("analysé", SIGNAL)}, colonne_etat="Analyse")
+    t.section("Tip and cue (lot T1)")
+    t.chiffre("Demandes en cours",
+              "SELECT count(*) AS demandes FROM demandes_observation WHERE etat IN ('en_attente', 'planifiee')", w=6,
+              description="Demandes d'observation en attente d'un passage ou planifiées sur un passage Sentinel 1.")
+    t.chiffre("Délai médian du tip à l'observation",
+              """SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM heure_passage - cree_le) / 3600)
+                        AS heures FROM demandes_observation
+                 WHERE etat = 'analysee' AND $__timeFilter(cree_le)""", "h", w=6, decimales=1,
+              description="Heures entre la création de la demande et le passage analysé (négatif : passage déjà "
+                          "acquis au moment du tip).")
+    t.chiffre("Présents sans AIS",
+              "SELECT count(*) AS demandes FROM demandes_observation WHERE resultat = 'present_sans_ais' "
+              "AND $__timeFilter(cree_le)", seuils=((None, NEUTRE), (1, ROUGE)), w=6,
+              description="Écho radar sans AIS dans le cercle d'incertitude : preuve forte, gravité de l'alerte "
+                          "d'origine relevée selon la table de config/rules.yaml.")
+    t.chiffre("Coût des analyses portant une demande",
+              """SELECT coalesce(sum(a.cout_estime_eur), 0) AS euros FROM analyses a
+                 WHERE EXISTS (SELECT 1 FROM demandes_observation d WHERE d.analysis_id = a.id)
+                   AND $__timeFilter(a.requested_at)""", "currencyEUR", w=6, decimales=2,
+              description="Coût estimé des sessions Sentinel 1 qui portaient au moins une demande (partagé avec "
+                          "les autres points du passage).")
+    t.table("Demandes par source et par état",
+            """SELECT tip AS "Source", count(*) AS "Demandes",
+                      count(*) FILTER (WHERE etat IN ('en_attente', 'planifiee')) AS "En cours",
+                      count(*) FILTER (WHERE etat = 'analysee') AS "Analysées",
+                      count(*) FILTER (WHERE etat = 'sans_passage') AS "Sans passage",
+                      count(*) FILTER (WHERE etat = 'expiree') AS "Expirées",
+                      count(*) FILTER (WHERE etat = 'refusee_budget') AS "Refusées",
+                      count(*) FILTER (WHERE etat = 'annulee') AS "Annulées"
+               FROM demandes_observation WHERE $__timeFilter(cree_le) GROUP BY 1 ORDER BY 2 DESC""", w=12, h=7)
+    t.table("Résultats par catégorie",
+            """SELECT tip AS "Source", count(*) FILTER (WHERE resultat = 'present_apparie') AS "Présent, AIS cohérent",
+                      count(*) FILTER (WHERE resultat = 'present_sans_ais') AS "Présent sans AIS",
+                      count(*) FILTER (WHERE resultat = 'absent') AS "Aucun écho",
+                      count(*) FILTER (WHERE resultat = 'non_evaluable') AS "Non évaluable"
+               FROM demandes_observation WHERE etat = 'analysee' AND $__timeFilter(cree_le) GROUP BY 1 ORDER BY 1""",
+            w=12, h=7)
+    t.table("Dernières demandes",
+            """SELECT d.cree_le AS "Créée le", d.tip AS "Source", d.etat AS "État", d.vessel_id AS "Navire n°",
+                      d.heure_passage AS "Passage", round(d.rayon_m)::int AS "Rayon (m)", d.resultat AS "Résultat",
+                      left(d.motif, 120) AS "Motif", d.trace_id AS "Trace"
+               FROM demandes_observation d WHERE $__timeFilter(d.cree_le) ORDER BY d.id DESC LIMIT 100""",
+            h=9, etats={"refusee_budget": ("refusée", ORANGE), "expiree": ("expirée", NEUTRE),
+                        "analysee": ("analysée", SIGNAL)}, colonne_etat="État", trace="Trace")
     return t
 
 

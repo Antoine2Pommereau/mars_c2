@@ -396,7 +396,7 @@ def loop(conn):
     secours = supervision.Secours(supervision.Ntfy.from_env())
     if secours.ntfy is None:
         log("NTFY_SUJET absent du .env : aucune alerte de secours ne partira sur le téléphone")
-    last = {"disk": 0.0, "rules": 0.0, "sentinel": 0.0}
+    last = {"disk": 0.0, "rules": 0.0, "sentinel": 0.0, "tip": 0.0}
     while True:
         conn = minute(conn, secours, last)
         time.sleep(60)
@@ -424,6 +424,11 @@ def minute(conn, secours, last: dict):
             # statistiques d'abord, indépendantes des règles : un cycle des règles en échec ne les arrête plus
             step(stats_cycle, "statistiques de la frise")
             step(lambda: run(conn, "regles", rules_cycle, quiet=True), "règles")
+        # Tip and cue (lot T1) : tips relevés après les règles, demandes planifiées ou expirées
+        tc = load_rules().get("tip_and_cue") or {}
+        if tc.get("actif") and time.time() - last["tip"] >= 60 * tc["intervalle_min"]:
+            last["tip"] = time.time()
+            step(lambda: run(conn, "tip_and_cue", lambda: tip_and_cue_cycle(conn), quiet=True), "tip and cue")
         # Sentinel 1 : passages examinés toutes les 30 minutes (rien n'est lancé sans point d'intérêt ; un refus du
         # plafond ou du budget est consigné dans task_runs, sans trace d'erreur)
         if time.time() - last["sentinel"] >= 60 * load_rules()["sentinel"]["intervalle_min"]:
@@ -612,6 +617,33 @@ def _detruire_travailleurs(conn, _a):
                 print(s["id"], s.get("name"), f"REFUSÉE : {e}")
     conn.execute("UPDATE travailleurs SET etat = 'echec', fini_le = coalesce(fini_le, now()), "
                  "erreur = coalesce(erreur, 'arrêt d''urgence') WHERE detruit_le IS NULL AND etat NOT IN ('termine', 'echec')")
+
+
+def tip_and_cue_cycle(conn) -> dict:
+    from mars import tip_and_cue
+    return tip_and_cue.cycle(conn, load_rules())
+
+
+@commande("tip-rejeu")                               # lecture seule : demandes qu'auraient données les jours passés
+def _tip_rejeu(conn, a):
+    """Rejeu du tip and cue sur les a.args[0] derniers jours (7 par défaut), seuils de config/rules.yaml, même coupé
+    (actif: false) : demandes, passages utiles dans les 36 h, fenêtres et coût. Rien n'est écrit."""
+    from mars import tip_and_cue
+    jours = float(a.args[0]) if a.args else 7.0
+    fin = datetime.now(timezone.utc)
+    rules = load_rules()
+    r = tip_and_cue.rejeu_base(conn, rules, fin - timedelta(days=jours), fin)
+    traces.attributs(**{"tip.rejeu_jours": jours, "tip.rejeu_sessions": r["sessions"], "tip.rejeu_fenetres": r["fenetres"]})
+    print(f"Rejeu du tip and cue sur {r['jours']} jours ({r['passages_examines']} passages Sentinel 1 examinés) :")
+    print(f"  {'tip':<12} {'tips':>5} {'regroupés':>10} {'passage':>8} {'côte':>5} {'incertitude':>12} {'sans 36 h':>10}")
+    for tip, d in sorted(r["par_tip"].items()):
+        print(f"  {tip:<12} {d['tips']:>5} {d['regroupees']:>10} {d['passage']:>8} {d['cote']:>5} {d['incertitude']:>12} "
+              f"{d['sans_passage_36h']:>10}")
+    delais = sorted(x["delai_h"] for x in r["lignes"] if x["issue"] == "passage")
+    if delais:
+        print(f"  délai du tip au passage : médiane {delais[len(delais) // 2]} h, de {delais[0]} à {delais[-1]} h")
+    print(f"  {r['sessions']} session(s) ({r['sessions_par_jour']} par jour), {r['fenetres']} fenêtre(s), "
+          f"{r['cout_eur']:.2f} € sur la période, environ {r['cout_mois_eur']:.2f} € par mois".replace(".", ","))
 
 
 def _instant(texte: str) -> datetime:

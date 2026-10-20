@@ -118,4 +118,10 @@ export const api = {
   track: (vesselId: number, start: string, end: string, maxPoints = 2000) =>
     get<Feature>(`/vessels/${vesselId}/track?start=${enc(start)}&end=${enc(end)}&max_points=${maxPoints}`),
   vessel: (id: number) => get<VesselCard>(`/vessels/${id}`),
+  /** Tip and cue (lot T1) : demandes d'observation d'une alerte ou d'un navire, demande manuelle, annulation */
+  demandes: (q: { alerte_id?: number; vessel_id?: number }) =>
+    get<Props[]>(`/demandes?${q.alerte_id != null ? `alerte_id=${q.alerte_id}` : `vessel_id=${q.vessel_id}`}`),
+  demander: (body: { vessel_id?: number; alerte_id?: number; lon?: number; lat?: number; author?: string }) =>
+    post<{ id: number; regroupee: boolean; etat: string }>("/demandes", body),
+  annulerDemande: (id: number) => post<Props>(`/demandes/${id}/annuler`, {}),
 };

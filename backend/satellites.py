@@ -12,7 +12,9 @@ router = APIRouter()
 COLS = """s.id, s.mission, s.satellite, s.mode, s.orbit_direction, s.relative_orbit, s.absolute_orbit,
           s.acquired_at, s.ended_at, s.statut, s.source, s.produits, s.regions, s.nuages,
           cardinality(coalesce(s.infra_ids, '{}')) AS n_infra, cardinality(coalesce(s.watch_ids, '{}')) AS n_listes,
-          (SELECT a.status FROM analyses a WHERE a.pass_id = s.id ORDER BY a.id DESC LIMIT 1) AS analyse"""
+          (SELECT a.status FROM analyses a WHERE a.pass_id = s.id ORDER BY a.id DESC LIMIT 1) AS analyse,
+          (SELECT count(*) FROM demandes_observation d WHERE d.pass_id = s.id
+             AND d.etat IN ('planifiee', 'analysee'))::int AS demandes"""
 
 
 def _iso(v):

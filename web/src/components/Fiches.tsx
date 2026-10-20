@@ -10,6 +10,7 @@ import type { Feature, Props } from "../lib/types";
 import { zoneAlerte } from "../lib/fil";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
 import { Row, Tag } from "./Elements";
+import PreuveImage from "./PreuveImage";
 
 const F = L.fiche;
 const MIN = 60_000;
@@ -529,6 +530,83 @@ export function VerificationSatellite({ vesselId, onPickDetection }:
           ? V.longueurs(num(x.longueur_m, 0), num(x.longueur_declaree_m, 0)) : `${num(x.longueur_m, 0)} m`))}</ul></div>}
       {d.viirs.length > 0 && <div><div className="mb-1 text-muted">{V.viirs}</div><ul className="space-y-1">
         {d.viirs.map((x) => ligne("viirs", x, V.lumiere(num(x.nanowatts, 1))))}</ul></div>}
+    </div>
+  );
+}
+
+// Tip and cue (lot T1) : demande d'observation satellite
+
+type Cible = { vessel_id?: number; alerte_id?: number; lon?: number; lat?: number };
+
+/** Motif d'un refus de l'API (« detail » de la réponse), sinon le message brut. */
+function motifRefus(e: unknown): string {
+  const m = String((e as Error)?.message ?? e).match(/"detail"\s*:\s*"([^"]+)"/);
+  return m ? m[1] : String((e as Error)?.message ?? e);
+}
+
+/** Bouton « Demander une observation » : navire, alerte ou point de la carte ; la planification suit au cycle suivant. */
+export function BoutonObservation({ cible }: { cible: Cible }) {
+  const qc = useQueryClient();
+  const O = F.observation;
+  const m = useMutation({
+    mutationFn: () => api.demander({ ...cible, author: auteurMemorise() }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["demandes"] }),
+  });
+  return (
+    <div className="mt-2">
+      <button disabled={m.isPending || m.isSuccess} onClick={() => m.mutate()}
+        className="rounded-md border border-hair px-2.5 py-1 text-[12px] text-ink hover:border-signal disabled:opacity-60">
+        {m.isPending ? O.envoi : m.isSuccess ? (m.data.regroupee ? O.regroupee : O.enregistree) : O.demander}
+      </button>
+      {m.isError && <div className="mt-1 text-[11.5px] text-faint">{motifRefus(m.error)}</div>}
+    </div>
+  );
+}
+
+/** Demandes d'observation d'une alerte ou d'un navire : état, passage prévu, cercle d'incertitude, puis résultat,
+ *  vignette radar et gravité ajustée ; bouton de demande manuelle en bas. */
+export function DemandesObservation({ alerteId, vesselId, verification, onPickDetection }: {
+  alerteId?: number; vesselId?: number; verification?: Props;
+  onPickDetection: (source: "sentinel1" | "viirs", id: number) => void;
+}) {
+  const O = F.observation;
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["demandes", alerteId != null ? `a${alerteId}` : `n${vesselId}`],
+    queryFn: () => api.demandes(alerteId != null ? { alerte_id: alerteId } : { vessel_id: vesselId }),
+    staleTime: 60_000, refetchInterval: 120_000 });
+  const annuler = useMutation({ mutationFn: (id: number) => api.annulerDemande(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["demandes"] }) });
+  const rows = q.data ?? [];
+  return (
+    <div className="space-y-2 text-[12px]">
+      {rows.map((d) => {
+        const ouverte = (d.etat === "en_attente" || d.etat === "planifiee") && d.analysis_id == null;
+        const fort = d.resultat === "present_sans_ais";
+        return (
+          <div key={d.id} className="rounded-md border p-2.5" style={{ borderColor: fort ? "#e85bc7" : undefined }}>
+            <div className="flex items-baseline gap-2">
+              <span className="text-ink">{O.tips[d.tip] ?? d.tip}</span>
+              <span className="ml-auto text-muted">{O.etats[d.etat] ?? d.etat}</span>
+            </div>
+            {d.heure_passage && <Row label={O.passageLabel}>{O.passage(d.satellite ?? "", utc(d.heure_passage), !!d.passage_retro)}</Row>}
+            {d.rayon_m != null && <Row label={O.incertitude}>{O.cercle(num(d.rayon_m / 1000, 1), O.modes[d.prediction] ?? "")}</Row>}
+            {d.resultat && <Row label={O.resultat}><span style={{ color: fort ? "#e85bc7" : undefined }}>{O.resultats[d.resultat] ?? d.resultat}</span></Row>}
+            {d.distance_m != null && <div className="pt-1 text-muted">{O.distance(Math.round(d.distance_m))}</div>}
+            {verification?.demande === d.id && verification?.gravite_ajustee &&
+              <div className="pt-1 text-muted">{O.gravite(verification.gravite_avant, verification.gravite_ajustee)}</div>}
+            {!d.resultat && d.motif && ["sans_passage", "expiree", "refusee_budget"].includes(d.etat) &&
+              <div className="pt-1 text-faint">{d.motif}</div>}
+            {d.detection_id != null && (
+              <button onClick={() => onPickDetection("sentinel1", d.detection_id)} className="mt-2 block w-full text-left">
+                <PreuveImage source="sentinel1" detectionId={Number(d.detection_id)} />
+              </button>
+            )}
+            {ouverte && <button onClick={() => annuler.mutate(d.id)} className="mt-1.5 text-[11.5px] text-muted hover:text-ink">{O.annuler}</button>}
+          </div>
+        );
+      })}
+      {q.isSuccess && rows.length === 0 && <p className="text-muted">{O.aucune}</p>}
+      <BoutonObservation cible={alerteId != null ? { alerte_id: alerteId } : { vessel_id: vesselId }} />
     </div>
   );
 }

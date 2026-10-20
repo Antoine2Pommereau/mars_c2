@@ -3,7 +3,7 @@ import AlertActions from "../components/AlertActions";
 import Chip from "../components/Chip";
 import PreuveImage from "../components/PreuveImage";
 import { Row, Sejour, Sources, Tag } from "../components/Elements";
-import { Comportement, EnTeteAlerteNavire, EnTeteNavire, RadarAlertes, RadarMesures, RadarNavire, VerificationSatellite, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
+import { Comportement, DemandesObservation, EnTeteAlerteNavire, EnTeteNavire, RadarAlertes, RadarMesures, RadarNavire, VerificationSatellite, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
   PassageInfras, PassageListes, PassageResume, Trajectoire, ViirsAlertes, ViirsMesures, ViirsNavire, Vignette, ZoneResume,
   ZoneTrafic } from "../components/Fiches";
 import type { VesselCard } from "../lib/api";
@@ -101,6 +101,10 @@ const SECTIONS: Section[] = [
         ))}
       </ul>
     ) },
+  // Tip and cue (lot T1) : vérification satellite demandée, résultat et vignette ; demande manuelle
+  { id: "observation", objet: "alerte", ordre: 35, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <DemandesObservation alerteId={Number(c.alerte!.properties.id)}
+      verification={c.alerte!.properties.details?.verification_satellite} onPickDetection={c.onPickDetection} /> },
   { id: "decisions", objet: "alerte", ordre: 90, etape: null, titre: true, condition: toujours,
     rendu: (c) => <AlertActions id={c.alerte!.properties.id} status={c.alerte!.properties.status ?? "nouvelle"}
       onStatus={c.onStatus} /> },
@@ -138,6 +142,8 @@ const SECTIONS: Section[] = [
   { id: "satellite", objet: "navire", ordre: 80, etape: null, titre: true, condition: toujours,
     rendu: (c) => <VerificationSatellite vesselId={Number(c.navire!.vessel_id)}
       onPickDetection={(source, id) => c.onPickDetection(source, id)} /> },
+  { id: "observation", objet: "navire", ordre: 82, etape: null, titre: true, condition: toujours,
+    rendu: (c) => <DemandesObservation vesselId={Number(c.navire!.vessel_id)} onPickDetection={c.onPickDetection} /> },
   { id: "appris", objet: "navire", ordre: 85, etape: "pilote", titre: true, condition: toujours, rendu: rien },
   { id: "prediction", objet: "navire", ordre: 88, etape: "4", titre: true, condition: toujours, rendu: rien },
   { id: "notes", objet: "navire", ordre: 90, etape: null, titre: true, condition: toujours,

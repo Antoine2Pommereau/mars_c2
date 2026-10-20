@@ -1531,6 +1531,500 @@
      "show": false
     }
    }
+  },
+  {
+   "type": "row",
+   "title": "Tip and cue (lot T1)",
+   "collapsed": false,
+   "id": 19,
+   "gridPos": {
+    "x": 0,
+    "y": 49,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 20,
+   "type": "stat",
+   "title": "Demandes en cours",
+   "description": "Demandes d'observation en attente d'un passage ou planifiées sur un passage Sentinel 1.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 50,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT count(*) AS demandes FROM demandes_observation WHERE etat IN ('en_attente', 'planifiee')"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 21,
+   "type": "stat",
+   "title": "Délai médian du tip à l'observation",
+   "description": "Heures entre la création de la demande et le passage analysé (négatif : passage déjà acquis au moment du tip).",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 50,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM heure_passage - cree_le) / 3600) AS heures FROM demandes_observation WHERE etat = 'analysee' AND $__timeFilter(cree_le)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "h",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       }
+      ]
+     },
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 22,
+   "type": "stat",
+   "title": "Présents sans AIS",
+   "description": "Écho radar sans AIS dans le cercle d'incertitude : preuve forte, gravité de l'alerte d'origine relevée selon la table de config/rules.yaml.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 50,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT count(*) AS demandes FROM demandes_observation WHERE resultat = 'present_sans_ais' AND $__timeFilter(cree_le)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       },
+       {
+        "value": 1,
+        "color": "#ef6461"
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 23,
+   "type": "stat",
+   "title": "Coût des analyses portant une demande",
+   "description": "Coût estimé des sessions Sentinel 1 qui portaient au moins une demande (partagé avec les autres points du passage).",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 50,
+    "w": 6,
+    "h": 4
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT coalesce(sum(a.cout_estime_eur), 0) AS euros FROM analyses a WHERE EXISTS (SELECT 1 FROM demandes_observation d WHERE d.analysis_id = a.id) AND $__timeFilter(a.requested_at)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "currencyEUR",
+     "color": {
+      "mode": "thresholds"
+     },
+     "noValue": "aucune mesure",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "#7c8b97"
+       }
+      ]
+     },
+     "decimals": 2
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "wideLayout": true,
+    "showPercentChange": false
+   }
+  },
+  {
+   "id": 24,
+   "type": "table",
+   "title": "Demandes par source et par état",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 54,
+    "w": 12,
+    "h": 7
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT tip AS \"Source\", count(*) AS \"Demandes\", count(*) FILTER (WHERE etat IN ('en_attente', 'planifiee')) AS \"En cours\", count(*) FILTER (WHERE etat = 'analysee') AS \"Analysées\", count(*) FILTER (WHERE etat = 'sans_passage') AS \"Sans passage\", count(*) FILTER (WHERE etat = 'expiree') AS \"Expirées\", count(*) FILTER (WHERE etat = 'refusee_budget') AS \"Refusées\", count(*) FILTER (WHERE etat = 'annulee') AS \"Annulées\" FROM demandes_observation WHERE $__timeFilter(cree_le) GROUP BY 1 ORDER BY 2 DESC"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
+  },
+  {
+   "id": 25,
+   "type": "table",
+   "title": "Résultats par catégorie",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 54,
+    "w": 12,
+    "h": 7
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT tip AS \"Source\", count(*) FILTER (WHERE resultat = 'present_apparie') AS \"Présent, AIS cohérent\", count(*) FILTER (WHERE resultat = 'present_sans_ais') AS \"Présent sans AIS\", count(*) FILTER (WHERE resultat = 'absent') AS \"Aucun écho\", count(*) FILTER (WHERE resultat = 'non_evaluable') AS \"Non évaluable\" FROM demandes_observation WHERE etat = 'analysee' AND $__timeFilter(cree_le) GROUP BY 1 ORDER BY 1"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
+  },
+  {
+   "id": 26,
+   "type": "table",
+   "title": "Dernières demandes",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 61,
+    "w": 24,
+    "h": 9
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT d.cree_le AS \"Créée le\", d.tip AS \"Source\", d.etat AS \"État\", d.vessel_id AS \"Navire n°\", d.heure_passage AS \"Passage\", round(d.rayon_m)::int AS \"Rayon (m)\", d.resultat AS \"Résultat\", left(d.motif, 120) AS \"Motif\", d.trace_id AS \"Trace\" FROM demandes_observation d WHERE $__timeFilter(d.cree_le) ORDER BY d.id DESC LIMIT 100"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Trace"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Ouvrir la trace dans Tempo (vue Gantt)",
+          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+         }
+        ]
+       },
+       {
+        "id": "custom.width",
+        "value": 120
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "État"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "refusee_budget": {
+            "text": "refusée",
+            "color": "#f0a84b",
+            "index": 0
+           },
+           "expiree": {
+            "text": "expirée",
+            "color": "#7c8b97",
+            "index": 1
+           },
+           "analysee": {
+            "text": "analysée",
+            "color": "#4fb6c8",
+            "index": 2
+           }
+          }
+         }
+        ]
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
   }
  ],
  "templating": {

@@ -25,3 +25,11 @@ def motif_non_evaluable(flux_coupe: bool, zone_construite: bool, dans_zone: bool
         return (f"aucun navire AIS reçu à moins de {regle['couverture_rayon_km']} km dans les "
                 f"{regle['couverture_fenetre_min']} minutes autour du passage : réception AIS absente")
     return None
+
+
+# Lot T1 : une alerte vérifiée par satellite (tip and cue) garde sa vérification et sa gravité ajustée quand sa règle
+# la met à jour en place (règles en continu toutes les 5 minutes, nuit VIIRS, analyse Sentinel)
+GARDE_VERIFICATION = (
+    "severity = coalesce(alerts.details->'verification_satellite'->>'gravite_ajustee', EXCLUDED.severity), "
+    "details = EXCLUDED.details || jsonb_strip_nulls(jsonb_build_object('verification_satellite', "
+    "alerts.details->'verification_satellite'))")

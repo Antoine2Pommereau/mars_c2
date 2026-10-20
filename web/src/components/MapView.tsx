@@ -77,6 +77,7 @@ interface Props {
   onDraw: (bbox: number[]) => void;
   spotlight: { alertId: number | null; vesselIds: number[]; infraId?: number; zone?: string } | null;
   focusGeom: FC;                         // géométrie de l'objet sélectionné, surlignée (infrastructure, zone)
+  onContexte?: (pt: { lon: number; lat: number; x: number; y: number }) => void;   // clic droit (lot T1)
 }
 
 // Mode focus : tout ce qui ne concerne pas la sélection s'efface
@@ -94,6 +95,8 @@ export default function MapView(p: Props) {
   drawing.current = p.drawing;
   const onDraw = useRef(p.onDraw);
   onDraw.current = p.onDraw;
+  const onContexte = useRef(p.onContexte);
+  onContexte.current = p.onContexte;
 
   // Création de la carte et des couches, une seule fois
   useEffect(() => {
@@ -229,6 +232,10 @@ export default function MapView(p: Props) {
         start = null;
         if (b[2] - b[0] > 0.005 && b[3] - b[1] > 0.005) onDraw.current(b);
         else (map.getSource("draft") as GeoJSONSource).setData(EMPTY as any);
+      });
+      // Clic droit : menu de la carte (demande d'observation satellite sur le point)
+      map.on("contextmenu", (e) => {
+        if (!drawing.current) onContexte.current?.({ lon: e.lngLat.lng, lat: e.lngLat.lat, x: e.point.x, y: e.point.y });
       });
       map.on("mousemove", (e) => {
         if (drawing.current && start) (map.getSource("draft") as GeoJSONSource).setData(bboxPolygon(box(start, e.lngLat)) as any);

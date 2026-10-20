@@ -590,9 +590,22 @@ types horaires de plus de 0,50 €/h jamais éprouvés.
 `scenes_max_par_jour` à 2, budget de 6 € par mois ; `stats-trous` qualifie de vrai arrêt du flux un trou sous 5 % du
 flux habituel.
 
+**Lot T1, tip and cue (20/10/2026)** (migration 31, règles 2026.10.31, `docs/tip_and_cue.md`) : un signal suspect
+(VIIRS moyenne au moins, coupure élevée près d'une infrastructure même en observation, rendez vous au large, navire des
+listes près d'une infrastructure, changement d'identité moyen, demande manuelle) crée une demande d'observation
+(`demandes_observation`, origines regroupées par navire ou par zone, expiration 36 h) ; position prédite à l'heure de
+chaque passage Sentinel 1 (dernière position reçue, sinon estime ; cercle de 2 km plus 30 % du parcours, 30 km au
+plus ; 1,5 km à l'arrêt, 3 km sans navire), fenêtres de 24 km (4 au plus), point à moins de 2 km de la côte écarté ;
+passage acquis dans les 6 h, sinon le prochain prévu ; points « tip_and_cue » dans la sélection Sentinel (même
+session, plafonds et budget ; demandes d'abord dans le plafond) ; résultat (présent apparié, présent sans AIS, absent,
+non évaluable) en preuve de l'alerte, gravité ajustée par table, jamais de retrait, ntfy si relevée à élevée ;
+vérification gardée par les mises à jour en place des règles (`GARDE_VERIFICATION`). Liens de spans entre alerte,
+demande et analyse (`traces.span(liens=…)`). Livré coupé. Rejeu sur le serveur (7 jours, API) : 7 demandes avec passage
+sur 43 tips, 6 sessions, environ 4,90 € par mois ; navires des listes en transit presque jamais observables.
+
 ## 10. Tests
 
-`python -m pytest tests` (lot C5 : 235 réussis, 52 ignorés sans base ; 286 réussis, 1 ignoré avec la base de test) :
+`python -m pytest tests` (lot T1 : 244 réussis, 63 ignorés sans base ; 306 réussis, 1 ignoré avec la base de test) :
 227 réussis, 46 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 45 sans
 `MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
 lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans

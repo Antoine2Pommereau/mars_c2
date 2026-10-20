@@ -754,6 +754,27 @@ docker compose exec taches python scripts/taches.py sentinel-candidats 72
 docker compose exec taches python scripts/taches.py sentinel-diagnostic
 ```
 
+## Tip and cue (lot T1, docs/tip_and_cue.md)
+
+Migration 31 (`db/init/31_tip_and_cue.sql` : tables `demandes_observation` et `demandes_origines`, preuve « demande »
+des alertes) ; règles 2026.10.31, `tip_and_cue.actif: false`. Images qui changent : API (routes des demandes,
+passages), scripts (cycle, sélection Sentinel, commande `tip-rejeu`) et interface (section, bouton, clic droit, frise,
+indicateur). Grafana : section « Tip and cue » du tableau Satellites (redémarrage). La migration passe avant l'API (ses
+routes lisent les nouvelles tables).
+
+```bash
+cd /opt/mars_c2 && git pull origin main
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/31_tip_and_cue.sql
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
+docker compose rm -sf backend && docker image prune -af
+docker compose pull backend && docker compose up -d --no-build backend
+docker compose rm -sf web && docker image prune -af
+docker compose pull web && docker compose up -d --no-build web
+docker compose restart grafana
+docker compose exec taches python scripts/taches.py tip-rejeu 7
+```
+
 ## Vérifier
 
 ```bash
