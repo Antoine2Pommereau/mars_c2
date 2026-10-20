@@ -24,11 +24,14 @@
 #                 jeton (un jeton faux est refusé), résultats traités et instance « détruite » ; la trace doit réunir
 #                 taches, travailleur et API. Vérifie aussi le filtre des données sensibles du collecteur (environ
 #                 3 minutes ; images publiques du collecteur et de Tempo téléchargées au besoin).
+#   s2          : modèle Sentinel 2 d'AI2 (rslearn, image candidate du lot S2, 7,2 Go, poids publics de 2,2 Go gardés
+#                 dans ~/.cache/mars_c2/sentinel2) sur une vraie fenêtre de 24 km de la Manche lue sans clé dans le
+#                 miroir public de Google, sur processeur : quatre navires attendus (environ 3 minutes en émulation).
 #   sante       : collecte figée simulée dans l'image des scripts (processus vivant, aucun fichier écrit), lancée comme
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres] [sante] [traces]   (sans argument : les trois premiers)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres] [s2] [sante] [traces]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -139,6 +142,35 @@ verifier_ai2() {
     grep -vE 'Warning|warn\(' "$sortie" | tail -30
     rm -f "$sortie"
     echec "ai2 : essai du script du travailleur Sentinel en échec (code $code, trace ci dessus)"
+  fi
+  rm -f "$sortie"
+}
+
+# Lot S2 (mesures du 20/10/2026, docs/sentinel2.md) : image et poids candidats, pas encore dans config/rules.yaml
+IMAGE_S2=ghcr.io/allenai/sentinel2-vessel-detection@sha256:0ce4cbee15337138ead556f41aa099eb0512ae4b1bc4b3d4d6773ba90aa3672c
+POIDS_S2=https://storage.googleapis.com/ai2-rslearn-projects-data/projects
+verifier_s2() {
+  local cache=${MARS_CACHE_S2:-$HOME/.cache/mars_c2/sentinel2} p
+  for p in sentinel2_vessels/data_20250213_02_all_bands sentinel2_vessel_attribute/data_20250205_regress_00; do
+    if [ ! -s "$cache/projects/$p/best.ckpt" ]; then
+      echo "        téléchargement des poids $p (1,1 Go)"
+      mkdir -p "$cache/projects/$p"
+      curl -sf -o "$cache/projects/$p/best.ckpt" "$POIDS_S2/$p/checkpoints/best.ckpt" || echec "s2 : poids $p non téléchargés"
+    fi
+  done
+  if ! docker image inspect "$IMAGE_S2" >/dev/null 2>&1; then
+    echo "        téléchargement de l'image Sentinel 2 d'AI2 (7,2 Go) : $IMAGE_S2"
+    docker pull -q --platform "$PLATEFORME" "$IMAGE_S2" >/dev/null || echec "s2 : image non téléchargée"
+  fi
+  local sortie code=0
+  sortie=$(mktemp)
+  docker run --rm --platform "$PLATEFORME" --shm-size=2g -e RSLP_PREFIX=/rslp -v "$cache:/rslp" \
+    -v "$PWD/travailleurs:/mars:ro" --entrypoint python "$IMAGE_S2" /mars/essai_sentinel2.py >"$sortie" 2>&1 || code=$?
+  grep -E '^(OK|ÉCHEC|        )' "$sortie" || true
+  if [ "$code" -ne 0 ]; then
+    grep -vE 'Warning|warn\(' "$sortie" | tail -30
+    rm -f "$sortie"
+    echec "s2 : modèle Sentinel 2 en échec (code $code, trace ci dessus)"
   fi
   rm -f "$sortie"
 }
@@ -266,9 +298,10 @@ for cible in "${CIBLES[@]}"; do
     ai2-complet) verifier_ai2 "" ;;
     fenetres) verifier_ai2 --lecture essai_fenetres.py ;;
     ai2-fenetres) verifier_ai2 --complet essai_fenetres.py ;;
+    s2)      verifier_s2 ;;
     sante)   verifier_sante ;;
     traces)  verifier_traces ;;
-    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, sante ou traces)" ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, s2, sante ou traces)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."

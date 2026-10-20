@@ -611,6 +611,12 @@ plage ; cercle d'incertitude dessiné au clic ; compteur des actives).
 navire muet bornée à 6 h et à nos zones (au delà, « navire en transit, hors de portée au prochain passage »), muet lent
 sous 3 nœuds à position fixe ; pêcheurs et coupures déclassées écartés du tip coupure_ais ; motif au survol dans le
 panneau Observations.
+**Lot S2, mesures (20/10/2026)** (`docs/sentinel2.md`, aucun code de production) : toute notre mer acquise par
+Sentinel 2, large compris (un passage tous les 1,7 jours en Atlantique, 3,3 en Méditerranée, entre 10:00 et 11:30 UTC) ;
+0,8 passage dégagé par semaine et par point au large en Atlantique et Manche, 1,15 en Méditerranée (SCL de la fenêtre) ;
+annonce du catalogue utile comme premier tri seulement ; JP2 sur eodata, 47 Mo lus par fenêtre (15 %). Détecteur
+Sentinel 2 absent de l'image d'AI2 épinglée et de toutes ses étiquettes ; modèle rslearn d'AI2 essayé (L1C, 13 bandes,
+longueurs à 4 % près sur quatre navires de l'AIS sur cinq), `verifier_images.sh s2`. Suite en attente de décision.
 
 ## 10. Tests
 
@@ -791,6 +797,12 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   Et l'adresse d'un canal webhook est elle même un gabarit : `{{ "{{.title}}" }}` pour laisser `{{.title}}` à ntfy.
 * Tableaux Grafana : ne jamais lire la table `positions` ; `ingested_files` ne garde que deux jours (les journées
   archivées en sortent), `task_runs` des règles aussi.
+* **Heure d'une tuile Sentinel 2** : l'heure du catalogue et du nom de produit est le début de la prise de vue sur
+  toute l'orbite ; la tuile est vue plusieurs minutes plus tard (387 s pour T30UXA le 17/10/2026, soit 2 km de
+  décalage à 10 nœuds). Lire `SENSING_TIME` dans `MTD_TL.xml` pour la fusion.
+* L'image `vessel-detection-sentinels` d'AI2 n'a pas les poids de son détecteur Sentinel 2 (seulement `cfg.json`) ; le
+  modèle Sentinel 2 d'AI2 est celui de rslearn (`sentinel2-vessel-detection`), poids hors de l'image. Lancer avec
+  `--shm-size=2g` et un dossier des poids accessible en écriture.
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.
 * **Traces (étape D2)** : l'instrumentation de requests remplace l'en tête `traceparent` posé à la main par le
