@@ -299,8 +299,9 @@ def _setup(conn, now):
                 "DELETE FROM reception_cells", "DELETE FROM fixed_echoes", "DELETE FROM stats_minute",
                 "DELETE FROM sar_passes WHERE product_name LIKE 'S1C_OR999%'", "DELETE FROM infrastructure WHERE source = 'essai'",
                 "DELETE FROM watchlist WHERE imo = 9999011",
-                "DELETE FROM positions WHERE vessel_id IN (SELECT id FROM vessels WHERE mmsi IN (273999001, 228999002, 228999003))",
-                "DELETE FROM vessels WHERE mmsi IN (273999001, 228999002, 228999003)"):
+                "DELETE FROM positions WHERE vessel_id IN (SELECT id FROM vessels WHERE mmsi IN (273999001, 228999002, 228999003, "
+                "228999004))",
+                "DELETE FROM vessels WHERE mmsi IN (273999001, 228999002, 228999003, 228999004)"):
         conn.execute(sql)
     t0 = now - timedelta(hours=3)
     pid = conn.execute(
@@ -318,14 +319,16 @@ def _setup(conn, now):
                  (reg,))
     ids = {}
     for key, mmsi, imo, length in (("liste", 273999001, 9999011, 120), ("grand", 228999002, None, 200),
-                                   ("menteur", 228999003, None, 100)):
+                                   ("menteur", 228999003, None, 100), ("lointain", 228999004, None, 220)):
         ids[key] = conn.execute("INSERT INTO vessels (mmsi, imo, name, length_m, ais_class) VALUES (%s, %s, %s, %s, 'A') "
                                 "RETURNING id", (mmsi, imo, key.upper(), length)).fetchone()[0]
     conn.execute("INSERT INTO watchlist (source, imo, name, risks, datasets, sanctioned) VALUES "
                  "('opensanctions', 9999011, 'LISTE', '{sanction}', '{eu_essai}', true)")
     conn.execute("REFRESH MATERIALIZED VIEW vessel_watch")
     # Trajectoires à 10 nœuds vers l'est, une position par minute autour de l'acquisition
-    for key, lon0, lat in (("liste", -6.1, 48.01), ("grand", -5.9, 48.2), ("menteur", -6.2, 47.9)):
+    # « grand » dans la fenêtre lue autour du navire des listes ; « lointain » dans la scène, hors de toute fenêtre
+    for key, lon0, lat in (("liste", -6.1, 48.01), ("grand", -6.0, 48.08), ("menteur", -6.2, 47.9),
+                           ("lointain", -5.75, 48.25)):
         for k in range(-20, 21):
             conn.execute("INSERT INTO positions (vessel_id, ts, geom, sog_kn, cog_deg) VALUES (%s, %s, "
                          "ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, 10, 90)",
@@ -404,7 +407,7 @@ def test_selection_launch_and_results_end_to_end(conn, monkeypatch):
     dark = conn.execute("SELECT details, severity FROM alerts WHERE type = 'DARK_SHIP'").fetchone()
     assert dark[0]["source"] == "sentinel1" and dark[0]["critere_evaluation"] == "zone_de_reception_fiable"
     un = conn.execute("SELECT details FROM alerts WHERE type = 'AIS_UNCONFIRMED'").fetchone()[0]
-    assert un["navire"]["vessel_id"] == ids["grand"]
+    assert un["navire"]["vessel_id"] == ids["grand"]          # le lointain, hors des fenêtres lues, n'est jamais visé
     assert conn.execute("SELECT status FROM analyses WHERE id = %s", (aid,)).fetchone()[0] == "done"
     # Résultat reçu deux fois : ni détection ni alerte en double
     again = sentinel.ingest(conn, w, RULES)
@@ -632,3 +635,41 @@ def test_worker_imports_the_ai2_chain_as_src_modules():
     assert not [m for m in imports if m.split(".")[0] in ("data", "inference", "models", "utils")], imports
     assert {"src.data.image", "src.inference.pipeline"} <= set(imports)
     assert "int(round(float(task.get(\"nms_m\"" in src                  # seuil entier pour la grille d'AI2
+
+
+def test_unconfirmed_alerts_outside_read_windows_are_classed_without_losing_decisions(conn):
+    """Défaut du 21/10/2026 : AIS_UNCONFIRMED émise sur un navire de la scène hors des fenêtres lues. Lecture seule,
+    puis correction : une alerte nouvelle est classée avec motif, une alerte déjà décidée garde son statut et sa
+    décision ; une alerte dans une fenêtre lue n'est pas touchée."""
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    pid, ids, t0 = _setup(conn, now)
+    fen = [{"id": 0, "bbox": [-6.26, 47.90, -5.94, 48.12], "marge_m": 2000, "points": 1}]
+    aid = conn.execute(
+        "INSERT INTO analyses (pass_id, aoi, mode, status, source, scenes, requested_at, timings) VALUES (%s, "
+        "ST_MakeEnvelope(-6.5, 47.8, -5.5, 48.4, 4326)::geography, 'full', 'done', 'sentinel1', %s, %s, %s) RETURNING id",
+        (pid, json.dumps([{"id": "SC", "fenetres": fen}]), now, json.dumps({"SC": {"fenetres": [{"index": 0}]}}))).fetchone()[0]
+
+    def alerte(cle, lon, lat, statut="nouvelle"):
+        return conn.execute(
+            "INSERT INTO alerts (type, severity, status, event_time, geom, details, rule_version, rule_key) VALUES "
+            "('AIS_UNCONFIRMED', 'moyenne', %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, 'essai', %s) "
+            "RETURNING id", (statut, t0, lon, lat, json.dumps({"source": "sentinel1", "analysis_id": aid, "scene": "SC"}),
+                             cle)).fetchone()[0]
+    dedans = alerte("s1u:SC:1", -6.1, 48.0)
+    dehors = alerte("s1u:SC:2", -5.75, 48.25)
+    decidee = alerte("s1u:SC:3", -5.70, 48.30, "confirmee")
+    conn.execute("INSERT INTO alert_actions (alert_id, action, note, author) VALUES (%s, 'confirmer', 'vu', 'Antoine')",
+                 (decidee,))
+    lecture = S.non_confirmees_hors_fenetres(conn)
+    assert sorted(x["alerte"] for x in lecture["hors_fenetres"]) == [dehors, decidee] and lecture["classees"] == 0
+    assert conn.execute("SELECT status FROM alerts WHERE id = %s", (dehors,)).fetchone()[0] == "nouvelle"
+    r = S.non_confirmees_hors_fenetres(conn, appliquer=True)
+    assert (r["classees"], r["annotees"]) == (1, 1)
+    etats = dict(conn.execute("SELECT id, status FROM alerts WHERE id = ANY(%s)", ([dedans, dehors, decidee],)).fetchall())
+    assert etats == {dedans: "nouvelle", dehors: "classee", decidee: "confirmee"}
+    actions = conn.execute("SELECT alert_id, action, author FROM alert_actions WHERE alert_id = ANY(%s) ORDER BY id",
+                           ([dehors, decidee],)).fetchall()
+    assert actions == [(decidee, "confirmer", "Antoine"), (dehors, "classer", "MARS C2 (correction du 21/10/2026)")]
+    assert conn.execute("SELECT details->>'reclassement' FROM alerts WHERE id = %s", (decidee,)).fetchone()[0] \
+        == S.MOTIF_HORS_FENETRE
+    assert S.non_confirmees_hors_fenetres(conn)["hors_fenetres"] == []                # déjà corrigées, plus revues

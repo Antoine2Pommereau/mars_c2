@@ -1022,7 +1022,9 @@ def fuse_analysis(conn, aid: int, rules: dict) -> dict:
            "non_evaluables": 0, "echos_fixes": 0, "scenes": {}}
     scenes = conn.execute("SELECT DISTINCT scene, ts FROM detections WHERE analysis_id = %s AND scene IS NOT NULL",
                           (aid,)).fetchall()
-    meta = {sc["id"]: sc for sc in (conn.execute("SELECT scenes FROM analyses WHERE id = %s", (aid,)).fetchone()[0] or [])}
+    meta_row = conn.execute("SELECT scenes, timings FROM analyses WHERE id = %s", (aid,)).fetchone()
+    meta = {sc["id"]: sc for sc in (meta_row[0] or [])}
+    timings = meta_row[1] if isinstance(meta_row[1], dict) else {}
     # Scènes sans détection : leurs grands navires AIS doivent quand même être confrontés au radar
     for sid, sc in meta.items():
         if sid not in {x[0] for x in scenes}:
@@ -1063,7 +1065,11 @@ def fuse_analysis(conn, aid: int, rules: dict) -> dict:
         det_f, _alerts, n_ais, extras = fuse(det, pos, pd.Timestamp(t0), bbox, rules_f, heading, fixed)
         n_fixed = _record_fixed(conn, det_f, extras["fixed_hits"], t0)
         cut = flux_coupe(conn, t0, rules)
-        r = _screen_and_alert(conn, aid, scene, t0, sc, det_f, extras, cut, cells, heading, rules)
+        # Analyse par fenêtres (lot C3) : seules les fenêtres lues sont vues ; un grand navire AIS ailleurs dans la scène
+        # n'a pas été regardé, son absence d'écho ne prouve rien (défaut corrigé le 21/10/2026)
+        lues = fenetres_lues(sc, (timings.get(scene) or {}).get("fenetres"))
+        capteur = {"visible": lambda lon, lat, f=lues: dans_coeur(f, lon, lat)} if sc.get("fenetres") else None
+        r = _screen_and_alert(conn, aid, scene, t0, sc, det_f, extras, cut, cells, heading, rules, capteur)
         out["appariees"] += int(det_f.matched_vessel_id.notna().sum()) if len(det_f) else 0
         out["echos_fixes"] += n_fixed
         for k in ("alertes_dark_ship", "alertes_non_confirme", "alertes_incoherence", "non_evaluables"):
@@ -1071,6 +1077,68 @@ def fuse_analysis(conn, aid: int, rules: dict) -> dict:
         out["scenes"][scene] = {"detections": len(det_f), "navires_ais": n_ais, "direction_de_vol_deg": heading,
                                 "decalages": extras["offsets"], "flux_coupe": cut, "emprise": foot is not None}
     out["critere_evaluation"] = critere(cells)
+    return out
+
+
+def fenetres_lues(sc: dict, mesures: list | None) -> list[dict]:
+    """Fenêtres d'une scène réellement analysées : celles prévues (emprise, marge), moins celles en erreur au retour du
+    travailleur (hors de l'image, trop petites). Sans mesure par fenêtre, toutes les fenêtres prévues."""
+    erreurs = {f.get("index") for f in mesures or [] if f.get("erreur")}
+    return [f for k, f in enumerate(sc.get("fenetres") or []) if f.get("id", k) not in erreurs]
+
+
+def dans_coeur(fenetres_scene: list[dict], lon: float, lat: float) -> bool:
+    """Le point est il dans le cœur d'une fenêtre lue (emprise moins sa marge, où les détections sont gardées) ?"""
+    for f in fenetres_scene:
+        b, m = f["bbox"], f.get("marge_m", 2000)
+        dlat, dlon = m / 110_574.0, m / (111_320.0 * math.cos(math.radians((b[1] + b[3]) / 2)))
+        if b[0] + dlon <= lon <= b[2] - dlon and b[1] + dlat <= lat <= b[3] - dlat:
+            return True
+    return False
+
+
+MOTIF_HORS_FENETRE = ("Navire hors des fenêtres lues de la scène radar : son absence d'écho ne prouve rien (alerte émise "
+                      "à tort avant la correction du 21/10/2026)")
+
+
+def non_confirmees_hors_fenetres(conn, appliquer: bool = False) -> dict:
+    """Alertes AIS_UNCONFIRMED de Sentinel 1 émises hors des fenêtres lues (défaut corrigé le 21/10/2026). Lecture
+    seule par défaut ; `appliquer` : une alerte encore « nouvelle » est classée avec son motif (action « classer »
+    signée MARS C2, comme une décision d'opérateur) ; une alerte déjà traitée garde son statut et ses décisions, seul le
+    motif est ajouté à ses détails. Rien n'est supprimé."""
+    out = {"examinees": 0, "hors_fenetres": [], "classees": 0, "annotees": 0}
+    rows = conn.execute(
+        """SELECT a.id, a.status, ST_X(a.geom::geometry), ST_Y(a.geom::geometry), a.details->>'scene',
+                  (a.details->>'analysis_id')::bigint,
+                  EXISTS (SELECT 1 FROM alert_actions x WHERE x.alert_id = a.id) AS decisions
+           FROM alerts a WHERE a.type = 'AIS_UNCONFIRMED' AND coalesce(a.details->>'source', 'sentinel1') = 'sentinel1'
+             AND NOT (a.details ? 'reclassement') ORDER BY a.id""").fetchall()
+    for aid, statut, lon, lat, scene, analyse, decisions in rows:
+        out["examinees"] += 1
+        an = conn.execute("SELECT scenes, timings FROM analyses WHERE id = %s", (analyse,)).fetchone()
+        if not an:
+            continue
+        sc = next((x for x in an[0] or [] if x.get("id") == scene), None)
+        if not sc or not sc.get("fenetres"):
+            continue                                   # scène entière : l'emprise était bien lue
+        mesures = ((an[1] if isinstance(an[1], dict) else {}).get(scene) or {}).get("fenetres")
+        if dans_coeur(fenetres_lues(sc, mesures), lon, lat):
+            continue
+        out["hors_fenetres"].append({"alerte": aid, "statut": statut, "decisions": decisions, "analyse": analyse})
+        if not appliquer:
+            continue
+        conn.execute("UPDATE alerts SET details = details || jsonb_build_object('reclassement', %s::text) WHERE id = %s",
+                     (MOTIF_HORS_FENETRE, aid))
+        if statut == "nouvelle" and not decisions:
+            conn.execute("UPDATE alerts SET status = 'classee' WHERE id = %s", (aid,))
+            conn.execute("INSERT INTO alert_actions (alert_id, action, note, motif, author) VALUES (%s, 'classer', %s, "
+                         "'faux_positif', 'MARS C2 (correction du 21/10/2026)')", (aid, MOTIF_HORS_FENETRE))
+            out["classees"] += 1
+        else:
+            out["annotees"] += 1                        # décision d'opérateur conservée telle quelle
+    traces.attributs(**{"sentinel.non_confirmees_examinees": out["examinees"],
+                        "sentinel.non_confirmees_hors_fenetres": len(out["hors_fenetres"]),
+                        "sentinel.non_confirmees_classees": out["classees"]})
     return out
 
 

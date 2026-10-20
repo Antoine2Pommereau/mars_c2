@@ -37,6 +37,7 @@ Usage :
     python scripts/taches.py viirs-reevaluer          # détections VIIRS en base réévaluées (gravité, non évaluables)
     python scripts/taches.py sentinel                 # passages Sentinel 1 à analyser maintenant (sélection automatique)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
+    python scripts/taches.py sentinel-non-confirmees [--appliquer]   # AIS_UNCONFIRMED hors des fenêtres lues
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
     SENTINEL_PLAFOND_ESSAI=1 python scripts/taches.py sentinel2-analyser ID   # essai réel Sentinel 2 (coupé sinon)
     python scripts/taches.py sentinel2-poids          # poids du modèle Sentinel 2 recopiés sur R2 (une fois)
@@ -839,6 +840,20 @@ def _sentinel_candidats(conn, a):
 
 commande("sentinel")(_sentinel(False))
 commande("sentinel-analyser")(_sentinel(True))
+
+
+@commande("sentinel-non-confirmees")                 # alertes AIS_UNCONFIRMED hors des fenêtres lues (21/10/2026)
+def _sentinel_non_confirmees(conn, a):
+    """Lecture seule par défaut ; --appliquer : classe avec motif les alertes encore nouvelles, annote les autres."""
+    from mars import sentinel
+    r = sentinel.non_confirmees_hors_fenetres(conn, appliquer="--appliquer" in a.args)
+    print(f"{r['examinees']} alerte(s) AIS_UNCONFIRMED de Sentinel 1 examinée(s), {len(r['hors_fenetres'])} hors des "
+          f"fenêtres lues" + (f" : {r['classees']} classée(s) avec motif, {r['annotees']} annotée(s) (décision "
+                               "d'opérateur conservée)" if "--appliquer" in a.args else " (lecture seule, --appliquer pour "
+                                                                                       "corriger)"))
+    for x in r["hors_fenetres"]:
+        print(f"  alerte {x['alerte']} (analyse {x['analyse']}), statut {x['statut']}"
+              + (", décision d'opérateur" if x["decisions"] else ""))
 
 
 @commande("sentinel2-analyser")                      # essai réel : SENTINEL_PLAFOND_ESSAI=1 (Sentinel 2 coupé)

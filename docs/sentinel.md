@@ -584,3 +584,18 @@ sessions de fin de mois. Pour deux passages par jour tout le mois, il faut 12 �
 * Le modèle d'AI2 manque une partie des petits navires ; AIS_UNCONFIRMED ne concerne que les navires de 50 m et plus.
 * Les seuils d'incohérence et de persistance sont des valeurs de départ, à calibrer sur les premiers passages.
 * Un volume bloc dont l'instance aurait été supprimée hors de MARS C2 (console) n'est pas retrouvé automatiquement.
+
+## AIS_UNCONFIRMED hors des fenêtres lues (corrigé le 21/10/2026)
+
+Depuis le lot C3, une scène n'est lue que dans ses fenêtres utiles ; la fusion confrontait pourtant au radar tous les
+grands navires AIS de l'emprise de la scène entière. Un navire de plus de 50 m passant ailleurs dans la scène, jamais
+regardé, recevait une alerte AIS_UNCONFIRMED (« aucun écho compatible »). Désormais, pour une scène analysée par
+fenêtres, seul un navire dans le cœur d'une fenêtre lue sans erreur peut être déclaré sans écho (`dans_coeur`,
+`fenetres_lues`, comme pour Sentinel 2) ; une scène entière garde son emprise. Test :
+`test_selection_launch_and_results_end_to_end` (un navire de 220 m hors fenêtre n'est plus visé).
+
+Alertes déjà émises : sur le serveur, au 21/10/2026, **aucune** (0 AIS_UNCONFIRMED parmi les 156 alertes ; l'analyse
+97, seule analyse Sentinel 1 réussie avec des détections, n'en avait produit aucune). La commande
+`taches.py sentinel-non-confirmees` les recherche (lecture seule) ; avec `--appliquer`, une alerte encore nouvelle est
+classée « faux positif » avec le motif, par une action signée MARS C2, et une alerte déjà décidée par un opérateur garde
+son statut et sa décision (motif ajouté à ses détails seulement). Rien n'est supprimé.

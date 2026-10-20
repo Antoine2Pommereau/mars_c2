@@ -809,6 +809,9 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * **Heure d'une tuile Sentinel 2** : l'heure du catalogue et du nom de produit est le début de la prise de vue sur
   toute l'orbite ; la tuile est vue plusieurs minutes plus tard (387 s pour T30UXA le 17/10/2026, soit 2 km de
   décalage à 10 nœuds). Lire `SENSING_TIME` dans `MTD_TL.xml` pour la fusion.
+* **Analyse par fenêtres** : toute conclusion d'absence (AIS_UNCONFIRMED, « absent » du tip and cue) ne vaut que dans
+  le cœur des fenêtres réellement lues, jamais sur l'emprise de la scène (défaut corrigé le 21/10/2026 pour Sentinel 1,
+  `sentinel.dans_coeur`).
 * **Masque SCL et navires** : le SCL du L2A classe en nuage le navire lui même et son sillage (1 à 8 % des pixels
   autour d'un navire dégagé) : juger une part du voisinage, jamais un seul pixel.
 * GDAL ne journalise pas le premier bloc de 16 Ko lu à l'ouverture d'un fichier par `/vsicurl/` ou `/vsis3/` : le
