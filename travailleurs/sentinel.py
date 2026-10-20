@@ -119,7 +119,8 @@ def _request_for(href: str) -> urllib.request.Request:
             raise Arret("aucune clé S3 remise avec la tâche : lecture des images impossible")
         host, path = _S3.get("endpoint", "eodata.dataspace.copernicus.eu"), "/" + href[len("s3://"):]
         headers.update(s3_headers(host, path, _S3["access_key"], _S3["secret_key"], _S3.get("region", "default")))
-        return urllib.request.Request("https://" + host + urllib.parse.quote(path, safe="/-_.~"), headers=headers)
+        schema = "http://" if _S3.get("http") else "https://"        # http : faux S3 local des essais seulement
+        return urllib.request.Request(schema + host + urllib.parse.quote(path, safe="/-_.~"), headers=headers)
     return urllib.request.Request(href, headers=headers)
 
 

@@ -4,7 +4,8 @@ Exécuté sur une instance GP1-S éphémère, dans l'image publique ghcr.io/alle
 rslearn d'AI2, licence Apache 2.0 pour le code et les poids), épinglée par empreinte. Le serveur transmet ce fichier
 par cloud-init (mars/travailleurs.py), et la tâche par le réseau privé, une seule fois : paramètres, paire de clés S3
 de Copernicus dédiée aux travailleurs, adresses R2 présignées des poids (jamais dans le cloud-init, un journal ou la
-base ; clés gardées en mémoire, options GDAL du processus seulement).
+base ; clés gardées en mémoire, remises à rasterio par une AWSSession ou, sans boto3, par l'environnement le temps
+d'une lecture : rasterio refuse les clés AWS en options GDAL).
 
 Pour chaque tuile L1C (110 km) et chaque fenêtre de 24 km calculée par le serveur :
 1. masque des nuages : SCL du L2A de la même tuile, lu dans la fenêtre (20 m, quelques centaines de kilooctets) ; une
@@ -19,6 +20,7 @@ Essai local (scripts/verifier_images.sh s2) : python3 sentinel2.py --local tache
 de Google, mêmes fichiers qu'eodata) et poids déjà présents.
 """
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -250,7 +252,7 @@ def poids(task: dict, dossier: str, tr) -> dict:
 
 
 def chemin_gdal(href: str) -> str:
-    """s3://eodata/… devient /vsis3/eodata/… (clés en options GDAL) ; https:// devient /vsicurl/ (essai local)."""
+    """s3://eodata/… devient /vsis3/eodata/… (paire remise par env_gdal) ; https:// devient /vsicurl/ (essai local)."""
     if href.startswith("s3://"):
         return "/vsis3/" + href[len("s3://"):]
     if href.startswith("http"):
@@ -258,18 +260,53 @@ def chemin_gdal(href: str) -> str:
     return href
 
 
+CLES_AWS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+
+
+def session_aws():
+    """Session rasterio portant la paire S3 de Copernicus, si boto3 est dans l'image ; None sinon."""
+    try:
+        import boto3  # noqa: F401
+        from rasterio.session import AWSSession
+    except ImportError:
+        return None
+    return AWSSession(aws_access_key_id=_S3["access_key"], aws_secret_access_key=_S3["secret_key"],
+                      region_name=_S3.get("region", "default"),
+                      endpoint_url=_S3.get("endpoint", "eodata.dataspace.copernicus.eu"))
+
+
+@contextlib.contextmanager
 def env_gdal(journal: str):
-    """Options GDAL de lecture : clés S3 de Copernicus en mémoire, lecture partielle, journal pour compter les octets."""
+    """Lecture S3 par rasterio : lecture partielle, journal de GDAL pour compter les octets, paire S3 de Copernicus.
+
+    rasterio refuse les clés AWS en options GDAL (EnvError « GDAL's AWS config options can not be directly set »,
+    essai réel du 20/10/2026) : elles passent par une AWSSession si boto3 est présent, sinon par les variables
+    d'environnement que GDAL lit, posées pour la seule durée de la lecture puis retirées. Les options non sensibles
+    restent dans rasterio.Env. Aucune clé dans un journal ni dans un span."""
     import rasterio
     from rasterio.session import DummySession
     opts = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".jp2,.xml",
             "GDAL_HTTP_MAX_RETRY": "3", "GDAL_HTTP_RETRY_DELAY": "2", "CPL_DEBUG": "ON", "CPL_LOG": journal}
+    session, avant = DummySession(), None
     if _S3.get("access_key"):
         opts.update({"AWS_S3_ENDPOINT": _S3.get("endpoint", "eodata.dataspace.copernicus.eu"),
                      "AWS_VIRTUAL_HOSTING": "FALSE", "AWS_HTTPS": "NO" if _S3.get("http") else "YES",
-                     "AWS_REGION": _S3.get("region", "default"), "AWS_ACCESS_KEY_ID": _S3["access_key"],
-                     "AWS_SECRET_ACCESS_KEY": _S3["secret_key"]})
-    return rasterio.Env(session=DummySession(), **opts)
+                     "AWS_REGION": _S3.get("region", "default")})
+        session = session_aws()
+        if session is None:
+            avant = {k: os.environ.get(k) for k in CLES_AWS}
+            os.environ.update({"AWS_ACCESS_KEY_ID": _S3["access_key"], "AWS_SECRET_ACCESS_KEY": _S3["secret_key"]})
+            session = DummySession()
+    try:
+        with rasterio.Env(session=session, **opts):
+            yield
+    finally:
+        if avant is not None:
+            for k, v in avant.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 
 def fenetre_utm(ds, bbox: list):

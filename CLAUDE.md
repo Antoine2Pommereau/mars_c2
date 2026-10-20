@@ -674,6 +674,15 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   filtré par IP : les travailleurs sortent par des IP variables), par `r2_modeles_get_url` ; ne jamais présigner pour
   un travailleur avec `r2_get_url`. Un test depuis le serveur ne révèle pas un filtre IP : seul le contrôle du
   travailleur (étape `controle_r2`) le fait.
+* **rasterio refuse les clés AWS en options GDAL** (essai Sentinel 2 du 20/10/2026, analyse 99, travailleur 30 :
+  « EnvError: GDAL's AWS config options can not be directly set », 0 octet lu) : `AWS_ACCESS_KEY_ID` et
+  `AWS_SECRET_ACCESS_KEY` ne passent jamais dans `rasterio.Env(...)`. Les remettre par une
+  `rasterio.session.AWSSession` (boto3 présent dans l'image rslearn) ou, sans boto3, par les variables d'environnement
+  posées le temps de la lecture puis retirées (`env_gdal` de `travailleurs/sentinel2.py`) ; options non sensibles
+  (`AWS_S3_ENDPOINT`, `AWS_VIRTUAL_HOSTING`, `AWS_HTTPS`) dans `rasterio.Env`. GDAL seul (`gdal.SetConfigOption`,
+  travailleur Sentinel 1) n'a pas cette limite. Leçon : une lecture S3 d'un travailleur s'éprouve par son chemin S3
+  réel, signature comprise, jamais seulement sur des fichiers locaux ou un miroir sans clé (`verifier_images.sh s2-s3`,
+  `fenetres`, `tests/test_lectures_s3.py`).
 * Pas de commentaire en fin de ligne dans `.env` : `mars/config.py` ne les retire pas.
 * **Noms d'images fixes** (`mars_c2-backend`, `mars_c2-web`, `mars_c2-scripts`) : sans eux, le nom dépend du dossier
   du projet, et une image construite sur le Mac n'aurait pas le nom attendu sur le serveur.

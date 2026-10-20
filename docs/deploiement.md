@@ -445,6 +445,8 @@ scripts/verifier_images.sh                     # les trois ; ou seulement celles
 scripts/verifier_images.sh ai2                 # facultatif : script du travailleur Sentinel dans l'image d'AI2 (5 Go)
 scripts/verifier_images.sh ai2-complet         # facultatif : analyse complète sur CPU d'une scène synthétique (5 min)
 scripts/verifier_images.sh traces              # trace complète de bout en bout dans Tempo, travailleur simulé compris (3 min)
+scripts/verifier_images.sh s2 s2-s3            # travailleur Sentinel 2 dans l'image rslearn ; s2-s3 obligatoire dès que travailleurs/sentinel2.py change :
+                                               # chemin S3 de production, faux S3 qui vérifie la signature (environ 9 min en émulation)
 ```
 
 `traces` doit afficher `OK traces : trace … de bout en bout dans Tempo (OK 22 spans, services mars-api,

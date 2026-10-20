@@ -264,6 +264,16 @@ fenêtre de Beachy Head (essai du 20/10/2026 : 4 navires, masque présent, 0,4 %
 en 201 requêtes et 5 s, part nuageuse autour des navires 0 à 1,3 %, vignettes de 29 à 30 Ko, contextes de 136 à
 177 Ko, 141 s dont 133 s d'inférence en émulation).
 
+`scripts/verifier_images.sh s2-s3` (obligatoire avant publication, ajouté après l'essai réel du 20/10/2026) refait le
+même essai par le **chemin S3 de production** : adresses `s3://eodata/…`, paire de clés factice remise comme par le
+serveur, faux S3 local (`travailleurs/faux_s3.py`) qui vérifie la signature AWS version 4 de chaque requête et relaie
+les plages d'octets vers le miroir. La cible s2 lisait sans clé par `/vsicurl/` et n'avait pas vu que rasterio refuse
+les clés AWS en options GDAL (EnvError au travailleur 30) ; s2-s3 reproduit cette erreur sur l'ancien code. Elle vérifie
+aussi la voie sans boto3 (clés dans l'environnement le temps de la lecture, retirées ensuite), le refus d'une signature
+fausse et l'absence de toute clé dans le résultat, les spans, l'environnement et la sortie. Les autres lectures S3
+(heure propre des tuiles dans `MTD_TL.xml` et contrôle des clés par le serveur, téléchargement du travailleur
+Sentinel 1) passent par le même faux S3 dans `tests/test_lectures_s3.py`.
+
 ## 11. Essai réel pas à pas
 
 Sentinel 2 reste coupé (`scenes_max_par_jour: 0`) : l'essai passe par la commande manuelle et le plafond d'essai.

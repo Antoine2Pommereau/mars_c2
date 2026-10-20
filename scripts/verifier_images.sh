@@ -28,11 +28,17 @@
 #                 de 2,2 Go gardés dans ~/.cache/mars_c2/sentinel2), sur une vraie fenêtre de 24 km de la Manche lue
 #                 sans clé dans le miroir public de Google (13 bandes L1C et masque SCL du L2A), sur processeur :
 #                 quatre navires, masque présent, vignettes de 2 et 10 km (environ 3 minutes en émulation).
+#   s2-s3       : même essai par le chemin S3 de production (obligatoire avant publication) : adresses s3://eodata/…,
+#                 paire de clés factice remise comme par le serveur, faux S3 local (travailleurs/faux_s3.py) qui
+#                 vérifie la signature AWS version 4 de chaque requête et relaie les plages d'octets vers le miroir ;
+#                 SCL, 13 bandes, inférence et vignettes ; puis voie sans boto3, signature fausse refusée, aucune clé
+#                 dans le résultat, les spans, l'environnement ou la sortie. Ajouté après l'essai réel du 20/10/2026
+#                 (EnvError de rasterio sur les clés AWS en options GDAL, que la cible s2, sans clé, ne voyait pas).
 #   sante       : collecte figée simulée dans l'image des scripts (processus vivant, aucun fichier écrit), lancée comme
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres] [s2] [sante] [traces]   (sans argument : les trois premiers)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres] [s2] [s2-s3] [sante] [traces]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -150,7 +156,7 @@ verifier_ai2() {
 # Lot S2 (docs/sentinel2.md) : image épinglée de config/rules.yaml (travailleurs.types.sentinel2)
 POIDS_S2=https://storage.googleapis.com/ai2-rslearn-projects-data/projects
 verifier_s2() {
-  local cache=${MARS_CACHE_S2:-$HOME/.cache/mars_c2/sentinel2} p IMAGE_S2
+  local mode=${1:-} cache=${MARS_CACHE_S2:-$HOME/.cache/mars_c2/sentinel2} p IMAGE_S2
   IMAGE_S2=$(grep -o 'ghcr.io/allenai/sentinel2-vessel-detection@sha256:[0-9a-f]*' config/rules.yaml | head -1)
   [ -n "$IMAGE_S2" ] || echec "s2 : image Sentinel 2 introuvable dans config/rules.yaml"
   for p in sentinel2_vessels/data_20250213_02_all_bands sentinel2_vessel_attribute/data_20250205_regress_00; do
@@ -167,12 +173,17 @@ verifier_s2() {
   local sortie code=0
   sortie=$(mktemp)
   docker run --rm --platform "$PLATEFORME" --shm-size=2g -e RSLP_PREFIX=/rslp -v "$cache:/rslp" \
-    -v "$PWD/travailleurs:/mars:ro" --entrypoint python "$IMAGE_S2" /mars/essai_sentinel2.py >"$sortie" 2>&1 || code=$?
+    -v "${MARS_TRAVAILLEURS:-$PWD/travailleurs}:/mars:ro" --entrypoint python "$IMAGE_S2" /mars/essai_sentinel2.py $mode \
+    >"$sortie" 2>&1 || code=$?
   grep -E '^(OK|ÉCHEC|        )' "$sortie" || true
+  if [ -n "$mode" ] && grep -q SECRETESSAIS3 "$sortie"; then
+    rm -f "$sortie"
+    echec "s2-s3 : la clé secrète de l'essai apparaît dans la sortie du travailleur"
+  fi
   if [ "$code" -ne 0 ]; then
     grep -vE 'Warning|warn\(' "$sortie" | tail -30
     rm -f "$sortie"
-    echec "s2 : modèle Sentinel 2 en échec (code $code, trace ci dessus)"
+    echec "s2${mode:+-s3} : travailleur Sentinel 2 en échec (code $code, trace ci dessus)"
   fi
   rm -f "$sortie"
 }
@@ -301,9 +312,10 @@ for cible in "${CIBLES[@]}"; do
     fenetres) verifier_ai2 --lecture essai_fenetres.py ;;
     ai2-fenetres) verifier_ai2 --complet essai_fenetres.py ;;
     s2)      verifier_s2 ;;
+    s2-s3)   verifier_s2 --s3 ;;
     sante)   verifier_sante ;;
     traces)  verifier_traces ;;
-    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, s2, sante ou traces)" ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, s2, s2-s3, sante ou traces)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."
