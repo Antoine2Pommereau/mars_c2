@@ -203,14 +203,43 @@ modifiées ».
 
 ## 9. Poids dans le seau des modèles et quota gratuit
 
-Les deux fichiers de poids (1,15 Go et 1,09 Go, soit 2,24 Go) sont recopiés une fois dans le seau R2 des modèles
+Les trois fichiers de poids (1,15 Go et 1,09 Go pour la détection et les attributs, 0,47 Go pour le squelette
+SatlasPretrain depuis le 21/10/2026, soit 2,71 Go) sont recopiés une fois dans le seau R2 des modèles
 `mars-c2-modeles` par `taches.py sentinel2-poids` (copie en flux sans disque, empreinte SHA 256 vérifiée à l'envoi, puis par le travailleur
 après chaque téléchargement ; empreintes versionnées dans `config/rules.yaml`). Ils occupent **22 % des 10 Go gratuits**
-de R2. Avec l'archive (environ 26 Mo par jour depuis le 05/10/2026) et les sauvegardes (moins de 70 Mo), le quota
-gratuit serait atteint vers le **28/07/2027** au lieu du 21/10/2027, soit environ 85 jours plus tôt. Au delà, les poids
+de R2 (27 % avec le squelette). Avec l'archive (environ 26 Mo par jour depuis le 05/10/2026) et les sauvegardes (moins
+de 70 Mo), le quota gratuit serait atteint vers le **10/07/2027** au lieu du 21/10/2027, soit environ 103 jours plus
+tôt. Au delà, les poids
 coûtent 0,03 dollar par mois (0,015 dollar par Go et par mois). Les vignettes optiques pèsent environ 30 Ko (2 km,
 gardées 30 jours) et 140 à 180 Ko pour la vignette de contexte (10 km, seulement pour une détection liée à une alerte,
 gardée sans limite) : négligeables.
+
+### Squelette SatlasPretrain servi localement (21/10/2026)
+
+Le modèle d'attributs (longueur, largeur, vitesse, cap, type) part d'un squelette SatlasPretrain
+(`Sentinel2_SwinB_SI_MS`, 467 249 356 octets). La bibliothèque `satlaspretrain_models` le télécharge à chaque
+chargement depuis Hugging Face (`requests.get` sur une adresse codée en dur, ni cache ni variable d'environnement pour
+l'éviter ; sur le Mac, `IncompleteRead` à 361 Mo et cible s2-s3 en échec). Ses poids sont pourtant remplacés aussitôt
+par ceux du point de contrôle d'AI2 : le téléchargement ne sert qu'à construire le modèle. Le `restore_path` du modèle
+de détection (seau S3 public d'AI2) n'est lu qu'à l'entraînement (`on_fit_start`), jamais à l'inférence.
+
+* Copié dans le seau des modèles (`taches.py sentinel2-poids`, depuis Hugging Face, empreinte SHA 256 vérifiée, la même
+  que l'en tête `X-Linked-ETag` publié par Hugging Face), remis au travailleur par adresse présignée comme les deux
+  autres, contrôlé par `controle_r2` avant Docker et par `sentinel2-diagnostic`.
+* Le travailleur relit son empreinte juste avant le chargement (span `sentinel2.satlas_local`), puis lance l'inférence
+  par un lanceur (`LANCEUR`) qui remplace, dans ce seul processus, le `requests` de la bibliothèque par une lecture du
+  fichier (`servir_satlas`) : toute autre adresse est refusée (« téléchargement externe coupé »), sans repli.
+* Essai : `verifier_images.sh s2` et `s2-s3` rendent Hugging Face injoignable dans le conteneur ; mêmes quatre
+  navires, mêmes mesures.
+
+| Construction du squelette (image rslearn, Mac, émulation amd64) | Durée |
+|---|---|
+| Téléchargement depuis Hugging Face, trois essais | 224,6 s, 201,5 s, 174,5 s |
+| Fichier local (servir_satlas) | 5,0 s |
+
+Gain par analyse : environ 3 à 3,5 minutes sur le Mac, moins le téléchargement de 467 Mo depuis R2 par le travailleur
+(mesuré au prochain essai réel, span `GET R2 poids`). Sur un GP1-S facturé à l'heure entamée, le gain en euros n'apparaît
+que s'il fait passer la session sous une heure ; l'essentiel est la fiabilité (plus de dépendance à Hugging Face).
 
 ### Un seau et un jeton propres aux poids (correctif du 20/10/2026)
 

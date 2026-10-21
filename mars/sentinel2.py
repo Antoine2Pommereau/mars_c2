@@ -444,7 +444,9 @@ def _calculer(conn, scw, rules: dict, s2: dict, now: datetime, analyses: list, s
               "nuages_fenetre_max_pct": s2["nuages_fenetre_max_pct"], "masque_classes": s2["masque_classes"],
               "masque_voisinage_m": s2["masque_voisinage_m"], "masque_part_max_pct": s2["masque_part_max_pct"],
               "vignette_km": s2["vignette_km"], "contexte_km": s2["contexte_km"],
-              "poids": [{k: p[k] for k in ("chemin", "r2", "sha256", "octets")} for p in s2["poids"]]}
+              # satlas : squelette servi localement par le travailleur (sans lui, tout téléchargement est refusé)
+              "poids": [{k: p[k] for k in ("chemin", "r2", "sha256", "octets", "satlas") if k in p}
+                        for p in s2["poids"]]}
     essais = []
     with traces.span("sentinel2.choix_calcul", **{"sentinel2.analyses": len(ids), "sentinel2.fenetres": n_fen}) as sp:
         for v in travailleurs.variantes(rules, "sentinel2"):
@@ -518,7 +520,7 @@ def copier_poids(s2: dict, principal, modeles, session, nettoyer: bool = False, 
     flux depuis l'ancienne copie du seau principal si elle est complète, sinon depuis le dépôt public d'AI2, empreinte
     SHA 256 vérifiée pendant l'envoi (objet faux retiré). `nettoyer` : l'ancienne copie du seau principal est
     supprimée, après relecture complète de la nouvelle et vérification de son empreinte (le quota gratuit de 10 Go
-    de R2 est par compte : pas de doublon de 2,2 Go)."""
+    de R2 est par compte : pas de doublon de 2,7 Go)."""
     out = {"copies": 0, "deja": 0, "retires": 0, "octets": 0}
     for p in s2["poids"]:
         cle = p["r2"]
@@ -533,10 +535,13 @@ def copier_poids(s2: dict, principal, modeles, session, nettoyer: bool = False, 
                 if ancienne == p["octets"]:
                     source, flux, ferme = "seau principal", principal.flux(cle), None
                 else:
-                    url = f"{s2['source_poids']}/{p['chemin'].replace('/best.ckpt', '/checkpoints/best.ckpt')}"
+                    # Source propre au fichier (squelette SatlasPretrain sur Hugging Face), sinon dépôt public d'AI2
+                    url = p.get("source") or \
+                        f"{s2['source_poids']}/{p['chemin'].replace('/best.ckpt', '/checkpoints/best.ckpt')}"
                     resp = session.get(url, stream=True, timeout=120)
                     resp.raise_for_status()
-                    source, flux, ferme = "dépôt public d'AI2", resp.raw, resp
+                    source = "dépôt Hugging Face d'AI2" if p.get("source") else "dépôt public d'AI2"
+                    flux, ferme = resp.raw, resp
                 sp.set_attribute("sentinel2.source", source)
                 lecteur = _sha256_flux(flux)
                 try:

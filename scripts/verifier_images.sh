@@ -155,6 +155,7 @@ verifier_ai2() {
 
 # Lot S2 (docs/sentinel2.md) : image épinglée de config/rules.yaml (travailleurs.types.sentinel2)
 POIDS_S2=https://storage.googleapis.com/ai2-rslearn-projects-data/projects
+SATLAS_S2='https://huggingface.co/allenai/satlas-pretrain/resolve/main/sentinel2_swinb_si_ms.pth?download=true'
 verifier_s2() {
   local mode=${1:-} cache=${MARS_CACHE_S2:-$HOME/.cache/mars_c2/sentinel2} p IMAGE_S2
   IMAGE_S2=$(grep -o 'ghcr.io/allenai/sentinel2-vessel-detection@sha256:[0-9a-f]*' config/rules.yaml | head -1)
@@ -166,13 +167,24 @@ verifier_s2() {
       curl -sf -o "$cache/projects/$p/best.ckpt" "$POIDS_S2/$p/checkpoints/best.ckpt" || echec "s2 : poids $p non téléchargés"
     fi
   done
+  # Squelette SatlasPretrain (467 Mo) : gardé en cache, reprise du téléchargement si coupé, empreinte vérifiée
+  local satlas="$cache/satlas/sentinel2_swinb_si_ms.pth" sha
+  sha=$(grep -A3 'chemin: satlas/sentinel2_swinb_si_ms.pth' config/rules.yaml | grep -o 'sha256: [0-9a-f]*' | cut -d' ' -f2)
+  if [ "$(shasum -a 256 "$satlas" 2>/dev/null | cut -d' ' -f1)" != "$sha" ]; then
+    echo "        téléchargement du squelette SatlasPretrain (467 Mo)"
+    mkdir -p "$cache/satlas"
+    for _ in 1 2 3 4 5; do curl -sSL --retry 5 -C - -o "$satlas" "$SATLAS_S2" && break; done
+    [ "$(shasum -a 256 "$satlas" | cut -d' ' -f1)" = "$sha" ] || echec "s2 : squelette SatlasPretrain, empreinte fausse"
+  fi
   if ! docker image inspect "$IMAGE_S2" >/dev/null 2>&1; then
     echo "        téléchargement de l'image Sentinel 2 d'AI2 (7,2 Go) : $IMAGE_S2"
     docker pull -q --platform "$PLATEFORME" "$IMAGE_S2" >/dev/null || echec "s2 : image non téléchargée"
   fi
   local sortie code=0
   sortie=$(mktemp)
+  # Hugging Face injoignable dans le conteneur : le modèle doit charger son squelette depuis le fichier remis
   docker run --rm --platform "$PLATEFORME" --shm-size=2g -e RSLP_PREFIX=/rslp -v "$cache:/rslp" \
+    --add-host huggingface.co:127.0.0.1 --add-host us.aws.cdn.hf.co:127.0.0.1 --add-host cdn-lfs.huggingface.co:127.0.0.1 \
     -v "${MARS_TRAVAILLEURS:-$PWD/travailleurs}:/mars:ro" --entrypoint python "$IMAGE_S2" /mars/essai_sentinel2.py $mode \
     >"$sortie" 2>&1 || code=$?
   grep -E '^(OK|ÉCHEC|        )' "$sortie" || true

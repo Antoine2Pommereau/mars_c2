@@ -31,6 +31,8 @@ L1C = ("tiles/31/U/CR/S2A_MSIL1C_20261004T110831_N0513_R137_T31UCR_20261004T1624
 SCL = ("L2/tiles/31/U/CR/S2A_MSIL2A_20261004T110831_N0513_R137_T31UCR_20261004T174703.SAFE/GRANULE/"
        "L2A_T31UCR_A058936_20261004T111122/IMG_DATA/R20m/T31UCR_20261004T110831_SCL_20m.jp2")
 LON, LAT, DEMI_M = 0.4, 50.4, 12000
+SATLAS = "satlas/sentinel2_swinb_si_ms.pth"
+SATLAS_SHA256 = "788c3c9c7b74d4128627b4b27ebf3c3d3f715132c31271148f1cd5198b5be99a"
 ATTENDUS = 4
 
 
@@ -57,7 +59,11 @@ def main(s3: bool = False) -> int:
              "regions": [[-6.8, 41.2, 9.8, 51.2]], "confiance": 0.8, "nuages_fenetre_max_pct": 20,
              "masque_classes": [3, 8, 9, 10], "masque_voisinage_m": 500, "masque_part_max_pct": 25,
              "vignette_km": 2, "contexte_km": 10,
-             "rslp_prefix": "/rslp", "poids": []}
+             "rslp_prefix": "/rslp",
+             # Squelette SatlasPretrain : fichier du cache (monté dans /rslp), servi localement après vérification de son
+             # empreinte ; Hugging Face est rendu injoignable dans le conteneur par verifier_images.sh
+             "poids": [{"chemin": SATLAS, "fichier": "/rslp/" + SATLAS, "satlas": "Sentinel2_SwinB_SI_MS",
+                        "sha256": SATLAS_SHA256}]}
     import otel_mini
     tr = otel_mini.Traceur(None, None, None)
     t0 = time.time()

@@ -251,6 +251,71 @@ def poids(task: dict, dossier: str, tr) -> dict:
     return out
 
 
+# Squelette SatlasPretrain du modèle d'attributs : servi depuis le fichier remis par R2 et vérifié, jamais téléchargé.
+# satlaspretrain_models (Weights.get_pretrained_model) appelle requests.get sur une adresse Hugging Face codée en dur,
+# sans cache ni variable d'environnement pour l'éviter : le lanceur de l'inférence remplace ce requests, dans le seul
+# processus de l'inférence, par une lecture du fichier local ; toute autre adresse est refusée (accès coupé).
+
+def servir_satlas(fichiers: dict) -> dict:
+    """`fichiers` : identifiant SatlasPretrain (Sentinel2_SwinB_SI_MS) vers le fichier local vérifié. Retourne les
+    adresses servies localement."""
+    import satlaspretrain_models.model as m
+    from satlaspretrain_models.utils import SatlasPretrain_weights as poids_satlas
+    locales = {poids_satlas[k]["url"]: chemin for k, chemin in fichiers.items()}
+
+    class Reponse:
+        status_code = 200
+
+        def __init__(self, contenu: bytes):
+            self.content = contenu
+
+    class Requetes:
+        @staticmethod
+        def get(url, *_a, **_k):
+            if url not in locales:
+                raise RuntimeError("téléchargement externe coupé (squelette SatlasPretrain non remis par R2) : "
+                                   + url.split("?")[0])
+            with open(locales[url], "rb") as f:
+                return Reponse(f.read())
+    m.requests = Requetes
+    return locales
+
+
+# Lanceur de l'inférence : servir_satlas, puis rslp.main comme « python -m rslp.main »
+LANCEUR = """import importlib.util, json, os, runpy, sys
+spec = importlib.util.spec_from_file_location("mars_travailleur_s2", os.environ["MARS_S2_SCRIPT"])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.servir_satlas(json.loads(os.environ.get("MARS_SATLAS") or "{}"))
+sys.argv = ["rslp.main"] + sys.argv[1:]
+runpy.run_module("rslp.main", run_name="__main__", alter_sys=True)
+"""
+
+
+def verifier_satlas(task: dict, rslp: str, tr) -> dict:
+    """Fichiers SatlasPretrain de la tâche, empreinte relue juste avant le chargement (cache vérifié) : identifiant
+    vers chemin. Absent ou faux : arrêt, jamais de repli sur le téléchargement externe."""
+    out = {}
+    for p in task.get("poids") or []:
+        if not p.get("satlas"):
+            continue
+        chemin = os.path.join(rslp, p["chemin"])
+        with tr.span("sentinel2.satlas_local", **{"sentinel2.poids": p["chemin"]}) as sp:
+            h = hashlib.sha256()
+            try:
+                with open(chemin, "rb") as f:
+                    for b in iter(lambda: f.read(8 << 20), b""):
+                        h.update(b)
+            except OSError:
+                sp.erreur("absent")
+                raise Arret(f"squelette SatlasPretrain {p['chemin']} absent : téléchargement externe coupé")
+            if p.get("sha256") and h.hexdigest() != p["sha256"]:
+                sp.erreur("empreinte fausse")
+                raise Arret(f"squelette SatlasPretrain {p['chemin']} : empreinte fausse avant le chargement")
+        out[p["satlas"]] = chemin
+    return out
+
+
 def chemin_gdal(href: str) -> str:
     """s3://eodata/… devient /vsis3/eodata/… (paire remise par env_gdal) ; https:// devient /vsicurl/ (essai local)."""
     if href.startswith("s3://"):
@@ -463,10 +528,13 @@ def analyser(task: dict, tr) -> dict:
     if travaux:
         taches = [{"image_files": [{"bands": [b], "fname": os.path.join(d, f"{b}.tif")} for b in BANDES],
                    "geojson_path": os.path.join(d, "detections.geojson")} for _r, _rf, _f, d, _i, _m in travaux]
-        with tr.span("sentinel2.inference", **{"sentinel2.fenetres": len(taches)}) as si:
+        satlas = verifier_satlas(task, rslp, tr)
+        with tr.span("sentinel2.inference", **{"sentinel2.fenetres": len(taches),
+                                                "sentinel2.satlas_local": bool(satlas)}) as si:
             t = time.time()
-            env = {**os.environ, "RSLP_PREFIX": rslp}
-            run = subprocess.run([sys.executable, "-m", "rslp.main", "sentinel2_vessels", "predict", "--tasks",
+            env = {**os.environ, "RSLP_PREFIX": rslp, "MARS_SATLAS": json.dumps(satlas),
+                   "MARS_S2_SCRIPT": os.path.abspath(__file__)}
+            run = subprocess.run([sys.executable, "-c", LANCEUR, "sentinel2_vessels", "predict", "--tasks",
                                   json.dumps(taches), "--scratch_path", os.path.join(travail, "scratch")],
                                  cwd=RSLP, env=env, capture_output=True, text=True)
             duree = round(time.time() - t, 1)

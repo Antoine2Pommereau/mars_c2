@@ -53,7 +53,8 @@ def test_versioned_settings_delivered_switched_off():
     assert VERSIONNEES["sentinel"]["budget_mensuel_eur"] == 8.0            # budget partagé, porté par la section sentinel
     t = VERSIONNEES["travailleurs"]["types"]["sentinel2"]
     assert t["commercial_type"] == "GP1-S" and "@sha256:0ce4cbee" in t["image"] and t["tache_par_le_reseau"]
-    assert [p["sha256"][:8] for p in s2["poids"]] == ["2547ad10", "303cd443"]
+    assert [p["sha256"][:8] for p in s2["poids"]] == ["2547ad10", "303cd443", "788c3c9c"]
+    assert [p.get("satlas") for p in s2["poids"]] == [None, None, "Sentinel2_SwinB_SI_MS"]
 
 
 # Catalogue et heure propre de la tuile
@@ -315,6 +316,7 @@ def test_selection_launch_results_and_alerts_end_to_end(conn, monkeypatch):
     tache, params, env, variante = lances[0]
     assert tache == "sentinel2" and env == {} and variante["duree_max_min"] == 10 + 3 + 15
     assert '"k"' not in json.dumps(params) and all("url" not in x for x in params["poids"])   # ni clé ni adresse
+    assert [p.get("satlas") for p in params["poids"]] == [None, None, "Sentinel2_SwinB_SI_MS"]  # servi localement
     assert params["scenes"][0]["scl"].endswith("SCL_20m.jp2") and len(params["scenes"][0]["fenetres"]) == 1
     aid = r["analyses"][0]
     assert conn.execute("SELECT source, calcul FROM analyses WHERE id = %s", (aid,)).fetchone() == ("sentinel2", "cpu")

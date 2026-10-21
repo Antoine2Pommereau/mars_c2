@@ -693,6 +693,11 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
   filtré par IP : les travailleurs sortent par des IP variables), par `r2_modeles_get_url` ; ne jamais présigner pour
   un travailleur avec `r2_get_url`. Un test depuis le serveur ne révèle pas un filtre IP : seul le contrôle du
   travailleur (étape `controle_r2`) le fait.
+* **satlaspretrain_models télécharge son squelette à chaque chargement** (467 Mo depuis Hugging Face, `requests.get`
+  codé en dur, ni cache ni variable pour le couper) : le travailleur Sentinel 2 le reçoit de R2 comme les autres poids
+  et le sert par `servir_satlas` dans le lanceur de l'inférence ; tout autre téléchargement de la bibliothèque est
+  refusé. Le champ `satlas` doit suivre dans les paramètres de la tâche (`mars/sentinel2.py`), sinon l'inférence
+  s'arrête. Un `restore_path` de configuration rslearn n'est lu qu'à l'entraînement.
 * **rasterio refuse les clés AWS en options GDAL** (essai Sentinel 2 du 20/10/2026, analyse 99, travailleur 30 :
   « EnvError: GDAL's AWS config options can not be directly set », 0 octet lu) : `AWS_ACCESS_KEY_ID` et
   `AWS_SECRET_ACCESS_KEY` ne passent jamais dans `rasterio.Env(...)`. Les remettre par une

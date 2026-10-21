@@ -258,3 +258,59 @@ def test_access_check_and_delivery_use_the_models_bucket(monkeypatch):
     finally:
         c.execute("DELETE FROM travailleurs")
         c.close()
+
+
+# Squelette SatlasPretrain (21/10/2026) : copié depuis sa source propre, servi localement au modèle
+
+def test_satlas_backbone_is_copied_from_its_own_source():
+    from mars.r2 import R2
+    s2 = _s2()
+    s2["poids"][0]["source"] = "https://huggingface.test/satlas.pth?download=true"
+    session = Session()
+    assert S2.copier_poids(s2, R2(FauxSeau(), "mars-c2"), R2(FauxSeau(), "m"), session, log=lambda _t: None)["copies"] == 1
+    assert session.demandes[0][0] == "https://huggingface.test/satlas.pth?download=true"
+
+
+def _faux_satlas(monkeypatch, url):
+    import types
+    pkg, m, u = (types.ModuleType(n) for n in ("satlaspretrain_models", "satlaspretrain_models.model",
+                                               "satlaspretrain_models.utils"))
+    u.SatlasPretrain_weights = {"Sentinel2_SwinB_SI_MS": {"url": url}, "Autre": {"url": "https://hf.test/autre.pth"}}
+    m.requests = None
+    pkg.model, pkg.utils = m, u
+    for nom, mod in (("satlaspretrain_models", pkg), ("satlaspretrain_models.model", m),
+                     ("satlaspretrain_models.utils", u)):
+        monkeypatch.setitem(sys.modules, nom, mod)
+    return m
+
+
+def test_satlas_backbone_served_locally_and_any_other_download_refused(monkeypatch, tmp_path):
+    url = "https://huggingface.co/allenai/satlas-pretrain/resolve/main/sentinel2_swinb_si_ms.pth?download=true"
+    m = _faux_satlas(monkeypatch, url)
+    f = tmp_path / "s.pth"
+    f.write_bytes(b"poids satlas")
+    w = _worker()
+    assert w.servir_satlas({"Sentinel2_SwinB_SI_MS": str(f)}) == {url: str(f)}
+    r = m.requests.get(url)
+    assert r.status_code == 200 and r.content == b"poids satlas"
+    with pytest.raises(RuntimeError, match="téléchargement externe coupé"):
+        m.requests.get("https://hf.test/autre.pth")
+
+
+def test_satlas_cache_checked_before_loading(tmp_path):
+    w = _worker()
+    (tmp_path / "satlas").mkdir()
+    (tmp_path / "satlas" / "s.pth").write_bytes(b"poids satlas")
+    tache = {"poids": [{"chemin": "projects/a/best.ckpt"},
+                       {"chemin": "satlas/s.pth", "satlas": "Sentinel2_SwinB_SI_MS",
+                        "sha256": hashlib.sha256(b"poids satlas").hexdigest()}]}
+    tr = _Tr()
+    assert w.verifier_satlas(tache, str(tmp_path), tr) == {"Sentinel2_SwinB_SI_MS": str(tmp_path / "satlas" / "s.pth")}
+    tache["poids"][1]["sha256"] = "0" * 64
+    with pytest.raises(w.Arret, match="empreinte fausse"):
+        w.verifier_satlas(tache, str(tmp_path), tr)
+    tache["poids"][1]["chemin"] = "satlas/absent.pth"
+    with pytest.raises(w.Arret, match="téléchargement externe coupé"):
+        w.verifier_satlas(tache, str(tmp_path), tr)
+    assert "servir_satlas" in w.LANCEUR and "rslp.main" in w.LANCEUR
+

@@ -1018,7 +1018,7 @@ n'est plus tracé, le collecteur reçoit environ dix fois moins de spans. À con
 * archive : 27,4 octets par position et 22,5 par message statique après compactage (mesuré sur l'archivage de
   test), soit environ 26 Mo par jour, 0,77 Go par mois, 9,4 Go par an ;
 * sauvegardes sans positions : moins de 10 Mo chacune, moins de 70 Mo pour les 7 ;
-* poids du modèle Sentinel 2 (lot S2, `taches.py sentinel2-poids`) : 2,24 Go, soit 22 % du quota gratuit ;
+* poids du modèle Sentinel 2 (lot S2, `taches.py sentinel2-poids`) : 2,71 Go avec le squelette SatlasPretrain, soit 27 % du quota gratuit ;
 * les 10 Go gratuits sont atteints vers le **28/07/2027** (21/10/2027 sans les poids Sentinel 2), soit environ 10 mois
   de collecte depuis le 05/10/2026. Au delà, 0,015 dollar par Go et par mois (0,03 dollar par mois pour les poids).
 
