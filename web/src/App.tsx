@@ -15,6 +15,9 @@ import Recherche, { type Resultat } from "./components/Recherche";
 import SuivisPanel from "./components/SuivisPanel";
 import ObservationsPanel from "./components/ObservationsPanel";
 import ControlePanel from "./components/ControlePanel";
+import VeillePanel from "./components/VeillePanel";
+import type { Dossier } from "./lib/api";
+import type { Vue } from "./components/MapView";
 import { api, type Pass } from "./lib/api";
 import { FILTRES_DEFAUT, dansPlage, filtrer, naviresEnAlerte, statutDe, trier, type Filtres } from "./lib/fil";
 import { auteurMemorise } from "./lib/auteur";
@@ -27,7 +30,7 @@ import { ecrireAdresse, lireAdresse } from "./lib/url";
 import { FRANCE, zoneBbox, zoneOf, zonesGeoJSON } from "./lib/zones";
 import { useStream } from "./lib/useStream";
 import { COULEUR_LISTE, naviresAlerte, typeAlerte } from "./registres/alertes";
-import { COUCHES_DEFAUT } from "./registres/couches";
+import { VUES } from "./registres/couches";
 
 const INITIAL = lireAdresse();
 const DEUX_MILLES = 3704;
@@ -56,7 +59,9 @@ export default function App() {
   const [temps, setTemps] = useState<Temps>(INITIAL.temps);
   const [now, setNow] = useState(Date.now());
   const [panel, setPanel] = useState<PanelId | null>("alertes");
-  const [actives, setActives] = useState<string[]>(INITIAL.couches ?? COUCHES_DEFAUT);
+  // Vue prédéfinie de la carte (lot U) : Veille par défaut, Trafic complet, Satellites ; les couches détaillées restent
+  const [vue, setVue] = useState<Vue>((["veille", "trafic", "satellites"].includes(INITIAL.vue ?? "") ? INITIAL.vue : "veille") as Vue);
+  const [actives, setActives] = useState<string[]>(INITIAL.couches ?? [...VUES[vue]]);
   const [byType, setByType] = useState(false);
   const [concernees, setConcernees] = useState(false);
   const [filtres, setFiltres] = useState<Filtres>(FILTRES_DEFAUT);
@@ -101,6 +106,17 @@ export default function App() {
   const { data: stream, traffic: streamTraffic, connected } = useStream(direct, region);
   const trafficQ = useQuery({ queryKey: ["traffic", Math.round(instant / 1000), region], queryFn: () => api.traffic(iso(instant), region),
     enabled: !direct, placeholderData: keepPreviousData, retry: 2 });
+  // Dossiers (lot U) : à l'instant affiché, à la minute ; rejeu tel qu'il était si demandé
+  const instantDossiers = iso(Math.floor(instant / 60_000) * 60_000);
+  const dossiersQ = useQuery({ queryKey: ["dossiers", instantDossiers, region, aLInstant],
+    queryFn: () => api.dossiers(instantDossiers, region, aLInstant), refetchInterval: direct ? 30_000 : false,
+    placeholderData: keepPreviousData, retry: 2 });
+  const niveaux = useMemo(() => new Map((dossiersQ.data?.dossiers ?? []).filter((d) => d.vessel_id != null)
+    .map((d) => [d.vessel_id as number, d.niveau])), [dossiersQ.data]);
+  const dossiersPoints = useMemo<FC>(() => ({ type: "FeatureCollection", features: (dossiersQ.data?.dossiers ?? [])
+    .filter((d) => d.genre === "point").map((d) => ({ type: "Feature", geometry: { type: "Point", coordinates: [d.lon, d.lat] },
+      properties: { cle: d.cle, niveau: d.niveau, alerte: d.alertes[0] } })) }), [dossiersQ.data]);
+  const aExaminer = (dossiersQ.data?.dossiers ?? []).filter((d) => d.niveau >= 2).length;
   const rawTraffic = useMemo(() => decodeTraffic(direct ? streamTraffic : trafficQ.data, instant) ?? EMPTY,
     // eslint ne surveille pas ce fichier ; l'âge des positions n'a besoin que du trafic et de la minute courante
     [direct, streamTraffic, trafficQ.data, Math.floor(instant / 60_000)]);
@@ -132,8 +148,10 @@ export default function App() {
   // Navires affichés, avec la couleur de leur alerte ouverte la plus grave, et le suivi
   const traffic = useMemo<FC>(() => ({ type: "FeatureCollection", features: rawTraffic.features.map((f) => {
     const c = alertColors.get(f.properties.vessel_id), suivi = suivis.has(f.properties.vessel_id);
-    return c || suivi ? { ...f, properties: { ...f.properties, ...(c ? { alerte: c } : {}), ...(suivi ? { suivi: true } : {}) } } : f;
-  }) }), [rawTraffic, alertColors, suivis]);
+    const niveau = niveaux.get(f.properties.vessel_id);
+    return c || suivi || niveau ? { ...f, properties: { ...f.properties, ...(c ? { alerte: c } : {}), ...(suivi ? { suivi: true } : {}),
+      ...(niveau ? { niveau } : {}) } } : f;
+  }) }), [rawTraffic, alertColors, suivis, niveaux]);
   const vessels = useMemo(() => new Map<number, Props>(traffic.features.map((f) => [f.properties.vessel_id, {
     ...f.properties, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] }])), [traffic]);
 
@@ -223,8 +241,8 @@ export default function App() {
 
   // État de l'écran dans l'adresse de la page
   useEffect(() => {
-    ecrireAdresse({ temps, sel: selKey(selection) ?? pendingSel, couches: actives, region });
-  }, [temps, selection, pendingSel, actives, region]);
+    ecrireAdresse({ temps, sel: selKey(selection) ?? pendingSel, couches: actives, region, vue });
+  }, [temps, selection, pendingSel, actives, region, vue]);
 
   // Panneau « Observations » (tip and cue) : demandes de la plage et de la région, compteur sur l'icône du rail
   const observationsQ = useQuery({ queryKey: ["demandes", "observations", qDebut, qFin, region, aLInstant],
@@ -251,6 +269,22 @@ export default function App() {
     setFocus({ center: f.geometry.coordinates as [number, number], zoom: 9 });
   }, []);
   const onSelect = useCallback((s: Selection) => setSelection(s), []);
+  // Un dossier choisi dans la Veille : fiche du navire (son dossier en tête à l'étape 4), ou alerte d'un point
+  const [dossierFocus, setDossierFocus] = useState<string | null>(null);
+  const pickDossier = useCallback((d: Dossier) => {
+    setDossierFocus(d.cle);
+    setFocus({ center: [d.lon, d.lat], zoom: 8.5 });
+    if (d.vessel_id != null) {
+      setSelection({ kind: "vessel", properties: vessels.get(d.vessel_id) ?? { vessel_id: d.vessel_id, name: d.nom } });
+    } else {
+      api.alert(d.alertes[0]).then((a) => setSelection({ kind: "alert", feature: a })).catch(() => undefined);
+    }
+  }, [vessels]);
+  const choisirVue = useCallback((v: Vue | "couches") => {
+    if (v === "couches") { setPanel("couches"); return; }
+    setVue(v);
+    setActives([...VUES[v]]);
+  }, []);
   const pickVessel = useCallback((p: Props) => {
     const id = Number(p.vessel_id), v = vessels.get(id);
     setSelection({ kind: "vessel", properties: { ...p, ...(v ?? {}) } });
@@ -391,7 +425,6 @@ export default function App() {
   }, [searching, drawing, draft, cancelDraw]);
 
   const jobs = (stream?.analyses ?? []).filter((a) => a.status !== "done" || a.id !== analysisId);
-  const todo = filtered.filter((a) => statutDe(a) === "nouvelle" && a.properties.severity !== "faible").length;
   const selectedId = selection?.kind === "alert" ? selection.feature.properties.id : null;
   const analysisIds = new Set((analysisAlertsQ.data?.features ?? []).map((f) => f.properties.id));
   const mapAlerts = useMemo<FC>(() => ({ type: "FeatureCollection", features: filtered.filter((a) => !analysisIds.has(a.properties.id))
@@ -403,13 +436,14 @@ export default function App() {
       <BarreEtat now={now} connected={!direct || connected} onSearch={() => setSearching(true)}
         region={region} regions={regionsQ.data ?? null} onRegion={choisirRegion} />
       <div className="flex min-h-0 flex-1">
-        <Rail active={panel} onSelect={setPanel} onSearch={() => setSearching(true)} alertCount={todo}
+        <Rail active={panel} onSelect={setPanel} onSearch={() => setSearching(true)} alertCount={aExaminer}
           running={jobs.some((a) => a.status === "pending" || a.status === "running")}
           observationCount={observationsQ.data?.actives ?? 0} />
         {panel && (
           <aside className="h-full w-[350px] shrink-0 border-r border-hair bg-panel">
-            {panel === "alertes" && <AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels}
-              suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />}
+            {panel === "alertes" && <VeillePanel liste={dossiersQ.data} instant={instant} focus={dossierFocus} onPick={pickDossier}
+              fil={<AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels}
+                suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />} />}
             {panel === "observations" && <ObservationsPanel demandes={observationsQ.data?.demandes ?? []}
               selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} />}
             {panel === "controle" && <ControlePanel trace={trace} onTrace={setTrace}
@@ -431,7 +465,7 @@ export default function App() {
         <main className="relative flex-1">
           {(demoQ.data?.masquage || aLInstant) && (
             /* Sous la barre d'état (z-20) : le détail d'un voyant passe par dessus le bandeau */
-            <div className="pointer-events-none absolute left-1/2 top-3 z-[5] -translate-x-1/2 rounded-full border border-hair bg-panel/85 px-2.5 py-0.5 text-[11px] text-muted">
+            <div className="pointer-events-none absolute right-16 top-5 z-[5] rounded-full border border-hair bg-panel/85 px-2.5 py-0.5 text-[11px] text-muted">
               {[demoQ.data?.masquage && L.controle.demo.bandeau, aLInstant && L.controle.demo.bandeauRejeu].filter(Boolean).join(" · ")}
             </div>
           )}
@@ -442,11 +476,19 @@ export default function App() {
             byType={byType} region={region} passages={passagesQ.data ?? EMPTY} viirs={viirsQ.data ?? EMPTY} sentinel={sentinelQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
             drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom}
             vigilance={(vigilanceQ.data as FC | undefined) ?? EMPTY} trace={trace} onTracePoint={(c) => setTrace((t) => (t ? [...t, c] : t))}
+            vue={vue} infraProches={dossiersQ.data?.infrastructures_proches ?? []} dossiersPoints={dossiersPoints}
             onContexte={setMenu} />
           </Garde>
           {menu && <MenuCarte key={`${menu.lon},${menu.lat}`} point={menu} onClose={() => setMenu(null)} />}
+          {/* Vues prédéfinies (lot U) ; « Couches » ouvre la liste détaillée */}
+          <div className="absolute left-4 top-4 z-10 flex gap-0.5 rounded-md border border-hair bg-panel/90 p-0.5 text-[12.5px] backdrop-blur" role="group">
+            {(["veille", "trafic", "satellites", "couches"] as const).map((v) => (
+              <button key={v} onClick={() => choisirVue(v)} aria-pressed={v === vue}
+                className={`rounded px-2.5 py-1 ${v === vue ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>{L.veille.vues[v]}</button>
+            ))}
+          </div>
           <button onClick={drawing || draft ? cancelDraw : startDraw}
-            className={`absolute left-4 top-4 z-10 rounded-md border px-3 py-1.5 text-[12.5px] backdrop-blur
+            className={`absolute left-[372px] top-4 z-10 rounded-md border px-3 py-1.5 text-[12.5px] backdrop-blur
               ${drawing ? "border-signal bg-panel/95 text-ink" : "border-hair bg-panel/90 text-ink hover:border-signal"}`}>
             {drawing ? L.analyses.tracerCarte : draft ? L.analyses.annulerTrace : L.analyses.nouvelle}
           </button>

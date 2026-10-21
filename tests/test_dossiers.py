@@ -185,3 +185,19 @@ def test_api_verification_quote_refused_in_pause(api, monkeypatch):
     assert r["refus"] is None and r["cout_estime_eur"] > 0
     conn.execute("UPDATE interrupteurs_satellites SET en_pause = true, motif = 'budget' WHERE source = 'tip_and_cue'")
     assert c.get(f"/api/dossiers/navire:{vid}/verification").json()["refus"] == "Vérification satellite en pause : budget"
+
+
+def test_api_infrastructures_within_a_mile_of_a_dossier(api):
+    """Carte calme de la Veille : seuls les câbles à moins d'un mille d'un dossier restent nets."""
+    c, conn, _vid, _ids = api
+    region = conn.execute("SELECT id FROM regions ORDER BY id LIMIT 1").fetchone()[0]
+    proche, loin = (conn.execute(
+        """INSERT INTO infrastructure (region_id, kind, name, source, geom)
+           VALUES (%s, 'cable', %s, 'essai_d', ST_GeogFromText(%s)) RETURNING id""",
+        (region, nom, wkt)).fetchone()[0] for nom, wkt in (
+            ("proche", "LINESTRING(-4.91 48.505, -4.89 48.505)"), ("loin", "LINESTRING(-4.91 48.6, -4.89 48.6)")))
+    try:
+        r = c.get("/api/dossiers", params={"end": T.isoformat()}).json()
+        assert proche in r["infrastructures_proches"] and loin not in r["infrastructures_proches"]
+    finally:
+        conn.execute("DELETE FROM infrastructure WHERE source = 'essai_d'")

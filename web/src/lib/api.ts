@@ -77,6 +77,20 @@ export interface PrefsNotification {
   heures_calmes: { actif: boolean; debut: string; fin: string };
 }
 
+/** Dossier d'un navire ou d'un point (lot U, backend/dossiers.py) */
+interface Signal { alerte: number; type: string; icone: string; gravite: string; statut: string; famille: string;
+  fragment: string; t: string }
+export interface Dossier {
+  cle: string; genre: "navire" | "point"; nom: string; pavillon: string | null; vessel_id: number | null;
+  type_navire: string | null; longueur_m: number | null; lon: number; lat: number;
+  niveau: 1 | 2 | 3; niveau_cle: "urgent" | "a_examiner" | "a_noter"; phrase: string; contributions: string[];
+  icones: string[]; alertes: number[]; statuts: string[]; signaux: Signal[]; premier: string; dernier: string;
+}
+export interface ListeDossiers {
+  instant: string; fenetre_h: number; compteurs: Record<string, number>; dernier_inhabituel: string | null;
+  infrastructures_proches: number[]; dossiers: Dossier[];
+}
+
 export interface Pass {
   product_name: string;
   acquired_at: string;
@@ -187,6 +201,14 @@ export const api = {
   /** Panneau « Observations » : demandes de la plage et de la région, compteur des actives */
   observations: (start: string, end: string, region: string | null, aLInstant?: string | null) =>
     get<{ actives: number; demandes: Props[] }>(`/observations?start=${enc(start)}&end=${enc(end)}${rg(region)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
+  /** Dossiers (lot U) : liste à l'instant, récit, décision appliquée aux alertes ouvertes, devis de vérification */
+  dossiers: (instant: string, region: string | null, aLInstant?: string | null) =>
+    get<ListeDossiers>(`/dossiers?end=${enc(instant)}${rg(region)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
+  dossier: (cle: string, instant: string, aLInstant?: string | null) =>
+    get<Props>(`/dossiers/${enc(cle)}?end=${enc(instant)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
+  decisionDossier: (cle: string, body: { action: string; motif?: string; note?: string; author?: string }) =>
+    ecrire<{ alertes: number[]; statut: string }>(`/dossiers/${enc(cle)}/decision`, body),
+  verificationDossier: (cle: string) => get<Props>(`/dossiers/${enc(cle)}/verification`),
   /** Panneau de contrôle (lot P) : session d'opérateur, état, journal, et écritures (connexion exigée) */
   controle: {
     session: () => get<{ operateur: string | null; configure: boolean; abimes?: string[] }>("/controle/session"),

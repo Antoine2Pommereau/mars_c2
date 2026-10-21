@@ -8,6 +8,7 @@ interface EtatEcran {
   sel: string | null;          // « alerte:12 », « navire:345 », « detection:7 »
   couches: string[] | null;    // null : couches par défaut
   region: string | null;        // région affichée (sélecteur de la barre d'état), null : toute la France
+  vue?: string | null;          // vue de la carte (lot U) : veille par défaut, trafic, satellites
 }
 
 const ms = (v: string | null) => (v ? Date.parse(v) : undefined);
@@ -23,7 +24,8 @@ export function lireAdresse(search = window.location.search): EtatEcran {
   };
   if (temps.mode !== "direct" && (temps.debut == null || temps.fin == null || Number.isNaN(temps.debut))) temps.mode = "direct";
   return { temps, sel: q.get("sel"), couches: q.has("couches") ? q.get("couches")!.split(",").filter(Boolean) : null,
-    region: q.get("region") ?? q.get("zone") };     // « zone » : liens du lot 1
+    region: q.get("region") ?? q.get("zone"),       // « zone » : liens du lot 1
+    vue: q.get("vue") };
 }
 
 export function ecrireAdresse(e: EtatEcran) {
@@ -39,6 +41,7 @@ export function ecrireAdresse(e: EtatEcran) {
   if (e.sel) q.set("sel", e.sel);
   if (e.couches) q.set("couches", e.couches.join(","));
   if (e.region) q.set("region", e.region);
+  if (e.vue && e.vue !== "veille") q.set("vue", e.vue);
   const next = `${window.location.pathname}?${q.toString()}`;
   if (next !== `${window.location.pathname}${window.location.search}`) window.history.replaceState(null, "", next);
 }

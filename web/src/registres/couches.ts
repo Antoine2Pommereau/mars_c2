@@ -48,5 +48,12 @@ export const COUCHES: Couche[] = [
 ];
 
 export const GROUPES = ["trafic", "infrastructures", "zones", "satellites", "activite", "predictions"] as const;
-export const COUCHES_DEFAUT = COUCHES.filter((c) => c.defaut && c.etape == null).map((c) => c.id);
+const COUCHES_DEFAUT = COUCHES.filter((c) => c.defaut && c.etape == null).map((c) => c.id);
 export const disponible = (c: Couche) => c.etape == null;
+
+/** Vues prédéfinies de la carte (lot U) : couches actives de chacune ; « Couches » garde la liste détaillée */
+export const VUES = {
+  veille: ["navires", "trajectoires", "electriques", "eoliens", "vigilance"],   // carte calme : les points des dossiers ont leur couche
+  trafic: COUCHES_DEFAUT,                     // l'écran par défaut d'avant la refonte
+  satellites: ["navires", "electriques", "eoliens", "detections", "viirs", "passages", "couverture"],
+} as const satisfies Record<string, readonly string[]>;

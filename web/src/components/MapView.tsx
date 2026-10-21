@@ -6,6 +6,7 @@ import { EMPTY, type FC, type Feature, type Selection } from "../lib/types";
 import { zonesGeoJSON } from "../lib/zones";
 import { COULEUR_LISTE, COULEUR_SUIVI, STROKE_ALERTE } from "../registres/alertes";
 import { COUCHES, COULEUR_PASSAGE, COULEURS_INFRA } from "../registres/couches";
+import { URGENCE } from "../lib/urgence";
 
 const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
@@ -36,6 +37,22 @@ const TRAFFIC_OPACITY = opaciteTrafic();
 const INFRA_OPACITY: any = ["interpolate", ["linear"], ["zoom"], 5, 0.35, 9, 0.9];
 const INFRA_WIDTH: any = ["interpolate", ["linear"], ["zoom"], 5, 0.7, 10, 1.6];
 const INFRA_LIGNES = COUCHES.filter((c) => c.infra && c.infra !== "Parc éolien");
+
+// Vue Veille (lot U) : carte calme. Navires en dossier colorés par l'urgence et nets, le reste du trafic en poussière
+// grise ; alertes colorées par l'urgence (gravité) ; seules les infrastructures à moins d'un mille d'un dossier
+// restent nettes. Les couleurs par type ne restent que dans la vue « Trafic complet ».
+export type Vue = "veille" | "trafic" | "satellites";
+const POUSSIERE = "#55636f";
+const NIVEAU = ["coalesce", ["get", "niveau"], 0];
+const COULEUR_VEILLE: any = ["match", NIVEAU, 3, URGENCE[3], 2, URGENCE[2], 1, URGENCE[1],
+  ["case", ["to-boolean", ["get", "suivi"]], COULEUR_SUIVI, POUSSIERE]];
+const OPACITE_VEILLE: any = ["case", [">", NIVEAU, 0], 1, ["to-boolean", ["get", "suivi"]], 0.9, 0.45];
+const TAILLE_VEILLE: any = ["interpolate", ["linear"], ["zoom"], 5, ["case", [">", NIVEAU, 0], 0.42, 0.14],
+  10, ["case", [">", NIVEAU, 0], 0.5, 0.3], 13, ["case", [">", NIVEAU, 0], 0.6, 0.48]];
+const TAILLE_TRAFIC: any = ["interpolate", ["linear"], ["zoom"], 5, ["case", IMPORTANT, 0.34, 0.18], 10,
+  ["case", IMPORTANT, 0.42, 0.34], 13, ["case", IMPORTANT, 0.56, 0.5]];
+const ALERTE_URGENCE: any = ["match", ["get", "severity"], "critique", URGENCE[3], "elevee", URGENCE[2], URGENCE[1]];
+const infraVeille = (ids: number[]): any => ["case", ["in", ["get", "id"], ["literal", ids]], 0.85, 0.06];
 
 /** Icônes en champ de distance signé (teintables) : chevron pour un navire en route, point pour un navire immobile. */
 function makeIcon(kind: "chevron" | "dot") {
@@ -81,6 +98,9 @@ interface Props {
   vigilance: FC;                         // zones de vigilance actives (lot P)
   trace: number[][] | null;              // polygone d'une zone en cours de tracé (lot P) : un clic, un sommet
   onTracePoint: (lonLat: number[]) => void;
+  vue: Vue;                              // vue prédéfinie (lot U) : Veille, Trafic complet, Satellites
+  infraProches: number[];                // infrastructures à moins d'un mille d'un dossier (restent nettes en Veille)
+  dossiersPoints: FC;                    // dossiers « point » (lumière, écho sans navire), colorés par l'urgence
 }
 
 // Mode focus : tout ce qui ne concerne pas la sélection s'efface
@@ -115,7 +135,7 @@ export default function MapView(p: Props) {
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
       ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages", "viirs", "s1",
-        "vigilance", "trace"].forEach(src);
+        "vigilance", "trace", "dossiers"].forEach(src);
       // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
       map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
       map.addSource("couverture", { type: "geojson", data: zonesGeoJSON() as any });
@@ -180,6 +200,15 @@ export default function MapView(p: Props) {
           "icon-color": shipColor(NEUTRAL),
           "icon-opacity": TRAFFIC_OPACITY,
         } });
+      // Dossiers (lot U) : nom des navires à examiner, en Veille ; points sans navire en losange de leur urgence
+      map.addLayer({ id: "dossiers-noms", type: "symbol", source: "traffic", filter: [">=", NIVEAU, 2] as any,
+        layout: { visibility: "none", "text-field": ["coalesce", ["get", "name"], ""], "text-size": 11.5, "text-offset": [0.9, 0],
+                  "text-anchor": "left", "text-font": ["Montserrat Medium", "Open Sans Semibold", "Noto Sans Regular"] },
+        paint: { "text-color": "#e6ecf0", "text-halo-color": "#0e1419", "text-halo-width": 1.6 } });
+      map.addLayer({ id: "dossiers-points", type: "circle", source: "dossiers",
+        paint: { "circle-radius": ["match", NIVEAU, 3, 9, 2, 7, 5], "circle-color": "rgba(0,0,0,0)",
+                 "circle-stroke-width": ["match", NIVEAU, 1, 1.2, 2],
+                 "circle-stroke-color": ["match", NIVEAU, 3, URGENCE[3], 2, URGENCE[2], URGENCE[1]] } as any });
       map.addLayer({ id: "aoi", type: "line", source: "aoi",
         paint: { "line-color": "#4fb6c8", "line-width": 1.2, "line-dasharray": [4, 3] } });
       map.addLayer({ id: "det", type: "circle", source: "det",
@@ -351,6 +380,7 @@ export default function MapView(p: Props) {
   useEffect(() => setData("passages", p.passages), [ready, p.passages]);
   useEffect(() => setData("viirs", p.viirs), [ready, p.viirs]);
   useEffect(() => setData("vigilance", p.vigilance), [ready, p.vigilance]);
+  useEffect(() => setData("dossiers", p.dossiersPoints), [ready, p.dossiersPoints]);
   useEffect(() => {
     const t = p.trace ?? [];
     setData("trace", { type: "FeatureCollection", features: [
@@ -383,8 +413,12 @@ export default function MapView(p: Props) {
     const anyInfra = COUCHES.some((c) => c.infra && p.actives.includes(c.id));
     map.setLayoutProperty("infra-noms", "visibility", anyInfra ? "visible" : "none");
     map.setLayoutProperty("live", "visibility", "visible");
-    map.setPaintProperty("traffic", "icon-color", shipColor(p.byType ? SHIP_COLOR : NEUTRAL));
-  }, [ready, activesKey, p.byType]);
+    const veille = p.vue === "veille";
+    map.setPaintProperty("traffic", "icon-color", veille ? COULEUR_VEILLE : shipColor(p.byType ? SHIP_COLOR : NEUTRAL));
+    map.setLayoutProperty("traffic", "icon-size", veille ? TAILLE_VEILLE : TAILLE_TRAFIC);
+    map.setLayoutProperty("dossiers-noms", "visibility", veille ? "visible" : "none");
+    for (const id of ["alerts", "live"]) map.setPaintProperty(id, "circle-stroke-color", veille ? ALERTE_URGENCE : STROKE_ALERTE);
+  }, [ready, activesKey, p.byType, p.vue]);
 
   const concernedKey = p.concernedInfra ? p.concernedInfra.join(",") : "tout";
   useEffect(() => {
@@ -427,16 +461,19 @@ export default function MapView(p: Props) {
   useEffect(() => setData("draft", p.draft ? (bboxPolygon(p.draft) as FC) : null), [ready, p.draft]);
 
   // Mode focus sur la sélection
-  const spotKey = p.spotlight ? `${p.spotlight.alertId}:${p.spotlight.vesselIds.join(",")}:${p.spotlight.infraId}:${p.spotlight.zone}` : "";
+  const spotKey = (p.spotlight ? `${p.spotlight.alertId}:${p.spotlight.vesselIds.join(",")}:${p.spotlight.infraId}:${p.spotlight.zone}` : "")
+    + `|${p.vue}|${p.infraProches.join(",")}`;
   useEffect(() => {
     if (!ready || !mapRef.current) return;
     const map = mapRef.current;
     const s = p.spotlight;
     const ids = ["literal", s?.vesselIds ?? []];
     const dimTraffic = !!s && (s.vesselIds.length > 0 || s.alertId != null);
+    const veille = p.vue === "veille";
     map.setPaintProperty("traffic", "icon-opacity", dimTraffic ? ["case", ["in", ["get", "vessel_id"], ids], 1, 0.12]
-      : s ? opaciteTrafic(0.5) : TRAFFIC_OPACITY);
-    const infraOp = s?.infraId != null ? ["case", ["==", ["get", "id"], s.infraId], 1, 0.12] : s ? 0.25 : INFRA_OPACITY;
+      : s ? opaciteTrafic(0.5) : veille ? OPACITE_VEILLE : TRAFFIC_OPACITY);
+    const infraOp = s?.infraId != null ? ["case", ["==", ["get", "id"], s.infraId], 1, 0.12] : s ? 0.25
+      : veille ? infraVeille(p.infraProches) : INFRA_OPACITY;
     for (const c of INFRA_LIGNES) map.setPaintProperty(c.calques[0], "line-opacity", infraOp);
     map.setPaintProperty("infra-eoliens", "line-opacity", infraOp);
     map.setLayoutProperty("traffic", "symbol-sort-key", s ? ["case", ["in", ["get", "vessel_id"], ids], 2, IMPORTANT, 1, 0]

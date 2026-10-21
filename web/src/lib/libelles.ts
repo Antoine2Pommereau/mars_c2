@@ -19,8 +19,21 @@ export const L = {
   carte: { infrastructure: "Infrastructure", indisponible: "Carte indisponible : le navigateur ne prend pas en charge WebGL" },
 
   // Rail et panneaux
+  // Veille (lot U) : dossiers par navire ou par point, à examiner d'abord
+  veille: {
+    onglets: { dossiers: "Dossiers", alertes: "Toutes les alertes" },
+    rien: "Rien à examiner", aExaminer: (_n: number) => "à examiner", aNoter: (n: number) => `${n} à noter`,
+    raccourcis: "",
+    ilYa: (min: number) => (min < 90 ? `il y a ${Math.max(0, Math.round(min))} min` : min < 2880 ? `il y a ${Math.round(min / 60)} h`
+      : `il y a ${Math.round(min / 1440)} j`),
+    calme: (h: number | null, fenetre: number) => (h == null || h > fenetre ? `Aucun navire inhabituel sur ${fenetre} h`
+      : `Aucun navire inhabituel depuis ${Math.max(1, Math.round(h))} h`),
+    calmeDetail: "La veille continue : AIS, listes, satellites.",
+    niveaux: { urgent: "Urgent", a_examiner: "À examiner", a_noter: "À noter" } as Record<string, string>,
+    vues: { veille: "Veille", trafic: "Trafic complet", satellites: "Satellites", couches: "Couches" } as Record<string, string>,
+  },
   rail: {
-    alertes: "Alertes", analyses: "Analyses satellites", couches: "Couches et légende",
+    alertes: "Veille", analyses: "Analyses satellites", couches: "Couches et légende",
     suivis: "Navires suivis", recherche: "Recherche", observations: "Vérifications satellites", controle: "Contrôle",
   },
   // Panneau de contrôle (lot P)

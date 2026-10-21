@@ -110,11 +110,18 @@ async def liste(request: Request, end: datetime | None = None, region: str | Non
             dernier = await c.fetchval(
                 "SELECT max(event_time) FROM alerts WHERE event_time <= $1 AND detected_at <= $1 "
                 "AND severity IN ('elevee', 'critique')", instant)
+            # Carte calme (Veille) : seules les infrastructures à moins d'un mille d'un dossier restent nettes
+            proches = [r["id"] for r in await c.fetch(
+                """SELECT DISTINCT i.id FROM infrastructure i,
+                          unnest($1::float8[], $2::float8[]) AS p(lon, lat)
+                   WHERE ST_DWithin(i.geom, ST_SetSRID(ST_MakePoint(p.lon, p.lat), 4326)::geography, $3)""",
+                [d["lon"] for d in ds], [d["lat"] for d in ds], float(_p(rules)["infrastructure_m"]))] if ds else []
         compte = {k: sum(1 for d in ds if d["niveau_cle"] == k) for k in D.NIVEAUX.values()}
         sp.set_attributes({"dossiers.total": len(ds), **{f"dossiers.{k}": v for k, v in compte.items()},
                            "dossiers.alertes": sum(len(d["alertes"]) for d in ds)})
     return {"instant": instant.isoformat(), "fenetre_h": _p(rules)["fenetre_h"], "compteurs": compte,
-            "dernier_inhabituel": _iso(dernier), "dossiers": [_sortie(d) for d in ds]}
+            "dernier_inhabituel": _iso(dernier), "infrastructures_proches": proches,
+            "dossiers": [_sortie(d) for d in ds]}
 
 
 async def _trouver(c, cle: str, instant, rejeu, rules) -> dict:
