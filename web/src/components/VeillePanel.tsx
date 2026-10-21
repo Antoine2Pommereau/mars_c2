@@ -1,6 +1,8 @@
 import { Aperture, Moon } from "lucide-react";
-import { type ReactNode, useState } from "react";
-import type { Dossier, ListeDossiers } from "../lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
+import { api, type Dossier, type ListeDossiers } from "../lib/api";
+import { deplacer, toucheLibre } from "../lib/clavier";
 import { L } from "../lib/libelles";
 import { URGENCE } from "../lib/urgence";
 import { typeAlerte } from "../registres/alertes";
@@ -19,12 +21,13 @@ export function IconeSignal({ type, taille = 13 }: { type: string; taille?: numb
 
 const depuis = (iso: string, instant: number) => V.ilYa((instant - Date.parse(iso)) / 60_000);
 
-function Ligne({ d, instant, focus, onPick }: { d: Dossier; instant: number; focus: boolean; onPick: (d: Dossier) => void }) {
+function Ligne({ d, instant, focus, curseur, onPick }:
+  { d: Dossier; instant: number; focus: boolean; curseur: boolean; onPick: (d: Dossier) => void }) {
   return (
-    <button onClick={() => onPick(d)} aria-current={focus || undefined} data-dossier={d.cle}
+    <button onClick={() => onPick(d)} aria-current={focus || undefined} data-dossier={d.cle} data-curseur={curseur || undefined}
       style={{ boxShadow: d.niveau > 1 ? `inset 3px 0 0 ${URGENCE[d.niveau]}` : undefined }}
       className={`grid w-full grid-cols-[1fr_auto] gap-x-3 border-b border-hair/70 py-2.5 pl-4 pr-4 text-left transition-colors
-        ${focus ? "bg-raised outline outline-1 -outline-offset-1 outline-signal" : "hover:bg-raised/60"}`}>
+        ${focus ? "bg-raised" : "hover:bg-raised/60"} ${curseur || focus ? "outline outline-1 -outline-offset-1 outline-signal" : ""}`}>
       <span className="min-w-0">
         <span className="flex items-center gap-1.5">
           <span className="truncate font-semibold text-ink">{d.nom}</span>
@@ -47,8 +50,53 @@ export default function VeillePanel({ liste, instant, focus, onPick, fil }:
   const examiner = liste?.dossiers.filter((d) => d.niveau >= 2) ?? [];
   const noter = liste?.dossiers.filter((d) => d.niveau === 1) ?? [];
   const calme = liste && !examiner.length;
+  // Clavier : J et K déplacent le curseur dans les dossiers visibles, Entrée ouvre, ? montre l'aide
+  const [curseur, setCurseur] = useState<string | null>(null);
+  const [aide, setAide] = useState(false);
+  const visibles = [...examiner, ...(noterOuvert ? noter : [])];
+  const etat = useRef({ visibles, curseur, focus, onglet, aide });
+  etat.current = { visibles, curseur: curseur ?? focus, focus, onglet, aide };
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      const t = toucheLibre(e), s = etat.current;
+      if (t === "?") { e.preventDefault(); setAide((a) => !a); return; }
+      if (s.onglet !== "dossiers" || !t) return;
+      const cles = s.visibles.map((d) => d.cle);
+      if (t === "j" || t === "k") {
+        e.preventDefault();
+        const c = deplacer(cles, s.curseur, t === "j" ? 1 : -1);
+        setCurseur(c);
+        document.querySelector(`[data-dossier="${c}"]`)?.scrollIntoView({ block: "nearest" });
+      } else if (t === "enter" && s.curseur && s.curseur !== s.focus) {
+        const d = s.visibles.find((x) => x.cle === s.curseur);
+        if (d) { e.preventDefault(); onPick(d); }
+      }
+    };
+    // Échap ferme l'aide seule : en capture, avant l'écouteur de l'application qui fermerait aussi la fiche
+    const echap = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && etat.current.aide) { e.stopPropagation(); setAide(false); }
+    };
+    window.addEventListener("keydown", k);
+    window.addEventListener("keydown", echap, true);
+    return () => { window.removeEventListener("keydown", k); window.removeEventListener("keydown", echap, true); };
+  }, [onPick]);
+  const mesuresQ = useQuery({ queryKey: ["mesuresDecisions"], queryFn: () => api.mesuresDecisions(30), enabled: aide, staleTime: 60_000 });
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col">
+      {aide && (
+        <div className="absolute inset-0 z-20 bg-panel px-5 py-4 text-[12.5px]" role="dialog" aria-label={V.aide.titre}>
+          <p className="mb-3 text-[15px] font-semibold text-ink">{V.aide.titre}</p>
+          <dl className="grid grid-cols-[6.5rem_1fr] gap-x-3 gap-y-1.5">
+            {V.aide.touches.map(([k, t]) => <Fragment key={k}><dt className="font-mono text-[11.5px] text-ink">{k}</dt><dd className="text-muted">{t}</dd></Fragment>)}
+          </dl>
+          <p className="mt-5 font-semibold text-ink">{V.aide.mesures(30)}</p>
+          {mesuresQ.data && <>
+            <p className="mt-1 text-muted">{V.aide.vraisFaux(mesuresQ.data.confirmees, mesuresQ.data.faux_positif)}</p>
+            <p className="text-ink">{V.aide.part(mesuresQ.data.part_vrais)}</p>
+          </>}
+          <p className="mt-5 text-[11.5px] text-faint">{V.aide.fermer}</p>
+        </div>
+      )}
       <div className="flex gap-1 border-b border-hair px-3 pt-3" role="tablist">
         {(["dossiers", "alertes"] as const).map((o) => (
           <button key={o} role="tab" aria-selected={onglet === o} onClick={() => setOnglet(o)}
@@ -73,14 +121,14 @@ export default function VeillePanel({ liste, instant, focus, onPick, fil }:
                 <p className="mt-1 text-[12.5px]">{V.calmeDetail}</p>
               </div>
             )}
-            {examiner.map((d) => <Ligne key={d.cle} d={d} instant={instant} focus={focus === d.cle} onPick={onPick} />)}
+            {examiner.map((d) => <Ligne key={d.cle} d={d} instant={instant} focus={focus === d.cle} curseur={curseur === d.cle} onPick={onPick} />)}
             {noter.length > 0 && (
               <button onClick={() => setNoterOuvert(!noterOuvert)} aria-expanded={noterOuvert}
                 className="w-full px-4 py-2.5 text-left text-[12.5px] text-muted hover:text-ink">
                 <span className={`mr-1.5 inline-block transition-transform ${noterOuvert ? "rotate-90" : ""}`}>›</span>{V.aNoter(noter.length)}
               </button>
             )}
-            {noterOuvert && noter.map((d) => <Ligne key={d.cle} d={d} instant={instant} focus={focus === d.cle} onPick={onPick} />)}
+            {noterOuvert && noter.map((d) => <Ligne key={d.cle} d={d} instant={instant} focus={focus === d.cle} curseur={curseur === d.cle} onPick={onPick} />)}
           </div>
         </>
       )}

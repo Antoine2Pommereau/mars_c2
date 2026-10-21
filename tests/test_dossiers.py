@@ -236,3 +236,24 @@ def test_api_infrastructures_within_a_mile_of_a_dossier(api):
         assert proche in r["infrastructures_proches"] and loin not in r["infrastructures_proches"]
     finally:
         conn.execute("DELETE FROM infrastructure WHERE source = 'essai_d'")
+
+
+def test_api_true_and_false_positives_by_type(api):
+    """Mesure du triage : dernière décision de chaque alerte, confirmées contre faux positifs, par type (écart avant
+    et après les décisions d'essai : la base de test en porte d'autres)."""
+    c, conn, vid, ids = api
+    avant = c.get("/api/decisions/mesures", params={"jours": 1}).json()["par_type"]
+    for i, action, motif in ((ids["coupure"], "confirmer", None), (ids["echo"], "classer", "faux_positif"),
+                             (ids["lumiere"], "classer", "faux_positif"), (ids["lumiere"], "rouvrir", None),
+                             (ids["lumiere"], "classer", "doublon"), (ids["liste"], "acquitter", None),
+                             (ids["liste"], "commenter", None)):
+        conn.execute("INSERT INTO alert_actions (alert_id, action, motif, author, at) VALUES (%s, %s, %s, 'essai', "
+                     "clock_timestamp())", (i, action, motif))
+    apres = c.get("/api/decisions/mesures", params={"jours": 1}).json()["par_type"]
+    ecart = {t: {k: v - avant.get(t, {}).get(k, 0) for k, v in x.items() if k != "part_vrais"
+                 and v != avant.get(t, {}).get(k, 0)} for t, x in apres.items()}
+    assert ecart["AIS_GAP"] == {"confirmees": 1}
+    assert ecart["DARK_SHIP"] == {"faux_positif": 1, "doublon": 1}, "dernière décision seule"
+    assert ecart["WATCHLIST"] == {"vues": 1}, "un commentaire n'est pas une décision"
+    if not avant:
+        assert apres["AIS_GAP"]["part_vrais"] == 1.0 and apres["DARK_SHIP"]["part_vrais"] == 0.0

@@ -131,6 +131,36 @@ async def _trouver(c, cle: str, instant, rejeu, rules) -> dict:
     raise HTTPException(404, "Dossier introuvable ou clos à cet instant")
 
 
+@router.get("/api/decisions/mesures")
+async def mesures(request: Request, jours: int = 30):
+    """Vrais et faux positifs (lot U, étape 5) : dernière décision de chaque alerte décidée sur la période, par type
+    d'alerte ; part des vrais positifs = confirmées / (confirmées + faux positifs). Les alertes vues, ou classées
+    comme activité légitime ou doublon, ne comptent ni pour ni contre."""
+    jours = max(1, min(jours, 365))
+    with traces.span("dossiers.mesures", **{"mesures.jours": jours}) as sp:
+        async with request.app.state.pool.acquire() as c:
+            rows = await c.fetch(
+                """SELECT a.type, x.action, x.motif, count(*) AS n FROM alerts a
+                   JOIN LATERAL (SELECT action, motif FROM alert_actions y WHERE y.alert_id = a.id
+                                   AND y.action <> 'commenter' ORDER BY y.at DESC LIMIT 1) x ON true
+                   WHERE EXISTS (SELECT 1 FROM alert_actions z WHERE z.alert_id = a.id
+                                   AND z.at >= now() - make_interval(days => $1))
+                   GROUP BY 1, 2, 3""", jours)
+        par_type: dict = {}
+        for r in rows:
+            cle = {"confirmer": "confirmees", "acquitter": "vues", "rouvrir": "rouvertes"}.get(r["action"]) \
+                or (r["motif"] if r["action"] == "classer" else r["action"])
+            t = par_type.setdefault(r["type"], {})
+            t[cle] = t.get(cle, 0) + r["n"]
+        for t in par_type.values():
+            vp, fp = t.get("confirmees", 0), t.get("faux_positif", 0)
+            t["part_vrais"] = round(vp / (vp + fp), 3) if vp + fp else None
+        total = {k: sum(t.get(k, 0) for t in par_type.values()) for k in ("confirmees", "faux_positif")}
+        sp.set_attributes({"mesures.types": len(par_type), **{f"mesures.{k}": v for k, v in total.items()}})
+    return {"jours": jours, "par_type": par_type, **total,
+            "part_vrais": round(total["confirmees"] / sum(total.values()), 3) if sum(total.values()) else None}
+
+
 @router.get("/api/dossiers/{cle}")
 async def recit(request: Request, cle: str, a_l_instant: datetime | None = None, end: datetime | None = None):
     """Récit d'un dossier : en tête (niveau, nom, phrase, contributions), chronologie des signaux avec leurs détails et

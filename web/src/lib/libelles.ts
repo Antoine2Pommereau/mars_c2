@@ -25,7 +25,17 @@ export const L = {
   veille: {
     onglets: { dossiers: "Dossiers", alertes: "Toutes les alertes" },
     rien: "Rien à examiner", aExaminer: (_n: number) => "à examiner", aNoter: (n: number) => `${n} à noter`,
-    raccourcis: "",
+    raccourcis: "? raccourcis",
+    aide: {
+      titre: "Raccourcis",
+      touches: [["J  K", "dossier suivant, précédent"], ["Entrée", "ouvrir le dossier"], ["F", "confirmer"],
+        ["C  puis 1 2 3", "classer : faux positif, activité légitime, doublon"], ["S", "suivre le navire"],
+        ["V", "vérifier par satellite (Entrée demande, Échap annule)"], ["?", "cette aide"]] as [string, string][],
+      mesures: (j: number) => `Vos décisions sur ${j} jours`,
+      vraisFaux: (vp: number, fp: number) => `${nb(vp, "confirmée")}, ${nb(fp, "faux positif", "faux positifs")}`,
+      part: (p: number | null) => (p == null ? "Pas encore de mesure" : `${Math.round(p * 100)} % de vrais positifs`),
+      fermer: "Échap ou ? pour fermer",
+    },
     ilYa: (min: number) => (min < 90 ? `il y a ${Math.max(0, Math.round(min))} min` : min < 2880 ? `il y a ${Math.round(min / 60)} h`
       : `il y a ${Math.round(min / 1440)} j`),
     calme: (h: number | null, fenetre: number) => (h == null || h > fenetre ? `Aucun navire inhabituel sur ${fenetre} h`

@@ -55,7 +55,7 @@ export default function Recherche({ region, onClose, onPick }:
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-abyss/60 pt-[12vh]" onMouseDown={onClose}>
+    <div data-recherche className="fixed inset-0 z-50 flex items-start justify-center bg-abyss/60 pt-[12vh]" onMouseDown={onClose}>
       <div role="dialog" aria-label={R.titre} onMouseDown={(e) => e.stopPropagation()}
         className="w-[600px] max-w-[92vw] rounded-lg border border-hair bg-panel shadow-2xl">
         <label className="flex items-center gap-3 border-b border-hair px-4 py-3">

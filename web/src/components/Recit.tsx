@@ -1,7 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type Dossier } from "../lib/api";
 import { auteurMemorise } from "../lib/auteur";
+import { toucheLibre } from "../lib/clavier";
 import { hm, jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import { COULEURS_PREUVE as CP, distance, type Preuve } from "../lib/preuve";
@@ -87,6 +88,26 @@ export default function Recit({ dossier: d, recit, instant, suivi, onSuivre, onP
     onSuccess: (r) => { setDevis(null); setMessage(r.regroupee ? R.verifier.regroupee(r.id) : R.verifier.demandee(r.id)); rafraichir(); },
     onError: (e: Error) => setMessage(e.message),
   });
+  // Gestes au clavier : F, C puis 1 2 3, S, V (Entrée demande, Échap annule) ; écoute en capture, avant la Veille
+  const gestes = useRef({ classer, devis, occupe: false, suivi, onSuivre });
+  gestes.current = { classer, devis, occupe: decider.isPending || devisM.isPending || demander.isPending, suivi, onSuivre };
+  const { mutate: decide } = decider, { mutate: demande } = demander, { mutate: chiffre } = devisM;
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      const t = toucheLibre(e), g = gestes.current;
+      if (!t || g.occupe) return;
+      const pris = () => { e.preventDefault(); e.stopPropagation(); };
+      if (t === "escape" && (g.classer || g.devis)) { pris(); setClasser(false); setDevis(null); }
+      else if (t === "enter" && g.devis && !g.devis.refus) { pris(); demande(); }
+      else if (g.classer && ["1", "2", "3"].includes(t)) { pris(); decide({ action: "classer", motif: MOTIFS[Number(t) - 1] }); }
+      else if (t === "f") { pris(); decide({ action: "confirmer" }); }
+      else if (t === "c") { pris(); setClasser((x) => !x); }
+      else if (t === "s" && d.vessel_id != null) { pris(); g.onSuivre(d.vessel_id, !g.suivi); }
+      else if (t === "v") { pris(); chiffre(); }
+    };
+    window.addEventListener("keydown", k, true);
+    return () => window.removeEventListener("keydown", k, true);
+  }, [d.vessel_id, decide, demande, chiffre]);
   const ouvrirAlerte = (id: number) => api.alert(id).then(onPickAlert).catch(() => undefined);
   const occupe = decider.isPending || devisM.isPending || demander.isPending;
   const btn = "rounded-md border border-hair px-2 py-1.5 text-[12.5px] text-ink hover:border-muted disabled:opacity-40";
