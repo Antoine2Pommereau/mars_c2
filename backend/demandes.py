@@ -116,6 +116,8 @@ async def demander(request: Request, n: NouvelleDemande):
         raise HTTPException(409, "Tip and cue coupé (config/rules.yaml, tip_and_cue.actif)")
     auteur = (n.author or "").strip() or "Opérateur"
     async with request.app.state.pool.acquire() as c, c.transaction():
+        if await c.fetchval("SELECT source_en_pause('tip_and_cue')"):
+            raise HTTPException(409, "Tip and cue en pause (panneau de contrôle)")
         vid, lon, lat, ts, sog, cog, alerte = n.vessel_id, n.lon, n.lat, None, None, None, n.alerte_id
         if alerte is not None:
             a = await c.fetchrow("SELECT ST_X(geom::geometry) AS lon, ST_Y(geom::geometry) AS lat, event_time, "

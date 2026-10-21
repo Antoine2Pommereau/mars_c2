@@ -25,6 +25,7 @@ from preuves import router as preuves_router
 from travailleurs import router as travailleurs_router, viirs_status
 from sentinel import router as sentinel_router, sentinel_status
 from demandes import demandes_status, router as demandes_router
+from controle import router as controle_router
 from mars import traces
 from mars.config import load_rules
 from mars.frise import timeline
@@ -83,6 +84,7 @@ app.include_router(travailleurs_router) # travailleurs, détections VIIRS, mesur
 app.include_router(preuves_router)      # preuves images des détections satellites, relayées depuis R2
 app.include_router(sentinel_router)     # détections Sentinel 1, vérification satellite (backend/sentinel.py)
 app.include_router(demandes_router)     # tip and cue : demandes d'observation satellite (backend/demandes.py)
+app.include_router(controle_router)     # panneau de contrôle, connexion des opérateurs (backend/controle.py, lot P)
 
 
 def feature(geometry, properties):

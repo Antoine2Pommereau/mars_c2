@@ -18,7 +18,27 @@ export const L = {
   // Rail et panneaux
   rail: {
     alertes: "Alertes", analyses: "Analyses satellites", couches: "Couches et légende",
-    suivis: "Navires suivis", recherche: "Recherche", observations: "Observations satellites",
+    suivis: "Navires suivis", recherche: "Recherche", observations: "Observations satellites", controle: "Contrôle",
+  },
+  // Panneau de contrôle (lot P)
+  controle: {
+    titre: "Contrôle", regles: (v: string) => `règles ${v}`,
+    sections: { connexion: "Opérateur", capteurs: "Capteurs", depenses: "Dépenses", demande: "Demande d'observation",
+      journal: "Journal" } as Record<string, string>,
+    operateur: "Opérateur", motDePasse: "Mot de passe", seConnecter: "Se connecter", deconnexion: "Déconnexion",
+    nonConfigure: "Aucun opérateur configuré (MARS_OPERATEURS)", connexionRequise: "Connexion requise pour agir",
+    enService: "en service", enPause: "en pause", depuis: (t: string) => `depuis ${t}`, reprise: (t: string) => `reprise ${t}`,
+    pause: "Mettre en pause", reprendre: "Reprendre", motif: "Motif", repriseLe: "Reprise le (facultatif)",
+    confirmer: "Confirmer", annuler: "Annuler",
+    plafond: "Scènes par jour", moins: "Une scène de moins", plus: "Une scène de plus", plafondDefaut: (n: number) => `fichier : ${n}`, appliquer: "Appliquer",
+    budget: "Budget Sentinel du mois", depense: "dépensé", reserve: "réservé", restant: "restant",
+    hors: "hors budget", derniers: "Derniers travailleurs", coutEstime: "estimé",
+    lon: "Longitude", lat: "Latitude", rayon: "Rayon (m)", demander: "Demander",
+    demandeFaite: (id: number) => `Demande ${id} en attente`,
+    journalVide: "Aucune action", actions: {
+      pause: "pause", reprise: "reprise", plafond: "plafond", demande: "demande", connexion: "connexion",
+      connexion_refusee: "connexion refusée", deconnexion: "déconnexion", malgre_pause: "malgré la pause",
+    } as Record<string, string>,
   },
   // Panneau « Observations » (tip and cue, lot T1)
   observations: {

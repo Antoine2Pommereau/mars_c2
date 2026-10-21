@@ -332,6 +332,20 @@ def taches() -> Tableau:
 def satellites() -> Tableau:
     t = Tableau("mars-satellites", "Satellites", "Nuits VIIRS, travailleurs éphémères, coût du mois, passages Sentinel",
                 de="now-30d")
+    t.table("Interrupteurs des analyses satellites",
+            """SELECT CASE source WHEN 'sentinel1' THEN 'Sentinel 1' WHEN 'sentinel2' THEN 'Sentinel 2' WHEN 'viirs'
+                             THEN 'VIIRS' ELSE 'Tip and cue' END AS "Source",
+                      CASE WHEN en_pause THEN 'pause' ELSE 'service' END AS "État", depuis AS "Depuis",
+                      jusqu_a AS "Reprise prévue", coalesce(motif, '·') AS "Motif", coalesce(auteur, '·') AS "Par"
+               FROM interrupteurs_satellites ORDER BY source""", w=12, h=6,
+            description="Panneau de contrôle de l'interface (lot P), ou la commande « satellites pause » de taches. Une source en pause "
+                        "ne crée aucun travailleur ; ses alertes d'absence se taisent.",
+            etats={"pause": ("en pause", ORANGE), "service": ("en service", NEUTRE)}, colonne_etat="État")
+    t.table("Journal du panneau de contrôle",
+            """SELECT le AS "Le", auteur AS "Par", action AS "Action", coalesce(cible, '·') AS "Cible",
+                      coalesce(motif, '·') AS "Motif", trace_id AS "Trace"
+               FROM journal_controle WHERE le >= $__timeFrom() ORDER BY le DESC LIMIT 50""", w=12, h=6,
+            trace="Trace", vide="aucune action sur la période")
     t.chiffre("Coût Sentinel du mois",
               """SELECT coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8)), 0) AS cout FROM travailleurs
                  WHERE tache IN ('sentinel', 'sentinel2') AND cree_le >= date_trunc('month', now())""", "currencyEUR",
@@ -668,14 +682,19 @@ TUILE_SATELLITES = f"""SELECT now() AS time,
            WHEN attente_min IS NOT NULL THEN 'GPU indisponible chez Scaleway, nouvel essai dans '
                 || greatest(attente_min, 0) || ' min'
            WHEN nuit IS NULL THEN 'aucune nuit VIIRS traitée'
-           ELSE 'Nuit du ' || to_char(nuit, 'DD/MM') || ' traitée' END AS metric,
+           ELSE 'Nuit du ' || to_char(nuit, 'DD/MM') || ' traitée' END
+        || coalesce(', en pause : ' || pauses, '') AS metric,
       CASE WHEN absente THEN 2 WHEN attente_min IS NOT NULL THEN 1 WHEN nuit IS NULL THEN -1 WHEN echec THEN 1
            ELSE 0 END AS value
     FROM (SELECT (SELECT max(nuit) FROM viirs_granules WHERE traite_le IS NOT NULL) AS nuit,
                  (now() AT TIME ZONE 'UTC')::date - 1 AS veille,
                  extract(hour FROM now() AT TIME ZONE 'UTC') >= {_seuil("seuil_heure_nuit_viirs", 8)}
                    AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1
-                                   AND traite_le IS NOT NULL) AS absente,
+                                   AND traite_le IS NOT NULL)
+                   AND NOT source_en_pause('viirs') AS absente,
+                 (SELECT string_agg(CASE source WHEN 'sentinel1' THEN 'Sentinel 1' WHEN 'sentinel2' THEN 'Sentinel 2'
+                                    WHEN 'viirs' THEN 'VIIRS' ELSE 'tip and cue' END, ', ' ORDER BY source)
+                  FROM interrupteurs_satellites WHERE en_pause) AS pauses,
                  EXISTS (SELECT 1 FROM travailleurs WHERE etat = 'echec' AND NOT rupture_stock
                          AND cree_le > now() - interval '24 hours') AS echec,
                  (SELECT ceil(extract(epoch FROM min(prochain_essai) - now()) / 60)::int FROM analyses
@@ -716,7 +735,8 @@ def vue_ensemble() -> Tableau:
             "Échecs des tâches sur 24 h (refus attendus exclus). Rouge si une tâche échoue ECHECS_SUCCESSIFS fois de "
             "suite (alerte), orange dès un échec.")
     t.tuile("Satellites", TUILE_SATELLITES, "Satellites",
-            "Dernière nuit VIIRS traitée. Rouge si la nuit précédente manque après HEURE_NUIT_VIIRS (alerte) ; orange si "
+            "Dernière nuit VIIRS traitée, et les sources en pause (panneau de contrôle). Rouge si la nuit précédente "
+            "manque après HEURE_NUIT_VIIRS (alerte, muette quand VIIRS est en pause) ; orange si "
             "une analyse Sentinel 1 attend un GPU (rupture de stock, nouvel essai à chaque cycle) ou si un travailleur a "
             "échoué en 24 h (hors rupture de stock).")
     t.tuile("Traces", TUILE_TRACES, "Traces",

@@ -635,6 +635,14 @@ copie et `--nettoyer` retire l'ancienne copie ; contrôle d'un octet de chaque a
 avant Docker (étape `controle_r2`, état « acces ») ; `sentinel2-diagnostic` (variables dans taches et dans backend,
 seau, poids, adresse présignée).
 
+**Lot P, panneau de contrôle (21/10/2026)** (`docs/controle.md`) : icône « Contrôle » du rail ; état en base qui prime
+sur `config/rules.yaml` (`mars/controle.appliquer`), seuils jamais édités dans l'interface ; chaque action dans
+`journal_controle` ; écriture réservée aux opérateurs connectés (`MARS_OPERATEURS`, mot de passe haché, cookie HttpOnly
+SameSite strict, 12 h). Phase A (migration 33, règles 2026.10.36) : interrupteurs Sentinel 1, Sentinel 2, VIIRS et tip
+and cue (aucun travailleur en pause, commande manuelle refusée sauf `--malgre-pause`, reprise prévue et notification
+la veille, `taches.py satellites-pause`), plafond quotidien réglable de 0 à 4, budget du mois, demande d'observation
+d'un point, Grafana muette en pause.
+
 ## 10. Tests
 
 `python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :

@@ -36,6 +36,10 @@ Usage :
     python scripts/taches.py journal-travailleur [ID] # journal envoyé par un travailleur, état Scaleway s'il est muet
     python scripts/taches.py viirs-reevaluer          # détections VIIRS en base réévaluées (gravité, non évaluables)
     python scripts/taches.py sentinel                 # passages Sentinel 1 à analyser maintenant (sélection automatique)
+    python scripts/taches.py satellites-pause on|off [sentinel1|sentinel2|viirs|tip_and_cue|tout] [--jusqua DATE]
+                                              [--motif TEXTE]   # lot P : pause ou reprise ; sans argument : état
+    Commandes viirs, sentinel-analyser, sentinel2-analyser : refusées si la source est en pause, sauf --malgre-pause
+    python scripts/taches.py operateur-hacher [NOM]   # lot P : ligne MARS_OPERATEURS du .env (connexion au panneau)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-non-confirmees [--appliquer]   # AIS_UNCONFIRMED hors des fenêtres lues
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
@@ -67,7 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import psycopg
 
-from mars import archive, supervision, traces
+from mars import archive, controle, supervision, traces
 from mars.config import ROOT, database_url, load_env, load_rules
 
 LIVE = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
@@ -153,10 +157,17 @@ def due(conn, task: str, now: datetime, every_days: int = 1, hour: str = HOUR) -
     h, m = (int(x) for x in hour.split(":"))
     if now < now.replace(hour=h, minute=m, second=0, microsecond=0):
         return False
-    r = conn.execute("SELECT bool_or(status = 'ok') FILTER (WHERE run_day > %s), "
-                     "max(started_at) FILTER (WHERE status = 'echec') FROM task_runs WHERE task = %s",
-                     (now.date() - timedelta(days=every_days), task)).fetchone()
-    return not r[0] and (r[1] is None or (now - r[1]).total_seconds() >= RETRY_S)
+    r = conn.execute("SELECT bool_or(status = 'ok' AND NOT details ? 'en_pause') FILTER (WHERE run_day > %s), "
+                     "max(started_at) FILTER (WHERE status = 'echec'), "
+                     "bool_or(details ? 'en_pause') FILTER (WHERE run_day = %s) FROM task_runs WHERE task = %s",
+                     (now.date() - timedelta(days=every_days), now.date(), task)).fetchone()
+    if r[0]:
+        return False
+    # Lot P : une source en pause est consignée une fois par jour ; à sa reprise, la tâche redevient due le jour même
+    source = {"viirs": "viirs"}.get(task)
+    if r[2] and source and conn.execute("SELECT source_en_pause(%s)", (source,)).fetchone()[0]:
+        return False
+    return r[1] is None or (now - r[1]).total_seconds() >= RETRY_S
 
 
 def tasks(conn):
@@ -173,17 +184,42 @@ def tasks(conn):
     }
 
 
+def regles(conn) -> dict:
+    """Règles du fichier, avec l'état du panneau de contrôle qui prime (plafonds, pauses ; mars/controle.py)."""
+    return controle.appliquer(conn, load_rules())
+
+
+def garde_pause(conn, rules: dict, source: str, manuel: bool, malgre_pause: bool, motif: str | None = None) -> dict | None:
+    """Source en pause (lot P) : la boucle consigne la décision sans bruit ({"en_pause": motif}) ; une commande manuelle
+    est refusée, sauf --malgre-pause, consigné dans journal_controle."""
+    m = controle.en_pause(rules, source)
+    if not m:
+        return None
+    if manuel and malgre_pause:
+        controle.journaliser(conn, os.environ.get("MARS_OPERATEUR") or "terminal", "malgre_pause", source,
+                             motif=motif or "commande manuelle avec --malgre-pause")
+        log(f"{m} : lancement manuel malgré la pause (consigné)")
+        return None
+    if manuel:
+        from mars import travailleurs
+        raise travailleurs.RefusLancement(f"{m} : commande refusée, --malgre-pause pour passer outre (consigné)")
+    return {"en_pause": m}
+
+
 def purge_proofs(conn) -> dict:
     """Preuves images : sans limite si liées à une alerte, CONSERVATION_JOURS (30) sinon (mars/preuves.py)."""
     from mars import preuves
     return preuves.purge(conn, r2(), KEEP_DAYS)
 
 
-def launch_viirs(conn) -> dict:
+def launch_viirs(conn, manuel: bool = False, malgre_pause: bool = False, motif: str | None = None) -> dict:
     """Granules des dernières nuits pas encore traitées, confiées à un travailleur éphémère (un seul à la fois)."""
     import requests
     from mars import travailleurs, viirs
-    rules = load_rules()
+    rules = regles(conn)
+    pause = garde_pause(conn, rules, "viirs", manuel, malgre_pause, motif)
+    if pause:
+        return pause
     scw, token = travailleurs.Scaleway.from_env(), os.environ.get("EARTHDATA_TOKEN")
     if scw is None or not token:
         raise travailleurs.RefusLancement("clés absentes du .env : SCW_SECRET_KEY, SCW_PROJECT_ID, EARTHDATA_TOKEN")
@@ -211,17 +247,21 @@ def sentinel_suspended(conn) -> str | None:
     return r and (r[0] or "échec sans motif")
 
 
-def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False) -> dict:
+def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False, malgre_pause: bool = False,
+                    motif_pause: str | None = None) -> dict:
     """Passages Sentinel 1 à analyser (corridor avec un navire des listes, alerte VIIRS), ou un passage choisi à la
     main : une session GPU, dans les limites du plafond de scènes et du budget (mars/sentinel.py). `auto` : appel de
     la boucle, suspendu jusqu'au lendemain après un échec du jour."""
     import requests
     from mars import sentinel, travailleurs
+    rules = regles(conn)
+    pause = garde_pause(conn, rules, "sentinel1", not auto, malgre_pause, motif_pause)
+    if pause:
+        return pause
     if auto:
         motif = sentinel_suspended(conn)
         if motif:
             return {"passages": 0, "suspendu_jusqu_au_lendemain": motif}
-    rules = load_rules()
     scw = travailleurs.Scaleway.from_env()
     # Paire de clés Copernicus dédiée aux travailleurs (remise par le réseau privé) ; celle du serveur n'y sert pas
     missing = [k for k in ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY") if not os.environ.get(k)]
@@ -237,13 +277,17 @@ def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False) -> dic
     return r
 
 
-def launch_sentinel2(conn, pass_id: int | None = None) -> dict:
+def launch_sentinel2(conn, pass_id: int | None = None, malgre_pause: bool = False,
+                     motif_pause: str | None = None) -> dict:
     """Passages Sentinel 2 à analyser (mêmes points de déclenchement que Sentinel 1), ou un passage choisi à la main :
     une session sur processeur, plafond propre et budget partagé (mars/sentinel2.py). Coupé tant que
     sentinel2.scenes_max_par_jour vaut 0 (essai : SENTINEL_PLAFOND_ESSAI=1 sur la commande manuelle)."""
     import requests
     from mars import sentinel2, travailleurs
-    rules = load_rules()
+    rules = regles(conn)
+    pause = garde_pause(conn, rules, "sentinel2", pass_id is not None, malgre_pause, motif_pause)
+    if pause:
+        return pause
     scw = travailleurs.Scaleway.from_env()
     missing = [k for k in ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY") if not os.environ.get(k)]
     if scw is None or missing:
@@ -449,6 +493,7 @@ def minute(conn, secours, last: dict):
         step(lambda: signs_of_life(conn), "signes de vie")
         step(lambda: supervision.mesurer_otel(conn), "mesures du collecteur OpenTelemetry")
         step(lambda: supervise_workers(conn), "surveillance des travailleurs")   # chaque minute : aucun orphelin
+        step(lambda: interrupteurs(conn), "interrupteurs des analyses satellites")   # reprises prévues (lot P)
         if time.time() - last["disk"] >= DISK_EVERY_S:
             last["disk"] = time.time()
             step(lambda: archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log), "disque")
@@ -473,7 +518,7 @@ def minute(conn, secours, last: dict):
                 step(lambda: run(conn, "sentinel", lambda: launch_sentinel(conn, auto=True), quiet=True), "sentinel")
                 # Sentinel 2 (lot S2) : même rythme, seulement en service (plafond quotidien non nul)
                 from mars import sentinel2
-                if sentinel2.actif(load_rules()):
+                if sentinel2.actif(regles(conn)):
                     step(lambda: run(conn, "sentinel2", lambda: launch_sentinel2(conn), quiet=True), "sentinel2")
         for task, (fn, every, hour) in tasks(conn).items():
             if step(lambda: due(conn, task, datetime.now(timezone.utc), every, hour), f"{task} (échéance)"):
@@ -611,8 +656,9 @@ def _passages(conn, _a):
 
 
 @commande("viirs")
-def _viirs(conn, _a):
-    if run(conn, "viirs", lambda: launch_viirs(conn), parent=traces.traceparent()) is None:
+def _viirs(conn, a):
+    if run(conn, "viirs", lambda: launch_viirs(conn, True, a.malgre_pause, a.motif),
+           parent=traces.traceparent()) is None:
         sys.exit(1)
 
 
@@ -661,7 +707,16 @@ def _detruire_travailleurs(conn, _a):
 
 def tip_and_cue_cycle(conn) -> dict:
     from mars import tip_and_cue
-    return tip_and_cue.cycle(conn, load_rules())
+    return tip_and_cue.cycle(conn, regles(conn))
+
+
+def interrupteurs(conn) -> dict:
+    """Reprises automatiques des pauses échues et notification la veille (lot P) ; journalisé seulement s'il se passe
+    quelque chose."""
+    out = controle.echeances(conn, datetime.now(timezone.utc))
+    if out["reprises"] or out["veilles"]:
+        log(f"interrupteurs : {json.dumps(out, ensure_ascii=False)}")
+    return out
 
 
 @commande("tip-rejeu")                               # lecture seule : demandes qu'auraient données les jours passés
@@ -803,7 +858,8 @@ def _sentinel(manual: bool):
         pid = int(a.args[0]) if manual and a.args else None
         if manual and pid is None:
             raise SystemExit("Préciser l'identifiant du passage : taches.py sentinel-analyser ID (table sar_passes)")
-        if run(conn, "sentinel", lambda: launch_sentinel(conn, pid), parent=traces.traceparent()) is None:
+        if run(conn, "sentinel", lambda: launch_sentinel(conn, pid, malgre_pause=a.malgre_pause, motif_pause=a.motif),
+               parent=traces.traceparent()) is None:
             sys.exit(1)
     return go
 
@@ -839,6 +895,74 @@ def _sentinel_candidats(conn, a):
                   f"{e['ecarte']}")
 
 
+def date_reprise(texte: str) -> datetime:
+    """« 17/06/2024 08:00 » ou « 17/06/2024 » (heure de Paris, 08:00 par défaut), ou ISO 8601 ; rendue en UTC."""
+    from zoneinfo import ZoneInfo
+    t = texte.strip()
+    for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        try:
+            d = datetime.strptime(t, fmt)
+            if fmt == "%d/%m/%Y":
+                d = d.replace(hour=8)
+            return d.replace(tzinfo=ZoneInfo("Europe/Paris")).astimezone(timezone.utc)
+        except ValueError:
+            pass
+    d = datetime.fromisoformat(t)
+    return (d if d.tzinfo else d.replace(tzinfo=ZoneInfo("Europe/Paris"))).astimezone(timezone.utc)
+
+
+@commande("satellites-pause")                        # lot P : interrupteurs des analyses satellites (sans argument : état)
+def _satellites_pause(conn, a):
+    """satellites-pause on|off [sentinel1|sentinel2|viirs|tip_and_cue|tout] [--jusqua DATE] [--motif TEXTE] ; « tout »
+    exclut VIIRS, qui se nomme explicitement. Journalisé (auteur MARS_OPERATEUR, « terminal » par défaut) et notifié."""
+    if not a.args:
+        for r in conn.execute(f"SELECT {controle.COLS_INTERRUPTEUR} FROM interrupteurs_satellites ORDER BY source"):
+            e = controle.interrupteur(r)
+            if e["en_pause"]:
+                fin = f", reprise le {controle._paris(e['jusqu_a']):%d/%m/%Y %H:%M}" if e["jusqu_a"] else ""
+                print(f"{e['source']:<12} EN PAUSE depuis le {controle._paris(e['depuis']):%d/%m/%Y %H:%M}{fin} "
+                      f"par {e['auteur']} : {e['motif']}")
+            else:
+                print(f"{e['source']:<12} en service")
+        return
+    sens = a.args[0].lower()
+    if sens not in ("on", "off"):
+        raise SystemExit("taches.py satellites-pause on|off [source|tout] [--jusqua DATE] [--motif TEXTE]")
+    cible = a.args[1] if len(a.args) > 1 else "tout"
+    sources = controle.TOUT if cible == "tout" else (cible,)
+    if any(s not in controle.SOURCES for s in sources):
+        raise SystemExit(f"source inconnue : {cible} ({', '.join(controle.SOURCES)} ou tout)")
+    if sens == "on" and not a.motif:
+        raise SystemExit("--motif obligatoire pour une pause")
+    jusqua = date_reprise(a.jusqua) if a.jusqua and sens == "on" else None
+    auteur = os.environ.get("MARS_OPERATEUR") or "terminal"
+    traces.attributs(**{"controle.sources": ",".join(sources), "controle.pause": sens == "on"})
+    for s in sources:
+        try:
+            with conn.transaction():
+                e = controle.basculer(conn, s, sens == "on", auteur, a.motif, jusqua)
+        except ValueError as err:
+            raise SystemExit(str(err))
+        print(f"{s:<12} {'EN PAUSE' if e['en_pause'] else 'en service'}" +
+              (f" jusqu'au {controle._paris(jusqua):%d/%m/%Y %H:%M} (heure de Paris)" if jusqua else ""))
+
+
+@commande("operateur-hacher", base=False)           # lot P : ligne MARS_OPERATEURS du .env (mot de passe saisi masqué)
+def _operateur_hacher(_conn, a):
+    """Empreinte PBKDF2 SHA 256 du mot de passe d'un opérateur, saisi deux fois sans écho ; rien n'est écrit ni
+    journalisé. Plusieurs opérateurs : séparer les entrées par une virgule dans MARS_OPERATEURS."""
+    import getpass
+    nom = (a.args[0] if a.args else input("Nom de l'opérateur : ")).strip()
+    if not nom or any(c in nom for c in ":, "):
+        raise SystemExit("Nom d'opérateur sans espace, deux points ni virgule")
+    mdp = getpass.getpass("Mot de passe (12 caractères au moins) : ")
+    if len(mdp) < 12:
+        raise SystemExit("Mot de passe trop court : 12 caractères au moins")
+    if getpass.getpass("Encore une fois : ") != mdp:
+        raise SystemExit("Les deux saisies diffèrent")
+    print(f"MARS_OPERATEURS={nom}:{controle.hacher(mdp)}")
+
+
 commande("sentinel")(_sentinel(False))
 commande("sentinel-analyser")(_sentinel(True))
 
@@ -861,7 +985,8 @@ def _sentinel_non_confirmees(conn, a):
 def _sentinel2_analyser(conn, a):
     if not a.args:
         raise SystemExit("Préciser l'identifiant du passage Sentinel 2 : taches.py sentinel2-analyser ID (sar_passes)")
-    if run(conn, "sentinel2", lambda: launch_sentinel2(conn, int(a.args[0])), parent=traces.traceparent()) is None:
+    if run(conn, "sentinel2", lambda: launch_sentinel2(conn, int(a.args[0]), a.malgre_pause, a.motif),
+           parent=traces.traceparent()) is None:
         sys.exit(1)
 
 
@@ -1003,6 +1128,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--jours", type=int, default=14, help="mesures : nombre de jours examinés")
     ap.add_argument("--jour", type=date.fromisoformat, help="coupures-injection : journée (par défaut, la veille)")
     ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")
+    ap.add_argument("--malgre-pause", action="store_true",
+                    help="viirs, sentinel-analyser, sentinel2-analyser : lancer malgré la pause (consigné)")
+    ap.add_argument("--motif", help="satellites-pause, --malgre-pause : motif consigné dans journal_controle")
+    ap.add_argument("--jusqua", help="satellites-pause on : reprise automatique (17/06/2024 08:00, heure de Paris)")
     return ap
 
 

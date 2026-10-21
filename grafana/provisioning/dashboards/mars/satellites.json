@@ -38,6 +38,168 @@
  "panels": [
   {
    "id": 1,
+   "type": "table",
+   "title": "Interrupteurs des analyses satellites",
+   "description": "Panneau de contrôle de l'interface (lot P), ou la commande « satellites pause » de taches. Une source en pause ne crée aucun travailleur ; ses alertes d'absence se taisent.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 6
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT CASE source WHEN 'sentinel1' THEN 'Sentinel 1' WHEN 'sentinel2' THEN 'Sentinel 2' WHEN 'viirs' THEN 'VIIRS' ELSE 'Tip and cue' END AS \"Source\", CASE WHEN en_pause THEN 'pause' ELSE 'service' END AS \"État\", depuis AS \"Depuis\", jusqu_a AS \"Reprise prévue\", coalesce(motif, '·') AS \"Motif\", coalesce(auteur, '·') AS \"Par\" FROM interrupteurs_satellites ORDER BY source"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "État"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "pause": {
+            "text": "en pause",
+            "color": "#f0a84b",
+            "index": 0
+           },
+           "service": {
+            "text": "en service",
+            "color": "#7c8b97",
+            "index": 1
+           }
+          }
+         }
+        ]
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
+  },
+  {
+   "id": 2,
+   "type": "table",
+   "title": "Journal du panneau de contrôle",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "mars"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 6
+   },
+   "transparent": true,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "mars"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": "table",
+     "rawSql": "SELECT le AS \"Le\", auteur AS \"Par\", action AS \"Action\", coalesce(cible, '·') AS \"Cible\", coalesce(motif, '·') AS \"Motif\", trace_id AS \"Trace\" FROM journal_controle WHERE le >= $__timeFrom() ORDER BY le DESC LIMIT 50"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#c2ccd3"
+     },
+     "noValue": "aucune action sur la période"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Trace"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Ouvrir la trace dans Tempo (vue Gantt)",
+          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+         }
+        ]
+       },
+       {
+        "id": "custom.width",
+        "value": 120
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   }
+  },
+  {
+   "id": 3,
    "type": "stat",
    "title": "Coût Sentinel du mois",
    "description": "Radar (Sentinel 1) et optique (Sentinel 2) : un seul budget mensuel.",
@@ -47,7 +209,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 0,
+    "y": 6,
     "w": 4,
     "h": 4
    },
@@ -102,7 +264,7 @@
    }
   },
   {
-   "id": 2,
+   "id": 4,
    "type": "stat",
    "title": "Part du budget Sentinel",
    "description": "Coût du mois, radar et optique, rapporté au budget partagé de config/rules.yaml (sentinel.budget_mensuel_eur).",
@@ -112,7 +274,7 @@
    },
    "gridPos": {
     "x": 4,
-    "y": 0,
+    "y": 6,
     "w": 4,
     "h": 4
    },
@@ -175,7 +337,7 @@
    }
   },
   {
-   "id": 3,
+   "id": 5,
    "type": "stat",
    "title": "Coût VIIRS du mois",
    "description": "",
@@ -185,7 +347,7 @@
    },
    "gridPos": {
     "x": 8,
-    "y": 0,
+    "y": 6,
     "w": 4,
     "h": 4
    },
@@ -240,7 +402,7 @@
    }
   },
   {
-   "id": 4,
+   "id": 6,
    "type": "stat",
    "title": "Dernière nuit VIIRS traitée",
    "description": "Heures depuis le dernier traitement.",
@@ -250,7 +412,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 0,
+    "y": 6,
     "w": 4,
     "h": 4
    },
@@ -313,7 +475,7 @@
    }
   },
   {
-   "id": 5,
+   "id": 7,
    "type": "stat",
    "title": "Ruptures de stock GPU sur 30 jours",
    "description": "Lancements refusés par Scaleway faute de GPU L4 disponible.",
@@ -323,7 +485,7 @@
    },
    "gridPos": {
     "x": 16,
-    "y": 0,
+    "y": 6,
     "w": 4,
     "h": 4
    },
@@ -382,7 +544,7 @@
    }
   },
   {
-   "id": 6,
+   "id": 8,
    "type": "stat",
    "title": "Travailleurs actifs",
    "description": "Instances Scaleway facturées en ce moment.",
@@ -392,7 +554,7 @@
    },
    "gridPos": {
     "x": 20,
-    "y": 0,
+    "y": 6,
     "w": 4,
     "h": 4
    },
@@ -455,7 +617,7 @@
    }
   },
   {
-   "id": 7,
+   "id": 9,
    "type": "timeseries",
    "title": "Nuits VIIRS : détections par statut",
    "description": "",
@@ -465,7 +627,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 4,
+    "y": 10,
     "w": 12,
     "h": 8
    },
@@ -583,7 +745,7 @@
    }
   },
   {
-   "id": 8,
+   "id": 10,
    "type": "table",
    "title": "Nuits VIIRS",
    "description": "",
@@ -593,7 +755,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 4,
+    "y": 10,
     "w": 12,
     "h": 8
    },
@@ -635,7 +797,7 @@
    }
   },
   {
-   "id": 9,
+   "id": 11,
    "type": "table",
    "title": "Travailleurs",
    "description": "",
@@ -645,7 +807,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 12,
+    "y": 18,
     "w": 24,
     "h": 9
    },
@@ -787,17 +949,17 @@
    "type": "row",
    "title": "Analyses Sentinel 1 (lot C3)",
    "collapsed": false,
-   "id": 10,
+   "id": 12,
    "gridPos": {
     "x": 0,
-    "y": 21,
+    "y": 27,
     "w": 24,
     "h": 1
    },
    "panels": []
   },
   {
-   "id": 11,
+   "id": 13,
    "type": "stat",
    "title": "En attente d'un GPU",
    "description": "Rupture de stock chez Scaleway : nouvel essai à chaque cycle, repli sur processeur après repli_cpu_apres_h, abandon (et alerte) au delà de fenetre_utile_h.",
@@ -807,7 +969,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 22,
+    "y": 28,
     "w": 6,
     "h": 4
    },
@@ -866,7 +1028,7 @@
    }
   },
   {
-   "id": 12,
+   "id": 14,
    "type": "stat",
    "title": "Octets lus ce mois",
    "description": "Fenêtres utiles lues dans les images COG (requêtes partielles), toutes analyses du mois.",
@@ -876,7 +1038,7 @@
    },
    "gridPos": {
     "x": 6,
-    "y": 22,
+    "y": 28,
     "w": 6,
     "h": 4
    },
@@ -930,7 +1092,7 @@
    }
   },
   {
-   "id": 13,
+   "id": 15,
    "type": "stat",
    "title": "Analyses sur processeur ce mois",
    "description": "",
@@ -940,7 +1102,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 22,
+    "y": 28,
     "w": 6,
     "h": 4
    },
@@ -999,7 +1161,7 @@
    }
   },
   {
-   "id": 14,
+   "id": 16,
    "type": "stat",
    "title": "Abandonnées faute de GPU, 30 jours",
    "description": "",
@@ -1009,7 +1171,7 @@
    },
    "gridPos": {
     "x": 18,
-    "y": 22,
+    "y": 28,
     "w": 6,
     "h": 4
    },
@@ -1068,7 +1230,7 @@
    }
   },
   {
-   "id": 15,
+   "id": 17,
    "type": "timeseries",
    "title": "Analyses par mode",
    "description": "",
@@ -1078,7 +1240,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 26,
+    "y": 32,
     "w": 12,
     "h": 8
    },
@@ -1196,7 +1358,7 @@
    }
   },
   {
-   "id": 16,
+   "id": 18,
    "type": "table",
    "title": "Analyses Sentinel 1",
    "description": "",
@@ -1206,7 +1368,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 26,
+    "y": 32,
     "w": 12,
     "h": 8
    },
@@ -1343,7 +1505,7 @@
    }
   },
   {
-   "id": 17,
+   "id": 19,
    "type": "table",
    "title": "Types marqués incompatibles",
    "description": "GPU inutilisable constaté par le travailleur au contrôle du GPU (NVML) : type et zone jamais essayés jusqu'à la date de fin, sauf levée à la main (commande de levée, docs/sentinel.md).",
@@ -1353,7 +1515,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 34,
+    "y": 40,
     "w": 24,
     "h": 6
    },
@@ -1446,7 +1608,7 @@
    }
   },
   {
-   "id": 18,
+   "id": 20,
    "type": "table",
    "title": "Passages Sentinel 1",
    "description": "",
@@ -1456,7 +1618,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 40,
+    "y": 46,
     "w": 24,
     "h": 9
    },
@@ -1536,17 +1698,17 @@
    "type": "row",
    "title": "Sentinel 2, optique (lot S2)",
    "collapsed": false,
-   "id": 19,
+   "id": 21,
    "gridPos": {
     "x": 0,
-    "y": 49,
+    "y": 55,
     "w": 24,
     "h": 1
    },
    "panels": []
   },
   {
-   "id": 20,
+   "id": 22,
    "type": "stat",
    "title": "Passages dégagés à l'annonce, 30 jours",
    "description": "Passages Sentinel 2 acquis dont la couverture nuageuse annoncée (moyenne des tuiles) reste sous le seuil de lancement (sentinel2.nuages_annonce_max_pct, 50 %).",
@@ -1556,7 +1718,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 50,
+    "y": 56,
     "w": 6,
     "h": 4
    },
@@ -1611,7 +1773,7 @@
    }
   },
   {
-   "id": 21,
+   "id": 23,
    "type": "stat",
    "title": "Analyses exploitables, 30 jours",
    "description": "Analyses Sentinel 2 dont au moins une fenêtre a été lue (les autres closes « nuages » au masque de scène, sans inférence).",
@@ -1621,7 +1783,7 @@
    },
    "gridPos": {
     "x": 6,
-    "y": 50,
+    "y": 56,
     "w": 6,
     "h": 4
    },
@@ -1676,7 +1838,7 @@
    }
   },
   {
-   "id": 22,
+   "id": 24,
    "type": "stat",
    "title": "Octets lus ce mois (optique)",
    "description": "Masques de scène et 13 bandes du L1C, lus par fenêtre dans les JP2 (requêtes partielles).",
@@ -1686,7 +1848,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 50,
+    "y": 56,
     "w": 6,
     "h": 4
    },
@@ -1740,7 +1902,7 @@
    }
   },
   {
-   "id": 23,
+   "id": 25,
    "type": "stat",
    "title": "Coût Sentinel 2 du mois",
    "description": "Part optique du budget partagé avec Sentinel 1.",
@@ -1750,7 +1912,7 @@
    },
    "gridPos": {
     "x": 18,
-    "y": 50,
+    "y": 56,
     "w": 6,
     "h": 4
    },
@@ -1805,7 +1967,7 @@
    }
   },
   {
-   "id": 24,
+   "id": 26,
    "type": "timeseries",
    "title": "Analyses Sentinel 2 par résultat",
    "description": "",
@@ -1815,7 +1977,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 54,
+    "y": 60,
     "w": 12,
     "h": 8
    },
@@ -1948,7 +2110,7 @@
    }
   },
   {
-   "id": 25,
+   "id": 27,
    "type": "timeseries",
    "title": "Coût du mois par capteur",
    "description": "",
@@ -1958,7 +2120,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 54,
+    "y": 60,
     "w": 12,
     "h": 8
    },
@@ -2046,7 +2208,7 @@
    }
   },
   {
-   "id": 26,
+   "id": 28,
    "type": "table",
    "title": "Analyses Sentinel 2",
    "description": "",
@@ -2056,7 +2218,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 62,
+    "y": 68,
     "w": 24,
     "h": 8
    },
@@ -2196,17 +2358,17 @@
    "type": "row",
    "title": "Tip and cue (lot T1)",
    "collapsed": false,
-   "id": 27,
+   "id": 29,
    "gridPos": {
     "x": 0,
-    "y": 70,
+    "y": 76,
     "w": 24,
     "h": 1
    },
    "panels": []
   },
   {
-   "id": 28,
+   "id": 30,
    "type": "stat",
    "title": "Demandes en cours",
    "description": "Demandes d'observation en attente d'un passage ou planifiées sur un passage Sentinel 1.",
@@ -2216,7 +2378,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 71,
+    "y": 77,
     "w": 6,
     "h": 4
    },
@@ -2271,7 +2433,7 @@
    }
   },
   {
-   "id": 29,
+   "id": 31,
    "type": "stat",
    "title": "Délai médian du tip à l'observation",
    "description": "Heures entre la création de la demande et le passage analysé (négatif : passage déjà acquis au moment du tip).",
@@ -2281,7 +2443,7 @@
    },
    "gridPos": {
     "x": 6,
-    "y": 71,
+    "y": 77,
     "w": 6,
     "h": 4
    },
@@ -2336,7 +2498,7 @@
    }
   },
   {
-   "id": 30,
+   "id": 32,
    "type": "stat",
    "title": "Présents sans AIS",
    "description": "Écho radar sans AIS dans le cercle d'incertitude : preuve forte, gravité de l'alerte d'origine relevée selon la table de config/rules.yaml.",
@@ -2346,7 +2508,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 71,
+    "y": 77,
     "w": 6,
     "h": 4
    },
@@ -2405,7 +2567,7 @@
    }
   },
   {
-   "id": 31,
+   "id": 33,
    "type": "stat",
    "title": "Coût des analyses portant une demande",
    "description": "Coût estimé des sessions Sentinel 1 qui portaient au moins une demande (partagé avec les autres points du passage).",
@@ -2415,7 +2577,7 @@
    },
    "gridPos": {
     "x": 18,
-    "y": 71,
+    "y": 77,
     "w": 6,
     "h": 4
    },
@@ -2470,7 +2632,7 @@
    }
   },
   {
-   "id": 32,
+   "id": 34,
    "type": "table",
    "title": "Demandes par source et par état",
    "description": "",
@@ -2480,7 +2642,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 75,
+    "y": 81,
     "w": 12,
     "h": 7
    },
@@ -2522,7 +2684,7 @@
    }
   },
   {
-   "id": 33,
+   "id": 35,
    "type": "table",
    "title": "Résultats par catégorie",
    "description": "",
@@ -2532,7 +2694,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 75,
+    "y": 81,
     "w": 12,
     "h": 7
    },
@@ -2574,7 +2736,7 @@
    }
   },
   {
-   "id": 34,
+   "id": 36,
    "type": "table",
    "title": "Dernières demandes",
    "description": "",
@@ -2584,7 +2746,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 82,
+    "y": 88,
     "w": 24,
     "h": 9
    },

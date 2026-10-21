@@ -14,6 +14,7 @@ import Rail, { type PanelId } from "./components/Rail";
 import Recherche, { type Resultat } from "./components/Recherche";
 import SuivisPanel from "./components/SuivisPanel";
 import ObservationsPanel from "./components/ObservationsPanel";
+import ControlePanel from "./components/ControlePanel";
 import { api, type Pass } from "./lib/api";
 import { FILTRES_DEFAUT, dansPlage, filtrer, naviresEnAlerte, statutDe, trier, type Filtres } from "./lib/fil";
 import { auteurMemorise } from "./lib/auteur";
@@ -390,6 +391,7 @@ export default function App() {
               suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />}
             {panel === "observations" && <ObservationsPanel demandes={observationsQ.data?.demandes ?? []}
               selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} />}
+            {panel === "controle" && <ControlePanel />}
             {panel === "suivis" && <SuivisPanel suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
             {panel === "analyses" && (
               <AnalysesPanel jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0} history={done.slice(0, 8)}

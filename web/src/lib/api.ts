@@ -17,6 +17,40 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return r.json();
 }
 
+/** Écriture du panneau de contrôle : le motif d'un refus de l'API (detail) devient le message de l'erreur */
+async function ecrire<T>(path: string, body: unknown): Promise<T> {
+  const r = await appel(`/api${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let motif = `${r.status}`;
+    try {
+      const d = (await r.json()).detail;
+      motif = typeof d === "string" ? d : Array.isArray(d) ? d.map((x) => x.msg).join(", ") : motif;
+    } catch { /* corps non JSON : le code suffit */ }
+    throw new Error(motif);
+  }
+  return r.json();
+}
+
+export interface Interrupteur {
+  source: string; nom: string; en_pause: boolean; depuis: string | null; jusqu_a: string | null; motif: string | null;
+  auteur: string | null;
+}
+export interface EtatControle {
+  version_regles: string;
+  interrupteurs: Interrupteur[];
+  plafonds: Record<string, { valeur: number; defaut: number; min: number; max: number; regle_par_le_panneau: boolean }>;
+  budget: {
+    mois: string;
+    sources: Record<string, { depense: number; reserve: number; travailleurs: number }>;
+    total: { depense: number; reserve: number };
+    budget_sentinel: { plafond: number; engage: number; restant: number };
+  };
+  travailleurs: Props[];
+  rayon_demande_m: { min: number; max: number; defaut: number } | null;
+}
+
 export interface Pass {
   product_name: string;
   acquired_at: string;
@@ -127,4 +161,19 @@ export const api = {
   /** Panneau « Observations » : demandes de la plage et de la région, compteur des actives */
   observations: (start: string, end: string, region: string | null) =>
     get<{ actives: number; demandes: Props[] }>(`/observations?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
+  /** Panneau de contrôle (lot P) : session d'opérateur, état, journal, et écritures (connexion exigée) */
+  controle: {
+    session: () => get<{ operateur: string | null; configure: boolean }>("/controle/session"),
+    connexion: (operateur: string, mot_de_passe: string) =>
+      ecrire<{ operateur: string }>("/controle/connexion", { operateur, mot_de_passe }),
+    deconnexion: () => ecrire<{ operateur: null }>("/controle/deconnexion", {}),
+    etat: () => get<EtatControle>("/controle/etat"),
+    journal: (limit = 30) => get<Props[]>(`/controle/journal?limit=${limit}`),
+    basculer: (source: string, body: { en_pause: boolean; motif?: string; jusqu_a?: string | null }) =>
+      ecrire<Interrupteur>(`/controle/satellites/${source}`, body),
+    plafond: (source: string, valeur: number, motif: string) =>
+      ecrire<Props>(`/controle/plafonds/${source}`, { valeur, motif }),
+    demande: (body: { lon: number; lat: number; rayon_m: number; motif: string }) =>
+      ecrire<{ id: number }>("/controle/demandes", body),
+  },
 };

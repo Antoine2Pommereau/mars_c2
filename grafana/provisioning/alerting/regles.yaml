@@ -84,6 +84,7 @@ groups:
 
       - uid: mars-viirs
         title: Nuit VIIRS absente
+        # Muette quand VIIRS est en pause (panneau de contrôle, lot P : source_en_pause, migration 33)
         condition: C
         for: 0s
         noDataState: OK
@@ -96,7 +97,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN extract(hour FROM now() AT TIME ZONE 'UTC') >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_heure_nuit_viirs'), 8) AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1 AND traite_le IS NOT NULL) THEN 1 ELSE 0 END AS alerte"}
+                    rawSql: "SELECT CASE WHEN extract(hour FROM now() AT TIME ZONE 'UTC') >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_heure_nuit_viirs'), 8) AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1 AND traite_le IS NOT NULL) AND NOT source_en_pause('viirs') THEN 1 ELSE 0 END AS alerte"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}

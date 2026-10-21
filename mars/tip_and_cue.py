@@ -24,6 +24,22 @@ def actif(rules: dict) -> bool:
     return bool((rules.get("tip_and_cue") or {}).get("actif"))
 
 
+def missions_retenues(rules: dict) -> tuple[list[str], list[str]]:
+    """Missions dont les passages peuvent servir une demande, et motifs des missions écartées (lot P : Sentinel 1 ou
+    2 en pause, Sentinel 2 coupé)."""
+    from mars import controle, sentinel2
+    garde, motifs = [], []
+    for mission, source in (("S1", "sentinel1"), ("S2", "sentinel2")):
+        if mission == "S2" and not sentinel2.actif(rules):
+            continue
+        m = controle.en_pause(rules, source)
+        if m:
+            motifs.append(m)
+        else:
+            garde.append(mission)
+    return garde, motifs
+
+
 def _rang(g: str | None) -> int:
     return SEVERITES.index(g) if g in SEVERITES else -1
 
@@ -353,8 +369,11 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
     from mars import sentinel2
     from mars.sentinel import covers, distance_emprise_m
     tc, s = rules["tip_and_cue"], rules["sentinel"]
-    # Lot S2 : passages optiques candidats quand Sentinel 2 est en service (jamais la nuit, garde des nuages)
-    missions = ["S1", "S2"] if sentinel2.actif(rules) else ["S1"]
+    # Lot S2 : passages optiques candidats quand Sentinel 2 est en service (jamais la nuit, garde des nuages) ; lot P :
+    # passages d'une source en pause écartés
+    missions, pauses = missions_retenues(rules)
+    if not missions:
+        return {"attente": " ; ".join(pauses) or "aucune mission satellite en service"}
     p = tc["prediction"]
     cote = cote or (lambda lon, lat: distance_cote_m(conn, lon, lat, s["point_cote_min_km"] * 1000.0))
     debut = max(d["position_le"] - timedelta(minutes=30), now - timedelta(hours=tc["heures_retro"]))
@@ -380,6 +399,8 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
                 base = tuple(r)
         pr = predire_bornee(base, t, min(t, now), p, navire=navire,
                             a_l_arret=_a_l_arret(conn, d.get("vessel_id"), base[2]))
+        if not navire and d.get("rayon_demande_m"):
+            pr["rayon_m"] = float(d["rayon_demande_m"])      # point du panneau (lot P) : rayon choisi par l'opérateur
         if pr.get("hors_portee"):
             transit = transit or pr["hors_portee"]
             continue
@@ -456,13 +477,13 @@ def _fenetres_couvrent(fenetres: dict, lon: float, lat: float) -> bool:
 
 
 COLS = ("id", "tip", "priorite", "vessel_id", "lon", "lat", "position_le", "sog_kn", "cog_deg", "etat", "expire_le",
-        "pass_id", "analysis_id", "traceparent")
+        "pass_id", "analysis_id", "traceparent", "rayon_demande_m")
 
 
 def _demandes(conn, where: str, args: tuple) -> list[dict]:
     return [dict(zip(COLS, r)) for r in conn.execute(
         f"""SELECT id, tip, priorite, vessel_id, ST_X(position::geometry), ST_Y(position::geometry), position_le, sog_kn,
-                   cog_deg, etat, expire_le, pass_id, analysis_id, traceparent
+                   cog_deg, etat, expire_le, pass_id, analysis_id, traceparent, rayon_demande_m
             FROM demandes_observation WHERE {where} ORDER BY priorite DESC, id""", args).fetchall()]
 
 
@@ -541,14 +562,34 @@ def cycle(conn, rules: dict, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     if not actif(rules):
         return {"inactif": True}
+    from mars import controle
+    motif = controle.en_pause(rules, "tip_and_cue")
+    if motif:
+        return attendre_en_pause(conn, rules, now, motif)
     return {**collecter(conn, rules, now), **planifier(conn, rules, now)}
+
+
+def attendre_en_pause(conn, rules: dict, now: datetime, motif: str) -> dict:
+    """Tip and cue en pause (lot P) : aucune nouvelle demande ; les demandes actives gardent leur état avec le motif
+    « en pause » et reprennent au cycle qui suit la reprise si elles n'ont pas expiré entre temps."""
+    expirees = conn.execute(
+        "UPDATE demandes_observation SET etat = 'expiree', fini_le = now(), mis_a_jour_le = now(), motif = "
+        "coalesce(motif || ' ; ', '') || 'aucun passage utile en ' || %s || ' h' WHERE etat = ANY(%s) "
+        "AND analysis_id IS NULL AND expire_le < %s", (str(rules["tip_and_cue"]["expiration_h"]), list(ACTIFS), now)
+    ).rowcount
+    en_attente = conn.execute(
+        "UPDATE demandes_observation SET motif = %s, mis_a_jour_le = now() WHERE etat = ANY(%s) AND analysis_id IS NULL "
+        "AND motif IS DISTINCT FROM %s", (motif, list(ACTIFS), motif)).rowcount
+    return {"en_pause": motif, "expirees": expirees, "mises_en_attente": en_attente}
 
 
 # Sélection Sentinel (mars/sentinel.py) : points de déclenchement, lancement, refus
 
 def points_passage(conn, rules: dict, pass_id: int) -> list[dict]:
-    """Centres des fenêtres des demandes planifiées sur ce passage, comme points de déclenchement de la sélection."""
-    if not actif(rules):
+    """Centres des fenêtres des demandes planifiées sur ce passage, comme points de déclenchement de la sélection.
+    Tip and cue en pause (lot P) : aucun, les demandes planifiées attendent la reprise."""
+    from mars import controle
+    if not actif(rules) or controle.en_pause(rules, "tip_and_cue"):
         return []
     out = []
     for did, tip, prio, centres in conn.execute(

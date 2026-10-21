@@ -1,7 +1,7 @@
-import { Bell, Eye, Layers, Radar, Satellite, Search } from "lucide-react";
+import { Bell, Eye, Layers, Radar, Satellite, Search, SlidersHorizontal } from "lucide-react";
 import { L } from "../lib/libelles";
 
-export type PanelId = "alertes" | "analyses" | "couches" | "suivis" | "observations";
+export type PanelId = "alertes" | "analyses" | "couches" | "suivis" | "observations" | "controle";
 
 const ITEMS: { id: PanelId; label: string; Icon: typeof Bell; aVenir?: boolean }[] = [
   { id: "alertes", label: L.rail.alertes, Icon: Bell },
@@ -9,6 +9,7 @@ const ITEMS: { id: PanelId; label: string; Icon: typeof Bell; aVenir?: boolean }
   { id: "analyses", label: L.rail.analyses, Icon: Radar },
   { id: "suivis", label: L.rail.suivis, Icon: Eye },
   { id: "observations", label: L.rail.observations, Icon: Satellite },
+  { id: "controle", label: L.rail.controle, Icon: SlidersHorizontal },
 ];
 
 interface Props {

@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.35"
+version: "2026.10.36"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -499,3 +499,16 @@ travailleurs:
           facturation: heure_entamee
       # Tâche remise par le réseau privé, avec la paire Copernicus des travailleurs et les adresses des poids
       tache_par_le_reseau: true
+
+# Lot P, panneau de contrôle (21/10/2026). L'état du panneau est en base et prime sur ce fichier (interrupteurs des
+# analyses satellites, plafonds, modes des règles, préférences de notification, zones de vigilance) : ne plus modifier
+# ce fichier sur le serveur pour suspendre quoi que ce soit. Les seuils ne s'éditent jamais dans l'interface : le
+# panneau ne choisit qu'entre les valeurs et profils définis ici.
+controle:
+  # Plafond quotidien de scènes réglable dans le panneau, dans ces bornes (valeur par défaut : celle des sections
+  # sentinel et sentinel2 ci dessus)
+  plafonds:
+    sentinel1: {min: 0, max: 4}
+    sentinel2: {min: 0, max: 4}
+  session_h: 12                 # durée d'une session d'opérateur
+  rayon_demande_m: {min: 1000, max: 30000, defaut: 5000}   # demande d'observation manuelle du panneau
