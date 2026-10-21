@@ -25,7 +25,7 @@ export const L = {
   // Rail et panneaux
   // Veille (lot U) : dossiers par navire ou par point, à examiner d'abord
   veille: {
-    onglets: { dossiers: "Dossiers", alertes: "Toutes les alertes" },
+    onglets: { dossiers: "À examiner", alertes: "Alertes", suivis: "Suivis" },
     rien: "Rien à examiner", aExaminer: (_n: number) => "à examiner", aNoter: (n: number) => `${n} à noter`,
     raccourcis: "? raccourcis",
     aide: {
@@ -80,38 +80,34 @@ export const L = {
     traces: "Traces", alerte: (id: number) => `Alerte ${id}`,
     ficheComplete: "Fiche complète",
   },
-  // Coulisses (lot U, étape 6) : une carte par réglage ou état, chacune ouvre son panneau
+  // Coulisses : quatre groupes, dix rubriques (registres/reglages.ts) ; une place par réglage
   coulisses: {
-    titre: "Coulisses", retour: "Coulisses", chercher: "Rechercher un réglage", aucun: "Aucun réglage trouvé",
-    accueil: "Accueil des Coulisses", echap: "Échap : accueil",
-    journal: (auteur: string, action: string, le: string) => `${auteur} : ${action}, ${le}`, journalVide: "Aucune action",
-    cartes: { systeme: "Système", capteurs: "Capteurs et dépenses", regles: "Règles", satellites: "Satellites",
-      notifications: "Notifications", zones: "Zones de vigilance", suivis: "Navires suivis", demo: "Démonstration",
-      couches: "Couches détaillées", journal: "Journal", operateur: "Opérateur" } as Record<string, string>,
-    enPause: (noms: string[]) => (noms.length ? `${noms.join(", ")} en pause` : "Tous les capteurs en service"),
-    budget: (engage: number, plafond: number) => `Budget Sentinel : ${engage.toLocaleString("fr-FR", { maximumFractionDigits: 2 })} € sur ${plafond.toLocaleString("fr-FR", { maximumFractionDigits: 2 })} €`,
-    version: (v: string) => `Version des règles ${v}`,
-    faux: (fp: number, n: number, j: number) => `Faux positifs sur ${j} jours : ${fp} sur ${nb(n, "décision")}`,
-    actives: (n: number) => (n ? `${nb(n, "demande active", "demandes actives")}` : "Aucune demande active"),
-    enCours: (on: boolean) => (on ? "Une analyse en cours" : "Aucune analyse en cours"),
-    suivis: (n: number) => (n ? nb(n, "navire suivi", "navires suivis") : "Aucun navire suivi"),
-    zones: "Zones actives, tracé, retrait",
-    notifications: "Heures calmes, seuil, essai",
-    demo: (masque: boolean, rejeu: boolean) => [masque ? "Navires masqués" : "Navires visibles", rejeu ? "rejeu tel qu'il était" : null].filter(Boolean).join(", "),
-    couches: (n: number) => `${nb(n, "couche active", "couches actives")}`,
-    operateur: (op: string | null) => (op ? `Connecté : ${op}` : "Non connecté"),
+    titre: "Coulisses", chercher: "Rechercher un réglage", aucun: "Aucun réglage trouvé", echap: "Échap : retour à la Veille",
+    groupes: { moi: "Mon espace", surveillance: "Surveillance", capteurs: "Capteurs", plateforme: "Plateforme" } as Record<string, string>,
+    rubriques: { compte: "Compte", notifications: "Notifications", affichage: "Affichage et démonstration",
+      regles: "Règles d'alerte", zones: "Zones de vigilance", sources: "Sources et capteurs", activite: "Activité satellite",
+      budget: "Budget", systeme: "Système", journal: "Journal" } as Record<string, string>,
+    // Motifs du point d'attention, en une ligne au survol
+    attention: {
+      pauses: (noms: string[]) => `${noms.join(", ")} en pause`,
+      budget: (pct: number) => `Budget du mois engagé à ${pct} %`,
+      ligne: (libelle: string, resume: string) => `${libelle} : ${resume}`,
+      ntfy: "Aucune notification ne part (sujet ntfy absent)",
+      abime: "Ligne d'opérateur abîmée dans la configuration",
+    },
   },
-  rail: {
-    coulisses: "Coulisses",
-    alertes: "Veille", analyses: "Analyses satellites", couches: "Couches et légende",
-    suivis: "Navires suivis", recherche: "Recherche", observations: "Vérifications satellites", controle: "Contrôle",
-  },
+  rail: { alertes: "Veille", coulisses: "Coulisses", recherche: "Recherche" } as Record<string, string>,
   // Panneau de contrôle (lot P)
   controle: {
-    titre: "Contrôle", regles: (v: string) => `règles ${v}`,
-    sections: { connexion: "Opérateur", capteurs: "Capteurs", depenses: "Dépenses", demande: "Demande d'observation",
-      systeme: "Système", regles: "Règles", notifications: "Notifications", zones: "Zones de vigilance", demo: "Démonstration",
-      journal: "Journal" } as Record<string, string>,
+    regles: (v: string) => `règles ${v}`,
+    sections: { capteurs: "Capteurs satellites", demande: "Demande d'observation", donnees: "Sources de données",
+      services: "Services", demo: "Démonstration", journal: "Actions du panneau", decisions: "Décisions des opérateurs",
+      passages: "Passages à venir, 48 h", verifications: "Vérifications en cours", analyses: "Analyses récentes" } as Record<string, string>,
+    sources: { sentinel1: "Sentinel 1", sentinel2: "Sentinel 2", viirs: "VIIRS", tip_and_cue: "Vérification satellite" } as Record<string, string>,
+    affichage: { carte: "Carte et fil", vueDefaut: "Vue de carte à l'ouverture", vignettes: "Vignettes des navires dans le fil" },
+    passage: (sat: string, h: string, infra: number, listes: number) =>
+      [`${sat}, ${h}`, infra ? nb(infra, "infrastructure") : null, listes ? nb(listes, "navire des listes", "navires des listes") : null].filter(Boolean).join(" · "),
+    aucunPassage: "Aucun passage prévu sur 48 h",
     demo: {
       bandeau: "démonstration", bandeauRejeu: "rejeu tel qu'il était",
       masquage: "Masquer noms, MMSI, OMI et photos", masquageNote: "pseudonymes stables jusqu'à la fermeture du navigateur",
@@ -128,7 +124,7 @@ export const L = {
       sourceDessin: "Polygone dessiné", sourceInfra: "Infrastructure sélectionnée", choisirInfra: "Sélectionner une infrastructure sur la carte",
     },
     notif: {
-      alertes: "Nouvelles alertes", gravite: "À partir de", tip: "Résultat de tip and cue qui relève une alerte",
+      alertes: "Nouvelles alertes", gravite: "À partir de", tip: "Résultat d'une vérification satellite qui relève une alerte",
       systeme: "Système", categories: { pannes: "Pannes", disque: "Disque", collecte: "Collecte", travailleurs: "Travailleurs" } as Record<string, string>,
       calmes: "Heures calmes (Paris)", calmesNote: "tout est retenu sauf les pannes graves, résumé au réveil",
       maintenant: "en cours", retenues: (n: number) => nb(n, "retenue"), systemeTitre: "Système et tip and cue",
@@ -257,7 +253,7 @@ export const L = {
   // Fil d'alertes
   fil: {
     titre: "Alertes", onglets: { todo: "À traiter", confirmed: "Confirmées", all: "Toutes" },
-    type: "Type", gravite: "Gravité", vignettes: "Vignettes des navires",
+    type: "Type", gravite: "Gravité",
     aucune: { todo: "Aucune alerte à traiter sur la plage.", autre: "Aucune alerte sur la plage." },
     surTotal: (n: number, total: number) => `${n} sur ${total}`,
     groupe: (n: number) => `${n} alertes`,

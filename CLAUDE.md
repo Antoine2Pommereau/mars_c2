@@ -247,12 +247,13 @@ Couches), **fiche** à droite, **frise** en bas.
   replié). Preuve dessinée sur la carte (`lib/preuve.ts`, mêmes chiffres que la légende).
 * **Clavier** (`lib/clavier.ts`) : J, K, Entrée dans la Veille ; F confirmer, C puis 1 2 3 classer, S suivre, V
   vérifier (devis, Entrée demande, Échap annule), ? aide avec les vrais et faux positifs.
-* **Coulisses** (`components/Coulisses.tsx`, rubriques dans `components/Reglages.tsx`, index de recherche
-  `registres/reglages.ts`) : accueil en grille de cartes qui résument chacune leur rubrique ; une rubrique à la fois
-  (Système, Capteurs et dépenses, Règles, Satellites, Notifications, Zones de vigilance, Navires suivis, Démonstration,
-  Couches détaillées, Journal, Opérateur), liste et recherche des réglages à gauche, parties repliables (la plus
-  utile ouverte), adresse `espace=coulisses&rubrique=…`, retour arrière du navigateur, Échap vers l'accueil. L'ancien
-  panneau Contrôle n'existe plus comme liste unique.
+* **Coulisses** (`components/Coulisses.tsx`, rubriques dans `components/Reglages.tsx`, groupes, recherche et
+  redirections dans `registres/reglages.ts`) : critère de tri et inventaire dans `docs/ux_refonte.md`, section 13.
+  Quatre groupes, dix rubriques : Mon espace (Compte, Notifications, Affichage et démonstration), Surveillance (Règles
+  d'alerte, Zones de vigilance), Capteurs (Sources et capteurs, Activité satellite, Budget), Plateforme (Système,
+  Journal). Pas d'accueil : dernière rubrique consultée, sinon Système ; point d'attention seulement si besoin ;
+  adresse `espace=coulisses&rubrique=…`, anciennes rubriques redirigées ; Échap ramène à la Veille. Les outils de
+  travail sont dans la Veille : onglets À examiner, Alertes, Suivis ; couches dans la vue « Couches » de la carte.
 * **Panneaux redimensionnables** (`components/Poignee.tsx`, `lib/largeur.ts`) : panneau de gauche (Veille, Coulisses)
   et fiche de droite, de 280 (300 pour la fiche) à 640 px, jamais plus de la moitié de l'écran ; flèches par pas de
   16 px, double clic pour la largeur par défaut, largeur gardée par navigateur ; la carte suit (ResizeObserver).

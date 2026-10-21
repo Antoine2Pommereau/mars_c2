@@ -273,3 +273,15 @@ def test_api_true_and_false_positives_by_type(api):
     assert ecart["WATCHLIST"] == {"vues": 1}, "un commentaire n'est pas une décision"
     if not avant:
         assert apres["AIS_GAP"]["part_vrais"] == 1.0 and apres["DARK_SHIP"]["part_vrais"] == 0.0
+
+
+def test_api_operator_decisions_journal(api):
+    """Rubrique Journal : décisions des opérateurs, les plus récentes d'abord, avec le type de l'alerte."""
+    c, conn, _vid, ids = api
+    for i, action, motif in ((ids["coupure"], "acquitter", None), (ids["echo"], "classer", "doublon")):
+        conn.execute("INSERT INTO alert_actions (alert_id, action, motif, author, at) VALUES (%s, %s, %s, 'essai_j', "
+                     "clock_timestamp())", (i, action, motif))
+    r = c.get("/api/decisions/journal", params={"limite": 2}).json()
+    assert [(x["alert_id"], x["action"], x["motif"], x["author"], x["type"]) for x in r] == [
+        (ids["echo"], "classer", "doublon", "essai_j", "DARK_SHIP"), (ids["coupure"], "acquitter", None, "essai_j", "AIS_GAP")]
+    assert c.get("/api/decisions/journal", params={"limite": 0}).status_code == 200

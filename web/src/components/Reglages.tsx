@@ -4,8 +4,10 @@ import { createContext, type ReactNode, useContext, useEffect, useRef, useState 
 import { api, type PrefsNotification, type BlocRegle, type EtatControle, type Interrupteur, type SystemeControle } from "../lib/api";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
-import type { Props } from "../lib/types";
+import type { Feature, Props } from "../lib/types";
 import { libelleAlerte } from "../registres/alertes";
+import type { VueCarte } from "../lib/preferences";
+import { ListeIndicateurs } from "./BarreEtat";
 
 const C = L.controle;
 const euros = (v: number) => `${v.toFixed(2).replace(".", ",")} €`;
@@ -99,7 +101,7 @@ function Source({ i, actif }: { i: Interrupteur; actif: boolean }) {
     <li className="py-1.5">
       <div className="flex items-center gap-2">
         <span className={`h-2 w-2 shrink-0 rounded-full ${i.en_pause ? "bg-rdv" : "bg-faint"}`} />
-        <span className="flex-1 text-[12.5px] text-ink">{i.nom}</span>
+        <span className="flex-1 text-[12.5px] text-ink">{C.sources[i.source] ?? i.nom}</span>
         <span className={`text-[11.5px] ${i.en_pause ? "text-rdv" : "text-muted"}`}>{i.en_pause ? C.enPause : C.enService}</span>
         <button className={bouton} disabled={!actif || m.isPending} data-reglage={`pause-${i.source}`}
           onClick={() => (i.en_pause ? m.mutate(false) : setOuvert(!ouvert))}>
@@ -581,43 +583,106 @@ const useSession = () => useQuery({ queryKey: ["controle", "session"], queryFn: 
 const useEtatControle = () => useQuery({ queryKey: ["controle", "etat"], queryFn: api.controle.etat, refetchInterval: 30_000 });
 const Connecter = ({ actif }: { actif: boolean }) => (actif ? null : <p className="mb-1 text-[11.5px] text-faint">{C.connexionRequise}</p>);
 
-export function RubriqueOperateur() {
+export function RubriqueCompte() {
   const q = useSession();
   return <Connexion operateur={q.data?.operateur ?? null} configure={q.data?.configure ?? true} abimes={q.data?.abimes ?? []} />;
 }
 
-export function RubriqueCapteurs() {
+/** Sources et capteurs : ce que MARS C2 regarde. Source AIS et listes en lecture seule, interrupteurs des capteurs
+ *  satellites et de la vérification satellite, plafond de scènes par jour */
+export function RubriqueSources({ status, now }: { status: unknown; now: number }) {
   const actif = useSession().data?.operateur != null;
   const e = useEtatControle().data;
-  if (!e) return <p className="text-muted">{L.commun.chargement}</p>;
-  const pauses = e.interrupteurs.filter((i) => i.en_pause).length;
+  const pauses = e?.interrupteurs.filter((i) => i.en_pause).length ?? 0;
   return (
     <>
-      <Partie id="capteurs" titre={C.sections.capteurs} ouverte
-        droite={pauses ? <span className="normal-case text-rdv">{pauses} {C.enPause}</span> : null}>
-        <Connecter actif={actif} />
-        <ul>{e.interrupteurs.map((i) => <Source key={i.source} i={i} actif={actif} />)}</ul>
+      <Partie id="src-donnees" titre={C.sections.donnees} ouverte>
+        <ListeIndicateurs status={status} now={now} ids={["flux", "listes"]} />
       </Partie>
-      <Partie id="plafonds" titre={C.plafond}>
-        {Object.entries(e.plafonds).map(([s, p]) => (
-          <Plafond key={s} source={s} nom={s === "sentinel1" ? "Sentinel 1" : "Sentinel 2"} p={p} actif={actif} />
-        ))}
-      </Partie>
-      <Partie id="depenses" titre={C.sections.depenses} ouverte>
-        <Jauge b={e.budget} />
-        <p className="mb-1 mt-3 text-[11.5px] text-muted">{C.derniers}</p>
-        <ul className="space-y-0.5 text-[11.5px] tabular-nums">
-          {e.travailleurs.map((t) => (
-            <li key={t.id} className="flex gap-2 text-muted">
-              <span className="w-8 text-faint">{t.id}</span>
-              <span className="flex-1">{t.tache} · {jourHeure(t.cree_le)}</span>
-              <span className="text-ink">{t.cout_reel_eur != null ? euros(t.cout_reel_eur)
-                : t.cout_estime_eur != null ? `${euros(t.cout_estime_eur)} ${C.coutEstime}` : "·"}</span>
-            </li>
+      {e && <>
+        <Partie id="capteurs" titre={C.sections.capteurs} ouverte
+          droite={pauses ? <span className="normal-case text-rdv">{pauses} {C.enPause}</span> : null}>
+          <Connecter actif={actif} />
+          <ul>{e.interrupteurs.map((i) => <Source key={i.source} i={i} actif={actif} />)}</ul>
+        </Partie>
+        <Partie id="plafonds" titre={C.plafond}>
+          {Object.entries(e.plafonds).map(([s, p]) => (
+            <Plafond key={s} source={s} nom={C.sources[s] ?? s} p={p} actif={actif} />
           ))}
-        </ul>
+        </Partie>
+      </>}
+    </>
+  );
+}
+
+/** Budget : dépenses du mois par source et budget mensuel, coût des derniers travailleurs */
+export function RubriqueBudget() {
+  const e = useEtatControle().data;
+  if (!e) return <p className="text-muted">{L.commun.chargement}</p>;
+  return (
+    <>
+      <Jauge b={e.budget} />
+      <p className="mb-1 mt-4 text-[11.5px] text-muted">{C.derniers}</p>
+      <ul className="space-y-0.5 text-[11.5px] tabular-nums">
+        {e.travailleurs.map((t) => (
+          <li key={t.id} className="flex gap-2 text-muted">
+            <span className="w-8 text-faint">{t.id}</span>
+            <span className="flex-1">{t.tache} · {jourHeure(t.cree_le)}</span>
+            <span className="text-ink">{t.cout_reel_eur != null ? euros(t.cout_reel_eur)
+              : t.cout_estime_eur != null ? `${euros(t.cout_estime_eur)} ${C.coutEstime}` : "·"}</span>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** Affichage et démonstration : réglages de ce navigateur seulement (vue par défaut, vignettes du fil, masquage,
+ *  rejeu tel qu'il était) ; les scénarios enregistrés sont communs (cas signalé dans docs/ux_refonte.md) */
+export function RubriqueAffichage(pp: Pick<PanneauProps, "masquage" | "rejeuFidele" | "onRejeuFidele"> & {
+  vueDefaut: VueCarte; onVueDefaut: (v: VueCarte) => void; vignettes: boolean; onVignettes: (v: boolean) => void }) {
+  const actif = useSession().data?.operateur != null;
+  const A = C.affichage;
+  return (
+    <>
+      <Partie id="aff-carte" titre={A.carte} ouverte>
+        <label className="flex items-center justify-between gap-2 py-0.5 text-[12px]">
+          <span className="text-muted">{A.vueDefaut}</span>
+          <select value={pp.vueDefaut} onChange={(e) => pp.onVueDefaut(e.target.value as VueCarte)} aria-label={A.vueDefaut}
+            className="rounded border border-hair bg-abyss px-1 py-0.5 text-[11.5px] text-ink">
+            {(["veille", "trafic", "satellites"] as const).map((v) => <option key={v} value={v}>{L.veille.vues[v]}</option>)}
+          </select>
+        </label>
+        <Bascule on={pp.vignettes} actif label={A.vignettes} onChange={pp.onVignettes} />
+      </Partie>
+      <Partie id="aff-demo" titre={C.sections.demo} ouverte>
+        <Demonstration actif={actif} masquage={pp.masquage} rejeuFidele={pp.rejeuFidele} onRejeuFidele={pp.onRejeuFidele} />
       </Partie>
     </>
+  );
+}
+
+/** Passages à venir sur la région affichée (48 h) et état de l'activité satellite ; un clic ouvre la fiche du passage */
+export function PartiePassages({ region, status, now, onPick }: { region: string | null; status: unknown; now: number;
+  onPick: (f: Feature) => void }) {
+  const debut = new Date(Math.floor(now / 600_000) * 600_000), fin = new Date(debut.getTime() + 48 * 3600_000);
+  const q = useQuery({ queryKey: ["passagesAVenir", region, debut.toISOString()],
+    queryFn: () => api.passages(debut.toISOString(), fin.toISOString(), region), staleTime: 600_000 });
+  const venir = (q.data?.features ?? []).filter((f) => Date.parse(f.properties.acquired_at) >= now).slice(0, 8);
+  return (
+    <Partie id="passages" titre={C.sections.passages} ouverte>
+      <ListeIndicateurs status={status} now={now} ids={["satellites"]} />
+      {!venir.length && q.data && <p className="mt-1 text-[12px] text-muted">{C.aucunPassage}</p>}
+      <ul className="mt-1 space-y-0.5 text-[12px]">
+        {venir.map((f) => (
+          <li key={f.properties.id}>
+            <button onClick={() => onPick(f)} className="w-full text-left text-muted hover:text-ink">
+              {C.passage(f.properties.satellite, jourHeure(f.properties.acquired_at), f.properties.n_infra, f.properties.n_listes)}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Partie>
   );
 }
 
@@ -693,18 +758,41 @@ export function RubriqueZones(pp: Pick<PanneauProps, "trace" | "onTrace" | "infr
   return <><Connecter actif={actif} /><Zones actif={actif} {...(pp as PanneauProps)} /></>;
 }
 
-export function RubriqueDemo(pp: Pick<PanneauProps, "masquage" | "rejeuFidele" | "onRejeuFidele">) {
-  const actif = useSession().data?.operateur != null;
-  return <><Connecter actif={actif} /><Demonstration actif={actif} masquage={pp.masquage} rejeuFidele={pp.rejeuFidele} onRejeuFidele={pp.onRejeuFidele} /></>;
-}
-
-/** Services, disque, échecs et lien vers Grafana (lecture seule) ; l'état de la plateforme est rendu par l'appelant */
-export function PartieServices() {
+/** Système : comment MARS C2 fonctionne, en lecture seule (ingestion, disque, archivage, versions ; services,
+ *  mémoire, échecs, Grafana) */
+export function RubriqueSysteme({ status, now }: { status: unknown; now: number }) {
   const q = useQuery({ queryKey: ["controle", "systeme"], queryFn: api.controle.systeme, refetchInterval: 60_000 });
-  return <Partie id="services" titre={C.sections.systeme} ouverte>{q.data ? <Systeme s={q.data} /> : null}</Partie>;
+  return (
+    <>
+      <Partie id="sys-etat" titre={L.etat.titre} ouverte>
+        <ListeIndicateurs status={status} now={now} ids={["ingestion", "disque", "archivage", "version"]} />
+      </Partie>
+      <Partie id="services" titre={C.sections.services} ouverte>{q.data ? <Systeme s={q.data} /> : null}</Partie>
+    </>
+  );
 }
 
+/** Journal : actions du panneau (journal_controle) et décisions des opérateurs sur les alertes */
 export function RubriqueJournal() {
   const q = useQuery({ queryKey: ["controle", "journal"], queryFn: () => api.controle.journal(30), refetchInterval: 30_000 });
-  return <Journal lignes={q.data ?? []} />;
+  const d = useQuery({ queryKey: ["decisionsJournal"], queryFn: () => api.decisionsJournal(30), refetchInterval: 30_000 });
+  return (
+    <>
+      <Partie id="jrn-decisions" titre={C.sections.decisions} ouverte>
+        {!d.data?.length && <p className="text-[12px] text-muted">{C.journalVide}</p>}
+        <ul className="space-y-1 text-[11.5px] leading-snug">
+          {(d.data ?? []).map((x) => (
+            <li key={x.id} className="text-muted">
+              <span className="tabular-nums text-faint">{jourHeure(x.at)}</span>{" "}
+              <span className="text-ink">{x.author}</span> {L.decisions.verbe[x.action] ?? x.action} · {libelleAlerte(x.type)} {x.alert_id}
+              {x.motif && <> · {L.decisions.motifs[x.motif] ?? x.motif}</>}
+            </li>
+          ))}
+        </ul>
+      </Partie>
+      <Partie id="jrn-panneau" titre={C.sections.journal} ouverte>
+        <Journal lignes={q.data ?? []} />
+      </Partie>
+    </>
+  );
 }

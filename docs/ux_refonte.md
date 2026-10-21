@@ -344,3 +344,75 @@ réglage dans la page, défilements pour l'atteindre)
 | Mettre en pause Sentinel 1 | 2 clics, 100 mots visibles, 14 avant, 0 défilement | 2 clics, 87 mots, 15 avant, 0 défilement |
 | Changer les heures calmes | 2 clics, 122 mots visibles, 372 avant, 2 défilements (1 156 px) | 3 clics (la partie s'ouvre), 85 mots, 54 avant, 0 défilement ; ou « heures calmes » puis Entrée dans la recherche |
 | Passer une règle en observation | 2 clics, 153 mots visibles, 91 avant, 0 défilement | 2 clics, 127 mots, 20 avant, 0 défilement |
+
+## 13. Coulisses : critère de tri et rubriques (21/10/2026)
+
+**Critère.** Chaque réglage ou état a une seule place, décidée par deux questions : **qui il concerne** (moi seul, ou
+toute la plateforme) et **de quoi il parle** (ce que MARS C2 cherche, ce qu'il regarde et à quel prix, comment il
+fonctionne). Les outils de travail quotidien ne sont pas des réglages : ils sont dans la Veille. Un lien vers la
+rubrique propriétaire est permis, jamais une copie du réglage.
+
+| Groupe | Rubriques |
+|---|---|
+| Mon espace (n'affecte que moi) | Compte ; Notifications ; Affichage et démonstration |
+| Surveillance (ce que MARS C2 cherche) | Règles d'alerte ; Zones de vigilance |
+| Capteurs (ce que MARS C2 regarde, et à quel prix) | Sources et capteurs ; Activité satellite ; Budget |
+| Plateforme (comment MARS C2 fonctionne, lecture seule) | Système ; Journal |
+
+Plus de page d'accueil : ouvrir les Coulisses mène à la dernière rubrique consultée (gardée par navigateur), sinon à
+Système ; un point de couleur à côté d'une rubrique seulement si elle demande l'attention, motif au survol. Échap
+ramène à la Veille. Les anciennes adresses sont redirigées : operateur vers Compte, capteurs vers Sources et capteurs,
+satellites vers Activité satellite, demo vers Affichage et démonstration, suivis vers l'onglet Suivis de la Veille,
+couches vers le panneau des couches de la carte.
+
+**Inventaire** (avant : Coulisses du 21/10 et ancien panneau Contrôle)
+
+| Élément | Avant | Après |
+|---|---|---|
+| Connexion, déconnexion, opérateur connecté, ligne d'opérateur abîmée | Contrôle, Opérateur | Compte |
+| Gravité minimale et types d'alerte notifiés | Contrôle, Notifications | Notifications |
+| Notification d'une vérification satellite qui relève une alerte | Contrôle, Notifications | Notifications |
+| Catégories système notifiées (pannes, disque, collecte, travailleurs) | Contrôle, Notifications | Notifications |
+| Heures calmes, notification de test, sujet ntfy absent | Contrôle, Notifications | Notifications |
+| Vue de carte à l'ouverture | (nouveau) | Affichage et démonstration |
+| Vignettes des navires dans le fil | bouton de l'en tête du fil | Affichage et démonstration (bouton retiré du fil) |
+| Masquage des navires, rejeu tel qu'il était, scénarios enregistrés | Contrôle, Démonstration | Affichage et démonstration |
+| Modes par règle et sous type, alertes et épisodes sur 7 jours | Contrôle, Règles | Règles d'alerte |
+| Seuils, version des règles, empreinte de l'état | Contrôle, Règles | Règles d'alerte |
+| Vrais et faux positifs par type | Coulisses, Règles | Règles d'alerte |
+| Zones (liste, tracé, tampon, profils, retrait), priorité aux navires suivis | Contrôle, Zones | Zones de vigilance |
+| Flux AIS (dernier message, débit, navires vus) | barre d'état, Coulisses Système | Sources et capteurs |
+| Fraîcheur des listes de surveillance | barre d'état, Coulisses Système | Sources et capteurs |
+| Interrupteurs Sentinel 1, Sentinel 2, VIIRS, vérification satellite | Contrôle, Capteurs | Sources et capteurs |
+| Scènes par jour | Contrôle, Capteurs | Sources et capteurs |
+| État satellites (prochain passage, dernière nuit VIIRS, dernier travailleur) | barre d'état, Coulisses Système | Activité satellite |
+| Passages à venir sur 48 h | (nouveau) | Activité satellite |
+| Vérifications en cours | panneau Vérifications satellites | Activité satellite |
+| Analyses récentes et lancement d'une analyse | panneau Analyses | Activité satellite |
+| Demande d'observation manuelle | Contrôle, Demande d'observation | Activité satellite |
+| Dépenses du mois par source, budget mensuel, coût des derniers travailleurs | Contrôle, Dépenses | Budget |
+| Ingestion, disque, archivage, version | barre d'état, Coulisses Système | Système |
+| Services (signe de vie, version, mémoire), retard des positions, échecs avec trace, Grafana | Contrôle, Système | Système |
+| Actions du panneau | Contrôle, Journal | Journal |
+| Décisions des opérateurs sur les alertes | (nouveau, route /api/decisions/journal) | Journal |
+| Navires suivis | Coulisses, Navires suivis | Veille, onglet Suivis |
+| Couches détaillées | Coulisses, Couches détaillées | Carte, vue « Couches » (panneau flottant) |
+| Onze cartes de l'accueil et leurs résumés | accueil des Coulisses | supprimées ; ce qui demandait l'attention devient un point dans la liste (Système, Sources et capteurs, Activité satellite, Budget au delà de 80 %, Notifications sans ntfy, Compte avec ligne abîmée) |
+
+Le voyant Système de la barre d'état résume l'état de la plateforme sans porter de réglage : c'est un résumé, pas une
+copie.
+
+**Cas qui ne rentrent pas proprement dans le critère** (placés comme demandé, à trancher si besoin)
+1. **Notifications** : les préférences sont aujourd'hui communes à la plateforme (un seul sujet ntfy, un seul jeu de
+   préférences en base), pas propres à un opérateur ; elles ne seront vraiment « à moi » qu'avec un abonnement par
+   opérateur.
+2. **Scénarios enregistrés** : partagés en base, visibles de tous ; rangés dans Affichage et démonstration avec le
+   masquage.
+3. **Listes de surveillance** : on peut les lire comme « ce que MARS C2 cherche » (Surveillance) ou comme une source
+   de données externe à surveiller (fraîcheur) ; rangées dans Sources et capteurs, en lecture seule, à côté du flux AIS.
+4. **Flux AIS et ingestion** : la réception (ce qu'il regarde) est dans Sources et capteurs, le traitement (comment il
+   fonctionne) dans Système.
+5. **Lancer une analyse** : le bouton « Nouvelle analyse » de la carte et le lanceur d'Activité satellite sont la même
+   action à deux entrées (un outil de travail sur la carte, et sa place dans la rubrique) ; aucun réglage copié.
+6. **Rejeu tel qu'il était** : absent de la liste demandée ; réglage de ce navigateur, rangé dans Affichage et
+   démonstration.

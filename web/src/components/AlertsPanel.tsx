@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Eye, Image } from "lucide-react";
+import { ChevronDown, ChevronRight, Eye } from "lucide-react";
 import { useMemo, useState } from "react";
 import { FILTRES_DEFAUT, filtrer, grouper, statutDe, suivisEnTete, trier, zoneAlerte, type Filtres, type Vue } from "../lib/fil";
 import { hm, jourHeure } from "../lib/format";
@@ -9,15 +9,6 @@ import { URGENCE, urgenceGravite } from "../lib/urgence";
 import { Tag } from "./Elements";
 import { Vignette } from "./Fiches";
 
-// Vignette du navire dans chaque ligne du fil : réglage de l'opérateur, gardé dans ce navigateur
-const CLE_VIGNETTES = "mars.fil.vignettes";
-function lireVignettes(): boolean {
-  try { return localStorage.getItem(CLE_VIGNETTES) === "1"; } catch { return false; }
-}
-function garderVignettes(v: boolean) {
-  try { localStorage.setItem(CLE_VIGNETTES, v ? "1" : "0"); } catch { /* stockage indisponible */ }
-}
-
 interface PanelProps {
   alerts: Feature[];            // alertes de la plage
   filtres: Filtres;
@@ -27,6 +18,7 @@ interface PanelProps {
   now: number;
   selectedId: number | null;
   onPick: (f: Feature) => void;
+  vignettes: boolean;           // vignette du navire par ligne : réglage de la rubrique Affichage (lib/preferences.ts)
 }
 
 const GRAVITES = FILTRES_DEFAUT.gravites;
@@ -71,9 +63,8 @@ function Ligne({ a, vessels, now, selected, onPick, indent, vignette }:
 
 /** Fil d'alertes de la plage et de la région affichée (réglage de la barre d'état) : filtres par type, gravité et
  *  statut ; tri par gravité puis date ; alertes d'un même navire regroupées. */
-export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivis, now, selectedId, onPick }: PanelProps) {
+export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivis, now, selectedId, onPick, vignettes }: PanelProps) {
   const [ouverts, setOuverts] = useState<Set<string>>(new Set());
-  const [vignettes, setVignettes] = useState(lireVignettes);
   const sansVue = useMemo(() => filtrer(alerts, filtres, false), [alerts, filtres]);
   const shown = useMemo(() => trier(filtrer(alerts, filtres)), [alerts, filtres]);
   const groupes = useMemo(() => suivisEnTete(grouper(shown), suivis), [shown, suivis]);
@@ -88,9 +79,6 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivi
           {L.fil.titre}
           <span className="flex items-center gap-2 text-[12px] font-normal text-muted">
             {L.fil.surTotal(shown.length, alerts.length)}
-            <button onClick={() => { garderVignettes(!vignettes); setVignettes(!vignettes); }} aria-pressed={vignettes}
-              title={L.fil.vignettes} aria-label={L.fil.vignettes}
-              className={`rounded p-0.5 ${vignettes ? "text-ink" : "text-faint hover:text-muted"}`}><Image size={13} /></button>
           </span>
         </h2>
         <div className="mt-3 flex flex-wrap gap-1.5" role="group" aria-label={L.fil.type}>

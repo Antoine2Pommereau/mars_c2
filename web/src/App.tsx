@@ -2,13 +2,15 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AlertsPanel from "./components/AlertsPanel";
 import AnalysesPanel from "./components/AnalysesPanel";
-import BarreEtat, { ListeIndicateurs, useEtat } from "./components/BarreEtat";
+import BarreEtat, { useEtat } from "./components/BarreEtat";
 import Coulisses from "./components/Coulisses";
 import Poignee from "./components/Poignee";
-import { Partie, PartieDemande, PartieServices, RubriqueCapteurs, RubriqueDemo, RubriqueJournal, RubriqueNotifications,
-  RubriqueOperateur, RubriqueRegles, RubriqueZones } from "./components/Reglages";
+import { Partie, PartieDemande, PartiePassages, RubriqueAffichage, RubriqueBudget, RubriqueCompte, RubriqueJournal,
+  RubriqueNotifications, RubriqueRegles, RubriqueSources, RubriqueSysteme, RubriqueZones } from "./components/Reglages";
+import VeilleOnglets, { type OngletVeille } from "./components/VeillePanel";
+import { garderRubrique, garderVignettes, garderVueDefaut, lireRubrique, lireVignettes, lireVueDefaut, type VueCarte } from "./lib/preferences";
 import { bornerLargeur, ecrireLargeur, lireLargeur } from "./lib/largeur";
-import { estRubrique, type Rubrique } from "./registres/reglages";
+import { destination, type Destination, type Rubrique } from "./registres/reglages";
 import DetailPanel from "./components/DetailPanel";
 import Frise from "./components/Frise";
 import Garde from "./components/Garde";
@@ -20,7 +22,6 @@ import Rail, { type PanelId } from "./components/Rail";
 import Recherche, { type Resultat } from "./components/Recherche";
 import SuivisPanel from "./components/SuivisPanel";
 import ObservationsPanel from "./components/ObservationsPanel";
-import VeillePanel from "./components/VeillePanel";
 import Recit from "./components/Recit";
 import { emprise, preuveGeoJSON } from "./lib/preuve";
 import { cadreDossiers } from "./lib/cadre";
@@ -42,6 +43,15 @@ import { COULEUR_LISTE, naviresAlerte, typeAlerte } from "./registres/alertes";
 import { VUES } from "./registres/couches";
 
 const INITIAL = lireAdresse();
+// Coulisses à l'ouverture : la rubrique demandée, sinon la dernière consultée, sinon Système ; une ancienne adresse
+// (rubrique d'avant le 21/10/2026) va à sa nouvelle place, et l'adresse est corrigée sans entrée d'historique
+const DEPART: Destination | null = INITIAL.espace === "coulisses" || INITIAL.rubrique ? destination(INITIAL.rubrique, lireRubrique()) : null;
+if (DEPART && (DEPART.espace !== "coulisses" || DEPART.rubrique !== INITIAL.rubrique)) {
+  const q = new URLSearchParams(window.location.search);
+  if (DEPART.espace === "coulisses") { q.set("espace", "coulisses"); q.set("rubrique", DEPART.rubrique); }
+  else { q.delete("espace"); q.delete("rubrique"); }
+  window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
+}
 const DEUX_MILLES = 3704;
 // En direct, la plage glisse chaque seconde : les requêtes sur la plage sont arrondies à 30 s (clés stables)
 const arrondi = (ms: number) => Math.floor(ms / 30_000) * 30_000;
@@ -68,17 +78,22 @@ export default function App() {
   const [temps, setTemps] = useState<Temps>(INITIAL.temps);
   const [now, setNow] = useState(Date.now());
   // Deux espaces : la Veille et les Coulisses (une rubrique à la fois) ; l'adresse les garde, le retour arrière aussi
-  const [panel, setPanel] = useState<PanelId | null>(INITIAL.espace === "coulisses" ? "coulisses" : "alertes");
-  const [rubrique, setRubrique] = useState<Rubrique | null>(estRubrique(INITIAL.rubrique) ? INITIAL.rubrique : null);
+  const [panel, setPanel] = useState<PanelId | null>(DEPART?.espace === "coulisses" ? "coulisses" : "alertes");
+  const [rubrique, setRubrique] = useState<Rubrique>(
+    DEPART?.espace === "coulisses" ? DEPART.rubrique : (destination(null, lireRubrique()) as { rubrique: Rubrique }).rubrique);
   const [partie, setPartie] = useState<string | null>(null);
-  const ouvrirRubrique = useCallback((r: Rubrique | null, p: string | null = null) => {
-    setPanel("coulisses"); setRubrique(r); setPartie(p);
+  const [onglet, setOnglet] = useState<OngletVeille>(DEPART?.espace === "veille" && DEPART.onglet ? DEPART.onglet : "dossiers");
+  // Couches de la carte : panneau flottant du sélecteur de vues (outil de la Veille, pas un réglage)
+  const [couchesOuvertes, setCouchesOuvertes] = useState(DEPART?.espace === "veille" && !!DEPART.couches);
+  const ouvrirRubrique = useCallback((r: Rubrique, p: string | null = null) => {
+    setPanel("coulisses"); setRubrique(r); setPartie(p); garderRubrique(r);
   }, []);
   useEffect(() => {
     const retour = () => {
       const a = lireAdresse();
-      setPanel(a.espace === "coulisses" ? "coulisses" : "alertes");
-      setRubrique(estRubrique(a.rubrique) ? a.rubrique : null);
+      const d = a.espace === "coulisses" ? destination(a.rubrique, lireRubrique()) : null;
+      setPanel(d?.espace === "coulisses" ? "coulisses" : "alertes");
+      if (d?.espace === "coulisses") setRubrique(d.rubrique);
       setPartie(null);
     };
     window.addEventListener("popstate", retour);
@@ -102,7 +117,10 @@ export default function App() {
   }, []);
   const espaceLargeur = panel === "coulisses" ? "coulisses" : "veille";
   // Vue prédéfinie de la carte (lot U) : Veille par défaut, Trafic complet, Satellites ; les couches détaillées restent
-  const [vue, setVue] = useState<Vue>((["veille", "trafic", "satellites"].includes(INITIAL.vue ?? "") ? INITIAL.vue : "veille") as Vue);
+  // Vue à l'ouverture : celle de l'adresse, sinon la préférence de la rubrique Affichage
+  const [vueDefaut, setVueDefaut] = useState<VueCarte>(lireVueDefaut);
+  const [vignettes, setVignettes] = useState(lireVignettes);
+  const [vue, setVue] = useState<Vue>((["veille", "trafic", "satellites"].includes(INITIAL.vue ?? "") ? INITIAL.vue : vueDefaut) as Vue);
   const [actives, setActives] = useState<string[]>(INITIAL.couches ?? [...VUES[vue]]);
   const [byType, setByType] = useState(false);
   const [concernees, setConcernees] = useState(false);
@@ -180,7 +198,7 @@ export default function App() {
   const suivisQ = useQuery({ queryKey: ["suivis"], queryFn: () => api.suivis(), refetchInterval: 60_000 });
   // Panneau des suivis : ceux de la région affichée (la couleur sur la carte vaut pour tous)
   const suivisRegionQ = useQuery({ queryKey: ["suivis", region], queryFn: () => api.suivis(region),
-    enabled: panel === "coulisses" && rubrique === "suivis" && region != null, refetchInterval: 60_000 });
+    enabled: panel === "alertes" && onglet === "suivis" && region != null, refetchInterval: 60_000 });
   const suivis = useMemo(() => new Set<number>((suivisQ.data ?? []).map((v) => Number(v.vessel_id))), [suivisQ.data]);
   const suivre = useMutation({
     mutationFn: ({ id, on }: { id: number; on: boolean }) => (on ? api.suivre(id, auteurMemorise()) : api.nePlusSuivre(id)),
@@ -356,10 +374,10 @@ export default function App() {
   const etatSysteme = etatQ.isError ? null : etatQ.data;
   const veilleAveugle = aveugle(etatSysteme?.derniere_heure?.derniere_position, now, direct);
   const choisirVue = useCallback((v: Vue | "couches") => {
-    if (v === "couches") { ouvrirRubrique("couches"); return; }
+    if (v === "couches") { setCouchesOuvertes((x) => !x); return; }
     setVue(v);
     setActives([...VUES[v]]);
-  }, [ouvrirRubrique]);
+  }, []);
   const pickVessel = useCallback((p: Props) => {
     const id = Number(p.vessel_id), v = vessels.get(id);
     setSelection({ kind: "vessel", properties: { ...p, ...(v ?? {}) } });
@@ -477,7 +495,7 @@ export default function App() {
   }, [concernees, filtered, selection, vessels, infraQ.data]);
 
   // Nouvelle analyse radar : tracé puis lancement ; la plage se place autour du passage choisi
-  const startDraw = useCallback(() => { ouvrirRubrique("satellites", "analyses"); setSelection(null); setDraft(null); setDrawing(true); }, [ouvrirRubrique]);
+  const startDraw = useCallback(() => { ouvrirRubrique("activite", "analyses"); setSelection(null); setDraft(null); setDrawing(true); }, [ouvrirRubrique]);
   const cancelDraw = useCallback(() => { setDraft(null); setDrawing(false); }, []);
   const autourDe = useCallback((t: string) => {
     const ms = Date.parse(t);
@@ -511,7 +529,7 @@ export default function App() {
       <BarreEtat now={now} connected={!direct || connected} onSearch={() => setSearching(true)}
         region={region} regions={regionsQ.data ?? null} onRegion={choisirRegion} />
       <div className="flex min-h-0 flex-1">
-        <Rail active={panel} onSelect={(id) => (id === "coulisses" && panel === "coulisses" && rubrique ? ouvrirRubrique(null) : setPanel(id))} onSearch={() => setSearching(true)} alertCount={aExaminer}
+        <Rail active={panel} onSelect={setPanel} onSearch={() => setSearching(true)} alertCount={aExaminer}
           running={jobs.some((a) => a.status === "pending" || a.status === "running")}
           observationCount={observationsQ.data?.actives ?? 0} />
         {panel && (
@@ -520,46 +538,40 @@ export default function App() {
             <Poignee nom={L.rail[panel]} cote="droit" largeur={borne(espaceLargeur, largeurs[espaceLargeur])}
               onLargeur={regler(espaceLargeur)} defaut={LARGEURS[espaceLargeur]} min={280} max={Math.min(640, Math.floor(ecran / 2))} />
             <div className="min-h-0 flex-1">
-            {panel === "coulisses" && <Coulisses region={region} now={now} rubrique={rubrique} partie={partie}
-              onRubrique={ouvrirRubrique} compte={{
-                observations: observationsQ.data?.actives ?? 0, suivis: suivis.size,
-                analyse: jobs.some((a) => a.status === "pending" || a.status === "running"), couches: actives.length,
-                masquage: demoQ.data?.masquage ?? false, rejeu: rejeuFidele }}
+            {panel === "coulisses" && <Coulisses status={etatSysteme} now={now} rubrique={rubrique} partie={partie}
+              onRubrique={ouvrirRubrique} onFermer={() => setPanel("alertes")}
               contenus={{
-                systeme: <>
-                  <Partie id="etat" titre={L.etat.titre} ouverte><ListeIndicateurs status={etatSysteme} now={now} /></Partie>
-                  <PartieServices />
-                </>,
-                capteurs: <RubriqueCapteurs />,
+                compte: <RubriqueCompte />,
+                notifications: <RubriqueNotifications />,
+                affichage: <RubriqueAffichage masquage={demoQ.data?.masquage ?? false} rejeuFidele={rejeuFidele}
+                  onRejeuFidele={choisirRejeuFidele} vueDefaut={vueDefaut} onVueDefaut={(v) => { setVueDefaut(v); garderVueDefaut(v); }}
+                  vignettes={vignettes} onVignettes={(v) => { setVignettes(v); garderVignettes(v); }} />,
                 regles: <RubriqueRegles />,
-                satellites: <>
-                  <Partie id="verifications" titre={L.rail.observations} ouverte>
-                    <div className="h-[22rem]"><ObservationsPanel titre={false} demandes={observationsQ.data?.demandes ?? []}
+                zones: <RubriqueZones trace={trace} onTrace={setTrace}
+                  infra={selection?.kind === "infrastructure" ? { id: Number(selection.properties.id), nom: selection.properties.name ?? null } : null}
+                  onPickZone={(p) => setSelection({ kind: "vigilance", properties: p })} />,
+                sources: <RubriqueSources status={etatSysteme} now={now} />,
+                activite: <>
+                  <PartiePassages region={region} status={etatSysteme} now={now} onPick={pickPassage} />
+                  <Partie id="verifications" titre={L.controle.sections.verifications} ouverte>
+                    <div className="h-[18rem]"><ObservationsPanel titre={false} demandes={observationsQ.data?.demandes ?? []}
                       selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} /></div>
                   </Partie>
-                  <Partie id="analyses" titre={L.rail.analyses}>
+                  <Partie id="analyses" titre={L.controle.sections.analyses}>
                     <AnalysesPanel titre={false} jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0}
                       history={done.slice(0, 8)} onPick={pickAnalysis} launcher={<NewAnalysis drawing={drawing} draft={draft}
                         onStartDraw={startDraw} onCancel={cancelDraw} onLaunched={onLaunched} />} />
                   </Partie>
                   <PartieDemande />
                 </>,
-                notifications: <RubriqueNotifications />,
-                zones: <RubriqueZones trace={trace} onTrace={setTrace}
-                  infra={selection?.kind === "infrastructure" ? { id: Number(selection.properties.id), nom: selection.properties.name ?? null } : null}
-                  onPickZone={(p) => setSelection({ kind: "vigilance", properties: p })} />,
-                suivis: <SuivisPanel titre={false} suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />,
-                demo: <RubriqueDemo masquage={demoQ.data?.masquage ?? false} rejeuFidele={rejeuFidele} onRejeuFidele={choisirRejeuFidele} />,
-                couches: <LayersPanel titre={false} actives={actives} onActives={setActives} concernees={concernees}
-                  onConcernees={setConcernees} byType={byType} onByType={setByType} infraCounts={infraCounts}
-                  vesselCount={traffic.features.length} passageCount={passagesQ.data?.features.length ?? 0}
-                  viirsCount={viirsQ.data?.features.length ?? 0} />,
+                budget: <RubriqueBudget />,
+                systeme: <RubriqueSysteme status={etatSysteme} now={now} />,
                 journal: <RubriqueJournal />,
-                operateur: <RubriqueOperateur />,
               }} />}
-            {panel === "alertes" && <VeillePanel liste={dossiersQ.data} instant={instant} focus={dossierSel?.cle ?? null} onPick={pickDossier}
-              aveugle={veilleAveugle}
-              fil={<AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels}
+            {panel === "alertes" && <VeilleOnglets liste={dossiersQ.data} instant={instant} focus={dossierSel?.cle ?? null} onPick={pickDossier}
+              aveugle={veilleAveugle} onglet={onglet} onOnglet={setOnglet}
+              suivis={<SuivisPanel titre={false} suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
+              fil={<AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels} vignettes={vignettes}
                 suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />} />}
             </div>
           </aside>
@@ -585,10 +597,19 @@ export default function App() {
           {/* Vues prédéfinies (lot U) ; « Couches » ouvre la liste détaillée */}
           <div className="absolute left-4 top-4 z-10 flex gap-0.5 rounded-md border border-hair bg-panel/90 p-0.5 text-[12.5px] backdrop-blur" role="group">
             {(["veille", "trafic", "satellites", "couches"] as const).map((v) => (
-              <button key={v} onClick={() => choisirVue(v)} aria-pressed={v === vue}
-                className={`rounded px-2.5 py-1 ${v === vue ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>{L.veille.vues[v]}</button>
+              <button key={v} onClick={() => choisirVue(v)} aria-pressed={v === "couches" ? couchesOuvertes : v === vue} data-vue={v}
+                className={`rounded px-2.5 py-1 ${(v === "couches" ? couchesOuvertes : v === vue) ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>{L.veille.vues[v]}</button>
             ))}
           </div>
+          {couchesOuvertes && (
+            <div className="absolute left-4 top-14 z-10 h-[min(34rem,calc(100%-14rem))] w-[320px] overflow-hidden rounded-lg border border-hair bg-panel/95 shadow-2xl backdrop-blur"
+              data-couches>
+              <LayersPanel actives={actives} onActives={setActives} concernees={concernees} onFermer={() => setCouchesOuvertes(false)}
+                onConcernees={setConcernees} byType={byType} onByType={setByType} infraCounts={infraCounts}
+                vesselCount={traffic.features.length} passageCount={passagesQ.data?.features.length ?? 0}
+                viirsCount={viirsQ.data?.features.length ?? 0} />
+            </div>
+          )}
           <button onClick={drawing || draft ? cancelDraw : startDraw}
             className={`absolute left-[372px] top-4 z-10 rounded-md border px-3 py-1.5 text-[12.5px] backdrop-blur
               ${drawing ? "border-signal bg-panel/95 text-ink" : "border-hair bg-panel/90 text-ink hover:border-signal"}`}>

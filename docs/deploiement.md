@@ -931,6 +931,12 @@ routes du contrôle d'avant (connexion de l'opérateur, journal). Vérifier par 
 `http://localhost:8080/?espace=coulisses&rubrique=notifications`, la rubrique Notifications seule s'affiche ; le retour
 arrière du navigateur revient à la rubrique précédente ; la poignée du panneau de gauche l'élargit, la carte suit.
 
+## Coulisses en quatre groupes, sans accueil (21/10/2026)
+
+Images qui changent : backend (route en lecture `/api/decisions/journal`) et web. Aucune migration, aucune règle.
+Vérifier par le tunnel : `curl -s "localhost:8000/api/decisions/journal?limite=3"` renvoie les dernières décisions des
+opérateurs ; `http://localhost:8080/?espace=coulisses&rubrique=capteurs` est redirigé vers Sources et capteurs.
+
 ## Vérifier
 
 ```bash

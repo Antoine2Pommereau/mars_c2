@@ -287,7 +287,7 @@ verifier_controle() {
   # Lot U : dossiers, récit introuvable (404 et non 500), mesures des décisions, à travers nginx, avec les règles montées
   local route attendu
   for route in "dossiers?end=2026-10-09T21:00:00Z 200" "dossiers/navire:1?end=2026-10-09T21:00:00Z 404" \
-               "decisions/mesures?jours=30 200"; do
+               "decisions/mesures?jours=30 200" "decisions/journal?limite=5 200"; do
     attendu=${route##* }; route=${route% *}
     code=$(curl -s -o "$corps" -w '%{http_code}' "http://$hote/api/$route")
     [ "$code" = "$attendu" ] || { cat "$corps"; echo; docker logs --tail 15 "$API"; rm -f "$jar" "$corps" "$corps.entetes"

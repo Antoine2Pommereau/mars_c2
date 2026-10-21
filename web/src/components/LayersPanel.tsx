@@ -1,10 +1,11 @@
+import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { L } from "../lib/libelles";
 import { COULEUR_LISTE } from "../registres/alertes";
 import { COUCHES, COULEUR_PASSAGE, GROUPES, disponible, type Couche } from "../registres/couches";
 
 interface Props {
-  titre?: boolean;              // false dans une rubrique des Coulisses, qui porte déjà le titre
+  onFermer: () => void;         // panneau flottant du sélecteur de vues de la carte
   actives: string[];
   onActives: (ids: string[]) => void;
   concernees: boolean;
@@ -98,9 +99,10 @@ export default function LayersPanel(p: Props) {
   const set = (id: string, on: boolean) => p.onActives(on ? [...p.actives, id] : p.actives.filter((x) => x !== id));
   return (
     <div className="flex h-full flex-col overflow-y-auto pb-4">
-      {p.titre !== false && <header className="border-b border-hair px-4 pb-3 pt-4">
+      <header className="flex items-center justify-between border-b border-hair px-4 pb-3 pt-4">
         <h2 className="text-[15px] font-semibold">{C.titre}</h2>
-      </header>}
+        <button onClick={p.onFermer} className="text-muted hover:text-ink" aria-label={L.commun.fermer}><X size={15} /></button>
+      </header>
       {GROUPES.map((g) => (
         <section key={g} className="mx-3 mt-3 rounded-md border border-hair/70">
           <div className="px-4 pb-1 pt-2.5 text-[11.5px] font-medium uppercase tracking-wide text-faint">{C.groupes[g]}</div>

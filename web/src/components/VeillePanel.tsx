@@ -44,10 +44,12 @@ function Ligne({ d, instant, focus, curseur, onPick }:
 
 /** Veille (lot U) : les dossiers à examiner, triés par urgence ; les dossiers à noter repliés ; le fil d'alertes
  *  complet en second onglet. La question unique : quel navire regarder maintenant, et pourquoi. */
-export default function VeillePanel({ liste, instant, focus, onPick, fil, aveugle }:
+export type OngletVeille = "dossiers" | "alertes" | "suivis";
+
+export default function VeillePanel({ liste, instant, focus, onPick, fil, suivis, aveugle, onglet, onOnglet }:
   { liste: ListeDossiers | undefined; instant: number; focus: string | null; onPick: (d: Dossier) => void; fil: ReactNode;
-    aveugle: { minutes: number; derniere: string | null } | null }) {
-  const [onglet, setOnglet] = useState<"dossiers" | "alertes">("dossiers");
+    suivis: ReactNode; aveugle: { minutes: number; derniere: string | null } | null;
+    onglet: OngletVeille; onOnglet: (o: OngletVeille) => void }) {
   const [noterOuvert, setNoterOuvert] = useState(false);
   const examiner = liste?.dossiers.filter((d) => d.niveau >= 2) ?? [];
   const noter = liste?.dossiers.filter((d) => d.niveau === 1) ?? [];
@@ -107,14 +109,14 @@ export default function VeillePanel({ liste, instant, focus, onPick, fil, aveugl
         </p>
       )}
       <div className="flex gap-1 border-b border-hair px-3 pt-3" role="tablist">
-        {(["dossiers", "alertes"] as const).map((o) => (
-          <button key={o} role="tab" aria-selected={onglet === o} onClick={() => setOnglet(o)}
+        {(["dossiers", "alertes", "suivis"] as const).map((o) => (
+          <button key={o} role="tab" aria-selected={onglet === o} onClick={() => onOnglet(o)}
             className={`rounded-t px-3 py-1.5 text-[12.5px] ${onglet === o ? "bg-raised text-ink" : "text-muted hover:text-ink"}`}>
             {V.onglets[o]}
           </button>
         ))}
       </div>
-      {onglet === "alertes" ? <div className="min-h-0 flex-1">{fil}</div> : (
+      {onglet === "alertes" ? <div className="min-h-0 flex-1">{fil}</div> : onglet === "suivis" ? <div className="min-h-0 flex-1">{suivis}</div> : (
         <>
           <header className="flex items-baseline justify-between px-4 pb-2 pt-3">
             <h2 className="text-[20px] font-semibold tabular-nums">

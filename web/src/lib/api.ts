@@ -208,6 +208,8 @@ export const api = {
     get<Props>(`/dossiers/${enc(cle)}?end=${enc(instant)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
   decisionDossier: (cle: string, body: { action: string; motif?: string; note?: string; author?: string; instant?: string }) =>
     ecrire<{ alertes: number[]; statut: string }>(`/dossiers/${enc(cle)}/decision`, body),
+  decisionsJournal: (limite = 30) => get<{ id: number; at: string; author: string; action: string; motif: string | null;
+    note: string | null; alert_id: number; type: string }[]>(`/decisions/journal?limite=${limite}`),
   mesuresDecisions: (jours = 30) => get<Props>(`/decisions/mesures?jours=${jours}`),
   verificationDossier: (cle: string, instant: string) => get<Props>(`/dossiers/${enc(cle)}/verification?end=${enc(instant)}`),
   /** Panneau de contrôle (lot P) : session d'opérateur, état, journal, et écritures (connexion exigée) */

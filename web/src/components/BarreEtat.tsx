@@ -18,11 +18,11 @@ export function useEtat(region: string | null) {
 }
 
 /** Liste des indicateurs, chacun vert, orange ou rouge ; son détail se déplie au clic */
-export function ListeIndicateurs({ status, now }: { status: any; now: number }) {
+export function ListeIndicateurs({ status, now, ids }: { status: any; now: number; ids?: string[] }) {
   const [ouvert, setOuvert] = useState<string | null>(null);
   return (
     <ul>
-      {mesurer(status, now).map(({ ind, m }) => (
+      {mesurer(status, now).filter(({ ind }) => !ids || ids.includes(ind.id)).map(({ ind, m }) => (
         <li key={ind.id} className="border-t border-hair/70 first:border-t-0">
           <button onClick={() => setOuvert(ouvert === ind.id ? null : ind.id)} aria-expanded={ouvert === ind.id}
             className="flex w-full items-center gap-2 py-1.5 text-left text-muted hover:text-ink">

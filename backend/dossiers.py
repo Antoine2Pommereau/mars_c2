@@ -164,6 +164,20 @@ async def mesures(request: Request, jours: int = 30):
             "part_vrais": round(total["confirmees"] / sum(total.values()), 3) if sum(total.values()) else None}
 
 
+@router.get("/api/decisions/journal")
+async def journal_decisions(request: Request, limite: int = 30):
+    """Décisions des opérateurs sur les alertes, les plus récentes d'abord (rubrique Journal des Coulisses, à côté
+    des actions du panneau). Lecture seule ; les commentaires en font partie."""
+    limite = max(1, min(limite, 200))
+    with traces.span("dossiers.journal", **{"journal.limite": limite}) as sp:
+        async with request.app.state.pool.acquire() as c:
+            rows = await c.fetch(
+                """SELECT x.id, x.at, x.author, x.action, x.motif, x.note, x.alert_id, a.type
+                   FROM alert_actions x JOIN alerts a ON a.id = x.alert_id ORDER BY x.at DESC, x.id DESC LIMIT $1""", limite)
+        sp.set_attributes({"journal.lignes": len(rows)})
+    return [{k: _iso(v) for k, v in dict(r).items()} for r in rows]
+
+
 @router.get("/api/dossiers/{cle}")
 async def recit(request: Request, cle: str, a_l_instant: datetime | None = None, end: datetime | None = None):
     """Récit d'un dossier : en tête (niveau, nom, phrase, contributions), chronologie des signaux avec leurs détails et
