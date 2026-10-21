@@ -1,0 +1,56 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>MARS C2, maquette : Coulisses</title><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"><style>
+:root{--fond:#0e1419;--panneau:#141c23;--sur:#1b252e;--filet:#26323d;--texte:#e6ecf0;--second:#7c8b97;--discret:#4c5a66;
+--signal:#4fb6c8;--u3:#ef6461;--u2:#f0a84b;--u1:#aab6bf}
+*{box-sizing:border-box}body{margin:0;background:var(--fond);color:var(--texte);font:13.5px/1.45 "IBM Plex Sans",system-ui,sans-serif;
+font-variant-numeric:tabular-nums}
+.ecran{width:1440px;height:900px;display:grid;grid-template-rows:40px 1fr;overflow:hidden;position:relative;border:1px solid var(--filet)}
+.barre{display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid var(--filet);background:var(--panneau);font-size:12.5px}
+.marque{font-weight:600;letter-spacing:.04em}.espaces{display:flex;gap:4px}.espaces a{color:var(--second);text-decoration:none;
+padding:5px 10px;border-radius:5px}.espaces a.on{background:var(--sur);color:var(--texte)}
+.temps{margin-left:auto;color:var(--second)}.temps b{color:var(--texte);font-weight:500}.cmdk{border:1px solid var(--filet);
+border-radius:5px;padding:3px 9px;color:var(--second)}.systeme{display:flex;align-items:center;gap:6px;color:var(--second)}
+.pastille{width:7px;height:7px;border-radius:50%;background:#3f8f62;display:inline-block}
+.corps{display:grid;grid-template-columns:380px 1fr;min-height:0}
+.liste{border-right:1px solid var(--filet);background:var(--panneau);display:flex;flex-direction:column;min-height:0}
+.tete{padding:16px 18px 10px;display:flex;align-items:baseline;justify-content:space-between}
+.tete h1{margin:0;font-size:22px;font-weight:600}.tete h1 small{font-size:13px;color:var(--second);font-weight:400;margin-left:6px}
+.raccourcis{color:var(--discret);font-size:11.5px}.raccourcis kbd,.touches kbd{font:inherit;border:1px solid var(--filet);
+border-radius:3px;padding:0 4px;color:var(--second)}
+.dossier{display:grid;grid-template-columns:4px 1fr auto;gap:0 12px;padding:11px 18px 11px 0;border-top:1px solid var(--filet);
+cursor:default}.dossier .niv{border-radius:0 2px 2px 0}.dossier .nom{font-weight:600;font-size:14px}
+.dossier .nom small{font-weight:400;color:var(--second);font-size:11px;border:1px solid var(--filet);border-radius:3px;padding:0 4px;margin-left:6px}
+.dossier .pourquoi{color:#c9d2d8;font-size:12.5px;margin-top:2px}.dossier .icones{display:flex;gap:6px;color:var(--second);margin-top:5px}
+.dossier .quand{color:var(--second);font-size:12px;text-align:right}.dossier.focus{background:var(--sur);outline:1px solid var(--signal)}
+.noter{padding:10px 18px;color:var(--second);border-top:1px solid var(--filet);font-size:12.5px}
+.vide{padding:40px 24px;text-align:center;color:var(--second)}.vide b{display:block;color:var(--texte);font-size:16px;font-weight:500;margin-bottom:6px}
+.zone-carte{position:relative;min-height:0}.carte{width:100%;height:100%;display:block}
+.lieu{fill:#7c8b97;font-size:11px}.etiquette{fill:#e6ecf0;font-size:11.5px;font-weight:500;paint-order:stroke;stroke:#0e1419;stroke-width:3px}
+.vues{position:absolute;left:14px;top:14px;display:flex;gap:4px;background:rgba(20,28,35,.92);border:1px solid var(--filet);border-radius:6px;padding:3px}
+.vues span{padding:4px 10px;border-radius:4px;color:var(--second);font-size:12px}.vues span.on{background:var(--sur);color:var(--texte)}
+.legende{position:absolute;left:14px;bottom:14px;background:rgba(20,28,35,.92);border:1px solid var(--filet);border-radius:6px;
+padding:8px 12px;font-size:11.5px;color:var(--second);display:flex;gap:14px;align-items:center}
+.legende i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.enquete{display:grid;grid-template-columns:520px 1fr;min-height:0}.recit{background:var(--panneau);border-right:1px solid var(--filet);
+display:flex;flex-direction:column;min-height:0}.recit .haut{padding:18px 22px 14px;border-bottom:1px solid var(--filet)}
+.niveau{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px}
+.recit h2{margin:8px 0 2px;font-size:22px}.recit .qui{color:var(--second);font-size:12.5px}.recit .phrase{font-size:15px;margin-top:10px;line-height:1.5}
+.chrono{padding:14px 22px;overflow:hidden;flex:1}.fait{display:grid;grid-template-columns:62px 22px 1fr;gap:0 8px;padding:8px 0;position:relative}
+.fait .h{color:var(--second);font-size:12px;padding-top:1px}.fait .t{font-size:13.5px}.fait .t em{color:var(--second);font-style:normal;font-size:12px;display:block}
+.preuve{margin-top:6px;border:1px solid var(--filet);border-radius:6px;background:#0f161c;height:86px;display:flex;align-items:center;
+justify-content:center;color:var(--discret);font-size:11.5px}
+.gestes{display:flex;gap:8px;padding:12px 22px;border-top:1px solid var(--filet);background:var(--panneau)}
+.geste{flex:1;border:1px solid var(--filet);border-radius:6px;padding:8px 10px;text-align:center;font-size:13px}
+.geste kbd{font:inherit;color:var(--second);border:1px solid var(--filet);border-radius:3px;padding:0 4px;margin-left:6px;font-size:11px}
+.details{padding:0 22px 10px;color:var(--second);font-size:12px}.details summary{cursor:pointer}
+.alerte-systeme{position:absolute;left:50%;transform:translateX(-50%);top:52px;background:#2a1517;border:1px solid var(--u3);
+color:#ffd9d6;border-radius:6px;padding:8px 14px;font-size:13px;z-index:3}
+.grille{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;padding:18px;overflow:hidden}.carte-c{background:var(--panneau);
+border:1px solid var(--filet);border-radius:8px;padding:14px 16px}.carte-c h3{margin:0 0 8px;font-size:14px}.carte-c p{margin:3px 0;color:var(--second);font-size:12.5px}
+.carte-c .ok{color:#7fbf9a}.carte-c .att{color:var(--u2)}
+.pop{position:absolute;background:var(--sur);border:1px solid var(--filet);border-radius:8px;padding:12px 14px;width:300px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.pop h4{margin:0 0 8px;font-size:13px}.pop .m{display:flex;justify-content:space-between;padding:6px 8px;border-radius:5px;color:#c9d2d8}
+.pop .m.on{background:#24313c;color:var(--texte)}.touches{position:absolute;right:14px;bottom:14px;background:rgba(20,28,35,.95);
+border:1px solid var(--filet);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--second);line-height:1.9}
+.page{max-width:1100px;margin:30px auto;padding:0 20px}.page a{color:var(--signal)}table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid var(--filet);padding:6px 8px;text-align:left;font-size:13px;vertical-align:top}th{color:var(--second);font-weight:500}
+</style></head><body><div class="ecran"><div class="barre"><span class="marque">MARS C2</span><nav class="espaces"><a>Veille</a><a>Enquête</a><a class="on">Coulisses</a></nav><span class="temps">Manche · <b>jeu 09/10 21:00</b> · plage 24 h</span><span class="cmdk">Rechercher ⌘K</span><span class="systeme" title="Système : tout va bien"><span class="pastille"></span></span></div><div class="grille"><div class="carte-c"><h3>Système</h3><p><span class="ok">●</span> Collecte AIS : fichier il y a 40 s</p><p><span class="ok">●</span> Ingestion : retard 1 min</p><p><span class="ok">●</span> Disque : 41 % libres</p><p>Versions : 04b8377 partout</p></div><div class="carte-c"><h3>Capteurs et dépenses</h3><p>Sentinel 1 <span class="att">en pause</span> depuis le 21/10</p><p>Sentinel 2 en pause</p><p>VIIRS en service, tip and cue en service</p><p>Budget Sentinel : 0,19 € sur 8 €</p></div><div class="carte-c"><h3>Règles</h3><p>Coupure AIS : observation</p><p>Rendez vous, identité, listes : actifs</p><p>Faux positifs sur 7 jours : 3 sur 41 décisions</p><p>Version des règles 2026.10.40</p></div><div class="carte-c"><h3>Satellites</h3><p>Prochain passage : S1A demain 06:00</p><p>Dernière nuit VIIRS : 08/10, 3 détections</p><p>Analyses, passages, travailleurs, coûts</p></div><div class="carte-c"><h3>Notifications</h3><p>Heures calmes 23:00 à 07:00</p><p>Alertes élevées et plus</p><p>Notification de test</p></div><div class="carte-c"><h3>Zones de vigilance</h3><p>1 zone active : rail d'Ouessant (renforcé)</p><p>Priorité aux navires suivis : oui</p></div><div class="carte-c"><h3>Démonstration</h3><p>Masquage des navires</p><p>Rejeu tel qu'il était</p><p>Scénarios enregistrés : 2</p></div><div class="carte-c"><h3>Couches détaillées</h3><p>Infrastructures par type, couverture, réception fiable</p><p>Mouillages, passages, détections</p></div><div class="carte-c"><h3>Journal</h3><p>Décisions des opérateurs et actions du panneau</p><p>Liens vers Grafana et les traces</p></div></div></div></body></html>

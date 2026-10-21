@@ -654,6 +654,13 @@ priorité aux navires suivis. Phase F (migration 37) : rejeu tel qu'il était (a
 de l'instant, lecture seule), scénarios enregistrés, masquage des navires par l'API sous un cookie de session
 (pseudonymes stables, photos et GPX refusés, bandeau « démonstration »).
 
+**Lot U, refonte UX, phase 1 (21/10/2026)** (`docs/ux_refonte.md`, maquettes `docs/ux/maquettes/`) : audit mesuré sur
+la base de test (captures sans affichage, navires masqués) : 231 mots et 10 couleurs vives sur l'écran par défaut,
+navire le plus suspect éclaté en trois lignes du fil ; heuristiques de Nielsen ; trois tâches de référence (20 s, 41 s,
+6 s par alerte) ; cible : dossier par navire, trois niveaux d'urgence, phrase d'explication, Veille, Enquête,
+Coulisses, tri au clavier ; prototype du modèle des dossiers (`docs/ux/maquettes/dossiers.py`). **Phase 2 en attente
+de la validation d'Antoine.**
+
 ## 10. Tests
 
 `python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :
@@ -721,8 +728,12 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * Recharger d'anciens jours ne passe pas par l'ingestion en direct : `taches.py restaurer-positions`.
 * La collecte écrit dans un fichier caché puis renomme ; l'ingestion ignore les fichiers de moins de 5 s.
 * Tester R2 en local : `moto_server` dans un conteneur Python (MinIO n'est plus publié).
-* Le navigateur sans affichage (gstack) n'a pas WebGL : la carte ne s'y dessine pas. Une limite d'erreur
-  (`components/Garde.tsx`) garde le reste de l'écran ; pour voir la carte, l'ouvrir dans un vrai navigateur.
+* Le navigateur sans affichage de gstack n'a pas WebGL. Le Chromium de Playwright, lui, dessine la carte sans
+  affichage (`--use-angle=swiftshader --enable-unsafe-swiftshader`, Metal fonctionne aussi) : captures de l'audit UX
+  du lot U. Une limite d'erreur (`components/Garde.tsx`) garde le reste de l'écran si WebGL manque.
+* **Mode plage et rejeu sans navires** (constaté le 21/10/2026, lot U) : `/api/traffic` renvoie `{at, cols, rows}`,
+  `decodeTraffic` (`web/src/lib/trafic.ts`) attend `{navires: {cols, rows}}` (format du flux en direct) ; la carte
+  est vide hors du direct. Correctif d'une ligne proposé, en attente de validation (docs/ux_refonte.md, section 3).
 * L'horloge partagée (`sim_clock`) est commune à tous les utilisateurs : un rejeu chez l'un changeait l'écran de tous.
   L'instant est désormais tenu par l'interface (routes `?at=` sans état) ; ne plus faire dépendre l'écran de
   `/api/clock`.
