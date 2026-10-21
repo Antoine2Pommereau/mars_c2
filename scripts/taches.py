@@ -305,12 +305,22 @@ def launch_sentinel2(conn, pass_id: int | None = None, malgre_pause: bool = Fals
 def supervise_workers(conn, quiet: bool = True) -> dict | None:
     """Une minute de surveillance des travailleurs ; une erreur (API Scaleway injoignable) n'arrête pas la boucle."""
     from mars import sentinel, sentinel2, travailleurs, viirs
-    rules = load_rules()
+    rules = regles(conn)
+
+    def compte(fn):
+        # Épisodes des règles en observation au panneau (lot P) : comptés dans le résumé de l'exécution, donc dans
+        # task_runs (travailleur_<tâche>)
+        def h(c, w):
+            rules["_controle"]["observees"] = {}
+            out = fn(c, w, rules)
+            if rules["_controle"]["observees"]:
+                out["controle_observees"] = dict(rules["_controle"]["observees"])
+            return out
+        return h
     try:
         out = travailleurs.supervise(conn, travailleurs.Scaleway.from_env(), rules,
-                                     {"viirs": lambda c, w: viirs.ingest(c, w, rules),
-                                      "sentinel": lambda c, w: sentinel.ingest(c, w, rules),
-                                      "sentinel2": lambda c, w: sentinel2.ingest(c, w, rules)}, log=log)
+                                     {"viirs": compte(viirs.ingest), "sentinel": compte(sentinel.ingest),
+                                      "sentinel2": compte(sentinel2.ingest)}, log=log)
     except Exception as e:
         log(f"surveillance des travailleurs : ÉCHEC, {e}")
         return None
@@ -344,7 +354,7 @@ def update_list(conn, source: str) -> dict:
         out = watchlist.update_opensanctions(conn)
     if out.get("ajoutes") or out.get("retires") or out.get("modifies"):
         log(f"liste {source} : {out['ajoutes']} ajoutés, {out['retires']} retirés, {out['modifies']} modifiés")
-        out["regles"] = rules_cycle(lists_only=True)
+        out["regles"] = rules_cycle(lists_only=True, rules=regles(conn))
     return out
 
 
@@ -367,9 +377,11 @@ def injection(day: date, essais: int) -> dict:
     return asyncio.run(go())
 
 
-def rules_cycle(lists_only: bool = False) -> dict:
+def rules_cycle(lists_only: bool = False, rules: dict | None = None) -> dict:
     """Un cycle des règles sur le flux en direct (mars/rules.py), sur une connexion asyncpg dédiée. `lists_only` :
-    seulement les règles qui dépendent des listes (navires des listes, gravité des changements d'identité)."""
+    seulement les règles qui dépendent des listes (navires des listes, gravité des changements d'identité). `rules` :
+    règles appliquées par le panneau de contrôle (modes des règles), celles du fichier à défaut."""
+    rules = rules or load_rules()
     import asyncio
     import asyncpg
     from mars.rules import run_continuous, run_identity, run_watchlist
@@ -385,7 +397,7 @@ def rules_cycle(lists_only: bool = False) -> dict:
             await c.close()
 
     async def cycle(c):
-        now, rules = datetime.now(timezone.utc), load_rules()
+        now = datetime.now(timezone.utc)
         if lists_only:
             p = rules["continu"]
             return {"watchlist": await run_watchlist(c, now - timedelta(hours=p["fenetre_h"]), now, rules),
@@ -504,7 +516,7 @@ def minute(conn, secours, last: dict):
             last["rules"] = time.time()
             # statistiques d'abord, indépendantes des règles : un cycle des règles en échec ne les arrête plus
             step(stats_cycle, "statistiques de la frise")
-            step(lambda: run(conn, "regles", rules_cycle, quiet=True), "règles")
+            step(lambda: run(conn, "regles", lambda: rules_cycle(rules=regles(conn)), quiet=True), "règles")
         # Tip and cue (lot T1) : tips relevés après les règles, demandes planifiées ou expirées
         tc = load_rules().get("tip_and_cue") or {}
         if tc.get("actif") and time.time() - last["tip"] >= 60 * tc["intervalle_min"]:
@@ -637,7 +649,7 @@ commande("sauvegarder")(_named("sauvegarde"))
 
 @commande("regles")
 def _regles(conn, _a):
-    if run(conn, "regles", rules_cycle, parent=traces.traceparent()) is None:
+    if run(conn, "regles", lambda: rules_cycle(rules=regles(conn)), parent=traces.traceparent()) is None:
         sys.exit(1)
 
 

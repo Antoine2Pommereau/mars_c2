@@ -1311,10 +1311,10 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
                        "parametres": {"rayon_base_m": rules["fusion"]["base_radius_m"],
                                       "doppler_s": rules["fusion"]["doppler_s"], "confiance": cap.get("confiance",
                                                                                                      s["confiance"])}}
-            _alert(conn, "DARK_SHIP", sev, t0, float(d.lon), float(d.lat), details, rules,
-                   f"{cap['cles'][0]}:{scene}:{float(d.lon):.4f}:{float(d.lat):.4f}",
-                   [("detection", did), ("analysis", aid)] + ([("vessel", liste["vessel_id"])] if liste else []))
-            out["alertes_dark_ship"] += 1
+            if _alert(conn, "DARK_SHIP", sev, t0, float(d.lon), float(d.lat), details, rules,
+                      f"{cap['cles'][0]}:{scene}:{float(d.lon):.4f}:{float(d.lat):.4f}",
+                      [("detection", did), ("analysis", aid)] + ([("vessel", liste["vessel_id"])] if liste else [])):
+                out["alertes_dark_ship"] += 1
         elif vid is not None and len(ais):
             # Écho apparié : longueur et cap mesurés contre la déclaration AIS
             a = ais[ais.vessel_id == vid].iloc[0]
@@ -1334,10 +1334,10 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
                            "motif": cap["incoherence"],
                            "parametres": {k: s[k] for k in ("ecart_longueur_m", "ecart_longueur_relatif",
                                                             "cap_ecart_min_deg", "cap_ecart_max_deg")}}
-                _alert(conn, "IDENTITY_MISMATCH", "moyenne" if listed else "faible", t0, float(d.lon), float(d.lat),
-                       details, rules, f"{cap['cles'][1]}:{scene}:{vid}", [("detection", did), ("analysis", aid),
-                                                                            ("vessel", vid)])
-                out["alertes_incoherence"] += 1
+                if _alert(conn, "IDENTITY_MISMATCH", "moyenne" if listed else "faible", t0, float(d.lon),
+                          float(d.lat), details, rules, f"{cap['cles'][1]}:{scene}:{vid}",
+                          [("detection", did), ("analysis", aid), ("vessel", vid)]):
+                    out["alertes_incoherence"] += 1
     # Grands navires AIS sans écho : seulement dans l'emprise réelle de la scène, au large, là où l'AIS est fiable
     for x in extras["unconfirmed"]:
         if sc.get("emprise") and not covers(sc["emprise"], x["lon"], x["lat"], 0):
@@ -1360,9 +1360,9 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
                    "motif": cap["non_confirme"],
                    "contexte": ["Le détecteur manque une partie des navires : indice à recouper, pas une preuve"],
                    "parametres": dict(rules["unconfirmed"])}
-        _alert(conn, "AIS_UNCONFIRMED", "moyenne" if big else "faible", t0, x["lon"], x["lat"], details, rules,
-               f"{cap['cles'][2]}:{scene}:{x['vessel_id']}", [("analysis", aid), ("vessel", x["vessel_id"])])
-        out["alertes_non_confirme"] += 1
+        if _alert(conn, "AIS_UNCONFIRMED", "moyenne" if big else "faible", t0, x["lon"], x["lat"], details, rules,
+                  f"{cap['cles'][2]}:{scene}:{x['vessel_id']}", [("analysis", aid), ("vessel", x["vessel_id"])]):
+            out["alertes_non_confirme"] += 1
     return out
 
 
@@ -1393,13 +1393,20 @@ def _context(conn, did: int, t0: datetime, v: dict):
 
 
 def _alert(conn, kind, sev, t0, lon, lat, details, rules, key, evidence):
+    """Alerte d'une analyse Sentinel 1 ou 2 ; None si sa règle est en observation (épisode compté) ou coupée au
+    panneau de contrôle (lot P)."""
+    from mars import controle
+    if not controle.filtrer_sync(conn, rules, kind, details, key, sev):
+        return None
     aid = conn.execute(
-        """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
-           VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s)
+        """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key, controle_empreinte)
+           VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s)
            ON CONFLICT (type, rule_key) WHERE rule_key IS NOT NULL DO UPDATE
-           SET rule_version = EXCLUDED.rule_version, """ + GARDE_VERIFICATION + """
+           SET rule_version = EXCLUDED.rule_version, controle_empreinte = EXCLUDED.controle_empreinte, """
+        + GARDE_VERIFICATION + """
            RETURNING id""",
-        (kind, sev, t0, lon, lat, json.dumps(details, default=str), rules["version"], key)).fetchone()[0]
+        (kind, sev, t0, lon, lat, json.dumps(details, default=str), rules["version"], key,
+         controle.stamp(conn, rules))).fetchone()[0]
     for et, eid in evidence:
         conn.execute("INSERT INTO alert_evidence VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", (aid, et, eid))
     return aid

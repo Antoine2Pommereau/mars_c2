@@ -48,7 +48,7 @@ export default function DetailPanel(p: PanelProps) {
     title = `${libelleAlerte(a.type)}, ${L.gravite[a.severity] ?? a.severity}`;
     color = typeAlerte(a.type).couleur;
     badge = a.status && a.status !== "nouvelle" ? L.statut[a.status] : null;
-    footer = L.fiche.regles(a.rule_version, a.event_time ? utc(a.event_time) : undefined);
+    footer = L.fiche.regles(a.rule_version, a.event_time ? utc(a.event_time) : undefined, a.controle_empreinte);
     trace = a.details?.trace_id ?? null;               // trace qui a produit l'alerte (Grafana, Tempo)
   } else if (selection.kind === "vessel") {
     Object.assign(ctx, { objet: "navire", navire: selection.properties, carte: card.data });

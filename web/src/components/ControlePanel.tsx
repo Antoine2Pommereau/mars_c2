@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, LogOut, Minus, Plus } from "lucide-react";
 import { type ReactNode, useState } from "react";
-import { api, type EtatControle, type Interrupteur, type SystemeControle } from "../lib/api";
+import { api, type BlocRegle, type EtatControle, type Interrupteur, type RegleControle, type SystemeControle } from "../lib/api";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
@@ -259,6 +259,68 @@ function Systeme({ s }: { s: SystemeControle }) {
   );
 }
 
+const R = C.regle;
+const MODES = ["actif", "observation", "coupe"] as const;
+const COULEUR_MODE: Record<string, string> = { actif: "text-ink", observation: "text-unconf", coupe: "text-gap" };
+
+/** Sélecteur de mode d'une règle ou d'un sous type : le choix ouvre un motif obligatoire, puis la confirmation */
+function ModeRegle({ regle, sousType, nom, b, actif }: { regle: string; sousType?: string; nom: string; b: BlocRegle; actif: boolean }) {
+  const qc = useQueryClient();
+  const [cible, setCible] = useState<string | null>(null), [motif, setMotif] = useState("");
+  const m = useMutation({
+    mutationFn: () => api.controle.mode(regle, { mode: cible!, sous_type: sousType ?? null, motif }),
+    onSuccess: () => { setCible(null); setMotif(""); qc.invalidateQueries({ queryKey: ["controle"] }); },
+  });
+  return (
+    <div className="py-1">
+      <div className="flex items-center gap-2">
+        <span className={`flex-1 truncate text-[12.5px] ${sousType ? "pl-3 text-muted" : "text-ink"}`} title={R.fichier(b.mode_fichier)}>{nom}</span>
+        <div className="flex overflow-hidden rounded border border-hair" role="group" aria-label={nom}>
+          {MODES.map((x) => (
+            <button key={x} disabled={!actif || m.isPending} aria-pressed={b.mode === x}
+              onClick={() => x !== b.mode && setCible(x)}
+              className={`px-1.5 py-0.5 text-[11px] ${b.mode === x ? `bg-raised ${COULEUR_MODE[x]}` : "text-faint hover:text-muted"} disabled:cursor-default`}>
+              {R.modes[x]}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className={`text-[11px] text-faint ${sousType ? "pl-3" : ""}`}>{R.compte(b.alertes_7j, b.episodes_7j)}</p>
+      {cible && (
+        <form className="mt-1 flex gap-1.5" onSubmit={(e) => { e.preventDefault(); m.mutate(); }}>
+          <input className={champ} placeholder={R.changer(nom, R.modes[cible])} value={motif}
+            onChange={(e) => setMotif(e.target.value)} aria-label={C.motif} autoFocus />
+          <button type="submit" className={bouton} disabled={motif.trim().length < 3 || m.isPending}>{C.confirmer}</button>
+          <button type="button" className="text-[12px] text-muted hover:text-ink" onClick={() => setCible(null)}>{C.annuler}</button>
+        </form>
+      )}
+      {m.error && <p className="text-[11.5px] text-gap">{m.error.message}</p>}
+    </div>
+  );
+}
+
+function Regle({ r, actif }: { r: RegleControle; actif: boolean }) {
+  const [seuilsOuverts, setSeuilsOuverts] = useState(false);
+  return (
+    <li className="border-b border-hair/50 py-1 last:border-0">
+      <ModeRegle regle={r.regle} nom={r.nom} b={r} actif={actif} />
+      {r.sous_types.map((s) => <ModeRegle key={s.sous_type} regle={r.regle} sousType={s.sous_type} nom={s.nom} b={s} actif={actif} />)}
+      <button onClick={() => setSeuilsOuverts(!seuilsOuverts)} className="text-[11px] text-faint hover:text-muted">
+        <span className={`mr-1 inline-block transition-transform ${seuilsOuverts ? "rotate-90" : ""}`}>›</span>{R.seuils}
+      </button>
+      {seuilsOuverts && (
+        <table className="mt-0.5 w-full font-mono text-[10.5px] text-muted">
+          <tbody>
+            {r.seuils.map(([k, v]) => (
+              <tr key={k}><td className="pr-2 align-top text-faint">{k}</td><td className="text-right text-ink/80">{JSON.stringify(v)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </li>
+  );
+}
+
 function Journal({ lignes }: { lignes: Props[] }) {
   if (!lignes.length) return <p className="text-[12px] text-muted">{C.journalVide}</p>;
   return (
@@ -281,6 +343,7 @@ export default function ControlePanel() {
   const etatQ = useQuery({ queryKey: ["controle", "etat"], queryFn: api.controle.etat, refetchInterval: 30_000 });
   const journalQ = useQuery({ queryKey: ["controle", "journal"], queryFn: () => api.controle.journal(30), refetchInterval: 30_000 });
   const systemeQ = useQuery({ queryKey: ["controle", "systeme"], queryFn: api.controle.systeme, refetchInterval: 60_000 });
+  const reglesQ = useQuery({ queryKey: ["controle", "regles"], queryFn: api.controle.regles, refetchInterval: 60_000 });
   const op = sessionQ.data?.operateur ?? null;
   const actif = op != null;
   const e = etatQ.data;
@@ -328,6 +391,13 @@ export default function ControlePanel() {
               <Demande actif={actif} rayon={e.rayon_demande_m} />
             </Section>
           </>
+        )}
+        {reglesQ.data && (
+          <Section id="regles" titre={C.sections.regles}
+            droite={<span className="normal-case font-normal text-faint">{R.empreinte(reglesQ.data.empreinte)}</span>}>
+            {!actif && <p className="mb-1 text-[11.5px] text-faint">{C.connexionRequise}</p>}
+            <ul>{reglesQ.data.regles.map((r) => <Regle key={r.regle} r={r} actif={actif} />)}</ul>
+          </Section>
         )}
         {systemeQ.data && (
           <Section id="systeme" titre={C.sections.systeme}>

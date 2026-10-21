@@ -642,7 +642,10 @@ SameSite strict, 12 h). Phase A (migration 33, règles 2026.10.36) : interrupteu
 and cue (aucun travailleur en pause, commande manuelle refusée sauf `--malgre-pause`, reprise prévue et notification
 la veille, `taches.py satellites-pause`), plafond quotidien réglable de 0 à 4, budget du mois, demande d'observation
 d'un point, Grafana muette en pause. Phase B : section Système (services, version, signe de vie, mémoire du
-conteneur lue dans son cgroup, retard, disque, échecs avec lien vers la trace, lien vers Grafana).
+conteneur lue dans son cgroup, retard, disque, échecs avec lien vers la trace, lien vers Grafana). Phase C (migration
+34, règles 2026.10.37) : mode actif, observation ou coupé par règle et sous type, en base, prime sur le fichier
+(`ais_gap.mode` compris), aucune alerte supprimée, épisodes observés comptés, empreinte de l'état du panneau dans
+chaque alerte (`alerts.controle_empreinte`).
 
 ## 10. Tests
 

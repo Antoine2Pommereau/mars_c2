@@ -61,6 +61,15 @@ export interface SystemeControle {
   lien_regles: string | null;
 }
 
+export interface BlocRegle {
+  mode: "actif" | "observation" | "coupe"; mode_fichier: string; mode_panneau: string | null;
+  alertes_7j: number; episodes_7j: number; observes_7j: number;
+}
+export interface RegleControle extends BlocRegle {
+  regle: string; nom: string; sous_types: (BlocRegle & { sous_type: string; nom: string })[];
+  seuils: [string, unknown][];
+}
+
 export interface Pass {
   product_name: string;
   acquired_at: string;
@@ -180,6 +189,9 @@ export const api = {
     etat: () => get<EtatControle>("/controle/etat"),
     journal: (limit = 30) => get<Props[]>(`/controle/journal?limit=${limit}`),
     systeme: () => get<SystemeControle>("/controle/systeme"),
+    regles: () => get<{ version_regles: string; empreinte: string; regles: RegleControle[] }>("/controle/regles"),
+    mode: (regle: string, body: { mode: string; sous_type?: string | null; motif: string }) =>
+      ecrire<Props>(`/controle/regles/${regle}`, body),
     basculer: (source: string, body: { en_pause: boolean; motif?: string; jusqu_a?: string | null }) =>
       ecrire<Interrupteur>(`/controle/satellites/${source}`, body),
     plafond: (source: string, valeur: number, motif: string) =>

@@ -77,3 +77,28 @@ Section « Système » (`GET /api/controle/systeme`, rafraîchie chaque minute) 
 * retard des positions (dernière position reçue), disque (dernière mesure de `mesures_disque`, en rouge sous 15 %) ;
 * dix dernières tâches en échec (refus attendus exclus), chacune avec le lien vers sa trace ;
 * lien vers Grafana (`MARS_GRAFANA_URL`, `http://localhost:3000` par défaut, par le tunnel SSH).
+
+## Phase C : règles d'alerte (migration 34, règles 2026.10.37)
+
+Section « Règles » : pour chaque règle (coupure AIS, rendez vous, changement d'identité et ses deux sous types,
+navire des listes, détections VIIRS, Sentinel 1 et Sentinel 2 avec leurs trois types d'alerte), un mode :
+
+| Mode | Effet |
+|---|---|
+| actif | alertes créées et mises à jour comme avant |
+| observation | aucune alerte ; chaque épisode est compté dans `task_runs` (règles du flux : `observees` dans le détail de la tâche regles ; VIIRS et Sentinel : `controle_observees` dans l'exécution du travailleur) et gardé une fois dans `episodes_observes` (clé de l'alerte qu'il aurait donnée) |
+| coupé | rien ; une règle du flux entièrement coupée n'est même pas calculée |
+
+* Le mode en base (`reglages_controle`, clé `mode:<règle>` ou `mode:<règle>.<sous type>`) prime sur le fichier,
+  `ais_gap.mode` compris ; le mode d'un sous type prime sur celui de sa règle. Catalogue des règles et section des
+  seuils : `controle.regles` de `config/rules.yaml`.
+* **Aucune alerte n'est supprimée** par un changement de mode : une règle qui n'est pas active ne retire plus les
+  alertes vierges non retrouvées. Au passage en coupé, les alertes ouvertes de la règle restent telles quelles, et le
+  motif entre dans leur historique (commentaire signé de l'opérateur).
+* Motif obligatoire, journalisé (`mode_regle`, mode avant et après, alertes annotées).
+* Seuils affichés en lecture seule, à plat, avec la version des règles ; nombre d'alertes et d'épisodes (alertes plus
+  épisodes observés) des 7 derniers jours par règle et sous type.
+* **Empreinte de l'état du panneau** : toute alerte enregistre, en plus de la version des règles, l'empreinte
+  (`alerts.controle_empreinte`, 16 caractères) de l'état du panneau qui l'a influencée (modes des règles, puis zones
+  de vigilance) ; l'état complet est gardé une fois par empreinte (`empreintes_controle`). Pied de la fiche d'une
+  alerte : « Règles 2026.10.37, panneau 1a2b3c4d ».

@@ -206,9 +206,14 @@ def client(conn, monkeypatch):
     monkeypatch.setattr(controle, "notifier", Envois())
     api._echecs.clear()
 
+    async def codecs(c):                       # comme l'API (backend/app.py, _init) : JSON décodé
+        import json as js
+        for t in ("json", "jsonb"):
+            await c.set_type_codec(t, encoder=js.dumps, decoder=js.loads, schema="pg_catalog")
+
     @asynccontextmanager
     async def vie(app):
-        app.state.pool = await asyncpg.create_pool(URL, min_size=1, max_size=2)
+        app.state.pool = await asyncpg.create_pool(URL, min_size=1, max_size=2, init=codecs)
         yield
         await app.state.pool.close()
     app = FastAPI(lifespan=vie)
@@ -299,6 +304,110 @@ def test_system_route_services_failures_and_links(client, conn):
         assert mine[0]["lien_trace"].startswith(s["grafana"] + "/explore")
     finally:
         conn.execute("DELETE FROM task_runs WHERE task = 'essai_systeme'")
+
+
+# Phase C : modes des règles
+
+def test_rule_of_an_alert_and_mode_priority():
+    assert controle.regle_de("AIS_GAP", {}) == ("ais_gap", None)
+    assert controle.regle_de("IDENTITY_CHANGE", {"changement": "omi_autre_mmsi"}) == ("identite", "omi")
+    assert controle.regle_de("DARK_SHIP", {"source": "viirs"}) == ("viirs", None)
+    assert controle.regle_de("AIS_UNCONFIRMED", {"source": "sentinel2"}) == ("sentinel2", "ais_unconfirmed")
+    assert controle.mode_effectif(RULES, "ais_gap") == "observation"                 # ais_gap.mode du fichier
+    assert controle.mode_effectif(RULES, "rendezvous") == "actif"
+    r = controle.appliquer_reglages(RULES, {"mode:ais_gap": "actif", "mode:identite": "observation",
+                                            "mode:identite.nom": "coupe", "mode:faux": "n'importe quoi"}, {})
+    assert controle.mode_effectif(r, "ais_gap") == "actif", "le panneau prime sur le fichier"
+    assert controle.mode_effectif(r, "identite", "nom") == "coupe" and controle.mode_effectif(r, "identite", "omi") == "observation"
+    assert not controle.regle_coupee(r, "identite")
+    r2 = controle.appliquer_reglages(RULES, {"mode:identite.nom": "coupe", "mode:identite.omi": "coupe"}, {})
+    assert controle.regle_coupee(r2, "identite")
+    assert r["_controle"]["empreinte"] != r2["_controle"]["empreinte"]
+    assert controle.appliquer_reglages(RULES, {}, {})["_controle"]["empreinte"] == \
+        controle.appliquer_reglages(RULES, {}, {"viirs": {}})["_controle"]["empreinte"], "les pauses n'influencent pas les alertes"
+    with pytest.raises(ValueError):
+        controle.verifier_mode(RULES, "identite", "inconnu", "actif")
+    s = dict((k, v) for k, v in controle.seuils(RULES["identite"]))
+    assert s["confirmation_min"] == 360 and s["militaire.mmsi"] == [232002833]      # à plat, sections imbriquées
+    assert "militaire.prefixes_nom" not in s                                        # longue liste omise
+
+
+def _alerte_item(cle, gravite="moyenne"):
+    return {"key": cle, "severity": gravite, "event_time": datetime.now(timezone.utc), "lon": -6.1, "lat": 48.0,
+            "details": {"motif": "essai", "debut": datetime.now(timezone.utc).isoformat()}, "vessels": []}
+
+
+def test_save_alerts_observation_cut_and_active_with_fingerprint(conn):
+    import asyncio
+    import json as js
+    import asyncpg
+    from mars.rules import save_alerts
+    conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_p:%'")
+    conn.execute("DELETE FROM episodes_observes WHERE cle LIKE 'essai_p:%'")
+    debut = datetime.now(timezone.utc) - timedelta(hours=1)
+    # Alerte vierge existante, absente du cycle : elle serait retirée par une règle active
+    conn.execute("""INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
+                    VALUES ('RENDEZVOUS', 'moyenne', now(), ST_SetSRID(ST_MakePoint(-6, 48), 4326)::geography,
+                            %s, 'x', 'essai_p:ancienne')""", (js.dumps({"debut": datetime.now(timezone.utc).isoformat()}),))
+
+    async def go(regl):
+        c = await asyncpg.connect(URL)
+        for t in ("json", "jsonb"):
+            await c.set_type_codec(t, encoder=js.dumps, decoder=js.loads, schema="pg_catalog")
+        try:
+            r = controle.appliquer_reglages(RULES, regl, {})
+            return await save_alerts(c, "RENDEZVOUS", [_alerte_item("essai_p:1")], debut,
+                                     datetime.now(timezone.utc) + timedelta(hours=1), "debut", "v", rules=r), r
+        finally:
+            await c.close()
+    out, _r = asyncio.run(go({"mode:rendezvous": "observation"}))
+    assert out == {"nouvelles": 0, "mises_a_jour": 0, "retirees": 0, "observees": 1, "coupees": 0}
+    assert conn.execute("SELECT regle, gravite FROM episodes_observes WHERE cle = 'essai_p:1'").fetchone() == \
+        ("rendezvous", "moyenne")
+    out, _r = asyncio.run(go({"mode:rendezvous": "coupe"}))
+    assert out["coupees"] == 1 and out["retirees"] == 0
+    assert conn.execute("SELECT count(*) FROM alerts WHERE rule_key = 'essai_p:ancienne'").fetchone()[0] == 1, \
+        "un changement de mode ne supprime aucune alerte"
+    out, r = asyncio.run(go({}))
+    assert out["nouvelles"] == 1
+    emp = conn.execute("SELECT controle_empreinte FROM alerts WHERE rule_key = 'essai_p:1'").fetchone()[0]
+    assert emp == r["_controle"]["empreinte"]
+    assert conn.execute("SELECT etat FROM empreintes_controle WHERE empreinte = %s", (emp,)).fetchone()[0] == {"modes": {}}
+    conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_p:%'")
+    conn.execute("DELETE FROM episodes_observes WHERE cle LIKE 'essai_p:%'")
+
+
+def test_sentinel_alert_in_observation_is_counted_not_written(conn):
+    from mars import sentinel
+    conn.execute("DELETE FROM episodes_observes WHERE cle LIKE 'essai_p:%'")
+    r = controle.appliquer_reglages(RULES, {"mode:sentinel1.dark_ship": "observation"}, {})
+    aid = sentinel._alert(conn, "DARK_SHIP", "elevee", datetime.now(timezone.utc), -6.1, 48.0,
+                          {"source": "sentinel1"}, r, "essai_p:s1", [])
+    assert aid is None and r["_controle"]["observees"] == {"sentinel1.dark_ship": 1}
+    assert conn.execute("SELECT regle, sous_type, gravite FROM episodes_observes WHERE cle = 'essai_p:s1'").fetchone() == \
+        ("sentinel1", "dark_ship", "elevee")
+    conn.execute("DELETE FROM episodes_observes WHERE cle LIKE 'essai_p:%'")
+
+
+def test_mode_route_cut_keeps_open_alerts_with_reason(client, conn):
+    conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_p:%'")
+    aid = conn.execute("""INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
+                          VALUES ('WATCHLIST', 'elevee', now(), ST_SetSRID(ST_MakePoint(-6, 48), 4326)::geography,
+                                  '{}', 'x', 'essai_p:w') RETURNING id""").fetchone()[0]
+    client.post("/api/controle/connexion", json={"operateur": "antoine", "mot_de_passe": "bon mot de passe"})
+    assert client.post("/api/controle/regles/inconnue", json={"mode": "coupe", "motif": "essai"}).status_code == 422
+    r = client.post("/api/controle/regles/watchlist", json={"mode": "coupe", "motif": "listes en révision"})
+    assert r.status_code == 200 and r.json()["alertes_ouvertes_annotees"] >= 1
+    assert conn.execute("SELECT status FROM alerts WHERE id = %s", (aid,)).fetchone()[0] == "nouvelle"
+    assert conn.execute("SELECT action, author, note FROM alert_actions WHERE alert_id = %s", (aid,)).fetchone() == \
+        ("commenter", "antoine", "Règle « Navire des listes » coupée au panneau de contrôle par antoine : listes en révision")
+    g = client.get("/api/controle/regles").json()
+    w = [x for x in g["regles"] if x["regle"] == "watchlist"][0]
+    assert w["mode"] == "coupe" and w["mode_panneau"] == "coupe" and w["alertes_7j"] >= 1 and w["seuils"]
+    assert controle.mode_effectif(controle.appliquer(conn, RULES), "watchlist") == "coupe"
+    j = conn.execute("SELECT action, cible, avant, apres, motif FROM journal_controle WHERE action = 'mode_regle'").fetchone()
+    assert j[:2] == ("mode_regle", "watchlist") and j[2] == {"mode": None} and j[3]["mode"] == "coupe"
+    conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_p:%'")
 
 
 def test_rules_file_untouched():

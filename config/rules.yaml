@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.36"
+version: "2026.10.37"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -512,3 +512,24 @@ controle:
     sentinel2: {min: 0, max: 4}
   session_h: 12                 # durée d'une session d'opérateur
   rayon_demande_m: {min: 1000, max: 30000, defaut: 5000}   # demande d'observation manuelle du panneau
+  # Phase C : règles d'alerte pilotées par le panneau. Mode actif (alertes), observation (épisodes comptés dans
+  # task_runs et episodes_observes, aucune alerte) ou coupé (rien). Le mode en base prime sur celui du fichier
+  # (ais_gap.mode compris) ; un changement de mode ne supprime aucune alerte. section : seuils affichés en lecture seule.
+  regles:
+    ais_gap: {nom: Coupure AIS, section: ais_gap}
+    rendezvous: {nom: Rendez vous, section: rendezvous}
+    identite:
+      nom: Changement d'identité
+      section: identite
+      sous_types: {nom: Changement de nom, omi: Même OMI sous un autre MMSI}
+    watchlist: {nom: Navire des listes, section: watchlist}
+    viirs: {nom: Détections VIIRS, section: viirs}
+    sentinel1:
+      nom: Sentinel 1
+      section: sentinel
+      sous_types: {dark_ship: Navire sans AIS, ais_unconfirmed: Position non confirmée, identity_mismatch: Identité incohérente}
+    sentinel2:
+      nom: Sentinel 2
+      section: sentinel2
+      sous_types: {dark_ship: Navire sans AIS, ais_unconfirmed: Position non confirmée, identity_mismatch: Identité incohérente}
+

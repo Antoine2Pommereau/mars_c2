@@ -539,14 +539,19 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
             "parametres": {k: v[k] for k in ("tolerance_m", "cote_km", "persistance_m", "persistance_nuits", "corridor_m",
                                              "liste_rayon_km", "tres_au_large_km", "couverture_rayon_km")},
         }
+        cle = f"viirs:{nom}:{lon:.4f}:{lat:.4f}"
+        from mars import controle
+        if not controle.filtrer_sync(conn, rules, "DARK_SHIP", details, cle, sev):
+            continue                     # règle en observation (épisode compté) ou coupée au panneau (lot P)
         aid = conn.execute(
-            """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
-               VALUES ('DARK_SHIP', %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s)
+            """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key, controle_empreinte)
+               VALUES ('DARK_SHIP', %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s)
                ON CONFLICT (type, rule_key) WHERE rule_key IS NOT NULL DO UPDATE
-               SET rule_version = EXCLUDED.rule_version, """ + GARDE_VERIFICATION + """
+               SET rule_version = EXCLUDED.rule_version, controle_empreinte = EXCLUDED.controle_empreinte,
+               """ + GARDE_VERIFICATION + """
                RETURNING id""",
-            (sev, ts, lon, lat, json.dumps(details, default=str), rules["version"],
-             f"viirs:{nom}:{lon:.4f}:{lat:.4f}")).fetchone()[0]
+            (sev, ts, lon, lat, json.dumps(details, default=str), rules["version"], cle,
+             controle.stamp(conn, rules))).fetchone()[0]
         conn.execute("INSERT INTO alert_evidence VALUES (%s, 'viirs', %s) ON CONFLICT DO NOTHING", (aid, did))
         if liste:
             conn.execute("INSERT INTO alert_evidence VALUES (%s, 'vessel', %s) ON CONFLICT DO NOTHING", (aid, liste["vessel_id"]))

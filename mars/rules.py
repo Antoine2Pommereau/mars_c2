@@ -9,6 +9,7 @@ Règles : rendez vous (RENDEZVOUS), coupure AIS (AIS_GAP), navire d'une liste de
 (WATCHLIST), changement d'identité (IDENTITY_CHANGE). Les fonctions de décision des deux dernières, et la mesure des
 coupures du flux, sont pures et couvertes par tests/test_rules.py.
 """
+import json
 import math
 import re
 import statistics
@@ -29,27 +30,50 @@ def stamp(t: datetime) -> str:
 # Enregistrement des alertes
 
 async def save_alerts(c, kind: str, items: list[dict], prune_from=None, prune_to=None, time_field: str | None = None,
-                      rule_version: str = "") -> dict:
+                      rule_version: str = "", rules: dict | None = None) -> dict:
     """Crée ou met à jour les alertes `items` (clé `key`) ; si une fenêtre et un champ de temps sont donnés, retire
-    les alertes vierges de ce type, dans cette fenêtre, qui n'ont pas été retrouvées."""
-    created = updated = 0
+    les alertes vierges de ce type, dans cette fenêtre, qui n'ont pas été retrouvées.
+
+    Panneau de contrôle (lot P, `rules["_controle"]`) : seules les alertes d'une règle (ou d'un sous type) en mode
+    actif sont écrites ; en observation, l'épisode est compté et gardé dans episodes_observes ; coupée, rien. Une
+    règle qui n'est pas active ne retire aucune alerte (un changement de mode ne supprime rien). Chaque alerte porte
+    l'empreinte de l'état du panneau."""
+    from mars import controle
+    rules = rules or {}
+    created = updated = observed = cut = 0
+    ctrl = rules.get("_controle")
+    emp = ctrl["empreinte"] if ctrl else None
     async with c.transaction():
+        if ctrl:
+            await c.execute(controle.EMPREINTE_SQL.format(p1="$1", p2="$2::text::jsonb"), emp, json.dumps(ctrl["etat"]))
         for it in items:
+            mode, regle, sous = controle.decision(rules, kind, it["details"])
+            if mode == "observation":
+                observed += 1
+                await c.execute(controle.EPISODE_SQL.format(p1="$1", p2="$2", p3="$3", p4="$4", p5="$5"),
+                                regle, sous, it["key"], it["severity"], emp)
+                continue
+            if mode == "coupe":
+                cut += 1
+                continue
             r = await c.fetchrow(
-                """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
-                   VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography, $6, $7, $8)
+                """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key,
+                                       controle_empreinte)
+                   VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography, $6, $7, $8, $9)
                    ON CONFLICT (type, rule_key) WHERE rule_key IS NOT NULL DO UPDATE
                    SET event_time = EXCLUDED.event_time, geom = EXCLUDED.geom, rule_version = EXCLUDED.rule_version,
+                       controle_empreinte = EXCLUDED.controle_empreinte,
                        """ + GARDE_VERIFICATION + """
                    RETURNING id, (xmax = 0) AS created""",
                 kind, it["severity"], it["event_time"], float(it["lon"]), float(it["lat"]), it["details"],
-                rule_version, it["key"])
+                rule_version, it["key"], emp)
             created += r["created"]
             updated += not r["created"]
             await c.executemany("INSERT INTO alert_evidence VALUES ($1, 'vessel', $2) ON CONFLICT DO NOTHING",
                                 [(r["id"], v) for v in dict.fromkeys(it["vessels"]) if v is not None])
         removed = 0
-        if time_field and prune_from is not None:
+        actif = controle.mode_effectif(rules, controle.regle_de(kind, {})[0]) == "actif"
+        if time_field and prune_from is not None and actif:
             removed = int((await c.execute(
                 f"""DELETE FROM alerts a
                     WHERE a.type = $1 AND a.status = 'nouvelle'
@@ -57,7 +81,10 @@ async def save_alerts(c, kind: str, items: list[dict], prune_from=None, prune_to
                       AND NOT (coalesce(a.rule_key, '') = ANY($4::text[]))
                       AND NOT EXISTS (SELECT 1 FROM alert_actions x WHERE x.alert_id = a.id)""",
                 kind, prune_from, prune_to, [it["key"] for it in items])).split()[-1])
-    return {"nouvelles": created, "mises_a_jour": updated, "retirees": removed}
+    out = {"nouvelles": created, "mises_a_jour": updated, "retirees": removed}
+    if observed or cut:
+        out.update({"observees": observed, "coupees": cut})
+    return out
 
 
 RENDEZVOUS_SQL = """
@@ -210,7 +237,7 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
                 it["event_time"] = first["debut"] + timedelta(minutes=r["min_duration_min"])
         else:
             it["key"] = f"{it['v1']}:{it['v2']}:{stamp(it['t_start'])}"
-    saved = await save_alerts(c, "RENDEZVOUS", items, day_start, day_end, "debut", rules["version"])
+    saved = await save_alerts(c, "RENDEZVOUS", items, day_start, day_end, "debut", rules["version"], rules=rules)
     return {"episodes_detectes": len(rows), "alertes": len(items), "dont_zone_de_mouillage": anchorage,
             "exclus": excluded, **saved}
 
@@ -620,14 +647,17 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
                                                                             if x["cog_deg"] is not None] or [0]))}
                              for k, n in sorted(collective.items(), key=lambda kv: -kv[1])[:20]],
               "avec_partenaire_possible": with_partner, "minutes_de_flux_coupe": len(outage)}
-    if g.get("mode", "alertes") == "observation":
+    from mars import controle
+    if controle.mode_effectif(rules, "ais_gap") == "observation":
         # Seuils encore danois : les épisodes sont comptés et décrits pour la recalibration, aucune alerte n'est créée,
-        # mise à jour ni retirée (celles qui existeraient déjà restent telles quelles)
-        return {**counts, "mode": "observation", **observation_summary(items)}
+        # mise à jour ni retirée (celles qui existeraient déjà restent telles quelles). Mode du fichier (ais_gap.mode)
+        # ou du panneau de contrôle, qui prime ; épisodes gardés dans episodes_observes
+        saved = await save_alerts(c, "AIS_GAP", items, rule_version=rules["version"], rules=rules)
+        return {**counts, "mode": "observation", **observation_summary(items), "observees": saved.get("observees", 0)}
     # Les alertes dont le dernier message précède le début de la fenêtre plus la fenêtre d'historique de la règle ne
     # sont pas retirées : la fenêtre glissante ne voit plus leur historique, elles restent valables
     prune_from = day_start + timedelta(minutes=g["prior_window_min"])
-    saved = await save_alerts(c, "AIS_GAP", items, prune_from, day_end, "dernier_message", rules["version"])
+    saved = await save_alerts(c, "AIS_GAP", items, prune_from, day_end, "dernier_message", rules["version"], rules=rules)
     return {**counts, "mode": "alertes", **saved}
 
 
@@ -864,7 +894,7 @@ async def run_watchlist(c, start, end, rules: dict) -> dict:
             }
             items.append({"key": key, "severity": watch_severity(v["level"], v["matched_by"]), "event_time": debut,
                           "lon": pos[j]["lon"], "lat": pos[j]["lat"], "details": details, "vessels": [v["vessel_id"]]})
-    saved = await save_alerts(c, "WATCHLIST", items, rule_version=rules["version"])
+    saved = await save_alerts(c, "WATCHLIST", items, rule_version=rules["version"], rules=rules)
     return {"navires_des_listes": len(vessels), "passages": len(items), **saved}
 
 
@@ -1053,7 +1083,7 @@ async def run_identity(c, start, end, rules: dict) -> dict:
         items.append({"key": f"omi:{ch['imo']}:{new['vessel_id']}", "severity": severity,
                       "event_time": new["first_seen"], "lon": pos["lon"], "lat": pos["lat"], "details": details,
                       "vessels": involved})
-    saved = await save_alerts(c, "IDENTITY_CHANGE", items, rule_version=rules["version"])
+    saved = await save_alerts(c, "IDENTITY_CHANGE", items, rule_version=rules["version"], rules=rules)
     return {"changements": len(items), "sans_position": skipped, **saved}
 
 
@@ -1080,15 +1110,25 @@ async def run_continuous(c, now: datetime, rules: dict) -> dict:
                 sp.set_attributes({f"regles.{k}": v for k, v in r.items() if isinstance(v, (int, float))})
         durees[name] = round(time.perf_counter() - t, 2)
         return r
-    if await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
+    from mars import controle
+    coupees = {r for r in ("rendezvous", "ais_gap", "watchlist", "identite") if controle.regle_coupee(rules, r)}
+    if "rendezvous" in coupees:                        # règle coupée au panneau : pas même calculée (lot P)
+        out["rendezvous"] = {"mode": "coupe"}
+    elif await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
         out["rendezvous"] = await step("rendezvous", run_rendezvous(c, start, watermark, rules))
     else:
         out["rendezvous"] = "trait de côte absent : lancer scripts/build_masks.py"
-    if await c.fetchval("SELECT EXISTS (SELECT 1 FROM reception_cells)"):
+    if "ais_gap" in coupees:
+        out["ais_gap"] = {"mode": "coupe"}
+    elif await c.fetchval("SELECT EXISTS (SELECT 1 FROM reception_cells)"):
         out["ais_gap"] = await step("ais_gap", run_ais_gap(c, start, watermark, rules))
     else:
         out["ais_gap"] = "zone de réception absente : lancer scripts/build_masks.py"
-    out["watchlist"] = await step("watchlist", run_watchlist(c, start, now, rules))
-    out["identite"] = await step("identite", run_identity(c, now - timedelta(hours=p["identite_fenetre_h"]), now, rules))
+    out["watchlist"] = ({"mode": "coupe"} if "watchlist" in coupees
+                        else await step("watchlist", run_watchlist(c, start, now, rules)))
+    out["identite"] = ({"mode": "coupe"} if "identite" in coupees else
+                       await step("identite", run_identity(c, now - timedelta(hours=p["identite_fenetre_h"]), now, rules)))
+    if (rules.get("_controle") or {}).get("empreinte"):
+        out["controle_empreinte"] = rules["_controle"]["empreinte"]
     out["durees_s"] = durees
     return out

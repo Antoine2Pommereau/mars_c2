@@ -207,6 +207,91 @@ async def systeme(request: Request):
             "lien_regles": controle.lien_trace(derniere_trace)}
 
 
+# Règles d'alerte (phase C) : modes, seuils en lecture seule, épisodes et alertes des 7 derniers jours
+
+async def _modes(c) -> dict:
+    return {r["cle"]: r["valeur"] for r in await c.fetch("SELECT cle, valeur FROM reglages_controle "
+                                                         "WHERE cle LIKE 'mode:%'")}
+
+
+@router.get("/api/controle/regles")
+async def regles(request: Request):
+    rules = load_rules()
+    async with request.app.state.pool.acquire() as c:
+        regl = await _modes(c)
+        alertes = await c.fetch(
+            """SELECT type, details->>'source' AS source, details->>'changement' AS changement, count(*) AS n
+               FROM alerts WHERE detected_at >= now() - interval '7 days' GROUP BY 1, 2, 3""")
+        observes = await c.fetch(
+            """SELECT regle, sous_type, count(*) AS n FROM episodes_observes
+               WHERE derniere_le >= now() - interval '7 days' GROUP BY 1, 2""")
+    r = controle.appliquer_reglages(rules, regl, {})
+    n_alertes: dict = {}
+    for a in alertes:
+        regle, sous = controle.regle_de(a["type"], {"source": a["source"], "changement": a["changement"]})
+        if regle:
+            for k in (regle, f"{regle}.{sous}" if sous else None):
+                if k:
+                    n_alertes[k] = n_alertes.get(k, 0) + a["n"]
+    n_obs: dict = {}
+    for o in observes:
+        for k in (o["regle"], f"{o['regle']}.{o['sous_type']}" if o["sous_type"] else None):
+            if k:
+                n_obs[k] = n_obs.get(k, 0) + o["n"]
+
+    def bloc(regle, sous=None):
+        k = f"{regle}.{sous}" if sous else regle
+        return {"mode": controle.mode_effectif(r, regle, sous), "mode_fichier": controle.mode_fichier(rules, regle),
+                "mode_panneau": regl.get(f"mode:{k}"), "alertes_7j": n_alertes.get(k, 0),
+                "episodes_7j": n_alertes.get(k, 0) + n_obs.get(k, 0), "observes_7j": n_obs.get(k, 0)}
+    out = []
+    for regle, d in controle.catalogue(rules).items():
+        out.append({"regle": regle, "nom": d["nom"], **bloc(regle),
+                    "sous_types": [{"sous_type": s, "nom": nom, **bloc(regle, s)}
+                                   for s, nom in (d.get("sous_types") or {}).items()],
+                    "seuils": controle.seuils(rules.get(d.get("section")) or {})})
+    return {"version_regles": rules["version"], "empreinte": r["_controle"]["empreinte"], "regles": out}
+
+
+class Mode(BaseModel):
+    mode: str
+    sous_type: str | None = None
+    motif: str = Field(min_length=3, max_length=300)
+
+
+@router.post("/api/controle/regles/{regle}")
+async def changer_mode(request: Request, regle: str, x: Mode, op: str = Depends(exiger_operateur)):
+    """Mode d'une règle (ou d'un sous type) : actif, observation ou coupé ; journalisé. Aucune alerte supprimée ; au
+    passage en coupé, les alertes ouvertes de la règle restent telles quelles et le motif entre dans leur historique."""
+    rules = load_rules()
+    try:
+        cle = controle.verifier_mode(rules, regle, x.sous_type, x.mode)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    nom = controle.catalogue(rules)[regle]["nom"]
+    if x.sous_type:
+        nom += ", " + controle.catalogue(rules)[regle]["sous_types"][x.sous_type]
+    annotees = 0
+    async with request.app.state.pool.acquire() as c, c.transaction():
+        avant = await c.fetchval("SELECT valeur FROM reglages_controle WHERE cle = $1 FOR UPDATE", cle)
+        await c.execute("INSERT INTO reglages_controle (cle, valeur, auteur) VALUES ($1, $2::text::jsonb, $3) "
+                        "ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur, auteur = EXCLUDED.auteur, "
+                        "mis_a_jour_le = now()", cle, json.dumps(x.mode), op)
+        if x.mode == "coupe" and avant != "coupe":
+            ouvertes = await c.fetch("SELECT id, type, details->>'source' AS source, details->>'changement' AS changement "
+                                     "FROM alerts WHERE status IN ('nouvelle', 'acquittee', 'confirmee')")
+            ids = [a["id"] for a in ouvertes if controle.concerne((regle, x.sous_type), a["type"],
+                                                                   {"source": a["source"], "changement": a["changement"]})]
+            if ids:
+                note = f"Règle « {nom} » coupée au panneau de contrôle par {op} : {x.motif.strip()}"
+                await c.executemany("INSERT INTO alert_actions (alert_id, action, note, author) "
+                                    "VALUES ($1, 'commenter', $2, $3)", [(i, note, op) for i in ids])
+            annotees = len(ids)
+        await journaliser(c, op, "mode_regle", f"{regle}.{x.sous_type}" if x.sous_type else regle,
+                          {"mode": avant}, {"mode": x.mode, "alertes_ouvertes_annotees": annotees}, x.motif.strip())
+    return {"regle": regle, "sous_type": x.sous_type, "mode": x.mode, "alertes_ouvertes_annotees": annotees}
+
+
 # Écriture : interrupteurs, plafonds, demande d'observation
 
 class Bascule(BaseModel):

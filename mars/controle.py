@@ -158,15 +158,141 @@ def regler(conn, cle: str, valeur, auteur: str, motif: str | None, action: str, 
 
 
 def appliquer_reglages(rules: dict, regl: dict, pauses_: dict) -> dict:
-    """Règles appliquées (calcul pur) : plafonds du panneau dans leurs bornes, pauses dans rules["_controle"]."""
+    """Règles appliquées (calcul pur) : plafonds du panneau dans leurs bornes, pauses, modes des règles et empreinte
+    de l'état qui influence les alertes, dans rules["_controle"]."""
     r = copy.deepcopy(rules)
     for source, section in PLAFONDS.items():
         v = regl.get(f"plafond:{source}")
         if v is not None and section in r:
             lo, hi = bornes_plafond(rules, source)
             r[section]["scenes_max_par_jour"] = max(lo, min(hi, int(v)))
-    r["_controle"] = {"pauses": pauses_}
+    modes = {k[len("mode:"):]: v for k, v in regl.items() if k.startswith("mode:") and v in MODES}
+    etat = {"modes": dict(sorted(modes.items()))}
+    r["_controle"] = {"pauses": pauses_, "modes": modes, "etat": etat, "empreinte": empreinte(etat), "observees": {}}
     return r
+
+
+# Modes des règles d'alerte (phase C)
+
+MODES = ("actif", "observation", "coupe")
+
+
+def empreinte(etat: dict) -> str:
+    """Empreinte courte et stable de l'état du panneau qui influence les alertes."""
+    return hashlib.sha256(json.dumps(etat, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+
+
+def catalogue(rules: dict) -> dict:
+    return (rules.get("controle") or {}).get("regles") or {}
+
+
+def regle_de(kind: str, details: dict | None) -> tuple[str | None, str | None]:
+    """Règle du panneau et sous type d'une alerte, d'après son type et sa source."""
+    d = details or {}
+    src = d.get("source")
+    if src in ("sentinel1", "sentinel2"):
+        return src, kind.lower()
+    if src == "viirs":
+        return "viirs", None
+    return {"AIS_GAP": ("ais_gap", None), "RENDEZVOUS": ("rendezvous", None), "WATCHLIST": ("watchlist", None),
+            "IDENTITY_CHANGE": ("identite", {"nom": "nom", "omi_autre_mmsi": "omi"}.get(d.get("changement")))
+            }.get(kind, (None, None))
+
+
+def mode_fichier(rules: dict, regle: str) -> str:
+    """Mode du fichier : ais_gap.mode (observation ou alertes) ; les autres règles sont actives."""
+    if regle == "ais_gap":
+        return "observation" if (rules.get("ais_gap") or {}).get("mode") == "observation" else "actif"
+    return "actif"
+
+
+def mode_effectif(rules: dict, regle: str | None, sous_type: str | None = None) -> str:
+    if regle is None:
+        return "actif"
+    modes = (rules.get("_controle") or {}).get("modes") or {}
+    if sous_type and f"{regle}.{sous_type}" in modes:
+        return modes[f"{regle}.{sous_type}"]
+    return modes.get(regle) or mode_fichier(rules, regle)
+
+
+def regle_coupee(rules: dict, regle: str) -> bool:
+    """Règle entière coupée (et chacun de ses sous types) : elle n'est même pas calculée."""
+    sous = (catalogue(rules).get(regle) or {}).get("sous_types") or {}
+    if not sous:
+        return mode_effectif(rules, regle) == "coupe"
+    return all(mode_effectif(rules, regle, s) == "coupe" for s in sous)
+
+
+def decision(rules: dict, kind: str, details: dict | None) -> tuple[str, str | None, str | None]:
+    """Mode qui s'applique à une alerte à écrire : (mode, règle, sous type)."""
+    regle, sous = regle_de(kind, details)
+    return mode_effectif(rules, regle, sous), regle, sous
+
+
+def compter_observation(rules: dict, regle: str, sous: str | None):
+    obs = (rules.setdefault("_controle", {})).setdefault("observees", {})
+    k = f"{regle}.{sous}" if sous else regle
+    obs[k] = obs.get(k, 0) + 1
+
+
+EPISODE_SQL = """INSERT INTO episodes_observes (regle, sous_type, cle, gravite, controle_empreinte)
+VALUES ({p1}, {p2}, {p3}, {p4}, {p5}) ON CONFLICT (regle, cle) DO UPDATE
+SET derniere_le = now(), gravite = EXCLUDED.gravite, controle_empreinte = EXCLUDED.controle_empreinte"""
+EMPREINTE_SQL = "INSERT INTO empreintes_controle (empreinte, etat) VALUES ({p1}, {p2}) ON CONFLICT DO NOTHING"
+
+
+def stamp(conn, rules: dict) -> str | None:
+    """Empreinte de l'état du panneau à joindre aux alertes (psycopg) ; l'état complet est gardé une fois."""
+    c = rules.get("_controle")
+    if not c:
+        return None
+    if not c.get("_empreinte_ecrite"):
+        conn.execute(EMPREINTE_SQL.format(p1="%s", p2="%s"), (c["empreinte"], json.dumps(c["etat"])))
+        c["_empreinte_ecrite"] = True
+    return c["empreinte"]
+
+
+def filtrer_sync(conn, rules: dict, kind: str, details: dict | None, cle: str, gravite: str | None) -> bool:
+    """Alerte à écrire (psycopg : VIIRS, Sentinel) : vrai si la règle est active ; en observation, l'épisode est compté
+    et gardé ; coupée, rien."""
+    mode, regle, sous = decision(rules, kind, details)
+    if mode == "observation":
+        compter_observation(rules, regle, sous)
+        conn.execute(EPISODE_SQL.format(p1="%s", p2="%s", p3="%s", p4="%s", p5="%s"),
+                     (regle, sous, cle, gravite, stamp(conn, rules)))
+    return mode == "actif"
+
+
+def seuils(section: dict, prefixe: str = "", limite: int = 40) -> list[list]:
+    """Seuils d'une section de config/rules.yaml à plat, en lecture seule : valeurs simples et courtes listes."""
+    out: list[list] = []
+    for k, v in (section or {}).items():
+        cle = f"{prefixe}{k}"
+        if isinstance(v, dict):
+            out += seuils(v, f"{cle}.", limite)
+        elif isinstance(v, (int, float, str, bool)) or v is None:
+            out.append([cle, v])
+        elif isinstance(v, list) and len(v) <= 10 and all(isinstance(x, (int, float, str)) for x in v):
+            out.append([cle, v])
+    return out[:limite]
+
+
+def verifier_mode(rules: dict, regle: str, sous_type: str | None, mode: str) -> str:
+    """Clé du réglage d'un mode, après contrôle de la règle, du sous type et du mode."""
+    cat = catalogue(rules)
+    if regle not in cat:
+        raise ValueError(f"règle inconnue : {regle}")
+    if sous_type is not None and sous_type not in ((cat[regle].get("sous_types") or {})):
+        raise ValueError(f"sous type inconnu pour {regle} : {sous_type}")
+    if mode not in MODES:
+        raise ValueError(f"mode inconnu : {mode} ({', '.join(MODES)})")
+    return f"mode:{regle}.{sous_type}" if sous_type else f"mode:{regle}"
+
+
+def concerne(rules_regle: tuple[str, str | None], kind: str, details: dict | None) -> bool:
+    """L'alerte (type, détails) relève-t-elle de la règle (et du sous type, s'il est donné) ?"""
+    regle, sous = regle_de(kind, details)
+    return regle == rules_regle[0] and (rules_regle[1] is None or sous == rules_regle[1])
 
 
 def appliquer(conn, rules: dict) -> dict:

@@ -969,7 +969,7 @@ async def alerts(analysis_id: int | None = None, start: datetime | None = None, 
     du fil d'alertes, navires en alerte sur la carte)."""
     q = """
     SELECT al.id, al.type, al.severity, al.status, al.event_time, al.detected_at, al.details, al.rule_version,
-           ST_AsGeoJSON(al.geom, 5)::json AS geometry,
+           al.controle_empreinte, ST_AsGeoJSON(al.geom, 5)::json AS geometry,
            coalesce((SELECT array_agg(e.evidence_id) FROM alert_evidence e
                      WHERE e.alert_id = al.id AND e.evidence_type = 'vessel'), '{}') AS vessel_ids
     FROM alerts al

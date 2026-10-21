@@ -24,7 +24,14 @@ export const L = {
   controle: {
     titre: "Contrôle", regles: (v: string) => `règles ${v}`,
     sections: { connexion: "Opérateur", capteurs: "Capteurs", depenses: "Dépenses", demande: "Demande d'observation",
-      systeme: "Système", journal: "Journal" } as Record<string, string>,
+      systeme: "Système", regles: "Règles", journal: "Journal" } as Record<string, string>,
+    regle: {
+      modes: { actif: "actif", observation: "observation", coupe: "coupé" } as Record<string, string>,
+      compte: (a: number, e: number) => `7 j : ${a} alertes, ${e} épisodes`,
+      fichier: (m: string) => `fichier : ${m === "actif" ? "actif" : m}`,
+      seuils: "Seuils (config/rules.yaml)", empreinte: (e: string) => `état ${e.slice(0, 8)}`,
+      changer: (nom: string, m: string) => `${nom} : passer en ${m}`,
+    },
     systeme: {
       services: { api: "API", collecte: "Collecte", ingestion: "Ingestion", taches: "Tâches", statistiques: "Statistiques" } as Record<string, string>,
       il_y_a: (s: number) => (s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`),
@@ -45,6 +52,7 @@ export const L = {
     journalVide: "Aucune action", actions: {
       pause: "pause", reprise: "reprise", plafond: "plafond", demande: "demande", connexion: "connexion",
       connexion_refusee: "connexion refusée", deconnexion: "déconnexion", malgre_pause: "malgré la pause",
+      mode_regle: "mode de règle",
     } as Record<string, string>,
   },
   // Panneau « Observations » (tip and cue, lot T1)
@@ -316,7 +324,8 @@ export const L = {
     navireSansNom: "Navire sans nom", mmsi: "MMSI", omi: "OMI", pavillon: "Pavillon", indicatif: "Indicatif",
     type: "Type", longueur: "Longueur", destination: "Destination", vitesse: "Vitesse", route: "Route",
     dernierMessage: "Dernier message", nonRenseigne: "non renseigné", ilYaMin: (m: string) => `il y a ${m} min`,
-    regles: (v: string, t?: string) => `Règles ${v}${t ? `, alerte levée le ${t}` : ""}`, sansNom: "sans nom",
+    regles: (v: string, t?: string, e?: string | null) =>
+      `Règles ${v}${e ? `, panneau ${e.slice(0, 8)}` : ""}${t ? `, alerte levée le ${t}` : ""}`, sansNom: "sans nom",
     trace: (id: string) => `Trace ${id}`,
   },
 
