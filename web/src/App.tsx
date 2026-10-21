@@ -3,7 +3,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AlertsPanel from "./components/AlertsPanel";
 import AnalysesPanel from "./components/AnalysesPanel";
 import BarreEtat, { ListeIndicateurs, useEtat } from "./components/BarreEtat";
-import Coulisses, { type Cible } from "./components/Coulisses";
+import Coulisses from "./components/Coulisses";
+import Poignee from "./components/Poignee";
+import { Partie, PartieDemande, PartieServices, RubriqueCapteurs, RubriqueDemo, RubriqueJournal, RubriqueNotifications,
+  RubriqueOperateur, RubriqueRegles, RubriqueZones } from "./components/Reglages";
+import { bornerLargeur, ecrireLargeur, lireLargeur } from "./lib/largeur";
+import { estRubrique, type Rubrique } from "./registres/reglages";
 import DetailPanel from "./components/DetailPanel";
 import Frise from "./components/Frise";
 import Garde from "./components/Garde";
@@ -15,7 +20,6 @@ import Rail, { type PanelId } from "./components/Rail";
 import Recherche, { type Resultat } from "./components/Recherche";
 import SuivisPanel from "./components/SuivisPanel";
 import ObservationsPanel from "./components/ObservationsPanel";
-import ControlePanel from "./components/ControlePanel";
 import VeillePanel from "./components/VeillePanel";
 import Recit from "./components/Recit";
 import { emprise, preuveGeoJSON } from "./lib/preuve";
@@ -63,7 +67,40 @@ export default function App() {
   const qc = useQueryClient();
   const [temps, setTemps] = useState<Temps>(INITIAL.temps);
   const [now, setNow] = useState(Date.now());
-  const [panel, setPanel] = useState<PanelId | null>("alertes");
+  // Deux espaces : la Veille et les Coulisses (une rubrique à la fois) ; l'adresse les garde, le retour arrière aussi
+  const [panel, setPanel] = useState<PanelId | null>(INITIAL.espace === "coulisses" ? "coulisses" : "alertes");
+  const [rubrique, setRubrique] = useState<Rubrique | null>(estRubrique(INITIAL.rubrique) ? INITIAL.rubrique : null);
+  const [partie, setPartie] = useState<string | null>(null);
+  const ouvrirRubrique = useCallback((r: Rubrique | null, p: string | null = null) => {
+    setPanel("coulisses"); setRubrique(r); setPartie(p);
+  }, []);
+  useEffect(() => {
+    const retour = () => {
+      const a = lireAdresse();
+      setPanel(a.espace === "coulisses" ? "coulisses" : "alertes");
+      setRubrique(estRubrique(a.rubrique) ? a.rubrique : null);
+      setPartie(null);
+    };
+    window.addEventListener("popstate", retour);
+    return () => window.removeEventListener("popstate", retour);
+  }, []);
+  // Largeurs des panneaux, gardées par navigateur ; bornées à la moitié de l'écran
+  const [ecran, setEcran] = useState(window.innerWidth);
+  useEffect(() => {
+    const r = () => setEcran(window.innerWidth);
+    window.addEventListener("resize", r);
+    return () => window.removeEventListener("resize", r);
+  }, []);
+  const LARGEURS = { veille: 350, coulisses: 640, fiche: 380 } as const;
+  const [largeurs, setLargeurs] = useState(() => ({ veille: lireLargeur("veille", LARGEURS.veille),
+    coulisses: lireLargeur("coulisses", LARGEURS.coulisses), fiche: lireLargeur("fiche", LARGEURS.fiche) }));
+  const borne = (nom: keyof typeof LARGEURS, l: number) => bornerLargeur(l, nom === "fiche" ? 300 : 280, 640, ecran);
+  const regler = useCallback((nom: keyof typeof LARGEURS) => (l: number) => {
+    const b = bornerLargeur(l, nom === "fiche" ? 300 : 280, 640, window.innerWidth);
+    setLargeurs((x) => ({ ...x, [nom]: b }));
+    ecrireLargeur(nom, b);
+  }, []);
+  const espaceLargeur = panel === "coulisses" ? "coulisses" : "veille";
   // Vue prédéfinie de la carte (lot U) : Veille par défaut, Trafic complet, Satellites ; les couches détaillées restent
   const [vue, setVue] = useState<Vue>((["veille", "trafic", "satellites"].includes(INITIAL.vue ?? "") ? INITIAL.vue : "veille") as Vue);
   const [actives, setActives] = useState<string[]>(INITIAL.couches ?? [...VUES[vue]]);
@@ -143,7 +180,7 @@ export default function App() {
   const suivisQ = useQuery({ queryKey: ["suivis"], queryFn: () => api.suivis(), refetchInterval: 60_000 });
   // Panneau des suivis : ceux de la région affichée (la couleur sur la carte vaut pour tous)
   const suivisRegionQ = useQuery({ queryKey: ["suivis", region], queryFn: () => api.suivis(region),
-    enabled: panel === "suivis" && region != null, refetchInterval: 60_000 });
+    enabled: panel === "coulisses" && rubrique === "suivis" && region != null, refetchInterval: 60_000 });
   const suivis = useMemo(() => new Set<number>((suivisQ.data ?? []).map((v) => Number(v.vessel_id))), [suivisQ.data]);
   const suivre = useMutation({
     mutationFn: ({ id, on }: { id: number; on: boolean }) => (on ? api.suivre(id, auteurMemorise()) : api.nePlusSuivre(id)),
@@ -246,8 +283,9 @@ export default function App() {
 
   // État de l'écran dans l'adresse de la page
   useEffect(() => {
-    ecrireAdresse({ temps, sel: selKey(selection) ?? pendingSel, couches: actives, region, vue });
-  }, [temps, selection, pendingSel, actives, region, vue]);
+    ecrireAdresse({ temps, sel: selKey(selection) ?? pendingSel, couches: actives, region, vue,
+      espace: panel === "coulisses" ? "coulisses" : null, rubrique });
+  }, [temps, selection, pendingSel, actives, region, vue, panel, rubrique]);
 
   // Panneau « Observations » (tip and cue) : demandes de la plage et de la région, compteur sur l'icône du rail
   const observationsQ = useQuery({ queryKey: ["demandes", "observations", qDebut, qFin, region, aLInstant],
@@ -313,20 +351,15 @@ export default function App() {
     if (b) setFocus({ bounds: b });
   }, [recit, preuveCadree]);
   useEffect(() => { if (!dossierSel) setPreuveCadree(null); }, [dossierSel]);
-  // Coulisses : une carte ouvre un panneau, ou une section du panneau de contrôle
-  const [cibleControle, setCibleControle] = useState<string | null>(null);
-  const ouvrirCoulisse = useCallback((c: Cible) => {
-    if ("controle" in c) { setCibleControle(c.controle); setPanel("controle"); } else { setCibleControle(null); setPanel(c.panneau); }
-  }, []);
   // État dégradé : en direct, plus de 15 minutes sans position AIS, la Veille le dit en tête
   const etatQ = useEtat(region);
   const etatSysteme = etatQ.isError ? null : etatQ.data;
   const veilleAveugle = aveugle(etatSysteme?.derniere_heure?.derniere_position, now, direct);
   const choisirVue = useCallback((v: Vue | "couches") => {
-    if (v === "couches") { setCibleControle(null); setPanel("couches"); return; }
+    if (v === "couches") { ouvrirRubrique("couches"); return; }
     setVue(v);
     setActives([...VUES[v]]);
-  }, []);
+  }, [ouvrirRubrique]);
   const pickVessel = useCallback((p: Props) => {
     const id = Number(p.vessel_id), v = vessels.get(id);
     setSelection({ kind: "vessel", properties: { ...p, ...(v ?? {}) } });
@@ -444,7 +477,7 @@ export default function App() {
   }, [concernees, filtered, selection, vessels, infraQ.data]);
 
   // Nouvelle analyse radar : tracé puis lancement ; la plage se place autour du passage choisi
-  const startDraw = useCallback(() => { setPanel("analyses"); setSelection(null); setDraft(null); setDrawing(true); }, []);
+  const startDraw = useCallback(() => { ouvrirRubrique("satellites", "analyses"); setSelection(null); setDraft(null); setDrawing(true); }, [ouvrirRubrique]);
   const cancelDraw = useCallback(() => { setDraft(null); setDrawing(false); }, []);
   const autourDe = useCallback((t: string) => {
     const ms = Date.parse(t);
@@ -478,47 +511,56 @@ export default function App() {
       <BarreEtat now={now} connected={!direct || connected} onSearch={() => setSearching(true)}
         region={region} regions={regionsQ.data ?? null} onRegion={choisirRegion} />
       <div className="flex min-h-0 flex-1">
-        <Rail active={panel} onSelect={setPanel} onSearch={() => setSearching(true)} alertCount={aExaminer}
+        <Rail active={panel} onSelect={(id) => (id === "coulisses" && panel === "coulisses" && rubrique ? ouvrirRubrique(null) : setPanel(id))} onSearch={() => setSearching(true)} alertCount={aExaminer}
           running={jobs.some((a) => a.status === "pending" || a.status === "running")}
           observationCount={observationsQ.data?.actives ?? 0} />
         {panel && (
-          <aside className={`flex h-full ${panel === "coulisses" ? "w-[460px]" : "w-[350px]"} shrink-0 flex-col border-r border-hair bg-panel`}>
-            {panel !== "alertes" && panel !== "coulisses" && (
-              <button onClick={() => setPanel("coulisses")} className="border-b border-hair px-4 py-2 text-left text-[12px] text-muted hover:text-ink">
-                ‹ {L.coulisses.retour}
-              </button>
-            )}
+          <aside style={{ width: borne(espaceLargeur, largeurs[espaceLargeur]) }}
+            className="relative flex h-full shrink-0 flex-col border-r border-hair bg-panel">
+            <Poignee nom={L.rail[panel]} cote="droit" largeur={borne(espaceLargeur, largeurs[espaceLargeur])}
+              onLargeur={regler(espaceLargeur)} defaut={LARGEURS[espaceLargeur]} min={280} max={Math.min(640, Math.floor(ecran / 2))} />
             <div className="min-h-0 flex-1">
-            {panel === "coulisses" && <Coulisses region={region} now={now} onOuvrir={ouvrirCoulisse} compte={{
-              observations: observationsQ.data?.actives ?? 0, suivis: suivis.size,
-              analyse: jobs.some((a) => a.status === "pending" || a.status === "running"), couches: actives.length,
-              masquage: demoQ.data?.masquage ?? false, rejeu: rejeuFidele }} />}
-            {panel === "systeme" && (
-              <div className="h-full overflow-y-auto px-4 pt-4 text-[12.5px]">
-                <h2 className="mb-2 text-[15px] font-semibold">{L.etat.titre}</h2>
-                <ListeIndicateurs status={etatSysteme} now={now} />
-              </div>
-            )}
+            {panel === "coulisses" && <Coulisses region={region} now={now} rubrique={rubrique} partie={partie}
+              onRubrique={ouvrirRubrique} compte={{
+                observations: observationsQ.data?.actives ?? 0, suivis: suivis.size,
+                analyse: jobs.some((a) => a.status === "pending" || a.status === "running"), couches: actives.length,
+                masquage: demoQ.data?.masquage ?? false, rejeu: rejeuFidele }}
+              contenus={{
+                systeme: <>
+                  <Partie id="etat" titre={L.etat.titre} ouverte><ListeIndicateurs status={etatSysteme} now={now} /></Partie>
+                  <PartieServices />
+                </>,
+                capteurs: <RubriqueCapteurs />,
+                regles: <RubriqueRegles />,
+                satellites: <>
+                  <Partie id="verifications" titre={L.rail.observations} ouverte>
+                    <div className="h-[22rem]"><ObservationsPanel titre={false} demandes={observationsQ.data?.demandes ?? []}
+                      selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} /></div>
+                  </Partie>
+                  <Partie id="analyses" titre={L.rail.analyses}>
+                    <AnalysesPanel titre={false} jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0}
+                      history={done.slice(0, 8)} onPick={pickAnalysis} launcher={<NewAnalysis drawing={drawing} draft={draft}
+                        onStartDraw={startDraw} onCancel={cancelDraw} onLaunched={onLaunched} />} />
+                  </Partie>
+                  <PartieDemande />
+                </>,
+                notifications: <RubriqueNotifications />,
+                zones: <RubriqueZones trace={trace} onTrace={setTrace}
+                  infra={selection?.kind === "infrastructure" ? { id: Number(selection.properties.id), nom: selection.properties.name ?? null } : null}
+                  onPickZone={(p) => setSelection({ kind: "vigilance", properties: p })} />,
+                suivis: <SuivisPanel titre={false} suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />,
+                demo: <RubriqueDemo masquage={demoQ.data?.masquage ?? false} rejeuFidele={rejeuFidele} onRejeuFidele={choisirRejeuFidele} />,
+                couches: <LayersPanel titre={false} actives={actives} onActives={setActives} concernees={concernees}
+                  onConcernees={setConcernees} byType={byType} onByType={setByType} infraCounts={infraCounts}
+                  vesselCount={traffic.features.length} passageCount={passagesQ.data?.features.length ?? 0}
+                  viirsCount={viirsQ.data?.features.length ?? 0} />,
+                journal: <RubriqueJournal />,
+                operateur: <RubriqueOperateur />,
+              }} />}
             {panel === "alertes" && <VeillePanel liste={dossiersQ.data} instant={instant} focus={dossierSel?.cle ?? null} onPick={pickDossier}
               aveugle={veilleAveugle}
               fil={<AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels}
                 suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />} />}
-            {panel === "observations" && <ObservationsPanel demandes={observationsQ.data?.demandes ?? []}
-              selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} />}
-            {panel === "controle" && <ControlePanel trace={trace} onTrace={setTrace}
-              masquage={demoQ.data?.masquage ?? false} rejeuFidele={rejeuFidele} onRejeuFidele={choisirRejeuFidele}
-              infra={selection?.kind === "infrastructure" ? { id: Number(selection.properties.id), nom: selection.properties.name ?? null } : null}
-              onPickZone={(p) => setSelection({ kind: "vigilance", properties: p })} cible={cibleControle} />}
-            {panel === "suivis" && <SuivisPanel suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
-            {panel === "analyses" && (
-              <AnalysesPanel jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0} history={done.slice(0, 8)}
-                onPick={pickAnalysis} launcher={<NewAnalysis drawing={drawing} draft={draft} onStartDraw={startDraw}
-                  onCancel={cancelDraw} onLaunched={onLaunched} />} />
-            )}
-            {panel === "couches" && <LayersPanel actives={actives} onActives={setActives} concernees={concernees}
-              onConcernees={setConcernees} byType={byType} onByType={setByType} infraCounts={infraCounts}
-              vesselCount={traffic.features.length} passageCount={passagesQ.data?.features.length ?? 0}
-              viirsCount={viirsQ.data?.features.length ?? 0} />}
             </div>
           </aside>
         )}
@@ -557,6 +599,9 @@ export default function App() {
             onPickAlert={pickAlert} onPickVessel={pickVessel} onPickInfra={(id) => pickInfra(id)}
             onSuivre={(id, on) => suivre.mutate({ id, on })} onRejeu={onRejeu}
             onPickDetection={(source, id) => setSelection({ kind: "detection", properties: { id, source } })}
+            largeur={borne("fiche", largeurs.fiche)}
+            poignee={<Poignee nom={L.fiche.titrePanneau} cote="gauche" largeur={borne("fiche", largeurs.fiche)} onLargeur={regler("fiche")}
+              defaut={LARGEURS.fiche} min={300} max={Math.min(640, Math.floor(ecran / 2))} />}
             recit={dossierSel ? <Recit key={dossierSel.cle} dossier={dossierSel} recit={recit} instant={instantDossiers}
               suivi={dossierSel.vessel_id != null && suivis.has(dossierSel.vessel_id)} onSuivre={(id, on) => suivre.mutate({ id, on })}
               onPickAlert={pickAlert} /> : undefined} />

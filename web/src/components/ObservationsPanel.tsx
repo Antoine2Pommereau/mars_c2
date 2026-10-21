@@ -27,8 +27,8 @@ const FILTRES: Filtre[] = ["toutes", "planifiee", "en_attente", "analysee", "clo
 /** Demandes d'observation (tip and cue, lot T1), dans l'ordre de l'API : planifiées par passage le plus proche, en
  *  attente, analysées les plus récentes ; les closes sans résultat repliées en bas. Un clic ouvre la fiche du navire
  *  (ou de l'alerte d'origine) et montre la position prédite et son cercle. */
-export default function ObservationsPanel({ demandes, selectedId, onPick }:
-  { demandes: Props[]; selectedId: number | null; onPick: (d: Props) => void }) {
+export default function ObservationsPanel({ demandes, selectedId, onPick, titre = true }:
+  { demandes: Props[]; selectedId: number | null; onPick: (d: Props) => void; titre?: boolean }) {
   const O = L.observations;
   const [filtre, setFiltre] = useState<Filtre>("toutes");
   const [closesOuvertes, setClosesOuvertes] = useState(false);
@@ -79,10 +79,10 @@ export default function ObservationsPanel({ demandes, selectedId, onPick }:
   };
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-hair px-4 pb-3 pt-4">
-        <h2 className="flex items-baseline justify-between text-[15px] font-semibold">
+      <header className={titre ? "border-b border-hair px-4 pb-3 pt-4" : "border-b border-hair pb-2"}>
+        {titre && <h2 className="flex items-baseline justify-between text-[15px] font-semibold">
           {O.titre}<span className="text-[12px] font-normal text-muted">{vivantes.length + closes.length}</span>
-        </h2>
+        </h2>}
         <div className="mt-3 flex flex-wrap gap-1.5" role="group" aria-label={O.filtre}>
           {FILTRES.map((f) => (
             <button key={f} onClick={() => setFiltre(f)} aria-pressed={filtre === f}

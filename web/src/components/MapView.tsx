@@ -384,7 +384,10 @@ export default function MapView(p: Props) {
       }
       setReady(true);
     });
-    return () => map.remove();
+    // Panneaux redimensionnables : la carte suit la taille de son conteneur en direct (la fenêtre seule ne bouge pas)
+    const taille = new ResizeObserver(() => map.resize());
+    taille.observe(container.current!);
+    return () => { taille.disconnect(); map.remove(); };
   }, []);
 
   const setData = (id: string, data: FC | Feature | null) => {

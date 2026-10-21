@@ -1,14 +1,13 @@
 import { Bell, LayoutGrid, Search } from "lucide-react";
 import { L } from "../lib/libelles";
 
-export type PanelId = "alertes" | "coulisses" | "systeme" | "analyses" | "couches" | "suivis" | "observations" | "controle";
+export type PanelId = "alertes" | "coulisses";
 
 // Deux espaces (lot U) : la Veille, et les Coulisses qui ouvrent les autres panneaux (ils y restent rattachés)
 const ITEMS: { id: PanelId; label: string; Icon: typeof Bell; aVenir?: boolean }[] = [
   { id: "alertes", label: L.rail.alertes, Icon: Bell },
   { id: "coulisses", label: L.rail.coulisses, Icon: LayoutGrid },
 ];
-const espace = (p: PanelId | null): PanelId | null => (p == null || p === "alertes" ? p : "coulisses");
 
 interface Props {
   active: PanelId | null;
@@ -23,7 +22,7 @@ export default function Rail({ active, onSelect, onSearch, alertCount, running, 
   return (
     <nav className="flex h-full w-14 shrink-0 flex-col items-center border-r border-hair bg-panel py-2">
       {ITEMS.map(({ id, label, Icon, aVenir }) => {
-        const on = espace(active) === id;
+        const on = active === id;
         const title = aVenir ? `${label}, ${L.commun.aVenir}` : label;
         return (
           <button key={id} title={title} aria-label={title} aria-pressed={on} disabled={aVenir}

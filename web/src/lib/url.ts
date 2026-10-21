@@ -9,6 +9,8 @@ interface EtatEcran {
   couches: string[] | null;    // null : couches par défaut
   region: string | null;        // région affichée (sélecteur de la barre d'état), null : toute la France
   vue?: string | null;          // vue de la carte (lot U) : veille par défaut, trafic, satellites
+  espace?: string | null;       // « coulisses » ; absent : la Veille
+  rubrique?: string | null;     // rubrique ouverte des Coulisses (absente : leur accueil)
 }
 
 const ms = (v: string | null) => (v ? Date.parse(v) : undefined);
@@ -25,7 +27,7 @@ export function lireAdresse(search = window.location.search): EtatEcran {
   if (temps.mode !== "direct" && (temps.debut == null || temps.fin == null || Number.isNaN(temps.debut))) temps.mode = "direct";
   return { temps, sel: q.get("sel"), couches: q.has("couches") ? q.get("couches")!.split(",").filter(Boolean) : null,
     region: q.get("region") ?? q.get("zone"),       // « zone » : liens du lot 1
-    vue: q.get("vue") };
+    vue: q.get("vue"), espace: q.get("espace"), rubrique: q.get("rubrique") };
 }
 
 export function ecrireAdresse(e: EtatEcran) {
@@ -42,6 +44,13 @@ export function ecrireAdresse(e: EtatEcran) {
   if (e.couches) q.set("couches", e.couches.join(","));
   if (e.region) q.set("region", e.region);
   if (e.vue && e.vue !== "veille") q.set("vue", e.vue);
+  if (e.espace === "coulisses") q.set("espace", "coulisses");
+  if (e.espace === "coulisses" && e.rubrique) q.set("rubrique", e.rubrique);
   const next = `${window.location.pathname}?${q.toString()}`;
-  if (next !== `${window.location.pathname}${window.location.search}`) window.history.replaceState(null, "", next);
+  if (next === `${window.location.pathname}${window.location.search}`) return;
+  // Changer d'espace ou de rubrique ajoute une entrée à l'historique (le retour arrière y revient) ; le reste (temps,
+  // sélection, couches) remplace l'adresse, sans encombrer l'historique
+  const avant = new URLSearchParams(window.location.search);
+  const navigue = (avant.get("espace") ?? "") !== (q.get("espace") ?? "") || (avant.get("rubrique") ?? "") !== (q.get("rubrique") ?? "");
+  if (navigue) window.history.pushState(null, "", next); else window.history.replaceState(null, "", next);
 }

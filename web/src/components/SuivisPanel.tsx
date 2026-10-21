@@ -5,11 +5,11 @@ import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alerte
 import { Tag } from "./Elements";
 
 /** Navires suivis : dernière position et dernière alerte ; un clic ouvre la fiche et centre la carte. */
-export default function SuivisPanel({ suivis, onPick }: { suivis: Props[]; onPick: (p: Props) => void }) {
+export default function SuivisPanel({ suivis, onPick, titre = true }: { suivis: Props[]; onPick: (p: Props) => void; titre?: boolean }) {
   const S = L.suivis;
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-hair px-4 pb-3 pt-4"><h2 className="text-[15px] font-semibold">{S.titre}</h2></header>
+      {titre && <header className="border-b border-hair px-4 pb-3 pt-4"><h2 className="text-[15px] font-semibold">{S.titre}</h2></header>}
       {!suivis.length && <p className="px-4 py-6 text-muted">{S.aucun}</p>}
       <ul className="flex-1 overflow-y-auto">
         {suivis.map((v) => (

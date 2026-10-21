@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, LogOut, Minus, Plus } from "lucide-react";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
-import { api, type PrefsNotification, type BlocRegle, type EtatControle, type Interrupteur, type RegleControle, type SystemeControle } from "../lib/api";
+import { api, type PrefsNotification, type BlocRegle, type EtatControle, type Interrupteur, type SystemeControle } from "../lib/api";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
@@ -10,35 +10,37 @@ import { libelleAlerte } from "../registres/alertes";
 const C = L.controle;
 const euros = (v: number) => `${v.toFixed(2).replace(".", ",")} €`;
 
-// Section visée depuis une carte des Coulisses : ouverte et amenée à l'écran
-const Visee = createContext<string | null>(null);
+// Réglage visé par la recherche des Coulisses : sa partie s'ouvre, vient à l'écran et se signale un instant
+export const Visee = createContext<string | null>(null);
 
-/** Section repliable du panneau ; l'état ouvert est gardé dans le navigateur */
-function Section({ id, titre, droite, children }: { id: string; titre: string; droite?: ReactNode; children: ReactNode }) {
-  const cle = `mars.controle.${id}`;
+/** Partie repliable d'une rubrique des Coulisses ; l'état ouvert est gardé dans le navigateur, la plus utile est
+ *  ouverte par défaut */
+export function Partie({ id, titre, ouverte: defaut = false, droite, children }:
+  { id: string; titre: string; ouverte?: boolean; droite?: ReactNode; children: ReactNode }) {
+  const cle = `mars.partie.${id}`;
   const [ouverte, setOuverte] = useState(() => {
-    try { return localStorage.getItem(cle) !== "0"; } catch { return true; }
+    try { const v = localStorage.getItem(cle); return v == null ? defaut : v === "1"; } catch { return defaut; }
   });
   const visee = useContext(Visee) === id;
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!visee) return;
     setOuverte(true);
-    ref.current?.scrollIntoView({ block: "start" });
+    ref.current?.scrollIntoView({ block: "nearest" });
   }, [visee]);
   const basculer = () => {
     setOuverte(!ouverte);
     try { localStorage.setItem(cle, ouverte ? "0" : "1"); } catch { /* stockage indisponible */ }
   };
   return (
-    <section ref={ref} data-section={id} className="border-b border-hair">
+    <section ref={ref} data-partie={id} className={`border-b border-hair last:border-0 ${visee ? "bg-signal/5" : ""}`}>
       <button onClick={basculer} aria-expanded={ouverte}
-        className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted hover:text-ink">
+        className="flex w-full items-center gap-1.5 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted hover:text-ink">
         <ChevronRight size={13} className={`transition-transform ${ouverte ? "rotate-90" : ""}`} />
         <span className="flex-1">{titre}</span>
         {droite}
       </button>
-      {ouverte && <div className="px-4 pb-3">{children}</div>}
+      {ouverte && <div className="pb-3">{children}</div>}
     </section>
   );
 }
@@ -99,7 +101,7 @@ function Source({ i, actif }: { i: Interrupteur; actif: boolean }) {
         <span className={`h-2 w-2 shrink-0 rounded-full ${i.en_pause ? "bg-rdv" : "bg-faint"}`} />
         <span className="flex-1 text-[12.5px] text-ink">{i.nom}</span>
         <span className={`text-[11.5px] ${i.en_pause ? "text-rdv" : "text-muted"}`}>{i.en_pause ? C.enPause : C.enService}</span>
-        <button className={bouton} disabled={!actif || m.isPending}
+        <button className={bouton} disabled={!actif || m.isPending} data-reglage={`pause-${i.source}`}
           onClick={() => (i.en_pause ? m.mutate(false) : setOuvert(!ouvert))}>
           {i.en_pause ? C.reprendre : C.pause}
         </button>
@@ -289,7 +291,7 @@ function ModeRegle({ regle, sousType, nom, b, actif }: { regle: string; sousType
     <div className="py-1">
       <div className="flex items-center gap-2">
         <span className={`flex-1 truncate text-[12.5px] ${sousType ? "pl-3 text-muted" : "text-ink"}`} title={R.fichier(b.mode_fichier)}>{nom}</span>
-        <div className="flex overflow-hidden rounded border border-hair" role="group" aria-label={nom}>
+        <div className="flex overflow-hidden rounded border border-hair" role="group" aria-label={nom} data-reglage="mode-regle">
           {MODES.map((x) => (
             <button key={x} disabled={!actif || m.isPending} aria-pressed={b.mode === x}
               onClick={() => x !== b.mode && setCible(x)}
@@ -299,7 +301,8 @@ function ModeRegle({ regle, sousType, nom, b, actif }: { regle: string; sousType
           ))}
         </div>
       </div>
-      <p className={`text-[11px] text-faint ${sousType ? "pl-3" : ""}`}>{R.compte(b.alertes_7j, b.episodes_7j)}</p>
+      {/* Le compte de la semaine seulement s'il n'est pas nul : la liste des modes tient sans défiler */}
+      {(b.alertes_7j || b.episodes_7j) ? <p className={`text-[11px] text-faint ${sousType ? "pl-3" : ""}`}>{R.compte(b.alertes_7j, b.episodes_7j)}</p> : null}
       {cible && (
         <form className="mt-1 flex gap-1.5" onSubmit={(e) => { e.preventDefault(); m.mutate(); }}>
           <input className={champ} placeholder={R.changer(nom, R.modes[cible])} value={motif}
@@ -310,28 +313,6 @@ function ModeRegle({ regle, sousType, nom, b, actif }: { regle: string; sousType
       )}
       {m.error && <p className="text-[11.5px] text-gap">{m.error.message}</p>}
     </div>
-  );
-}
-
-function Regle({ r, actif }: { r: RegleControle; actif: boolean }) {
-  const [seuilsOuverts, setSeuilsOuverts] = useState(false);
-  return (
-    <li className="border-b border-hair/50 py-1 last:border-0">
-      <ModeRegle regle={r.regle} nom={r.nom} b={r} actif={actif} />
-      {r.sous_types.map((s) => <ModeRegle key={s.sous_type} regle={r.regle} sousType={s.sous_type} nom={s.nom} b={s} actif={actif} />)}
-      <button onClick={() => setSeuilsOuverts(!seuilsOuverts)} className="text-[11px] text-faint hover:text-muted">
-        <span className={`mr-1 inline-block transition-transform ${seuilsOuverts ? "rotate-90" : ""}`}>›</span>{R.seuils}
-      </button>
-      {seuilsOuverts && (
-        <table className="mt-0.5 w-full font-mono text-[10.5px] text-muted">
-          <tbody>
-            {r.seuils.map(([k, v]) => (
-              <tr key={k}><td className="pr-2 align-top text-faint">{k}</td><td className="text-right text-ink/80">{JSON.stringify(v)}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </li>
   );
 }
 
@@ -360,10 +341,11 @@ function Notifications({ actif }: { actif: boolean }) {
   if (!prefs || !q.data) return null;
   const maj = (f: (x: PrefsNotification) => void) => { const x = structuredClone(prefs); f(x); setP(x); };
   return (
-    <div className="space-y-2 text-[12px]">
-      <div>
+    <div className="text-[12px]">
+      <Connecter actif={actif} />
+      <Partie id="notif-alertes" titre={N.alertes} ouverte>
         <div className="flex items-center justify-between">
-          <span className="text-muted">{N.alertes}</span>
+          <span className="text-muted">{N.gravite}</span>
           <select disabled={!actif} value={prefs.alertes.gravite_min} aria-label={N.gravite}
             onChange={(e) => maj((x) => { x.alertes.gravite_min = e.target.value; })}
             className="rounded border border-hair bg-abyss px-1 py-0.5 text-[11.5px] text-ink">
@@ -378,19 +360,19 @@ function Notifications({ actif }: { actif: boolean }) {
             </button>
           ))}
         </div>
-      </div>
-      <Bascule on={prefs.tip_and_cue} actif={actif} label={N.tip} onChange={(v) => maj((x) => { x.tip_and_cue = v; })} />
-      <div>
-        <p className="text-muted">{N.systeme}</p>
+      </Partie>
+      <Partie id="notif-systeme" titre={N.systemeTitre}>
+        <Bascule on={prefs.tip_and_cue} actif={actif} label={N.tip} onChange={(v) => maj((x) => { x.tip_and_cue = v; })} />
+        <p className="mt-1 text-muted">{N.systeme}</p>
         <div className="grid grid-cols-2">
           {q.data.categories.map((c) => (
             <Bascule key={c} on={prefs.categories[c] ?? true} actif={actif} label={N.categories[c] ?? c}
               onChange={(v) => maj((x) => { x.categories[c] = v; })} />
           ))}
         </div>
-      </div>
-      <div>
-        <div className="flex items-center gap-2">
+      </Partie>
+      <Partie id="notif-calmes" titre={N.calmes}>
+        <div className="flex items-center gap-2" data-reglage="heures-calmes">
           <Bascule on={prefs.heures_calmes.actif} actif={actif} label={N.calmes}
             onChange={(v) => maj((x) => { x.heures_calmes.actif = v; })} />
           {q.data.heures_calmes_maintenant && <span className="text-[11px] text-signal">{N.maintenant}</span>}
@@ -403,13 +385,13 @@ function Notifications({ actif }: { actif: boolean }) {
           ))}
         </div>
         <p className="pl-5 text-[11px] text-faint">{N.calmesNote}{q.data.retenues ? `, ${N.retenues(q.data.retenues)}` : ""}</p>
-      </div>
-      {!q.data.ntfy && <p className="text-[11px] text-gap">{N.sansNtfy}</p>}
-      <div className="flex items-center justify-between gap-2">
+      </Partie>
+      {!q.data.ntfy && <p className="mt-2 text-[11px] text-gap">{N.sansNtfy}</p>}
+      <div className="mt-2 flex items-center justify-between gap-2">
         <button className={bouton} disabled={!actif || test.isPending} onClick={() => test.mutate()}>{N.test}</button>
         <button className={bouton} disabled={!actif || !p || save.isPending} onClick={() => save.mutate()}>{N.enregistrer}</button>
       </div>
-      {(save.error || test.error) && <p className="text-[11.5px] text-gap">{(save.error ?? test.error)?.message}</p>}
+      {(save.error || test.error) && <p className="mt-1 text-[11.5px] text-gap">{(save.error ?? test.error)?.message}</p>}
       {test.data && <p className="text-[11.5px] text-muted">{N.envoyee}</p>}
     </div>
   );
@@ -591,91 +573,138 @@ interface PanneauProps {
   masquage: boolean;
   rejeuFidele: boolean;
   onRejeuFidele: (v: boolean) => void;
-  cible?: string | null;                          // section visée depuis les Coulisses
 }
 
-/** Panneau de contrôle (lot P) : lecture pour tous, écriture après connexion d'un opérateur. */
-export default function ControlePanel(pp: PanneauProps) {
-  const sessionQ = useQuery({ queryKey: ["controle", "session"], queryFn: api.controle.session });
-  const etatQ = useQuery({ queryKey: ["controle", "etat"], queryFn: api.controle.etat, refetchInterval: 30_000 });
-  const journalQ = useQuery({ queryKey: ["controle", "journal"], queryFn: () => api.controle.journal(30), refetchInterval: 30_000 });
-  const systemeQ = useQuery({ queryKey: ["controle", "systeme"], queryFn: api.controle.systeme, refetchInterval: 60_000 });
-  const reglesQ = useQuery({ queryKey: ["controle", "regles"], queryFn: api.controle.regles, refetchInterval: 60_000 });
-  const op = sessionQ.data?.operateur ?? null;
-  const actif = op != null;
-  const e = etatQ.data;
-  const pauses = e?.interrupteurs.filter((i) => i.en_pause).length ?? 0;
+// Rubriques des Coulisses (retours du lot U) : le contenu de l'ancien panneau Contrôle, réparti ; lecture pour tous,
+// écriture après connexion d'un opérateur, journalisée par l'API comme avant
+const useSession = () => useQuery({ queryKey: ["controle", "session"], queryFn: api.controle.session });
+const useEtatControle = () => useQuery({ queryKey: ["controle", "etat"], queryFn: api.controle.etat, refetchInterval: 30_000 });
+const Connecter = ({ actif }: { actif: boolean }) => (actif ? null : <p className="mb-1 text-[11.5px] text-faint">{C.connexionRequise}</p>);
+
+export function RubriqueOperateur() {
+  const q = useSession();
+  return <Connexion operateur={q.data?.operateur ?? null} configure={q.data?.configure ?? true} abimes={q.data?.abimes ?? []} />;
+}
+
+export function RubriqueCapteurs() {
+  const actif = useSession().data?.operateur != null;
+  const e = useEtatControle().data;
+  if (!e) return <p className="text-muted">{L.commun.chargement}</p>;
+  const pauses = e.interrupteurs.filter((i) => i.en_pause).length;
   return (
-    <Visee.Provider value={pp.cible ?? null}>
-    <div className="flex h-full flex-col">
-      <header className="border-b border-hair px-4 pb-3 pt-4">
-        <h2 className="flex items-baseline justify-between text-[15px] font-semibold">
-          {C.titre}{e && <span className="text-[11.5px] font-normal text-faint">{C.regles(e.version_regles)}</span>}
-        </h2>
-      </header>
-      <div className="flex-1 overflow-y-auto">
-        <Section id="connexion" titre={C.sections.connexion}
-          droite={op ? <span className="normal-case text-ink">{op}</span> : null}>
-          <Connexion operateur={op} configure={sessionQ.data?.configure ?? true} abimes={sessionQ.data?.abimes ?? []} />
-        </Section>
-        {e && (
-          <>
-            <Section id="capteurs" titre={C.sections.capteurs}
-              droite={pauses ? <span className="normal-case text-rdv">{pauses} {C.enPause}</span> : null}>
-              {!actif && <p className="mb-1 text-[11.5px] text-faint">{C.connexionRequise}</p>}
-              <ul>{e.interrupteurs.map((i) => <Source key={i.source} i={i} actif={actif} />)}</ul>
-              <div className="mt-2 border-t border-hair/60 pt-2">
-                <p className="mb-0.5 text-[11.5px] text-muted">{C.plafond}</p>
-                {Object.entries(e.plafonds).map(([s, p]) => (
-                  <Plafond key={s} source={s} nom={s === "sentinel1" ? "Sentinel 1" : "Sentinel 2"} p={p} actif={actif} />
-                ))}
-              </div>
-            </Section>
-            <Section id="depenses" titre={C.sections.depenses}>
-              <Jauge b={e.budget} />
-              <p className="mb-1 mt-3 text-[11.5px] text-muted">{C.derniers}</p>
-              <ul className="space-y-0.5 text-[11.5px] tabular-nums">
-                {e.travailleurs.map((t) => (
-                  <li key={t.id} className="flex gap-2 text-muted">
-                    <span className="w-8 text-faint">{t.id}</span>
-                    <span className="flex-1">{t.tache} · {jourHeure(t.cree_le)}</span>
-                    <span className="text-ink">{t.cout_reel_eur != null ? euros(t.cout_reel_eur)
-                      : t.cout_estime_eur != null ? `${euros(t.cout_estime_eur)} ${C.coutEstime}` : "·"}</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
-            <Section id="demande" titre={C.sections.demande}>
-              <Demande actif={actif} rayon={e.rayon_demande_m} />
-            </Section>
-          </>
-        )}
-        {reglesQ.data && (
-          <Section id="regles" titre={C.sections.regles}
-            droite={<span className="normal-case font-normal text-faint">{R.empreinte(reglesQ.data.empreinte)}</span>}>
-            {!actif && <p className="mb-1 text-[11.5px] text-faint">{C.connexionRequise}</p>}
-            <ul>{reglesQ.data.regles.map((r) => <Regle key={r.regle} r={r} actif={actif} />)}</ul>
-          </Section>
-        )}
-        <Section id="zones" titre={C.sections.zones}>
-          <Zones actif={actif} {...pp} />
-        </Section>
-        <Section id="demo" titre={C.sections.demo}>
-          <Demonstration actif={actif} masquage={pp.masquage} rejeuFidele={pp.rejeuFidele} onRejeuFidele={pp.onRejeuFidele} />
-        </Section>
-        <Section id="notifications" titre={C.sections.notifications}>
-          <Notifications actif={actif} />
-        </Section>
-        {systemeQ.data && (
-          <Section id="systeme" titre={C.sections.systeme}>
-            <Systeme s={systemeQ.data} />
-          </Section>
-        )}
-        <Section id="journal" titre={C.sections.journal}>
-          <Journal lignes={journalQ.data ?? []} />
-        </Section>
-      </div>
-    </div>
-    </Visee.Provider>
+    <>
+      <Partie id="capteurs" titre={C.sections.capteurs} ouverte
+        droite={pauses ? <span className="normal-case text-rdv">{pauses} {C.enPause}</span> : null}>
+        <Connecter actif={actif} />
+        <ul>{e.interrupteurs.map((i) => <Source key={i.source} i={i} actif={actif} />)}</ul>
+      </Partie>
+      <Partie id="plafonds" titre={C.plafond}>
+        {Object.entries(e.plafonds).map(([s, p]) => (
+          <Plafond key={s} source={s} nom={s === "sentinel1" ? "Sentinel 1" : "Sentinel 2"} p={p} actif={actif} />
+        ))}
+      </Partie>
+      <Partie id="depenses" titre={C.sections.depenses} ouverte>
+        <Jauge b={e.budget} />
+        <p className="mb-1 mt-3 text-[11.5px] text-muted">{C.derniers}</p>
+        <ul className="space-y-0.5 text-[11.5px] tabular-nums">
+          {e.travailleurs.map((t) => (
+            <li key={t.id} className="flex gap-2 text-muted">
+              <span className="w-8 text-faint">{t.id}</span>
+              <span className="flex-1">{t.tache} · {jourHeure(t.cree_le)}</span>
+              <span className="text-ink">{t.cout_reel_eur != null ? euros(t.cout_reel_eur)
+                : t.cout_estime_eur != null ? `${euros(t.cout_estime_eur)} ${C.coutEstime}` : "·"}</span>
+            </li>
+          ))}
+        </ul>
+      </Partie>
+    </>
   );
+}
+
+export function PartieDemande() {
+  const actif = useSession().data?.operateur != null;
+  const e = useEtatControle().data;
+  return (
+    <Partie id="demande" titre={C.sections.demande}>
+      <Connecter actif={actif} />
+      <Demande actif={actif} rayon={e?.rayon_demande_m ?? null} />
+    </Partie>
+  );
+}
+
+export function RubriqueRegles() {
+  const actif = useSession().data?.operateur != null;
+  const q = useQuery({ queryKey: ["controle", "regles"], queryFn: api.controle.regles, refetchInterval: 60_000 });
+  const m = useQuery({ queryKey: ["mesuresDecisions"], queryFn: () => api.mesuresDecisions(30), staleTime: 60_000 });
+  if (!q.data) return <p className="text-muted">{L.commun.chargement}</p>;
+  const par = Object.entries((m.data?.par_type ?? {}) as Record<string, Record<string, number | null>>);
+  return (
+    <>
+      <p className="mb-1 text-[11.5px] text-faint">{C.regles(q.data.version_regles)} · {R.empreinte(q.data.empreinte)}</p>
+      <Partie id="modes" titre={R.modesTitre} ouverte>
+        <Connecter actif={actif} />
+        <ul>
+          {q.data.regles.map((r) => (
+            <li key={r.regle} className="border-b border-hair/50 py-1 last:border-0">
+              <ModeRegle regle={r.regle} nom={r.nom} b={r} actif={actif} />
+              {r.sous_types.map((s) => <ModeRegle key={s.sous_type} regle={r.regle} sousType={s.sous_type} nom={s.nom} b={s} actif={actif} />)}
+            </li>
+          ))}
+        </ul>
+      </Partie>
+      <Partie id="seuils" titre={R.seuils}>
+        {q.data.regles.map((r) => (
+          <div key={r.regle} className="mb-2">
+            <p className="text-[12px] text-ink">{r.nom}</p>
+            <table className="mt-0.5 w-full font-mono text-[10.5px] text-muted">
+              <tbody>
+                {r.seuils.map(([k, v]) => (
+                  <tr key={k}><td className="pr-2 align-top text-faint">{k}</td><td className="text-right text-ink/80">{JSON.stringify(v)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </Partie>
+      <Partie id="faux" titre={R.fauxTitre}>
+        {!par.length && <p className="text-[12px] text-muted">{R.aucuneDecision}</p>}
+        <table className="w-full text-[11.5px] tabular-nums">
+          <tbody>
+            {par.map(([t, x]) => (
+              <tr key={t} className="text-muted">
+                <td className="py-0.5 text-ink">{libelleAlerte(t)}</td>
+                <td className="text-right">{R.vraisFaux(x.confirmees ?? 0, x.faux_positif ?? 0)}</td>
+                <td className="w-12 text-right text-ink">{x.part_vrais == null ? "·" : `${Math.round(Number(x.part_vrais) * 100)} %`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Partie>
+    </>
+  );
+}
+
+export function RubriqueNotifications() {
+  return <Notifications actif={useSession().data?.operateur != null} />;
+}
+
+export function RubriqueZones(pp: Pick<PanneauProps, "trace" | "onTrace" | "infra" | "onPickZone">) {
+  const actif = useSession().data?.operateur != null;
+  return <><Connecter actif={actif} /><Zones actif={actif} {...(pp as PanneauProps)} /></>;
+}
+
+export function RubriqueDemo(pp: Pick<PanneauProps, "masquage" | "rejeuFidele" | "onRejeuFidele">) {
+  const actif = useSession().data?.operateur != null;
+  return <><Connecter actif={actif} /><Demonstration actif={actif} masquage={pp.masquage} rejeuFidele={pp.rejeuFidele} onRejeuFidele={pp.onRejeuFidele} /></>;
+}
+
+/** Services, disque, échecs et lien vers Grafana (lecture seule) ; l'état de la plateforme est rendu par l'appelant */
+export function PartieServices() {
+  const q = useQuery({ queryKey: ["controle", "systeme"], queryFn: api.controle.systeme, refetchInterval: 60_000 });
+  return <Partie id="services" titre={C.sections.systeme} ouverte>{q.data ? <Systeme s={q.data} /> : null}</Partie>;
+}
+
+export function RubriqueJournal() {
+  const q = useQuery({ queryKey: ["controle", "journal"], queryFn: () => api.controle.journal(30), refetchInterval: 30_000 });
+  return <Journal lignes={q.data ?? []} />;
 }

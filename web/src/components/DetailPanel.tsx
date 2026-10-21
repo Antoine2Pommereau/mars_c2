@@ -76,6 +76,8 @@ interface PanelProps {
   onRejeu: (vesselId: number) => void;
   onPickDetection: (source: SourceDetection, id: number) => void;
   recit?: ReactNode;                     // récit du dossier de l'objet (lot U), en tête ; la fiche complète suit, repliée
+  largeur: number;                       // largeur réglée par la poignée (retours du lot U)
+  poignee: ReactNode;
 }
 
 /** Fiche de l'objet sélectionné (navire, alerte, infrastructure, zone, détection) : un en tête, puis les sections du
@@ -134,7 +136,9 @@ export default function DetailPanel(p: PanelProps) {
   }
 
   return (
-    <div className="absolute right-4 top-4 z-10 max-h-[calc(100%-12rem)] w-[380px] overflow-y-auto rounded-lg border border-hair bg-panel/95 p-4 shadow-2xl backdrop-blur">
+    <div className="absolute right-4 top-4 z-10 flex max-h-[calc(100%-12rem)] flex-col" style={{ width: p.largeur }}>
+    {p.poignee}
+    <div className="min-h-0 overflow-y-auto rounded-lg border border-hair bg-panel/95 p-4 shadow-2xl backdrop-blur">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="flex items-start gap-2.5">
           <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
@@ -157,6 +161,7 @@ export default function DetailPanel(p: PanelProps) {
       ) : <div key={s.id} className="mt-2">{s.rendu(ctx)}</div>)}
       {footer && <p className="mt-4 border-t border-hair pt-3 text-[12px] text-muted">{footer}
         {trace && <span className="mt-1 block select-all font-mono text-[10px] opacity-60" title={trace}>{L.fiche.trace(trace)}</span>}</p>}
+    </div>
     </div>
   );
 }

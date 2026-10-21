@@ -13,6 +13,8 @@ export const L = {
     etape: (n: number | string) => `étape ${n}`, toutes: "Toutes", tous: "Tous", oui: "oui", non: "non",
     noeuds: "nœuds", m: "m", km: "km", min: "min", s: "s", chargement: "Chargement…",
     reconnexion: "Reconnexion…",
+    redimensionner: (nom: string) => `Largeur du panneau ${nom}`,
+    redimensionnerAide: "Glisser pour élargir ; flèches gauche et droite ; double clic : largeur par défaut",
   },
 
   // Étapes du plan, pour les éléments « à venir » des registres
@@ -80,11 +82,12 @@ export const L = {
   },
   // Coulisses (lot U, étape 6) : une carte par réglage ou état, chacune ouvre son panneau
   coulisses: {
-    titre: "Coulisses", retour: "Coulisses",
-    cartes: { systeme: "Système", capteurs: "Capteurs et dépenses", regles: "Règles et faux positifs",
-      satellites: "Vérifications satellites", analyses: "Analyses satellites", suivis: "Navires suivis",
-      zones: "Zones de vigilance", notifications: "Notifications", demo: "Démonstration", couches: "Couches détaillées",
-      operateur: "Opérateur" } as Record<string, string>,
+    titre: "Coulisses", retour: "Coulisses", chercher: "Rechercher un réglage", aucun: "Aucun réglage trouvé",
+    accueil: "Accueil des Coulisses", echap: "Échap : accueil",
+    journal: (auteur: string, action: string, le: string) => `${auteur} : ${action}, ${le}`, journalVide: "Aucune action",
+    cartes: { systeme: "Système", capteurs: "Capteurs et dépenses", regles: "Règles", satellites: "Satellites",
+      notifications: "Notifications", zones: "Zones de vigilance", suivis: "Navires suivis", demo: "Démonstration",
+      couches: "Couches détaillées", journal: "Journal", operateur: "Opérateur" } as Record<string, string>,
     enPause: (noms: string[]) => (noms.length ? `${noms.join(", ")} en pause` : "Tous les capteurs en service"),
     budget: (engage: number, plafond: number) => `Budget Sentinel : ${engage.toLocaleString("fr-FR", { maximumFractionDigits: 2 })} € sur ${plafond.toLocaleString("fr-FR", { maximumFractionDigits: 2 })} €`,
     version: (v: string) => `Version des règles ${v}`,
@@ -128,13 +131,16 @@ export const L = {
       alertes: "Nouvelles alertes", gravite: "À partir de", tip: "Résultat de tip and cue qui relève une alerte",
       systeme: "Système", categories: { pannes: "Pannes", disque: "Disque", collecte: "Collecte", travailleurs: "Travailleurs" } as Record<string, string>,
       calmes: "Heures calmes (Paris)", calmesNote: "tout est retenu sauf les pannes graves, résumé au réveil",
-      maintenant: "en cours", retenues: (n: number) => `${n} retenue(s)`,
+      maintenant: "en cours", retenues: (n: number) => nb(n, "retenue"), systemeTitre: "Système et tip and cue",
       enregistrer: "Enregistrer", test: "Envoyer une notification de test", envoyee: "Notification envoyée",
       sansNtfy: "NTFY_SUJET absent : aucune notification ne part",
     },
     regle: {
       modes: { actif: "actif", observation: "observation", coupe: "coupé" } as Record<string, string>,
-      compte: (a: number, e: number) => `7 j : ${a} alertes, ${e} épisodes`,
+      compte: (a: number, e: number) => `7 j : ${nb(a, "alerte")}, ${nb(e, "épisode")}`,
+      modesTitre: "Modes des règles", fauxTitre: "Vrais et faux positifs, 30 jours",
+      aucuneDecision: "Aucune décision sur 30 jours",
+      vraisFaux: (vp: number, fp: number) => `${nb(vp, "confirmée")}, ${nb(fp, "faux positif", "faux positifs")}`,
       fichier: (m: string) => `fichier : ${m === "actif" ? "actif" : m}`,
       seuils: "Seuils (config/rules.yaml)", empreinte: (e: string) => `état ${e.slice(0, 8)}`,
       changer: (nom: string, m: string) => `${nom} : passer en ${m}`,
@@ -336,6 +342,7 @@ export const L = {
 
   // Fiche (registre : registres/sections.tsx)
   fiche: {
+    titrePanneau: "de la fiche",
     // Zone de vigilance du panneau de contrôle (lot P)
     vigilance: {
       titre: "Zone de vigilance", creee: (t: string, par: string) => `Créée le ${t} par ${par}`,

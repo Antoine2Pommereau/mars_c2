@@ -924,6 +924,13 @@ docker compose exec -T db psql -U mars -d mars -c "SELECT id, details->'navire'-
 Ce qu'on doit lire : `rule_version` à 2026.10.43 et `hors_port` renseigné pour les passages en cours (0 pour une
 escale à quai comme VICTOR ANDRYUKHIN à Marseille).
 
+## Coulisses en rubriques et panneaux redimensionnables (21/10/2026)
+
+Interface seule (image web) : aucune route, aucune migration, aucune règle. Les écritures des rubriques passent par les
+routes du contrôle d'avant (connexion de l'opérateur, journal). Vérifier par le tunnel : ouvrir
+`http://localhost:8080/?espace=coulisses&rubrique=notifications`, la rubrique Notifications seule s'affiche ; le retour
+arrière du navigateur revient à la rubrique précédente ; la poignée du panneau de gauche l'élargit, la carte suit.
+
 ## Vérifier
 
 ```bash

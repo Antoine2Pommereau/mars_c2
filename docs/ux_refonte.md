@@ -310,3 +310,37 @@ l'instant affiché (jamais au delà de maintenant), sinon un dossier d'une plage
 hors port (règles 2026.10.43) ; sur le jeu d'essai, le compteur passe de 6 à 3, comme la maquette (les trois
 traversiers n'ont plus le niveau 2). Sur le serveur, il n'y a pas de traversier : le bruit venait des pétroliers des
 listes en transit de 26 à 37 h, désormais « à noter ». La Veille cadre la carte sur les dossiers à examiner.
+
+## 12. Retours après la phase 2 (21/10/2026)
+
+**Panneaux redimensionnables** : panneau de gauche et fiche de droite, poignée au bord (glisser, flèches par pas de
+16 px, double clic pour la largeur par défaut), de 280 à 640 px et jamais plus de la moitié de l'écran, largeur gardée
+par navigateur, carte redimensionnée en direct.
+
+**Coulisses, une rubrique à la fois** (modèle des Réglages du Mac) : l'ancien panneau Contrôle, une page de 2 692 px,
+est réparti sans perte.
+
+| Avant (section du Contrôle ou panneau du rail) | Après (rubrique, partie) |
+|---|---|
+| Opérateur | Opérateur |
+| Capteurs (interrupteurs, scènes par jour) | Capteurs et dépenses : Capteurs, Scènes par jour |
+| Dépenses (budget, derniers travailleurs) | Capteurs et dépenses : Dépenses |
+| Demande d'observation | Satellites : Demande d'observation |
+| Règles (modes, seuils) | Règles : Modes des règles, Seuils ; plus Vrais et faux positifs par type |
+| Zones de vigilance | Zones de vigilance |
+| Démonstration (masquage, rejeu, scénarios) | Démonstration |
+| Notifications | Notifications : Nouvelles alertes, Système et tip and cue, Heures calmes ; test et enregistrement en pied |
+| Système (services, disque, échecs, Grafana) | Système : État de la plateforme, Services |
+| Journal | Journal |
+| Panneaux Couches, Analyses, Suivis, Vérifications satellites, Système | Couches détaillées, Satellites (Vérifications, Analyses), Navires suivis, Système |
+
+Les onze rubriques s'ouvrent par leur adresse et tiennent sans défilement à 1440 × 900 (mesuré).
+
+**Trois tâches de réglage** (jeu d'essai, 1440 × 900 ; mots visibles dans le panneau à l'arrivée, mots placés avant le
+réglage dans la page, défilements pour l'atteindre)
+
+| Tâche | Avant | Après |
+|---|---|---|
+| Mettre en pause Sentinel 1 | 2 clics, 100 mots visibles, 14 avant, 0 défilement | 2 clics, 87 mots, 15 avant, 0 défilement |
+| Changer les heures calmes | 2 clics, 122 mots visibles, 372 avant, 2 défilements (1 156 px) | 3 clics (la partie s'ouvre), 85 mots, 54 avant, 0 défilement ; ou « heures calmes » puis Entrée dans la recherche |
+| Passer une règle en observation | 2 clics, 153 mots visibles, 91 avant, 0 défilement | 2 clics, 127 mots, 20 avant, 0 défilement |

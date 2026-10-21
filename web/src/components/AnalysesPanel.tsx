@@ -42,16 +42,17 @@ interface Props {
   jobs: ActiveAnalysis[];
   analysis: Feature | null;
   nDetections: number;
+  titre?: boolean;
 }
 
-export default function AnalysesPanel({ history, onPick, launcher, jobs, analysis, nDetections }: Props) {
+export default function AnalysesPanel({ history, onPick, launcher, jobs, analysis, nDetections, titre = true }: Props) {
   const s = analysis?.properties.summary ?? {};
   const t = analysis?.properties.timings ?? {};
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <header className="border-b border-hair px-4 pb-3 pt-4">
+      {titre && <header className="border-b border-hair px-4 pb-3 pt-4">
         <h2 className="text-[15px] font-semibold">{L.analyses.titre}</h2>
-      </header>
+      </header>}
       {launcher}
       {jobs.map((a) => <Job key={a.id} a={a} />)}
       {analysis ? (
