@@ -850,6 +850,35 @@ docker compose exec taches python scripts/taches.py sentinel2-poids --nettoyer #
 docker compose exec taches python scripts/taches.py sentinel2-diagnostic       # MANQUE si une variable n'arrive pas
 ```
 
+## Panneau de contrôle (lot P, 21/10/2026, migrations 33 à 37, règles 2026.10.39, docs/controle.md)
+
+L'état du panneau est en base et prime sur `config/rules.yaml` : on ne modifie plus ce fichier sur le serveur. Le
+dossier `config` est monté dans taches : dès que le fichier revient à sa version du dépôt, l'ancien taches relit le
+plafond de Sentinel 1 (2 scènes par jour). D'où l'ordre : taches arrêté avec le retour du fichier, pauses posées par
+un conteneur jetable de la nouvelle image avant le démarrage de la boucle.
+
+```bash
+cd /opt/mars_c2 && git checkout config/rules.yaml && docker compose stop taches
+git pull origin main
+for f in 33_controle 34_modes_regles 35_notifications 36_zones_vigilance 37_scenarios; do
+  docker compose exec -T db psql -U mars -d mars -v ON_ERROR_STOP=1 < db/init/$f.sql || break; done
+docker compose rm -sf collector ingest taches && docker image prune -af
+docker compose pull collector ingest taches
+docker compose run --rm --no-deps taches python scripts/taches.py satellites-pause on sentinel1 --motif "maîtrise des coûts"
+docker compose run --rm --no-deps taches python scripts/taches.py satellites-pause on sentinel2 --motif "essai du passage 325 en attente"
+docker compose up -d --no-build collector ingest taches
+docker compose run --rm --no-deps taches python scripts/taches.py operateur-hacher antoine   # saisie masquée
+nano .env                                    # coller la ligne MARS_OPERATEURS=antoine:pbkdf2_sha256:… à la fin
+docker compose rm -sf backend && docker image prune -af
+docker compose pull backend && docker compose up -d --no-build backend
+docker compose rm -sf web && docker image prune -af
+docker compose pull web && docker compose up -d --no-build web
+docker compose restart grafana                 # règles (notification_permise) et tableaux Satellites
+```
+
+Une pause posée par le fichier (plafond à 0 modifié à la main) est remplacée par `satellites-pause` ; VIIRS reste en
+service (environ 0,76 € par mois). La première connexion se fait dans l'interface, icône « Contrôle » du rail.
+
 ## Vérifier
 
 ```bash
