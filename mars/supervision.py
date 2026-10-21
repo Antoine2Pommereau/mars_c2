@@ -122,11 +122,31 @@ def mesurer(conn, live: Path, disque: str = "/") -> dict:
     return m
 
 
-def signe(conn, service: str, dernier_le: datetime, detail: dict | None = None, version: str | None = None):
+def memoire_conteneur(racine: str = "/sys/fs/cgroup") -> dict | None:
+    """Mémoire du conteneur courant, lue dans son propre cgroup (v2, sinon v1), sans socket Docker (lot P, section
+    Système du panneau) ; None hors d'un conteneur."""
+    for courant, limite in (("memory.current", "memory.max"),
+                            ("memory/memory.usage_in_bytes", "memory/memory.limit_in_bytes")):
+        try:
+            u = int((Path(racine) / courant).read_text().strip())
+        except (OSError, ValueError):
+            continue
+        try:
+            t = (Path(racine) / limite).read_text().strip()
+            lim = None if t == "max" or int(t) >= 1 << 60 else int(t)
+        except (OSError, ValueError):
+            lim = None
+        return {"memoire_mo": round(u / 2**20), "memoire_max_mo": round(lim / 2**20) if lim else None}
+    return None
+
+
+def signe(conn, service: str, dernier_le: datetime, detail: dict | None = None, version: str | None = None,
+          memoire: bool = False):
     """Signe de vie d'un service, avec l'empreinte du commit de son image (`version` ; celle du processus par défaut) :
-    la barre d'état et Grafana montrent si le serveur tourne sur la bonne version."""
+    la barre d'état et Grafana montrent si le serveur tourne sur la bonne version. `memoire` : le service écrit son
+    propre signe, la mémoire de son conteneur y est jointe."""
     from mars.traces import version as v
-    detail = {**(detail or {}), "version": version or v()}
+    detail = {**(detail or {}), "version": version or v(), **((memoire_conteneur() or {}) if memoire else {})}
     conn.execute("INSERT INTO signes_de_vie (service, dernier_le, detail, mesure_le) VALUES (%s, %s, %s, now()) "
                  "ON CONFLICT (service) DO UPDATE SET dernier_le = EXCLUDED.dernier_le, detail = EXCLUDED.detail, "
                  "mesure_le = now()", (service, dernier_le, json.dumps(detail, default=str)))

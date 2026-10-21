@@ -171,6 +171,42 @@ async def journal(request: Request, limit: int = 50):
     return [dict(r) for r in rows]
 
 
+# Lecture : état du système (phase B), sans socket Docker
+
+@router.get("/api/controle/systeme")
+async def systeme(request: Request):
+    """Services et version déployée (signes_de_vie), dernier signe de vie, retard de l'ingestion, disque, mémoire des
+    conteneurs qui la publient (taches, ingestion, API ; omise sinon), dernières tâches en échec (refus attendus
+    exclus) ; liens vers Grafana et vers la trace de chaque élément."""
+    from mars import supervision
+    async with request.app.state.pool.acquire() as c:
+        services = await c.fetch(
+            """SELECT service, dernier_le, extract(epoch FROM now() - dernier_le)::float8 AS age_s,
+                      detail->>'version' AS version, (detail->>'memoire_mo')::float8 AS memoire_mo,
+                      (detail->>'memoire_max_mo')::float8 AS memoire_max_mo, (detail->>'retard_s')::float8 AS retard_s
+               FROM signes_de_vie ORDER BY service""")
+        retard = await c.fetchval("SELECT extract(epoch FROM now() - max(ts))::float8 FROM positions "
+                                  "WHERE ts > now() - interval '1 day'")
+        disque = await c.fetchrow("SELECT mesure_le, libre_pct, libre_octets, total_octets, base_octets FROM mesures_disque "
+                                  "ORDER BY mesure_le DESC LIMIT 1")
+        echecs = await c.fetch(
+            """SELECT id, task AS tache, started_at AS le, left(details->>'erreur', 300) AS erreur, trace_id
+               FROM task_runs WHERE status = 'echec' AND NOT (details ? 'refus') ORDER BY started_at DESC LIMIT 10""")
+        derniere_trace = await c.fetchval("SELECT trace_id FROM task_runs WHERE task = 'regles' AND trace_id IS NOT NULL "
+                                          "ORDER BY started_at DESC LIMIT 1")
+    lignes = [dict(r) for r in services]
+    api_mem = supervision.memoire_conteneur() or {}
+    if not any(x["service"] == "api" for x in lignes):
+        lignes.append({"service": "api", "dernier_le": None, "age_s": None, "retard_s": None})
+    for x in lignes:
+        if x["service"] == "api":            # l'API se mesure en direct : elle répond, donc elle vit
+            x.update({"version": traces.version(), "age_s": 0.0, **api_mem})
+    return {"grafana": controle.grafana_url(), "services": lignes, "retard_positions_s": retard,
+            "disque": dict(disque) if disque else None,
+            "echecs": [{**dict(r), "lien_trace": controle.lien_trace(r["trace_id"])} for r in echecs],
+            "lien_regles": controle.lien_trace(derniere_trace)}
+
+
 # Écriture : interrupteurs, plafonds, demande d'observation
 
 class Bascule(BaseModel):

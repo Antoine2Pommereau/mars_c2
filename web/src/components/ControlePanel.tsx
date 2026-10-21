@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, LogOut, Minus, Plus } from "lucide-react";
+import { ChevronRight, ExternalLink, LogOut, Minus, Plus } from "lucide-react";
 import { type ReactNode, useState } from "react";
-import { api, type EtatControle, type Interrupteur } from "../lib/api";
+import { api, type EtatControle, type Interrupteur, type SystemeControle } from "../lib/api";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
@@ -196,6 +196,69 @@ function Demande({ actif, rayon }: { actif: boolean; rayon: EtatControle["rayon_
   );
 }
 
+const Y = C.systeme;
+const MUET_S = 600;                     // un signe de vie plus vieux que 10 minutes demande l'attention
+
+function Lien({ href, titre }: { href: string | null; titre: string }) {
+  if (!href) return null;
+  return (
+    <a href={href} target="_blank" rel="noreferrer" title={titre} aria-label={titre} className="text-faint hover:text-signal">
+      <ExternalLink size={11} className="inline" />
+    </a>
+  );
+}
+
+/** État du système en lecture seule (phase B) : services, version, signe de vie, mémoire, retard, disque, échecs */
+function Systeme({ s }: { s: SystemeControle }) {
+  const d = s.disque;
+  return (
+    <div className="space-y-2 text-[11.5px]">
+      <table className="w-full tabular-nums">
+        <tbody>
+          {s.services.map((x) => {
+            const muet = x.age_s != null && x.age_s > MUET_S && x.service !== "statistiques";
+            return (
+              <tr key={x.service} className="text-muted">
+                <td className="py-0.5 text-ink">{Y.services[x.service] ?? x.service}</td>
+                <td className="font-mono text-[10.5px] text-faint">{x.version?.slice(0, 7) ?? "·"}</td>
+                <td className={`text-right ${muet ? "text-gap" : ""}`}>{x.age_s != null ? Y.il_y_a(x.age_s) : "·"}</td>
+                <td className="text-right">{x.memoire_mo != null ? Y.memoire(x.memoire_mo, x.memoire_max_mo) : ""}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="flex justify-between text-muted">
+        <span>{Y.retard}</span>
+        <span className={`tabular-nums ${(s.retard_positions_s ?? 1e9) > MUET_S ? "text-gap" : "text-ink"}`}>
+          {s.retard_positions_s != null ? Y.il_y_a(s.retard_positions_s) : "·"}
+        </span>
+      </div>
+      {d && (
+        <div className="flex justify-between text-muted">
+          <span>{Y.disque}</span>
+          <span className={`tabular-nums ${d.libre_pct < 15 ? "text-gap" : "text-ink"}`}>{Y.libres(d.libre_pct, d.libre_octets / 1e9)}</span>
+        </div>
+      )}
+      <div>
+        <p className="mb-0.5 text-muted">{Y.echecs}</p>
+        {!s.echecs.length && <p className="text-faint">{Y.aucunEchec}</p>}
+        <ul className="space-y-0.5">
+          {s.echecs.map((e) => (
+            <li key={e.id} className="text-muted" title={e.erreur ?? undefined}>
+              <span className="tabular-nums text-faint">{jourHeure(e.le)}</span> <span className="text-gap">{e.tache}</span>{" "}
+              <span className="line-clamp-1 inline">{e.erreur}</span> <Lien href={e.lien_trace} titre={Y.trace} />
+            </li>
+          ))}
+        </ul>
+      </div>
+      <a href={s.grafana} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-signal hover:underline">
+        {Y.grafana} <ExternalLink size={11} />
+      </a>
+    </div>
+  );
+}
+
 function Journal({ lignes }: { lignes: Props[] }) {
   if (!lignes.length) return <p className="text-[12px] text-muted">{C.journalVide}</p>;
   return (
@@ -217,6 +280,7 @@ export default function ControlePanel() {
   const sessionQ = useQuery({ queryKey: ["controle", "session"], queryFn: api.controle.session });
   const etatQ = useQuery({ queryKey: ["controle", "etat"], queryFn: api.controle.etat, refetchInterval: 30_000 });
   const journalQ = useQuery({ queryKey: ["controle", "journal"], queryFn: () => api.controle.journal(30), refetchInterval: 30_000 });
+  const systemeQ = useQuery({ queryKey: ["controle", "systeme"], queryFn: api.controle.systeme, refetchInterval: 60_000 });
   const op = sessionQ.data?.operateur ?? null;
   const actif = op != null;
   const e = etatQ.data;
@@ -264,6 +328,11 @@ export default function ControlePanel() {
               <Demande actif={actif} rayon={e.rayon_demande_m} />
             </Section>
           </>
+        )}
+        {systemeQ.data && (
+          <Section id="systeme" titre={C.sections.systeme}>
+            <Systeme s={systemeQ.data} />
+          </Section>
         )}
         <Section id="journal" titre={C.sections.journal}>
           <Journal lignes={journalQ.data ?? []} />

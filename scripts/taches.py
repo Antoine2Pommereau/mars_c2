@@ -554,7 +554,7 @@ def signs_of_life(conn):
     if t is not None:
         supervision.signe(conn, "collecte", t, {"age_s": round((now - t).total_seconds())},
                           version=supervision.version_collecte(LIVE))
-    supervision.signe(conn, "taches", now)
+    supervision.signe(conn, "taches", now, memoire=True)
 
 
 def alert_if_grafana_down(conn, secours) -> list[str]:

@@ -227,6 +227,25 @@ def notifier(categorie: str, gravite: str, titre: str, message: str):
         return None
 
 
+# Système (phase B) : liens vers Grafana et vers une trace
+
+def grafana_url() -> str:
+    """Adresse de Grafana vue du navigateur de l'opérateur (par le tunnel SSH par défaut)."""
+    return (os.environ.get("MARS_GRAFANA_URL") or "http://localhost:3000").rstrip("/")
+
+
+def lien_trace(trace_id: str | None) -> str | None:
+    """Exploration Tempo de Grafana sur une trace (vue Gantt), comme les liens des tableaux (grafana/generer.py)."""
+    if not trace_id:
+        return None
+    from urllib.parse import quote
+    pane = {"a": {"datasource": "tempo", "queries": [{"refId": "A", "datasource": {"type": "tempo", "uid": "tempo"},
+                                                         "queryType": "traceql", "query": trace_id}],
+                  "range": {"from": "now-3d", "to": "now"}}}
+    return f"{grafana_url()}/explore?schemaVersion=1&orgId=1&panes=" + quote(json.dumps(pane, separators=(",", ":")),
+                                                                              safe="")
+
+
 # Opérateurs : mot de passe haché dans le .env (MARS_OPERATEURS), sessions par cookie
 
 ITERATIONS = 600_000

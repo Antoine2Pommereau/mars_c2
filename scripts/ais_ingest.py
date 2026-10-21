@@ -81,7 +81,8 @@ def main():
                 recent_only = True
                 toucher(SIGNE_INGESTION)
                 signe(ing.conn, "ingestion", datetime.now(timezone.utc),
-                      {"fichiers": totals["fichiers"], "retard_s": round(ing.retard_s), "duree_s": round(time.time() - t, 1)})
+                      {"fichiers": totals["fichiers"], "retard_s": round(ing.retard_s), "duree_s": round(time.time() - t, 1)},
+                      memoire=True)
                 if failures:
                     print(f"Ingestion rétablie après {failures} passage(s) en échec", flush=True)
                 failures = 0

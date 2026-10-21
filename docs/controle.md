@@ -64,3 +64,16 @@ sur la carte ; le rayon choisi remplace le rayon fixe d'un point (`rayon_demande
 
 **Grafana** : tuile Satellites (sources en pause dans le texte), tableau Satellites (interrupteurs, journal du
 panneau), règle « Nuit VIIRS absente » muette quand VIIRS est en pause (fonction SQL `source_en_pause`).
+
+## Phase B : état du système (lecture seule, aucune migration)
+
+Section « Système » (`GET /api/controle/systeme`, rafraîchie chaque minute) :
+
+* services et version déployée (empreinte du commit, `signes_de_vie`), âge du dernier signe de vie (en rouge au delà
+  de 10 minutes) ;
+* mémoire des conteneurs qui la publient d'eux mêmes, lue dans leur propre cgroup (v2, sinon v1) : taches et
+  ingestion à chaque signe de vie, l'API en direct ; la collecte n'écrit pas son propre signe (taches le relève
+  d'après ses fichiers) : sa mémoire est omise. Aucun socket Docker ;
+* retard des positions (dernière position reçue), disque (dernière mesure de `mesures_disque`, en rouge sous 15 %) ;
+* dix dernières tâches en échec (refus attendus exclus), chacune avec le lien vers sa trace ;
+* lien vers Grafana (`MARS_GRAFANA_URL`, `http://localhost:3000` par défaut, par le tunnel SSH).

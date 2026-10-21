@@ -24,7 +24,14 @@ export const L = {
   controle: {
     titre: "Contrôle", regles: (v: string) => `règles ${v}`,
     sections: { connexion: "Opérateur", capteurs: "Capteurs", depenses: "Dépenses", demande: "Demande d'observation",
-      journal: "Journal" } as Record<string, string>,
+      systeme: "Système", journal: "Journal" } as Record<string, string>,
+    systeme: {
+      services: { api: "API", collecte: "Collecte", ingestion: "Ingestion", taches: "Tâches", statistiques: "Statistiques" } as Record<string, string>,
+      il_y_a: (s: number) => (s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`),
+      retard: "Retard des positions", disque: "Disque", libres: (pct: number, go: number) => `${Math.round(pct)} % libres, ${go.toFixed(1).replace(".", ",")} Go`,
+      echecs: "Dernières tâches en échec", aucunEchec: "Aucune tâche en échec", grafana: "Ouvrir Grafana", trace: "Trace",
+      memoire: (mo: number, max?: number | null) => (max ? `${mo} / ${max} Mo` : `${mo} Mo`),
+    },
     operateur: "Opérateur", motDePasse: "Mot de passe", seConnecter: "Se connecter", deconnexion: "Déconnexion",
     nonConfigure: "Aucun opérateur configuré (MARS_OPERATEURS)", connexionRequise: "Connexion requise pour agir",
     enService: "en service", enPause: "en pause", depuis: (t: string) => `depuis ${t}`, reprise: (t: string) => `reprise ${t}`,

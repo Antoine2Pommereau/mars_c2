@@ -641,7 +641,8 @@ sur `config/rules.yaml` (`mars/controle.appliquer`), seuils jamais édités dans
 SameSite strict, 12 h). Phase A (migration 33, règles 2026.10.36) : interrupteurs Sentinel 1, Sentinel 2, VIIRS et tip
 and cue (aucun travailleur en pause, commande manuelle refusée sauf `--malgre-pause`, reprise prévue et notification
 la veille, `taches.py satellites-pause`), plafond quotidien réglable de 0 à 4, budget du mois, demande d'observation
-d'un point, Grafana muette en pause.
+d'un point, Grafana muette en pause. Phase B : section Système (services, version, signe de vie, mémoire du
+conteneur lue dans son cgroup, retard, disque, échecs avec lien vers la trace, lien vers Grafana).
 
 ## 10. Tests
 

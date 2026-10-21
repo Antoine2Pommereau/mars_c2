@@ -268,6 +268,39 @@ def test_login_throttled_after_five_failures(client):
                                                         "mot_de_passe": "bon mot de passe"}).status_code == 429
 
 
+# Phase B : état du système
+
+def test_container_memory_from_own_cgroup(tmp_path):
+    from mars import supervision
+    assert supervision.memoire_conteneur(str(tmp_path)) is None                  # hors conteneur : omise
+    (tmp_path / "memory.current").write_text("314572800\n")
+    (tmp_path / "memory.max").write_text("max\n")
+    assert supervision.memoire_conteneur(str(tmp_path)) == {"memoire_mo": 300, "memoire_max_mo": None}
+    (tmp_path / "memory.max").write_text(str(1 << 30))
+    assert supervision.memoire_conteneur(str(tmp_path)) == {"memoire_mo": 300, "memoire_max_mo": 1024}
+
+
+def test_trace_link_opens_tempo_in_grafana(monkeypatch):
+    monkeypatch.setenv("MARS_GRAFANA_URL", "http://localhost:3000/")
+    lien = controle.lien_trace("4bf92f3577b34da6a3ce929d0e0e4736")
+    assert lien.startswith("http://localhost:3000/explore?schemaVersion=1&orgId=1&panes=")
+    assert "4bf92f3577b34da6a3ce929d0e0e4736" in lien and controle.lien_trace(None) is None
+
+
+def test_system_route_services_failures_and_links(client, conn):
+    conn.execute("INSERT INTO task_runs (task, run_day, status, details, trace_id, started_at) VALUES "
+                 "('essai_systeme', current_date, 'echec', '{\"erreur\": \"disque plein\"}', 'abc', now()), "
+                 "('essai_systeme', current_date, 'echec', '{\"erreur\": \"plafond\", \"refus\": true}', 'def', now())")
+    try:
+        s = client.get("/api/controle/systeme").json()
+        assert any(x["service"] == "api" and x["age_s"] == 0 for x in s["services"])
+        mine = [e for e in s["echecs"] if e["tache"] == "essai_systeme"]
+        assert [e["erreur"] for e in mine] == ["disque plein"], "refus attendus exclus"
+        assert mine[0]["lien_trace"].startswith(s["grafana"] + "/explore")
+    finally:
+        conn.execute("DELETE FROM task_runs WHERE task = 'essai_systeme'")
+
+
 def test_rules_file_untouched():
     """Le panneau ne modifie jamais config/rules.yaml (une modification locale bloque git pull sur le serveur)."""
     src = Path(controle.__file__).read_text() + (ROOT / "backend" / "controle.py").read_text()

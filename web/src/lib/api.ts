@@ -51,6 +51,16 @@ export interface EtatControle {
   rayon_demande_m: { min: number; max: number; defaut: number } | null;
 }
 
+export interface SystemeControle {
+  grafana: string;
+  services: { service: string; dernier_le: string | null; age_s: number | null; version: string | null;
+    memoire_mo?: number | null; memoire_max_mo?: number | null; retard_s: number | null }[];
+  retard_positions_s: number | null;
+  disque: { mesure_le: string; libre_pct: number; libre_octets: number; total_octets: number; base_octets: number | null } | null;
+  echecs: { id: number; tache: string; le: string; erreur: string | null; trace_id: string | null; lien_trace: string | null }[];
+  lien_regles: string | null;
+}
+
 export interface Pass {
   product_name: string;
   acquired_at: string;
@@ -169,6 +179,7 @@ export const api = {
     deconnexion: () => ecrire<{ operateur: null }>("/controle/deconnexion", {}),
     etat: () => get<EtatControle>("/controle/etat"),
     journal: (limit = 30) => get<Props[]>(`/controle/journal?limit=${limit}`),
+    systeme: () => get<SystemeControle>("/controle/systeme"),
     basculer: (source: string, body: { en_pause: boolean; motif?: string; jusqu_a?: string | null }) =>
       ecrire<Interrupteur>(`/controle/satellites/${source}`, body),
     plafond: (source: string, valeur: number, motif: string) =>
