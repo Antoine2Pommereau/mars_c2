@@ -889,6 +889,25 @@ Le correctif à chaud de nginx sur le serveur (« proxy_set_header Host $http_ho
 à garder à la main. Une ligne MARS_OPERATEURS copiée avec « trace_id=… » se refait : `taches.py operateur-hacher <nom>`
 (la nouvelle ligne n'a plus de suffixe), puis `taches.py controle-diagnostic` doit dire PRÊT pour taches et backend.
 
+## Lot U, refonte de l'interface (21/10/2026)
+
+Veille, Enquête, Coulisses et triage au clavier (`docs/ux_refonte.md`, section 11). Aucune migration ; règles
+2026.10.42 (section `dossiers` de `config/rules.yaml`, lue par l'API à chaque requête, arrivée par `git pull`). Images
+qui changent : backend (`backend/dossiers.py`, `mars/dossiers.py`) et web ; scripts seulement si le lot A n'a pas
+encore été publié (`mars/controle.py`, `mars/traces.py`, `operateur-hacher`).
+
+Vérifier après déploiement, par le tunnel, en lecture seule :
+
+```bash
+curl -s "localhost:8000/api/dossiers?end=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | python3 -c "import json, sys; d = json.load(sys.stdin); print(d['compteurs'], len(d['dossiers']))"
+curl -s "localhost:8000/api/decisions/mesures?jours=30"
+```
+
+Ce qu'on doit lire : des compteurs `urgent`, `a_examiner`, `a_noter` (les alertes ouvertes des 72 dernières heures,
+regroupées par navire) ; les mesures par type d'alerte (vide tant qu'aucune décision n'a été prise). Dans
+l'interface : la Veille s'ouvre par défaut, la barre d'état n'a plus que le voyant Système, les anciens panneaux sont
+dans les Coulisses ; une adresse avec `vue=trafic` rouvre la vue d'avant la refonte.
+
 ## Vérifier
 
 ```bash

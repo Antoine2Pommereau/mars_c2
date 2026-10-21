@@ -230,10 +230,25 @@ secondaire `#7c8b97`, signal système `#4fb6c8` ; navire sombre `#e85bc7`, rende
 `#5fd3a5`. IBM Plex Sans et Sans Condensed, chiffres
 tabulaires.
 
-Disposition (vision, lots 1 et 2 faits) : **barre d'état** en haut (**sélecteur de région**, puis flux AIS,
-ingestion, listes, disque, archivage, satellites, chacun vert, orange ou rouge avec son détail au clic ; **recherche** par Cmd + K dans les navires, infrastructures,
-alertes et lieux, résultats groupés, clavier), **rail** (alertes, couches, analyses, navires suivis), panneau
-contextuel, carte, **fiche** à droite, **frise** en bas.
+Disposition (lot U, 21/10/2026, `docs/ux_refonte.md`) : **barre d'état** en haut (**sélecteur de région**, puis un
+seul **voyant Système**, vert quand tout fonctionne, sinon la cause ; les indicateurs flux AIS, ingestion, listes,
+disque, archivage, satellites et version se déplient au clic ; **recherche** par Cmd + K), **rail** à deux espaces
+(**Veille** et **Coulisses**), panneau contextuel, carte avec ses **vues** (Veille, Trafic complet, Satellites,
+Couches), **fiche** à droite, **frise** en bas.
+
+* **Échelle d'urgence** (`lib/urgence.ts`) : 3 `#ef6461`, 2 `#f0a84b`, 1 `#aab6bf` ; le type passe par l'icône, ses
+  couleurs ne restent que dans la vue Trafic complet.
+* **Veille** (`components/VeillePanel.tsx`) : dossiers par navire ou par point (`/api/dossiers`), « N à examiner »,
+  « à noter » repliés, fil d'alertes complet en second onglet, état calme, état dégradé en tête (plus de 15 min sans
+  AIS en direct, `lib/systeme.ts`). Carte calme : navires des dossiers nets et nommés, le reste en poussière,
+  infrastructures à moins d'un mille d'un dossier seules nettes.
+* **Enquête** (`components/Recit.tsx`) : tout clic sur un navire ouvre sa fiche, sections repliées ; s'il a un
+  dossier, le récit vient en tête (niveau, qui, phrase, gestes, légende de la preuve, chronologie, détail technique
+  replié). Preuve dessinée sur la carte (`lib/preuve.ts`, mêmes chiffres que la légende).
+* **Clavier** (`lib/clavier.ts`) : J, K, Entrée dans la Veille ; F confirmer, C puis 1 2 3 classer, S suivre, V
+  vérifier (devis, Entrée demande, Échap annule), ? aide avec les vrais et faux positifs.
+* **Coulisses** (`components/Coulisses.tsx`) : grille de cartes qui ouvrent les panneaux d'avant (couches, analyses,
+  suivis, vérifications satellites, système) ou la section du contrôle visée.
 
 * **Fiches** (registre `registres/sections.tsx`, composants `components/Fiches.tsx`) : navire (en tête avec photo et
   source, signal, état, suivre ; listes ; identités en frise compacte ; alertes ; comportement ; trajectoire avec
@@ -658,8 +673,17 @@ de l'instant, lecture seule), scénarios enregistrés, masquage des navires par 
 la base de test (captures sans affichage, navires masqués) : 231 mots et 10 couleurs vives sur l'écran par défaut,
 navire le plus suspect éclaté en trois lignes du fil ; heuristiques de Nielsen ; trois tâches de référence (20 s, 41 s,
 6 s par alerte) ; cible : dossier par navire, trois niveaux d'urgence, phrase d'explication, Veille, Enquête,
-Coulisses, tri au clavier ; prototype du modèle des dossiers (`docs/ux/maquettes/dossiers.py`). **Phase 2 en attente
-de la validation d'Antoine.**
+Coulisses, tri au clavier ; prototype du modèle des dossiers (`docs/ux/maquettes/dossiers.py`).
+
+**Lot A, correctifs (21/10/2026)** : trafic visible en mode plage et rejeu, origine vérifiée derrière nginx,
+`operateur-hacher` et lignes de `MARS_OPERATEURS` contrôlées, libellés et bandeau (`docs/deploiement.md`).
+
+**Lot U, phase 2 (21/10/2026)** (règles 2026.10.42, aucune migration ; `docs/ux_refonte.md`, section 11) : dossiers
+calculés à la lecture (`mars/dossiers.py`, `backend/dossiers.py` : liste, récit, décision journalisée alerte par
+alerte, devis de vérification, `/api/decisions/mesures`), Veille, Enquête, clavier, Coulisses (section 7). Mesures sur
+le jeu d'essai : écran par défaut de 231 à 149 mots et de 10 à 5 couleurs vives, fiche du navire suspect de 621 à 297
+mots ; navire le plus suspect trouvé sans geste (environ 7 s au lieu de 20, réponse juste), compris par la phrase de
+sa ligne, classé en deux touches pour tout le dossier (au lieu de 6 s par alerte).
 
 ## 10. Tests
 
@@ -671,9 +695,14 @@ trace ; origine des positions écrite par l'ingestion ; séjour prolongé au del
 de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 272 réussis, 1 ignoré (lot C4 : GPU inutilisable, échec signalé, instance arrêtée, essai forcé sur processeur ; script de démarrage exécuté avec de fausses commandes, `tests/test_demarrage.py`, avec `gdate` ; lot C3 : rupture de stock, attente, reprise, repli sur processeur, abandon, plafond de l'essai manuel, reclassement des analyses sans scène aboutie ; identifiant de trace des alertes par le déclencheur ; rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `tests/test_traces.py` : chaque commande de `taches.py` et chaque type de travailleur tracés (échoue sinon), filtre des données sensibles, script de démarrage bash (avec `gdate` sur le Mac). `npx knip` et `npm run typecheck` pour
-l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. `npm run typecheck` pour l'interface.
+l'interface ; `npm test` (node --test, `web/tests/` : trafic, preuve, clavier, état dégradé ; 13 réussis) ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. Lot U : 404 réussis, 1 ignoré avec la base de test.
 
 ## 11. Pièges connus
+
+* **Dossiers** : une décision ou un devis lit le dossier à l'instant affiché (`instant`, `end`), plafonné à
+  maintenant ; à l'instant réel seul, un dossier d'une plage passée est hors de la fenêtre de 72 h (404).
+* Raccourcis : un écouteur qui doit passer avant celui de l'application (Échap qui fermerait la fiche) s'inscrit en
+  capture (`addEventListener(…, true)`) et arrête la propagation.
 
 * Ne jamais remplacer un dossier par le Finder : utiliser `ditto`.
 * **Tailwind 4** : une règle hors couche l'emporte ; la carte MapLibre se positionne par style direct.

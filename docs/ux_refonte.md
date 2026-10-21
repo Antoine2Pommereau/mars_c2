@@ -253,3 +253,55 @@ trois tâches comparée à la section 6.
 7. **Touches** J, K, C, S, V : d'accord ? V crée une vérification satellite (coût possible) : faut il une confirmation ?
 8. **Fil d'alertes complet** : second onglet de la Veille, ou Coulisses ?
 9. **Ordre des étapes** de la section 9 : d'accord, ou la Veille avant l'API (maquette branchée sur le prototype) ?
+
+**Réponses d'Antoine (21/10/2026)** : correctif du trafic livré à part (lot A) ; navire des listes seul « à noter » à
+quai ou en transit, « à examiner » en mer près d'une infrastructure ou en séjour prolongé, coupure AIS élevée seule « à
+examiner » ; « près d'un câble » à 1 mille ; fenêtre de 72 h, points fusionnés à 2 km et 6 h ; couleurs de type
+gardées dans la seule vue « Trafic complet » ; « Vu » remplace « Acquitter », « Confirmer » reste un geste (touche F) ;
+V demande une confirmation avec le coût et l'heure du passage, refusée si le capteur est en pause ; fil complet en
+second onglet de la Veille ; ordre de la section 9.
+
+## 11. Construction (phase 2, 21/10/2026)
+
+Un commit par étape sur la branche `lot-u-construction`, l'interface utilisable à chacune. Le moteur des alertes ne
+change pas : les dossiers sont calculés par l'API à la lecture (`mars/dossiers.py`, `backend/dossiers.py`, section
+`dossiers` de `config/rules.yaml`, règles 2026.10.42).
+
+| Étape | Livré |
+|---|---|
+| 1 | API des dossiers : liste à l'instant (rejeu tel qu'il était compris), récit, décision sur le dossier appliquée aux alertes ouvertes et journalisée alerte par alerte, devis de vérification ; spans OpenTelemetry sur chaque route |
+| 2 | Échelle d'urgence (`lib/urgence.ts`), glossaire, icônes neutres et gravité en couleur dans le fil |
+| 3 | Veille : dossiers à examiner, à noter repliés, état calme, fil complet en second onglet ; carte calme (navires des dossiers nets et nommés, le reste en poussière, infrastructures à moins d'un mille d'un dossier seules nettes) ; vues Veille, Trafic complet, Satellites, Couches (paramètre `vue` de l'adresse) |
+| 4 | Enquête : récit en tête de la fiche (niveau, qui, phrase, chronologie avec les preuves, détail technique replié), fiche complète ensuite, sections repliées ; preuve dessinée (route, dernière position, silence en tirets, cercle d'incertitude, écart estimée et écho) avec une légende aux mêmes chiffres (`lib/preuve.ts`) ; gestes Vu, Confirmer, Classer, Suivre, Vérifier |
+| 5 | Clavier : J, K, Entrée, F, C puis 1 2 3, S, V (Entrée demande, Échap annule), ? ; vrais et faux positifs par type (`/api/decisions/mesures`), dans l'aide |
+| 6 | Coulisses : rail réduit à Veille et Coulisses, grille de cartes qui ouvrent les panneaux inchangés ou la section du contrôle ; voyant Système seul dans la barre d'état ; état dégradé en tête de la Veille (plus de 15 min sans AIS en direct) |
+
+**Écrans mesurés** (même jeu d'essai, mêmes états que l'audit, navires masqués, 1440 × 900)
+
+| État | Avant : mots, interactifs, couleurs vives | Après |
+|---|---|---|
+| Accueil en direct | 111, 49, 9 | 66, 27, 2 |
+| Veille, plage de 24 h | 231, 60, 10 | 149, 35, 5 |
+| Fiche du navire GOELAND 466 | 621, 69, 10 | 297, 47, 6 (récit en tête) |
+| Fiche de la coupure 2987 | 410, 68, 10 | 311, 49, 5 (récit du dossier en tête) |
+| Fiche d'infrastructure | 860, 83, 10 | 778, 58, 5 (sections ouvertes : pas de dossier) |
+| Détail de l'état | 252, 60, 10 | 170, 42, 6 (voyant Système) |
+| Recherche | 248, 63, 10 | 166, 38, 6 |
+| Rejeu | 235, 64, 10 | 153, 39, 5 |
+
+**Tâches de référence**
+
+| Tâche | Avant (audit) | Après |
+|---|---|---|
+| a. Trouver le navire le plus suspect | 1 clic, 9 lignes et 18 filtres, environ 66 mots ; environ 20 s, réponse fausse probable | 0 geste : « 6 à examiner » puis la première ligne, GOELAND 466 (25 mots) ; environ 7 s, réponse juste |
+| b. Comprendre pourquoi | 3 clics, 1 défilement, environ 130 mots ; environ 41 s | la phrase de la ligne suffit ; J puis Entrée ouvre le récit (niveau, qui, phrase, preuve sur la carte : 9 km, 4,1 km) ; environ 6 à 8 s |
+| c. Classer un faux positif | environ 6 s par alerte, 12 à 19 s pour un navire | C puis 1 : 2 touches pour tout le dossier ; 3 alertes journalisées une à une (motif, auteur, mention du dossier), vérifié en base |
+
+Temps estimés au rythme de lecture de l'audit, gestes et mots comptés sur les captures ; le temps d'un vrai opérateur
+reste à mesurer. Le compteur indique 6 à examiner, la maquette 3 : trois navires des listes sont en séjour prolongé
+d'après le moteur (des traversiers, à trancher).
+
+**Aucune perte** : les 27 états de l'audit rejoués (`captures` et `apres` dans le bloc notes) sans erreur de page ;
+couches détaillées, fiches infrastructure, zone, passage et détection, fil complet, Cmd + K, direct, plage et rejeu,
+frise, démonstration, masquage et adresse de la page fonctionnent. La décision et le devis lisent le dossier à
+l'instant affiché (jamais au delà de maintenant), sinon un dossier d'une plage passée serait introuvable.

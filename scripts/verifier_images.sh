@@ -284,8 +284,17 @@ verifier_controle() {
   [ "$code" = 403 ] || { rm -f "$jar" "$corps" "$corps.entetes"; echec "controle : une autre origine n'est pas refusée (HTTP $code)"; }
   local motif
   motif=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['detail'])" "$corps")
+  # Lot U : dossiers, récit introuvable (404 et non 500), mesures des décisions, à travers nginx, avec les règles montées
+  local route attendu
+  for route in "dossiers?end=2026-10-09T21:00:00Z 200" "dossiers/navire:1?end=2026-10-09T21:00:00Z 404" \
+               "decisions/mesures?jours=30 200"; do
+    attendu=${route##* }; route=${route% *}
+    code=$(curl -s -o "$corps" -w '%{http_code}' "http://$hote/api/$route")
+    [ "$code" = "$attendu" ] || { cat "$corps"; echo; docker logs --tail 15 "$API"; rm -f "$jar" "$corps" "$corps.entetes"
+      echec "controle : /api/$route répond $code au lieu de $attendu"; }
+  done
   rm -f "$jar" "$corps" "$corps.entetes"
-  ok "controle : connexion et écriture du panneau à travers nginx, cookie sans Secure en http, autre origine refusée ($motif)"
+  ok "controle : connexion et écriture du panneau à travers nginx, cookie sans Secure en http, autre origine refusée ($motif) ; dossiers et mesures des décisions servis"
 }
 
 verifier_traces() {
