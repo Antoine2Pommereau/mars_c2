@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, LogOut, Minus, Plus } from "lucide-react";
 import { type ReactNode, useState } from "react";
-import { api, type BlocRegle, type EtatControle, type Interrupteur, type RegleControle, type SystemeControle } from "../lib/api";
+import { api, type PrefsNotification, type BlocRegle, type EtatControle, type Interrupteur, type RegleControle, type SystemeControle } from "../lib/api";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
+import { libelleAlerte } from "../registres/alertes";
 
 const C = L.controle;
 const euros = (v: number) => `${v.toFixed(2).replace(".", ",")} €`;
@@ -321,6 +322,86 @@ function Regle({ r, actif }: { r: RegleControle; actif: boolean }) {
   );
 }
 
+const N = C.notif;
+
+function Bascule({ on, onChange, actif, label }: { on: boolean; onChange: (v: boolean) => void; actif: boolean; label: string }) {
+  return (
+    <label className={`flex items-center gap-2 py-0.5 text-[12px] ${actif ? "cursor-pointer" : ""}`}>
+      <input type="checkbox" checked={on} disabled={!actif} onChange={(e) => onChange(e.target.checked)}
+        className="accent-[var(--color-signal)]" />
+      <span className={on ? "text-ink" : "text-muted"}>{label}</span>
+    </label>
+  );
+}
+
+/** Préférences de notification (phase D) : gravité et types d'alerte, tip and cue, catégories système, heures calmes */
+function Notifications({ actif }: { actif: boolean }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["controle", "notifications"], queryFn: api.controle.notifications });
+  const [p, setP] = useState<PrefsNotification | null>(null);
+  const prefs = p ?? q.data?.preferences ?? null;
+  const save = useMutation({ mutationFn: () => api.controle.reglerNotifications(prefs!),
+    onSuccess: () => { setP(null); qc.invalidateQueries({ queryKey: ["controle"] }); } });
+  const test = useMutation({ mutationFn: api.controle.notificationTest,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["controle", "journal"] }) });
+  if (!prefs || !q.data) return null;
+  const maj = (f: (x: PrefsNotification) => void) => { const x = structuredClone(prefs); f(x); setP(x); };
+  return (
+    <div className="space-y-2 text-[12px]">
+      <div>
+        <div className="flex items-center justify-between">
+          <span className="text-muted">{N.alertes}</span>
+          <select disabled={!actif} value={prefs.alertes.gravite_min} aria-label={N.gravite}
+            onChange={(e) => maj((x) => { x.alertes.gravite_min = e.target.value; })}
+            className="rounded border border-hair bg-abyss px-1 py-0.5 text-[11.5px] text-ink">
+            {q.data.gravites.map((g) => <option key={g} value={g}>{N.gravite} {L.gravite[g] ?? g}</option>)}
+          </select>
+        </div>
+        <div className="mt-1 flex flex-wrap gap-1">
+          {Object.entries(prefs.alertes.types).map(([t, on]) => (
+            <button key={t} disabled={!actif} aria-pressed={on} onClick={() => maj((x) => { x.alertes.types[t] = !on; })}
+              className={`rounded-full border px-2 py-0.5 text-[11px] ${on ? "border-hair bg-raised text-ink" : "border-transparent text-faint"}`}>
+              {libelleAlerte(t)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <Bascule on={prefs.tip_and_cue} actif={actif} label={N.tip} onChange={(v) => maj((x) => { x.tip_and_cue = v; })} />
+      <div>
+        <p className="text-muted">{N.systeme}</p>
+        <div className="grid grid-cols-2">
+          {q.data.categories.map((c) => (
+            <Bascule key={c} on={prefs.categories[c] ?? true} actif={actif} label={N.categories[c] ?? c}
+              onChange={(v) => maj((x) => { x.categories[c] = v; })} />
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="flex items-center gap-2">
+          <Bascule on={prefs.heures_calmes.actif} actif={actif} label={N.calmes}
+            onChange={(v) => maj((x) => { x.heures_calmes.actif = v; })} />
+          {q.data.heures_calmes_maintenant && <span className="text-[11px] text-signal">{N.maintenant}</span>}
+        </div>
+        <div className="flex items-center gap-1.5 pl-5">
+          {(["debut", "fin"] as const).map((k) => (
+            <input key={k} type="time" disabled={!actif} value={prefs.heures_calmes[k]} aria-label={`${N.calmes} ${k}`}
+              onChange={(e) => maj((x) => { x.heures_calmes[k] = e.target.value; })}
+              className="rounded border border-hair bg-abyss px-1 py-0.5 text-[11.5px] text-ink" />
+          ))}
+        </div>
+        <p className="pl-5 text-[11px] text-faint">{N.calmesNote}{q.data.retenues ? `, ${N.retenues(q.data.retenues)}` : ""}</p>
+      </div>
+      {!q.data.ntfy && <p className="text-[11px] text-gap">{N.sansNtfy}</p>}
+      <div className="flex items-center justify-between gap-2">
+        <button className={bouton} disabled={!actif || test.isPending} onClick={() => test.mutate()}>{N.test}</button>
+        <button className={bouton} disabled={!actif || !p || save.isPending} onClick={() => save.mutate()}>{N.enregistrer}</button>
+      </div>
+      {(save.error || test.error) && <p className="text-[11.5px] text-gap">{(save.error ?? test.error)?.message}</p>}
+      {test.data && <p className="text-[11.5px] text-muted">{N.envoyee}</p>}
+    </div>
+  );
+}
+
 function Journal({ lignes }: { lignes: Props[] }) {
   if (!lignes.length) return <p className="text-[12px] text-muted">{C.journalVide}</p>;
   return (
@@ -399,6 +480,9 @@ export default function ControlePanel() {
             <ul>{reglesQ.data.regles.map((r) => <Regle key={r.regle} r={r} actif={actif} />)}</ul>
           </Section>
         )}
+        <Section id="notifications" titre={C.sections.notifications}>
+          <Notifications actif={actif} />
+        </Section>
         {systemeQ.data && (
           <Section id="systeme" titre={C.sections.systeme}>
             <Systeme s={systemeQ.data} />

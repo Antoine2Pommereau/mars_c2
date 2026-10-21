@@ -7,6 +7,7 @@ de l'opérateur. Les routes de lecture ne changent pas (aucune connexion requise
 écrit ici est lu par le conteneur taches (mars/controle.appliquer) à chaque cycle."""
 import asyncio
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -33,8 +34,18 @@ async def journaliser(c, auteur: str, action: str, cible: str | None, avant=None
     traces.attributs(**{"controle.action": action, "controle.cible": cible or "", "controle.auteur": auteur})
 
 
-async def notifier(categorie: str, gravite: str, titre: str, message: str):
-    await asyncio.to_thread(controle.notifier, categorie, gravite, titre, message)
+async def notifier(c, categorie: str, gravite: str, titre: str, message: str) -> str:
+    """Notification selon les préférences du panneau (envoyée, retenue pour le résumé du réveil, ou tue)."""
+    prefs = controle.preferences(load_rules(), await c.fetchval(
+        "SELECT valeur FROM reglages_controle WHERE cle = 'notif:preferences'"))
+    d = controle.decision_notification(prefs, categorie, gravite, datetime.now(timezone.utc))
+    if d == "retenir":
+        await c.execute("INSERT INTO notifications_retenues (categorie, gravite, titre, message) VALUES ($1, $2, $3, $4)",
+                        categorie, gravite, titre, message)
+    elif d == "envoyer":
+        await asyncio.to_thread(controle.envoyer, gravite, titre, message, "satellite")
+    traces.attributs(**{"notification.categorie": categorie, "notification.decision": d})
+    return d
 
 
 # Session
@@ -325,10 +336,61 @@ async def basculer(request: Request, source: str, x: Bascule, op: str = Depends(
                           controle._public(apres), motif)
     if bool(avant["en_pause"]) != x.en_pause or x.en_pause:
         fin = f" jusqu'au {controle._paris(x.jusqu_a):%d/%m/%Y %H:%M}" if x.en_pause and x.jusqu_a else ""
-        await notifier("satellites", "info", f"MARS C2 : {controle.NOMS[source]} "
-                       f"{'en pause' if x.en_pause else 'repris'}",
-                       f"{'Pause' if x.en_pause else 'Reprise'}{fin} par {op}" + (f" : {motif}" if motif else ""))
+        async with request.app.state.pool.acquire() as c:
+            await notifier(c, "travailleurs", "info", f"MARS C2 : {controle.NOMS[source]} "
+                           f"{'en pause' if x.en_pause else 'repris'}",
+                           f"{'Pause' if x.en_pause else 'Reprise'}{fin} par {op}" + (f" : {motif}" if motif else ""))
     return {**apres, "nom": controle.NOMS[source]}
+
+
+# Notifications (phase D)
+
+@router.get("/api/controle/notifications")
+async def notifications(request: Request):
+    rules = load_rules()
+    async with request.app.state.pool.acquire() as c:
+        en_base = await c.fetchval("SELECT valeur FROM reglages_controle WHERE cle = 'notif:preferences'")
+        retenues = await c.fetchval("SELECT count(*) FROM notifications_retenues WHERE envoyee_le IS NULL")
+    prefs = controle.preferences(rules, en_base)
+    return {"preferences": prefs, "par_le_panneau": en_base is not None, "retenues": retenues,
+            "heures_calmes_maintenant": controle.en_heures_calmes(prefs, datetime.now(timezone.utc)),
+            "gravites": list(controle.GRAVITES), "categories": list(controle.CATEGORIES),
+            "ntfy": bool(os.environ.get("NTFY_SUJET"))}
+
+
+class Preferences(BaseModel):
+    preferences: dict
+    motif: str | None = Field(default=None, max_length=300)
+
+
+@router.post("/api/controle/notifications")
+async def regler_notifications(request: Request, x: Preferences, op: str = Depends(exiger_operateur)):
+    rules = load_rules()
+    try:
+        p = controle.verifier_preferences(rules, x.preferences)
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(422, str(e))
+    async with request.app.state.pool.acquire() as c, c.transaction():
+        avant = await c.fetchval("SELECT valeur FROM reglages_controle WHERE cle = 'notif:preferences' FOR UPDATE")
+        await c.execute("INSERT INTO reglages_controle (cle, valeur, auteur) VALUES ('notif:preferences', "
+                        "$1::text::jsonb, $2) ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur, "
+                        "auteur = EXCLUDED.auteur, mis_a_jour_le = now()", json.dumps(p), op)
+        await journaliser(c, op, "notifications", "preferences", avant, p, (x.motif or "").strip() or None)
+    return {"preferences": controle.preferences(rules, p)}
+
+
+@router.post("/api/controle/notifications/test")
+async def notification_test(request: Request, op: str = Depends(exiger_operateur)):
+    """Notification d'essai, envoyée tout de suite (préférences et heures calmes ignorées : on vérifie le canal)."""
+    if not os.environ.get("NTFY_SUJET"):
+        raise HTTPException(503, "NTFY_SUJET absent du .env : aucune notification ne peut partir")
+    code = await asyncio.to_thread(controle.envoyer, "info", "MARS C2 : notification de test",
+                                   f"Envoyée depuis le panneau de contrôle par {op}", "white_check_mark")
+    async with request.app.state.pool.acquire() as c:
+        await journaliser(c, op, "notification_test", "ntfy", None, {"http": code})
+    if code is None:
+        raise HTTPException(502, "ntfy injoignable ou refus (voir les journaux de l'API)")
+    return {"envoyee": True, "http": code}
 
 
 class Plafond(BaseModel):

@@ -715,19 +715,14 @@ def _retour_alerte(conn, alerte_id: int, trace_alerte: str | None, did: int, tip
         releve = nouvelle is not None and _rang(nouvelle) > _rang(gravite)
         sp.set_attributes({"tip.gravite_avant": gravite, "tip.gravite_apres": nouvelle or gravite, "tip.relevee": releve})
         if releve and nouvelle in tc.get("ntfy_gravites", []):
-            (notifier or _ntfy)(f"MARS C2 : alerte {alerte_id} relevée à {nouvelle}",
-                                f"Vérification satellite ({tip}) : {detail['motif']}")
+            titre, message = (f"MARS C2 : alerte {alerte_id} relevée à {nouvelle}",
+                              f"Vérification satellite ({tip}) : {detail['motif']}")
+            if notifier:
+                notifier(titre, message)
+            else:                       # préférences du panneau de contrôle et heures calmes (lot P)
+                from mars import controle
+                controle.notifier("tip_and_cue", nouvelle, titre, message, conn=conn)
     return {"alerte": alerte_id, "gravite_avant": gravite, "gravite_apres": nouvelle or gravite}
-
-
-def _ntfy(titre: str, message: str):
-    from mars import supervision
-    n = supervision.Ntfy.from_env()
-    if n is not None:
-        try:
-            n.envoyer(titre, message, priorite="high", tags="satellite")
-        except Exception as e:                       # la notification ne doit jamais bloquer le résultat
-            traces.erreur(f"ntfy : {e}")
 
 
 # Rejeu (taches.py tip-rejeu) : sur les tips d'une période passée, demandes qu'ils auraient données, passages utiles

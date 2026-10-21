@@ -99,7 +99,7 @@ def basculer(conn, source: str, en_pause_: bool, auteur: str, motif: str | None 
     journaliser(conn, auteur, action, source, _public(avant), _public(apres), motif)
     if bool(avant["en_pause"]) != en_pause_ or en_pause_:
         fin = f" jusqu'au {_paris(jusqu_a):%d/%m/%Y %H:%M}" if jusqu_a else ""
-        (envoi if envoi is not None else notifier)("satellites", "info",
+        (envoi if envoi is not None else lambda *a: notifier(*a, conn=conn))("travailleurs", "info",
                  f"MARS C2 : {NOMS[source]} {'en pause' if en_pause_ else 'repris'}",
                  f"{'Pause' if en_pause_ else 'Reprise'}{fin} par {auteur}" + (f" : {motif}" if motif else ""))
     return apres
@@ -111,7 +111,7 @@ def _public(etat: dict) -> dict:
 
 def echeances(conn, now: datetime, envoi=None) -> dict:
     """Chaque minute (taches) : reprise automatique des pauses échues, notification la veille d'une reprise prévue."""
-    envoi = envoi if envoi is not None else notifier
+    envoi = envoi if envoi is not None else (lambda *a: notifier(*a, conn=conn))
     out = {"reprises": [], "veilles": []}
     for (source,) in conn.execute("SELECT source FROM interrupteurs_satellites WHERE en_pause AND jusqu_a <= %s",
                                   (now,)).fetchall():
@@ -121,7 +121,7 @@ def echeances(conn, now: datetime, envoi=None) -> dict:
             "SELECT source, jusqu_a FROM interrupteurs_satellites WHERE en_pause AND jusqu_a > %s AND jusqu_a <= %s "
             "AND veille_notifiee_le IS NULL", (now, now + timedelta(hours=24))).fetchall():
         conn.execute("UPDATE interrupteurs_satellites SET veille_notifiee_le = now() WHERE source = %s", (source,))
-        envoi("satellites", "info", f"MARS C2 : reprise de {NOMS[source]} demain",
+        envoi("travailleurs", "info", f"MARS C2 : reprise de {NOMS[source]} demain",
                  f"Reprise automatique le {_paris(fin):%d/%m/%Y à %H:%M} (heure de Paris)")
         out["veilles"].append(source)
     return out
@@ -338,16 +338,111 @@ def budget_calcul(rows, rules: dict, mois: datetime) -> dict:
                                 "restant": round(max(plafond - partage, 0.0), 2)}}
 
 
-# Notifications : envoi par défaut (ntfy) ; la phase D y branchera les préférences et les heures calmes
+# Notifications (phase D) : préférences, heures calmes, résumé au réveil
 
-def notifier(categorie: str, gravite: str, titre: str, message: str):
+CATEGORIES = ("pannes", "disque", "collecte", "travailleurs")
+GRAVITES = ("faible", "moyenne", "elevee", "critique")
+
+
+def preferences(rules: dict, en_base: dict | None) -> dict:
+    """Préférences effectives : celles du panneau (objets de premier niveau entiers) par dessus celles du fichier,
+    comme la fonction SQL preferences_notification."""
+    return {**copy.deepcopy((rules.get("controle") or {}).get("notifications") or {}), **(en_base or {})}
+
+
+def en_heures_calmes(prefs: dict, now: datetime) -> bool:
+    """Même calcul que la fonction SQL heures_calmes : heure de Paris, plage qui peut passer minuit."""
+    hc = prefs.get("heures_calmes") or {}
+    if not hc.get("actif", True):
+        return False
+    d, f = (datetime.strptime(hc.get(k, v), "%H:%M").time() for k, v in (("debut", "23:00"), ("fin", "07:00")))
+    h = _paris(now).time()
+    if d == f:
+        return False
+    return d <= h < f if d < f else (h >= d or h < f)
+
+
+def verifier_preferences(rules: dict, p: dict) -> dict:
+    """Préférences envoyées par le panneau : clés, gravités, types, catégories et heures connues seulement."""
+    defaut = preferences(rules, None)
+    out = {}
+    a = p.get("alertes") or {}
+    if a.get("gravite_min") not in GRAVITES:
+        raise ValueError(f"gravité inconnue : {a.get('gravite_min')}")
+    types = defaut["alertes"]["types"]
+    out["alertes"] = {"gravite_min": a["gravite_min"],
+                      "types": {t: bool((a.get("types") or {}).get(t, v)) for t, v in types.items()}}
+    out["tip_and_cue"] = bool(p.get("tip_and_cue", True))
+    out["categories"] = {c: bool((p.get("categories") or {}).get(c, True)) for c in CATEGORIES}
+    hc = p.get("heures_calmes") or {}
+    for k in ("debut", "fin"):
+        try:
+            datetime.strptime(hc.get(k, ""), "%H:%M")
+        except ValueError:
+            raise ValueError(f"heure {k} invalide (HH:MM) : {hc.get(k)}") from None
+    out["heures_calmes"] = {"actif": bool(hc.get("actif", True)), "debut": hc["debut"], "fin": hc["fin"]}
+    return out
+
+
+def decision_notification(prefs: dict, categorie: str, gravite: str | None, now: datetime,
+                          type_alerte: str | None = None) -> str:
+    """envoyer, retenir (heures calmes) ou taire (préférence coupée). Catégories : les quatre catégories système,
+    tip_and_cue, alerte (avec type_alerte et gravité). Une panne grave n'est jamais retenue."""
+    if categorie in CATEGORIES:
+        if not (prefs.get("categories") or {}).get(categorie, True):
+            return "taire"
+    elif categorie == "tip_and_cue":
+        if not prefs.get("tip_and_cue", True):
+            return "taire"
+    elif categorie == "alerte":
+        a = prefs.get("alertes") or {}
+        if not (a.get("types") or {}).get(type_alerte, True):
+            return "taire"
+        if gravite not in GRAVITES or GRAVITES.index(gravite) < GRAVITES.index(a.get("gravite_min", "elevee")):
+            return "taire"
+    if gravite != "grave" and en_heures_calmes(prefs, now):
+        return "retenir"
+    return "envoyer"
+
+
+def preferences_en_base(conn) -> dict | None:
+    r = conn.execute("SELECT valeur FROM reglages_controle WHERE cle = 'notif:preferences'").fetchone()
+    return r[0] if r else None
+
+
+def notifier(categorie: str, gravite: str, titre: str, message: str, conn=None, rules: dict | None = None,
+             type_alerte: str | None = None, now: datetime | None = None) -> str:
+    """Notification selon les préférences (psycopg) : envoyée, retenue pour le résumé du réveil, ou tue. Sans connexion,
+    envoyée telle quelle (base indisponible). Retourne la décision."""
+    if conn is not None:
+        d = decider(conn, categorie, gravite, titre, message, rules, type_alerte, now)
+        if d != "envoyer":
+            return d
+    envoyer(gravite, titre, message, "satellite" if categorie in ("travailleurs", "tip_and_cue") else "warning")
+    return "envoyer"
+
+
+def decider(conn, categorie: str, gravite: str, titre: str, message: str, rules: dict | None = None,
+            type_alerte: str | None = None, now: datetime | None = None) -> str:
+    """Décision selon les préférences (psycopg) ; une notification retenue est gardée pour le résumé du réveil."""
+    from mars.config import load_rules
+    prefs = preferences(rules or load_rules(), preferences_en_base(conn))
+    d = decision_notification(prefs, categorie, gravite, now or datetime.now(timezone.utc), type_alerte)
+    if d == "retenir":
+        conn.execute("INSERT INTO notifications_retenues (categorie, gravite, titre, message) VALUES (%s, %s, %s, %s)",
+                     (categorie, gravite, titre, message))
+    traces.attributs(**{"notification.categorie": categorie, "notification.decision": d})
+    return d
+
+
+def envoyer(gravite: str, titre: str, message: str, tags: str = "warning"):
     from mars import supervision
     n = supervision.Ntfy.from_env()
     if n is None:
         return None
     try:
         return n.envoyer(titre, message, priorite="high" if gravite in ("grave", "elevee", "critique") else "default",
-                         tags="satellite" if categorie == "satellites" else "warning")
+                         tags=tags)
     except Exception as e:                       # une notification ne bloque jamais l'action
         traces.erreur(f"ntfy : {e}")
         return None
@@ -414,3 +509,51 @@ def jeton_session() -> tuple[str, str]:
 
 def empreinte_jeton(j: str) -> str:
     return hashlib.sha256(j.encode()).hexdigest()
+
+
+def resume_du_reveil(conn, rules: dict, now: datetime) -> dict:
+    """Hors des heures calmes : notifications retenues envoyées en un seul résumé (psycopg)."""
+    prefs = preferences(rules, preferences_en_base(conn))
+    if en_heures_calmes(prefs, now):
+        return {"retenues": None}
+    rows = conn.execute("SELECT id, titre FROM notifications_retenues WHERE envoyee_le IS NULL ORDER BY le").fetchall()
+    if not rows:
+        return {"retenues": 0}
+    titres = [t.removeprefix("MARS C2 : ") for _i, t in rows]
+    message = "\n".join(titres[:10]) + (f"\n… et {len(titres) - 10} autres" if len(titres) > 10 else "")
+    envoyer("info", f"MARS C2 : {len(rows)} notification(s) pendant les heures calmes", message, "sunrise")
+    conn.execute("UPDATE notifications_retenues SET envoyee_le = now() WHERE id = ANY(%s)", ([i for i, _t in rows],))
+    return {"retenues": len(rows)}
+
+
+def notifier_alertes(conn, rules: dict, now: datetime, envoi=None) -> dict:
+    """Chaque minute (taches) : nouvelles alertes depuis la dernière vue, notifiées selon la gravité et le type (au delà
+    de par_minute_max, un seul message de synthèse). Au premier passage, la dernière alerte est seulement notée."""
+    envoi = envoi or notifier
+    prefs = preferences(rules, preferences_en_base(conn))
+    r = conn.execute("SELECT (valeur->>'id')::bigint FROM notifications_etat WHERE cle = 'derniere_alerte'").fetchone()
+    dernier = conn.execute("SELECT coalesce(max(id), 0) FROM alerts").fetchone()[0]
+    conn.execute("INSERT INTO notifications_etat (cle, valeur) VALUES ('derniere_alerte', %s) ON CONFLICT (cle) DO UPDATE "
+                 "SET valeur = EXCLUDED.valeur, mis_a_jour_le = now()", (json.dumps({"id": dernier}),))
+    if r is None:
+        return {"nouvelles": 0, "initialise": dernier}
+    rows = conn.execute("SELECT id, type, severity, details->>'source' FROM alerts WHERE id > %s AND id <= %s ORDER BY id",
+                        (r[0], dernier)).fetchall()
+    retenues = [x for x in rows if decision_notification(prefs, "alerte", x[2], now, x[1]) != "taire"]
+    nmax = int(prefs.get("par_minute_max", 5))
+    for aid, typ, sev, src in retenues[:nmax]:
+        envoi("alerte", sev, f"MARS C2 : alerte {aid}, {typ} {sev}", f"Nouvelle alerte {typ}"
+              + (f" ({src})" if src else "") + f", gravité {sev}", conn=conn, rules=rules, type_alerte=typ, now=now)
+    if len(retenues) > nmax:
+        envoi("alerte", "elevee", f"MARS C2 : {len(retenues) - nmax} autres alertes",
+              f"{len(retenues)} nouvelles alertes notifiables en une minute", conn=conn, rules=rules,
+              type_alerte=None, now=now)
+    return {"nouvelles": len(rows), "notifiees": min(len(retenues), nmax)}
+
+
+def recopier_defauts(conn, rules: dict):
+    """Préférences par défaut du fichier, recopiées pour la fonction SQL preferences_notification (Grafana)."""
+    conn.execute("INSERT INTO notifications_etat (cle, valeur) VALUES ('defauts', %s) ON CONFLICT (cle) DO UPDATE "
+                 "SET valeur = EXCLUDED.valeur, mis_a_jour_le = now()",
+                 (json.dumps((rules.get("controle") or {}).get("notifications") or {}),))
+

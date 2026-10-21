@@ -645,7 +645,9 @@ d'un point, Grafana muette en pause. Phase B : section Système (services, versi
 conteneur lue dans son cgroup, retard, disque, échecs avec lien vers la trace, lien vers Grafana). Phase C (migration
 34, règles 2026.10.37) : mode actif, observation ou coupé par règle et sous type, en base, prime sur le fichier
 (`ais_gap.mode` compris), aucune alerte supprimée, épisodes observés comptés, empreinte de l'état du panneau dans
-chaque alerte (`alerts.controle_empreinte`).
+chaque alerte (`alerts.controle_empreinte`). Phase D (migration 35, règles 2026.10.38) : préférences de notification par
+gravité et type d'alerte, tip and cue, catégories système, heures calmes de Paris avec résumé au réveil, appliquées à
+taches, à l'API et à Grafana (`notification_permise`), notification de test.
 
 ## 10. Tests
 

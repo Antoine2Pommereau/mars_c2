@@ -1,4 +1,7 @@
-# Règles d'alerte de Grafana (étape D). Seuils dans config/supervision.env, le seul fichier à modifier : taches les
+# Règles d'alerte de Grafana (étape D). Lot P, phase D : chaque condition passe par notification_permise(catégorie,
+# grave) (migration 35) : catégorie coupée au panneau de contrôle, ou heures calmes sauf pannes graves (disque, collecte,
+# ingestion) ; une condition retenue la nuit se déclenche au réveil si elle dure encore.
+# Seuils dans config/supervision.env, le seul fichier à modifier : taches les
 # recopie toutes les 10 minutes dans la table parametres_supervision, où ces règles les lisent (Grafana 12 ne remplace
 # pas les variables d'environnement dans les règles provisionnées). Valeurs de repli dans les requêtes : celles du
 # fichier, au cas où taches ne les aurait jamais écrites. Chaque règle : A, la mesure (pour le message) ; B, 1 si la
@@ -29,7 +32,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN m.libre_pct < coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_disque_pct'), 15) THEN 1 ELSE 0 END AS alerte FROM (SELECT libre_pct FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) m"}
+                    rawSql: "SELECT CASE WHEN m.libre_pct < coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_disque_pct'), 15) AND notification_permise('disque', true) THEN 1 ELSE 0 END AS alerte FROM (SELECT libre_pct FROM mesures_disque ORDER BY mesure_le DESC LIMIT 1) m"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -53,7 +56,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN extract(epoch FROM now() - dernier_le) / 60 > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_collecte_min'), 5) THEN 1 ELSE 0 END AS alerte FROM signes_de_vie WHERE service = 'collecte'"}
+                    rawSql: "SELECT CASE WHEN extract(epoch FROM now() - dernier_le) / 60 > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_collecte_min'), 5) AND notification_permise('collecte', true) THEN 1 ELSE 0 END AS alerte FROM signes_de_vie WHERE service = 'collecte'"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -77,7 +80,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN greatest(extract(epoch FROM now() - dernier_le), coalesce((detail->>'retard_s')::float8, 0)) / 60 > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_ingestion_min'), 10) THEN 1 ELSE 0 END AS alerte FROM signes_de_vie WHERE service = 'ingestion'"}
+                    rawSql: "SELECT CASE WHEN greatest(extract(epoch FROM now() - dernier_le), coalesce((detail->>'retard_s')::float8, 0)) / 60 > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_ingestion_min'), 10) AND notification_permise('collecte', true) THEN 1 ELSE 0 END AS alerte FROM signes_de_vie WHERE service = 'ingestion'"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -97,7 +100,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN extract(hour FROM now() AT TIME ZONE 'UTC') >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_heure_nuit_viirs'), 8) AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1 AND traite_le IS NOT NULL) AND NOT source_en_pause('viirs') THEN 1 ELSE 0 END AS alerte"}
+                    rawSql: "SELECT CASE WHEN extract(hour FROM now() AT TIME ZONE 'UTC') >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_heure_nuit_viirs'), 8) AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1 AND traite_le IS NOT NULL) AND NOT source_en_pause('viirs') AND notification_permise('travailleurs', false) THEN 1 ELSE 0 END AS alerte"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -116,7 +119,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "WITH n AS (SELECT coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int AS v) SELECT task AS tache, 1 AS alerte FROM n, (SELECT task, array_agg(status ORDER BY started_at DESC) AS s FROM task_runs WHERE started_at > now() - interval '7 days' AND status <> 'en_cours' AND NOT (details ? 'refus') GROUP BY task) x WHERE array_length(s, 1) >= n.v AND s[1:n.v] <@ ARRAY['echec']"}
+                    rawSql: "WITH n AS (SELECT coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int AS v) SELECT task AS tache, 1 AS alerte FROM n, (SELECT task, array_agg(status ORDER BY started_at DESC) AS s FROM task_runs WHERE started_at > now() - interval '7 days' AND status <> 'en_cours' AND NOT (details ? 'refus') GROUP BY task) x WHERE array_length(s, 1) >= n.v AND s[1:n.v] <@ ARRAY['echec'] AND notification_permise('pannes', false)"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -141,7 +144,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN coalesce(extract(epoch FROM now() - max(mesure_le) FILTER (WHERE recus > prec)) / 60, 1440) > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_collecteur_muet_min'), 15) THEN 1 ELSE 0 END AS alerte FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '1 day') x WHERE EXISTS (SELECT 1 FROM mesures_otel WHERE mesure_le > now() - interval '30 minutes')"}
+                    rawSql: "SELECT CASE WHEN coalesce(extract(epoch FROM now() - max(mesure_le) FILTER (WHERE recus > prec)) / 60, 1440) > coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_collecteur_muet_min'), 15) AND notification_permise('pannes', false) THEN 1 ELSE 0 END AS alerte FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '1 day') x WHERE EXISTS (SELECT 1 FROM mesures_otel WHERE mesure_le > now() - interval '30 minutes')"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -165,7 +168,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN coalesce(sum(greatest(refuses - prec, 0)), 0) > 0 THEN 1 ELSE 0 END AS alerte FROM (SELECT mesure_le, refuses, lag(refuses) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '16 minutes') x WHERE mesure_le > now() - interval '15 minutes'"}
+                    rawSql: "SELECT CASE WHEN coalesce(sum(greatest(refuses - prec, 0)), 0) > 0 AND notification_permise('pannes', false) THEN 1 ELSE 0 END AS alerte FROM (SELECT mesure_le, refuses, lag(refuses) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel WHERE mesure_le > now() - interval '16 minutes') x WHERE mesure_le > now() - interval '15 minutes'"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -191,7 +194,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN count(*) > 0 THEN 1 ELSE 0 END AS alerte FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE 'GPU indisponible pendant toute la fenêtre utile%' AND completed_at > now() - interval '55 minutes'"}
+                    rawSql: "SELECT CASE WHEN count(*) > 0 AND notification_permise('travailleurs', false) THEN 1 ELSE 0 END AS alerte FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE 'GPU indisponible pendant toute la fenêtre utile%' AND completed_at > now() - interval '55 minutes'"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -217,7 +220,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN count(*) > 0 THEN 1 ELSE 0 END AS alerte FROM types_incompatibles WHERE depuis > now() - interval '55 minutes' AND leve_le IS NULL"}
+                    rawSql: "SELECT CASE WHEN count(*) > 0 AND notification_permise('travailleurs', false) THEN 1 ELSE 0 END AS alerte FROM types_incompatibles WHERE depuis > now() - interval '55 minutes' AND leve_le IS NULL"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
@@ -243,7 +246,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN count(*) > 0 THEN 1 ELSE 0 END AS alerte FROM task_runs WHERE task = 'stats_reconstruction' AND status = 'echec' AND started_at > now() - interval '55 minutes'"}
+                    rawSql: "SELECT CASE WHEN count(*) > 0 AND notification_permise('pannes', false) THEN 1 ELSE 0 END AS alerte FROM task_runs WHERE task = 'stats_reconstruction' AND status = 'echec' AND started_at > now() - interval '55 minutes'"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}

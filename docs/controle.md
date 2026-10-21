@@ -102,3 +102,24 @@ navire des listes, détections VIIRS, Sentinel 1 et Sentinel 2 avec leurs trois 
   (`alerts.controle_empreinte`, 16 caractères) de l'état du panneau qui l'a influencée (modes des règles, puis zones
   de vigilance) ; l'état complet est gardé une fois par empreinte (`empreintes_controle`). Pied de la fiche d'une
   alerte : « Règles 2026.10.37, panneau 1a2b3c4d ».
+
+## Phase D : notifications (migration 35, règles 2026.10.38)
+
+Préférences en base (`reglages_controle`, clé `notif:preferences`) par dessus celles du fichier
+(`controle.notifications`), objet par objet :
+
+| Préférence | Défaut | Effet |
+|---|---|---|
+| Nouvelles alertes | gravité élevée au moins ; tous les types sauf AIS_UNCONFIRMED | une notification par nouvelle alerte (au plus 5 par minute, puis une synthèse) ; au premier passage, la dernière alerte est seulement notée |
+| Résultat de tip and cue | oui | alerte relevée par une vérification satellite (gravités de `tip_and_cue.ntfy_gravites`) |
+| Catégories système | pannes, disque, collecte, travailleurs : oui | pannes : tâches en échec, collecteur de traces, statistiques ; disque ; collecte : collecte figée et ingestion ; travailleurs : nuit VIIRS absente, GPU, pauses et reprises |
+| Heures calmes | 23:00 à 07:00, heure de Paris | tout est retenu sauf les pannes graves (disque presque plein, collecte figée, ingestion) ; résumé au réveil en un message |
+
+* Appliqué aux envois de taches (`controle.notifier`, `controle.decider`) et de l'API, aux alertes de secours (catégorie
+  coupée respectée, une alerte déjà envoyée suit son cours), et aux règles de Grafana : chaque condition passe par la
+  fonction SQL `notification_permise(catégorie, grave)`, qui lit les mêmes préférences (`preferences_notification`,
+  défauts du fichier recopiés par taches chaque minute dans `notifications_etat`). Une condition de Grafana retenue la
+  nuit se déclenche au réveil si elle dure encore ; le résumé du réveil réunit les notifications de taches et de l'API.
+* Calcul des heures calmes identique en Python et en SQL (testé sur les mêmes instants, heure d'été et d'hiver).
+* Bouton « Envoyer une notification de test » : part tout de suite (préférences ignorées), journalisé ; refusé si
+  `NTFY_SUJET` manque.

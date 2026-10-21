@@ -24,7 +24,15 @@ export const L = {
   controle: {
     titre: "Contrôle", regles: (v: string) => `règles ${v}`,
     sections: { connexion: "Opérateur", capteurs: "Capteurs", depenses: "Dépenses", demande: "Demande d'observation",
-      systeme: "Système", regles: "Règles", journal: "Journal" } as Record<string, string>,
+      systeme: "Système", regles: "Règles", notifications: "Notifications", journal: "Journal" } as Record<string, string>,
+    notif: {
+      alertes: "Nouvelles alertes", gravite: "À partir de", tip: "Résultat de tip and cue qui relève une alerte",
+      systeme: "Système", categories: { pannes: "Pannes", disque: "Disque", collecte: "Collecte", travailleurs: "Travailleurs" } as Record<string, string>,
+      calmes: "Heures calmes (Paris)", calmesNote: "tout est retenu sauf les pannes graves, résumé au réveil",
+      maintenant: "en cours", retenues: (n: number) => `${n} retenue(s)`,
+      enregistrer: "Enregistrer", test: "Envoyer une notification de test", envoyee: "Notification envoyée",
+      sansNtfy: "NTFY_SUJET absent : aucune notification ne part",
+    },
     regle: {
       modes: { actif: "actif", observation: "observation", coupe: "coupé" } as Record<string, string>,
       compte: (a: number, e: number) => `7 j : ${a} alertes, ${e} épisodes`,
@@ -52,7 +60,7 @@ export const L = {
     journalVide: "Aucune action", actions: {
       pause: "pause", reprise: "reprise", plafond: "plafond", demande: "demande", connexion: "connexion",
       connexion_refusee: "connexion refusée", deconnexion: "déconnexion", malgre_pause: "malgré la pause",
-      mode_regle: "mode de règle",
+      mode_regle: "mode de règle", notifications: "notifications", notification_test: "notification de test",
     } as Record<string, string>,
   },
   // Panneau « Observations » (tip and cue, lot T1)

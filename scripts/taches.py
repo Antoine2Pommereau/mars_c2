@@ -463,8 +463,15 @@ def stats_garde(conn, secours) -> dict:
         # Échec : Grafana prévient (règle « Statistiques de la frise non reconstruites ») ; s'il ne répond pas, taches
         # envoie lui même l'alerte sur le téléphone
         if res is None and secours.ntfy is not None and not supervision.grafana_repond():
-            secours.ntfy.envoyer("MARS C2 : statistiques de la frise", f"{len(manque)} minutes absentes de stats_minute "
-                                 "sur 24 h, reconstruction en échec (task_runs stats_reconstruction)")
+            titre = "MARS C2 : statistiques de la frise"
+            message = (f"{len(manque)} minutes absentes de stats_minute sur 24 h, reconstruction en échec "
+                       "(task_runs stats_reconstruction)")
+            try:                 # préférences du panneau (lot P) : catégorie pannes, retenue en heures calmes
+                d = controle.decider(conn, "pannes", "info", titre, message) if conn is not None else "envoyer"
+            except Exception:
+                d = "envoyer"
+            if d == "envoyer":
+                secours.ntfy.envoyer(titre, message)
         if res is not None:                       # nombre publié après réparation
             out["minutes_manquantes"] = len(_asyncpg(lambda c: minutes_manquantes(
                 c, now - timedelta(hours=STATS_GARDE_H), fin)))
@@ -506,6 +513,7 @@ def minute(conn, secours, last: dict):
         step(lambda: supervision.mesurer_otel(conn), "mesures du collecteur OpenTelemetry")
         step(lambda: supervise_workers(conn), "surveillance des travailleurs")   # chaque minute : aucun orphelin
         step(lambda: interrupteurs(conn), "interrupteurs des analyses satellites")   # reprises prévues (lot P)
+        step(lambda: notifications(conn), "notifications")          # nouvelles alertes, résumé du réveil (lot P)
         if time.time() - last["disk"] >= DISK_EVERY_S:
             last["disk"] = time.time()
             step(lambda: archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log), "disque")
@@ -573,6 +581,12 @@ def alert_if_grafana_down(conn, secours) -> list[str]:
     """Si Grafana ne répond pas, taches envoie lui même les trois alertes les plus graves ; sinon, il n'annonce que le
     retour à la normale de celles qu'il avait envoyées (Grafana prend le relais pour les nouvelles)."""
     etat = supervision.conditions(conn, LIVE)
+    try:                     # catégories coupées au panneau (lot P) ; une alerte déjà envoyée suit son cours
+        prefs = controle.preferences(load_rules(), controle.preferences_en_base(conn))
+        etat = {k: v for k, v in etat.items() if k in secours.actives or controle.decision_notification(
+            prefs, {"disque": "disque"}.get(k, "collecte"), "grave", datetime.now(timezone.utc)) == "envoyer"}
+    except Exception:
+        pass                 # base indisponible : les alertes de secours partent quand même
     if supervision.grafana_repond():
         etat = {k: v for k, v in etat.items() if k in secours.actives}
     return secours.evaluer(etat, log=log)
@@ -720,6 +734,17 @@ def _detruire_travailleurs(conn, _a):
 def tip_and_cue_cycle(conn) -> dict:
     from mars import tip_and_cue
     return tip_and_cue.cycle(conn, regles(conn))
+
+
+def notifications(conn) -> dict:
+    """Nouvelles alertes notifiées selon les préférences du panneau, puis résumé des notifications retenues pendant
+    les heures calmes ; défauts du fichier recopiés pour Grafana."""
+    rules, now = load_rules(), datetime.now(timezone.utc)
+    controle.recopier_defauts(conn, rules)
+    out = {**controle.notifier_alertes(conn, rules, now), **controle.resume_du_reveil(conn, rules, now)}
+    if out.get("notifiees") or out.get("retenues"):
+        log(f"notifications : {json.dumps(out, ensure_ascii=False)}")
+    return out
 
 
 def interrupteurs(conn) -> dict:

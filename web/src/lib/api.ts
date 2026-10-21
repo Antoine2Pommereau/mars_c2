@@ -70,6 +70,13 @@ export interface RegleControle extends BlocRegle {
   seuils: [string, unknown][];
 }
 
+export interface PrefsNotification {
+  alertes: { gravite_min: string; types: Record<string, boolean> };
+  tip_and_cue: boolean;
+  categories: Record<string, boolean>;
+  heures_calmes: { actif: boolean; debut: string; fin: string };
+}
+
 export interface Pass {
   product_name: string;
   acquired_at: string;
@@ -190,6 +197,10 @@ export const api = {
     journal: (limit = 30) => get<Props[]>(`/controle/journal?limit=${limit}`),
     systeme: () => get<SystemeControle>("/controle/systeme"),
     regles: () => get<{ version_regles: string; empreinte: string; regles: RegleControle[] }>("/controle/regles"),
+    notifications: () => get<{ preferences: PrefsNotification; par_le_panneau: boolean; retenues: number;
+      heures_calmes_maintenant: boolean; gravites: string[]; categories: string[]; ntfy: boolean }>("/controle/notifications"),
+    reglerNotifications: (preferences: PrefsNotification) => ecrire<Props>("/controle/notifications", { preferences }),
+    notificationTest: () => ecrire<{ envoyee: boolean }>("/controle/notifications/test", {}),
     mode: (regle: string, body: { mode: string; sous_type?: string | null; motif: string }) =>
       ecrire<Props>(`/controle/regles/${regle}`, body),
     basculer: (source: string, body: { en_pause: boolean; motif?: string; jusqu_a?: string | null }) =>

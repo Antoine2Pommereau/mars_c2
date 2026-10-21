@@ -83,12 +83,17 @@ def conn():
 
 
 def _remise_a_zero(c):
+    c.execute("DELETE FROM notifications_retenues")
+    c.execute("DELETE FROM notifications_etat")
     c.execute("UPDATE interrupteurs_satellites SET en_pause = false, depuis = NULL, jusqu_a = NULL, motif = NULL, "
               "auteur = NULL, veille_notifiee_le = NULL")
     for sql in ("DELETE FROM journal_controle", "DELETE FROM reglages_controle", "DELETE FROM sessions_operateur",
                 "DELETE FROM task_runs WHERE task IN ('viirs', 'sentinel', 'sentinel2')",
                 "DELETE FROM demandes_origines", "DELETE FROM demandes_observation"):
         c.execute(sql)
+
+
+ENVOYES: list = []                      # envois ntfy de l'API (controle.envoyer remplacé)
 
 
 class Envois(list):
@@ -203,7 +208,8 @@ def client(conn, monkeypatch):
     from fastapi.testclient import TestClient
     import controle as api
     monkeypatch.setenv("MARS_OPERATEURS", f"antoine:{controle.hacher('bon mot de passe', iterations=1000)}")
-    monkeypatch.setattr(controle, "notifier", Envois())
+    monkeypatch.setattr(controle, "envoyer", lambda *a, **_k: ENVOYES.append(a) or 200)
+    ENVOYES.clear()
     api._echecs.clear()
 
     async def codecs(c):                       # comme l'API (backend/app.py, _init) : JSON décodé
@@ -408,6 +414,132 @@ def test_mode_route_cut_keeps_open_alerts_with_reason(client, conn):
     j = conn.execute("SELECT action, cible, avant, apres, motif FROM journal_controle WHERE action = 'mode_regle'").fetchone()
     assert j[:2] == ("mode_regle", "watchlist") and j[2] == {"mode": None} and j[3]["mode"] == "coupe"
     conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_p:%'")
+
+
+# Phase D : notifications
+
+PARIS_NUIT = datetime(2026, 10, 21, 22, 30, tzinfo=timezone.utc)      # 00:30 à Paris
+PARIS_JOUR = datetime(2026, 10, 21, 8, 0, tzinfo=timezone.utc)        # 10:00 à Paris
+PARIS_HIVER = datetime(2026, 11, 3, 6, 30, tzinfo=timezone.utc)       # 07:30 à Paris (heure d'hiver)
+
+
+def test_notification_decisions_and_quiet_hours():
+    p = controle.preferences(RULES, None)
+    assert p["heures_calmes"] == {"actif": True, "debut": "23:00", "fin": "07:00"}
+    assert controle.en_heures_calmes(p, PARIS_NUIT) and not controle.en_heures_calmes(p, PARIS_JOUR)
+    assert not controle.en_heures_calmes(p, PARIS_HIVER)
+    d = controle.decision_notification
+    assert d(p, "disque", "grave", PARIS_NUIT) == "envoyer", "une panne grave n'est jamais retenue"
+    assert d(p, "pannes", "info", PARIS_NUIT) == "retenir" and d(p, "pannes", "info", PARIS_JOUR) == "envoyer"
+    assert d(p, "alerte", "moyenne", PARIS_JOUR, "WATCHLIST") == "taire"                 # sous la gravité minimale
+    assert d(p, "alerte", "elevee", PARIS_JOUR, "WATCHLIST") == "envoyer"
+    assert d(p, "alerte", "critique", PARIS_JOUR, "AIS_UNCONFIRMED") == "taire"          # type coupé dans le fichier
+    assert d(p, "alerte", "critique", PARIS_NUIT, "DARK_SHIP") == "retenir"
+    p2 = controle.preferences(RULES, {"categories": {"pannes": True, "disque": False, "collecte": True,
+                                                     "travailleurs": True}, "tip_and_cue": False,
+                                      "heures_calmes": {"actif": True, "debut": "12:00", "fin": "14:00"}})
+    assert d(p2, "disque", "grave", PARIS_JOUR) == "taire" and d(p2, "tip_and_cue", "elevee", PARIS_JOUR) == "taire"
+    assert controle.en_heures_calmes(p2, datetime(2026, 10, 21, 11, 0, tzinfo=timezone.utc))    # 13:00 à Paris
+    with pytest.raises(ValueError, match="heure"):
+        controle.verifier_preferences(RULES, {**p, "heures_calmes": {"actif": True, "debut": "25:00", "fin": "07:00"}})
+    with pytest.raises(ValueError, match="gravité"):
+        controle.verifier_preferences(RULES, {**p, "alertes": {"gravite_min": "extreme"}})
+    v = controle.verifier_preferences(RULES, {**p, "alertes": {"gravite_min": "moyenne", "types": {"INCONNU": True}}})
+    assert "INCONNU" not in v["alertes"]["types"] and v["alertes"]["gravite_min"] == "moyenne"
+
+
+def test_sql_quiet_hours_match_python(conn):
+    controle.recopier_defauts(conn, RULES)
+    for prefs in (None, {"heures_calmes": {"actif": True, "debut": "12:00", "fin": "14:00"}},
+                  {"heures_calmes": {"actif": False, "debut": "23:00", "fin": "07:00"}},
+                  {"categories": {"pannes": False}}):
+        conn.execute("DELETE FROM reglages_controle WHERE cle = 'notif:preferences'")
+        if prefs:
+            conn.execute("INSERT INTO reglages_controle (cle, valeur) VALUES ('notif:preferences', %s)", (js_dumps(prefs),))
+        p = controle.preferences(RULES, prefs)
+        for t in (PARIS_NUIT, PARIS_JOUR, PARIS_HIVER, datetime(2026, 10, 21, 11, 0, tzinfo=timezone.utc)):
+            assert conn.execute("SELECT heures_calmes(%s)", (t,)).fetchone()[0] == controle.en_heures_calmes(p, t), (prefs, t)
+    assert conn.execute("SELECT notification_permise('pannes', true), notification_permise('disque', true)"
+                        ).fetchone() == (False, True)
+
+
+def js_dumps(v):
+    import json
+    return json.dumps(v)
+
+
+def test_held_at_night_then_wake_up_summary(conn, monkeypatch):
+    envoyes = []
+    monkeypatch.setattr(controle, "envoyer", lambda *a, **_k: envoyes.append(a))
+    assert controle.notifier("pannes", "info", "MARS C2 : essai de nuit", "x", conn=conn, now=PARIS_NUIT) == "retenir"
+    assert controle.notifier("disque", "grave", "MARS C2 : disque", "x", conn=conn, now=PARIS_NUIT) == "envoyer"
+    assert [e[1] for e in envoyes] == ["MARS C2 : disque"]
+    assert controle.resume_du_reveil(conn, RULES, PARIS_NUIT) == {"retenues": None}            # encore la nuit
+    assert controle.resume_du_reveil(conn, RULES, PARIS_JOUR) == {"retenues": 1}
+    assert envoyes[-1][1] == "MARS C2 : 1 notification(s) pendant les heures calmes" and "essai de nuit" in envoyes[-1][2]
+    assert controle.resume_du_reveil(conn, RULES, PARIS_JOUR) == {"retenues": 0}
+
+
+def test_new_alerts_notified_by_severity_and_type(conn):
+    vus = []
+
+    def envoi(categorie, gravite, _titre, _message, **kw):
+        vus.append((gravite, kw.get("type_alerte"), controle.decision_notification(
+            controle.preferences(RULES, None), categorie, gravite, kw["now"], kw.get("type_alerte"))))
+    conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_n:%'")
+    assert controle.notifier_alertes(conn, RULES, PARIS_JOUR, envoi)["initialise"] >= 0      # premier passage : rien
+    for k, (typ, sev) in enumerate((("WATCHLIST", "elevee"), ("RENDEZVOUS", "moyenne"), ("AIS_UNCONFIRMED", "critique"))):
+        conn.execute("""INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key)
+                        VALUES (%s, %s, now(), ST_SetSRID(ST_MakePoint(-6, 48), 4326)::geography, '{}', 'x', %s)""",
+                     (typ, sev, f"essai_n:{k}"))
+    out = controle.notifier_alertes(conn, RULES, PARIS_JOUR, envoi)
+    assert out == {"nouvelles": 3, "notifiees": 1} and vus == [("elevee", "WATCHLIST", "envoyer")]
+    assert controle.notifier_alertes(conn, RULES, PARIS_JOUR, envoi) == {"nouvelles": 0, "notifiees": 0}
+    conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_n:%'")
+
+
+def test_notification_routes(client, conn, monkeypatch):
+    client.post("/api/controle/connexion", json={"operateur": "antoine", "mot_de_passe": "bon mot de passe"})
+    g = client.get("/api/controle/notifications").json()
+    assert g["par_le_panneau"] is False and g["preferences"]["alertes"]["gravite_min"] == "elevee"
+    p = g["preferences"]
+    p["alertes"]["gravite_min"] = "moyenne"
+    p["heures_calmes"]["debut"] = "22:00"
+    assert client.post("/api/controle/notifications", json={"preferences": {**p, "heures_calmes": {"debut": "x"}}}
+                       ).status_code == 422
+    assert client.post("/api/controle/notifications", json={"preferences": p}).status_code == 200
+    g = client.get("/api/controle/notifications").json()
+    assert g["par_le_panneau"] and g["preferences"]["heures_calmes"]["debut"] == "22:00"
+    assert conn.execute("SELECT heures_calmes(%s)", (datetime(2026, 10, 21, 20, 30, tzinfo=timezone.utc),)
+                        ).fetchone()[0], "Grafana lit les préférences du panneau (22:30 à Paris)"
+    monkeypatch.delenv("NTFY_SUJET", raising=False)
+    assert client.post("/api/controle/notifications/test").status_code == 503
+    monkeypatch.setenv("NTFY_SUJET", "sujet_d_essai")
+    assert client.post("/api/controle/notifications/test").json() == {"envoyee": True, "http": 200}
+    assert ENVOYES[-1][1] == "MARS C2 : notification de test"
+    actions = [x["action"] for x in client.get("/api/controle/journal").json()]
+    assert "notifications" in actions and "notification_test" in actions
+
+
+def test_grafana_rules_read_pauses_and_preferences_under_their_role(conn):
+    """Chaque règle de Grafana passe par notification_permise ; la nuit VIIRS absente se tait en pause ; toutes les
+    requêtes s'exécutent sous le rôle grafana_lecture (droits des migrations 33 à 35)."""
+    import yaml
+    doc = yaml.safe_load((ROOT / "grafana" / "provisioning" / "alerting" / "regles.yaml").read_text())
+    regles = {r["uid"]: r for g in doc["groups"] for r in g["rules"]}
+    b = {uid: [x for x in r["data"] if x["refId"] == "B"][0]["model"]["rawSql"] for uid, r in regles.items()}
+    assert all("notification_permise(" in sql for sql in b.values())
+    assert "notification_permise('disque', true)" in b["mars-disque"] and "source_en_pause('viirs')" in b["mars-viirs"]
+    controle.basculer(conn, "viirs", True, "antoine", "essai", envoi=Envois())
+    assert conn.execute("SELECT source_en_pause('viirs'), source_en_pause('sentinel1')").fetchone() == (True, False)
+    for uid, r in regles.items():
+        for x in r["data"]:
+            if x["model"].get("rawSql"):
+                with conn.transaction(force_rollback=True):
+                    conn.execute("SET LOCAL ROLE grafana_lecture")
+                    rows = conn.execute(x["model"]["rawSql"]).fetchall()
+                    if uid == "mars-viirs" and x["refId"] == "B":
+                        assert rows == [(0,)], "nuit VIIRS absente muette en pause"
 
 
 def test_rules_file_untouched():

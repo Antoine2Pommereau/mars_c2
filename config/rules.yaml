@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.37"
+version: "2026.10.38"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -532,4 +532,16 @@ controle:
       nom: Sentinel 2
       section: sentinel2
       sous_types: {dark_ship: Navire sans AIS, ais_unconfirmed: Position non confirmée, identity_mismatch: Identité incohérente}
+  # Phase D : préférences de notification par défaut ; le panneau les remplace en base (notif:preferences). Les
+  # heures calmes (heure de Paris) retiennent tout sauf les pannes graves (disque plein, collecte figée, ingestion), avec
+  # un résumé au réveil. Appliqué aux envois de taches et aux règles de Grafana (fonction SQL notification_permise).
+  notifications:
+    alertes:
+      gravite_min: elevee        # nouvelle alerte notifiée à partir de cette gravité
+      types: {AIS_GAP: true, RENDEZVOUS: true, IDENTITY_CHANGE: true, WATCHLIST: true, DARK_SHIP: true,
+              AIS_UNCONFIRMED: false, IDENTITY_MISMATCH: true}
+    tip_and_cue: true            # résultat de tip and cue qui relève une alerte
+    categories: {pannes: true, disque: true, collecte: true, travailleurs: true}
+    heures_calmes: {actif: true, debut: "23:00", fin: "07:00"}
+    par_minute_max: 5            # nouvelles alertes : au delà, un seul message de synthèse
 
