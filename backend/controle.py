@@ -64,15 +64,38 @@ async def operateur_connecte(request: Request) -> str | None:
                                 "AND revoquee_le IS NULL", e)
 
 
-def _meme_origine(request: Request):
-    """Écriture depuis l'interface seulement : l'en tête Origin, s'il est présent, désigne le même hôte."""
+def hote_vu(request: Request) -> str:
+    """Hôte de la requête vu du navigateur : X-Forwarded-Host s'il est posé par un relais, sinon Host. nginx doit
+    garder l'hôte d'origine (proxy_set_header Host $http_host, web/nginx.conf) : sans cela il envoie backend:8000."""
+    relais = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    return relais or (request.headers.get("host") or "")
+
+
+async def _meme_origine(request: Request):
+    """Écriture depuis l'interface seulement : l'en tête Origin, s'il est présent, désigne le même hôte que la page.
+    Un refus dit l'origine et l'hôte comparés, et il est journalisé (journal_controle, journaux de l'API)."""
     origine = request.headers.get("origin")
-    if origine and origine.split("://", 1)[-1].rstrip("/") != (request.headers.get("host") or ""):
-        raise HTTPException(403, "Origine refusée")
+    if not origine:
+        return
+    hote = hote_vu(request)
+    vue = origine.split("://", 1)[-1].rstrip("/")
+    if vue == hote:
+        return
+    motif = f"Origine refusée : la page vient de {vue}, la requête arrive pour l'hôte {hote or 'inconnu'}"
+    traces.erreur(motif)
+    print(motif, flush=True)
+    try:
+        async with request.app.state.pool.acquire() as c:
+            await journaliser(c, "inconnu", "origine_refusee", request.url.path, None,
+                              {"origine": vue, "hote": hote, "host": request.headers.get("host"),
+                               "x_forwarded_host": request.headers.get("x-forwarded-host")})
+    except Exception:
+        pass                                   # le refus ne dépend pas du journal
+    raise HTTPException(403, motif)
 
 
 async def exiger_operateur(request: Request) -> str:
-    _meme_origine(request)
+    await _meme_origine(request)
     op = await operateur_connecte(request)
     if op is None:
         raise HTTPException(401, "Connexion opérateur requise")
@@ -91,21 +114,27 @@ class Connexion(BaseModel):
 
 @router.get("/api/controle/session")
 async def session(request: Request):
-    return {"operateur": await operateur_connecte(request), "configure": bool(controle.operateurs())}
+    """Opérateur connecté, et les lignes MARS_OPERATEURS abîmées (noms et raisons, jamais d'empreinte)."""
+    abimes = controle.operateurs_abimes()
+    return {"operateur": await operateur_connecte(request), "configure": bool(controle.operateurs()),
+            "abimes": [controle.message_abime(n, r) for n, r in abimes.items()]}
 
 
 @router.post("/api/controle/connexion")
 async def connexion(request: Request, response: Response, x: Connexion):
-    _meme_origine(request)
+    await _meme_origine(request)
     ip = request.client.host if request.client else "?"
     t = time.time()
     _echecs[ip] = [e for e in _echecs.get(ip, []) if t - e < ECHECS_FENETRE_S]
     if len(_echecs[ip]) >= ECHECS_MAX:
         raise HTTPException(429, "Trop d'essais : réessayer dans 10 minutes")
     ops = controle.operateurs()
+    nom = x.operateur.strip()
+    abime = controle.operateurs_abimes().get(nom)
+    if abime:
+        raise HTTPException(503, controle.message_abime(nom, abime))
     if not ops:
         raise HTTPException(503, "Aucun opérateur configuré (MARS_OPERATEURS dans le .env)")
-    nom = x.operateur.strip()
     empreinte = ops.get(nom)
     ok = empreinte is not None and await asyncio.to_thread(controle.verifier_mot_de_passe, x.mot_de_passe, empreinte)
     async with request.app.state.pool.acquire() as c:
@@ -127,7 +156,7 @@ async def connexion(request: Request, response: Response, x: Connexion):
 
 @router.post("/api/controle/deconnexion")
 async def deconnexion(request: Request, response: Response):
-    _meme_origine(request)
+    await _meme_origine(request)
     e = _empreinte(request)
     if e:
         async with request.app.state.pool.acquire() as c:
@@ -554,7 +583,7 @@ async def demo_basculer(request: Request, response: Response, x: Demo):
     """Masquage pour une démonstration publique, propre à ce navigateur : graine aléatoire dans un cookie de session
     (effacé à la fermeture). Sans connexion requise : il ne fait que cacher ; journalisé avec l'opérateur s'il y en a un."""
     import demo
-    _meme_origine(request)
+    await _meme_origine(request)
     if x.masquage:
         response.set_cookie(demo.COOKIE, demo.nouvelle_graine(), httponly=True, samesite="strict",
                             secure=_https(request), path="/api")

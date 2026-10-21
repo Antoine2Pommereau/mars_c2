@@ -731,9 +731,20 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * Le navigateur sans affichage de gstack n'a pas WebGL. Le Chromium de Playwright, lui, dessine la carte sans
   affichage (`--use-angle=swiftshader --enable-unsafe-swiftshader`, Metal fonctionne aussi) : captures de l'audit UX
   du lot U. Une limite d'erreur (`components/Garde.tsx`) garde le reste de l'écran si WebGL manque.
-* **Mode plage et rejeu sans navires** (constaté le 21/10/2026, lot U) : `/api/traffic` renvoie `{at, cols, rows}`,
-  `decodeTraffic` (`web/src/lib/trafic.ts`) attend `{navires: {cols, rows}}` (format du flux en direct) ; la carte
-  est vide hors du direct. Correctif d'une ligne proposé, en attente de validation (docs/ux_refonte.md, section 3).
+* **Deux formes du trafic en colonnes** : le flux en direct envoie `{navires: {cols, rows}}`, `/api/traffic` (plage et
+  rejeu) `{at, cols, rows}` ; `decodeTraffic` accepte les deux (lot A, 21/10/2026 : n'accepter que la première vidait
+  la carte hors du direct, depuis des jours). Test : `npm test` dans `web/` (node --test, `web/tests/`).
+* **nginx et proxy_pass sur une variable** : l'en tête Host devient « backend:8000 ». Toute vérification qui compare
+  l'hôte à l'en tête Origin (écritures du panneau de contrôle) refusait tout (« Origine refusée », connexion des
+  opérateurs impossible le 21/10/2026). `web/nginx.conf` garde l'hôte du navigateur (`proxy_set_header Host
+  $http_host`, et X-Forwarded-Host) ; l'API lit X-Forwarded-Host d'abord ; cible `verifier_images.sh controle`.
+* **Ligne à copier dans un fichier** (`.env`, configuration) : jamais par `print` pendant un span, qui ajoute
+  « trace_id=… span_id=… » (`mars/traces.py`, journaux) ; `traces.ligne_brute`. Le 21/10/2026, une ligne
+  MARS_OPERATEURS copiée avec son suffixe (empreinte de 131 caractères au lieu de 64) rendait la connexion impossible ;
+  l'API refuse désormais une entrée abîmée en le disant (`controle.operateurs_abimes`, panneau, `taches.py
+  controle-diagnostic`).
+* Cookie de session : Secure seulement en https (`_https`) ; Safari ne renvoie pas un cookie Secure sur
+  http://localhost:8080.
 * L'horloge partagée (`sim_clock`) est commune à tous les utilisateurs : un rejeu chez l'un changeait l'écran de tous.
   L'instant est désormais tenu par l'interface (routes `?at=` sans état) ; ne plus faire dépendre l'écran de
   `/api/clock`.

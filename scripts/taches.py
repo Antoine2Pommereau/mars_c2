@@ -40,6 +40,7 @@ Usage :
                                               [--motif TEXTE]   # lot P : pause ou reprise ; sans argument : état
     Commandes viirs, sentinel-analyser, sentinel2-analyser : refusées si la source est en pause, sauf --malgre-pause
     python scripts/taches.py operateur-hacher [NOM]   # lot P : ligne MARS_OPERATEURS du .env (connexion au panneau)
+    python scripts/taches.py controle-diagnostic      # lignes MARS_OPERATEURS lues par taches et par l'API (lecture seule)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-non-confirmees [--appliquer]   # AIS_UNCONFIRMED hors des fenêtres lues
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
@@ -997,7 +998,33 @@ def _operateur_hacher(_conn, a):
         raise SystemExit("Mot de passe trop court : 12 caractères au moins")
     if getpass.getpass("Encore une fois : ") != mdp:
         raise SystemExit("Les deux saisies diffèrent")
-    print(f"MARS_OPERATEURS={nom}:{controle.hacher(mdp)}")
+    traces.ligne_brute(f"MARS_OPERATEURS={nom}:{controle.hacher(mdp)}")      # copiée dans le .env : sans suffixe
+
+
+@commande("controle-diagnostic", base=False)       # lecture seule : lignes MARS_OPERATEURS (taches et backend)
+def _controle_diagnostic(_conn, _a):
+    """MARS_OPERATEURS lue dans ce conteneur et dans l'API (GET /api/controle/session : noms et raisons seulement) ;
+    code de sortie 1 si une ligne est abîmée ou absente."""
+    import requests
+    from mars import diagnostic
+    lignes = []
+    ok, abimes = controle.operateurs(), controle.operateurs_abimes()
+    for n in ok:
+        lignes.append((diagnostic.PRET, f"Opérateur {n} (taches)", "empreinte de 64 caractères, bien formée"))
+    for n, r in abimes.items():
+        lignes.append((diagnostic.MANQUE, f"Opérateur {n} (taches)", controle.message_abime(n, r)))
+    if not ok and not abimes:
+        lignes.append((diagnostic.MANQUE, "MARS_OPERATEURS (taches)", "absente du .env : panneau en lecture seule"))
+    try:
+        api = os.environ.get("MARS_API", "http://backend:8000/api")
+        s = requests.get(f"{api}/controle/session", timeout=10).json()
+        lignes.append((diagnostic.PRET if s.get("configure") and not s.get("abimes") else diagnostic.MANQUE,
+                       "MARS_OPERATEURS (backend)", "; ".join(s.get("abimes") or []) or
+                       ("lue et bien formée" if s.get("configure") else "absente du conteneur backend")))
+    except Exception as e:
+        lignes.append((diagnostic.A_VERIFIER, "MARS_OPERATEURS (backend)", f"API injoignable ({type(e).__name__})"))
+    print(diagnostic.report(lignes))
+    sys.exit(1 if any(s == diagnostic.MANQUE for s, _r, _d in lignes) else 0)
 
 
 commande("sentinel")(_sentinel(False))

@@ -34,11 +34,14 @@
 #                 SCL, 13 bandes, inférence et vignettes ; puis voie sans boto3, signature fausse refusée, aucune clé
 #                 dans le résultat, les spans, l'environnement ou la sortie. Ajouté après l'essai réel du 20/10/2026
 #                 (EnvError de rasterio sur les clés AWS en options GDAL, que la cible s2, sans clé, ne voyait pas).
+#   controle    : connexion d'un opérateur puis une écriture du panneau à travers le vrai nginx de l'image web, avec un
+#                 en tête Origin de navigateur ; cookie sans Secure en http ; une autre origine refusée (lot A, environ
+#                 une minute ; « Origine refusée » sur le serveur le 21/10/2026).
 #   sante       : collecte figée simulée dans l'image des scripts (processus vivant, aucun fichier écrit), lancée comme
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres] [s2] [s2-s3] [sante] [traces]   (sans argument : les trois premiers)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres] [s2] [s2-s3] [controle] [sante] [traces]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -228,6 +231,63 @@ while True:
   ok "sante : collecte figée détectée et relancée ($n redémarrage(s)), collecte saine laissée en paix"
 }
 
+# Lot A (21/10/2026) : connexion d'un opérateur et écriture du panneau de contrôle à travers le vrai nginx de l'image
+# web, comme le navigateur par le tunnel (en tête Origin). Sur le serveur, nginx remplaçait Host par backend:8000 et
+# l'API refusait toute connexion (« Origine refusée »).
+verifier_controle() {
+  local api="$R/mars_c2-backend:$TAG" web="$R/mars_c2-web:$TAG" i
+  for i in "$api" "$web"; do
+    docker image inspect "$i" >/dev/null 2>&1 || echec "$i absente : la construire d'abord"
+  done
+  nettoyer
+  docker network create "$RESEAU" >/dev/null
+  docker run -d --name "$BASE" --platform "$PLATEFORME" --network "$RESEAU" --network-alias db -e POSTGRES_DB=mars \
+    -e POSTGRES_USER=mars -e POSTGRES_PASSWORD=mars -v "$PWD/db/init:/docker-entrypoint-initdb.d:ro" \
+    postgis/postgis:16-3.4 >/dev/null
+  local prete=""
+  for _ in $(seq 1 120); do
+    if docker exec "$BASE" pg_isready -h 127.0.0.1 -U mars -d mars >/dev/null 2>&1; then prete=1; break; fi
+    sleep 2
+  done
+  [ -n "$prete" ] || echec "controle : la base de vérification ne répond pas"
+  # Opérateur d'essai : mot de passe aléatoire, empreinte au format de taches.py operateur-hacher
+  local mdp ligne hote=localhost:18081 jar corps code
+  mdp=$(openssl rand -hex 12)
+  ligne=$(MDP="$mdp" python3 -c "import hashlib, os, secrets; s = secrets.token_bytes(16); h = hashlib.pbkdf2_hmac('sha256', os.environ['MDP'].encode(), s, 600000); print(f'essai:pbkdf2_sha256:600000:{s.hex()}:{h.hex()}')")
+  docker run -d --name "$API" --platform "$PLATEFORME" --network "$RESEAU" --network-alias backend \
+    -e DATABASE_URL=postgresql://mars:mars@db:5432/mars -e MARS_OPERATEURS="$ligne" -v "$PWD/config:/app/config:ro" \
+    "$api" >/dev/null                                   # config monté comme sur le serveur (règles relues)
+  docker run -d --name "$WEB" --platform "$PLATEFORME" --network "$RESEAU" --network-alias web -p "127.0.0.1:18081:80" \
+    "$web" >/dev/null
+  for _ in $(seq 1 90); do
+    curl -sf -m 3 "http://$hote/api/health" >/dev/null 2>&1 && break
+    sleep 2
+  done
+  jar=$(mktemp); corps=$(mktemp)
+  code=$(curl -s -o "$corps" -w '%{http_code}' -c "$jar" -D "$corps.entetes" -H "Origin: http://$hote" \
+    -H 'Content-Type: application/json' -d "{\"operateur\": \"essai\", \"mot_de_passe\": \"$mdp\"}" \
+    "http://$hote/api/controle/connexion")
+  if [ "$code" != 200 ]; then
+    cat "$corps"; echo; docker logs --tail 15 "$API"
+    rm -f "$jar" "$corps" "$corps.entetes"
+    echec "controle : connexion refusée à travers nginx (HTTP $code)"
+  fi
+  if grep -qi '^set-cookie:.*secure' "$corps.entetes"; then
+    rm -f "$jar" "$corps" "$corps.entetes"
+    echec "controle : cookie Secure sur http (Safari ne le renverrait pas sur http://localhost:8080)"
+  fi
+  code=$(curl -s -o "$corps" -w '%{http_code}' -b "$jar" -H "Origin: http://$hote" -H 'Content-Type: application/json' \
+    -d '{"valeur": 1, "motif": "essai de verifier_images"}' "http://$hote/api/controle/plafonds/sentinel1")
+  [ "$code" = 200 ] || { cat "$corps"; echo; rm -f "$jar" "$corps" "$corps.entetes"; echec "controle : écriture du panneau refusée (HTTP $code)"; }
+  code=$(curl -s -o "$corps" -w '%{http_code}' -b "$jar" -H "Origin: http://ailleurs.example" \
+    -H 'Content-Type: application/json' -d '{"valeur": 2, "motif": "essai"}' "http://$hote/api/controle/plafonds/sentinel1")
+  [ "$code" = 403 ] || { rm -f "$jar" "$corps" "$corps.entetes"; echec "controle : une autre origine n'est pas refusée (HTTP $code)"; }
+  local motif
+  motif=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['detail'])" "$corps")
+  rm -f "$jar" "$corps" "$corps.entetes"
+  ok "controle : connexion et écriture du panneau à travers nginx, cookie sans Secure en http, autre origine refusée ($motif)"
+}
+
 verifier_traces() {
   local scripts="$R/mars_c2-scripts:$TAG" api="$R/mars_c2-backend:$TAG" web="$R/mars_c2-web:$TAG" i
   for i in "$scripts" "$api" "$web"; do
@@ -325,9 +385,10 @@ for cible in "${CIBLES[@]}"; do
     ai2-fenetres) verifier_ai2 --complet essai_fenetres.py ;;
     s2)      verifier_s2 ;;
     s2-s3)   verifier_s2 --s3 ;;
+    controle) verifier_controle ;;
     sante)   verifier_sante ;;
     traces)  verifier_traces ;;
-    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, s2, s2-s3, sante ou traces)" ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, s2, s2-s3, controle, sante ou traces)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."

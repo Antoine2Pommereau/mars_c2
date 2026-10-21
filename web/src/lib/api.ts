@@ -189,7 +189,7 @@ export const api = {
     get<{ actives: number; demandes: Props[] }>(`/observations?start=${enc(start)}&end=${enc(end)}${rg(region)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
   /** Panneau de contrôle (lot P) : session d'opérateur, état, journal, et écritures (connexion exigée) */
   controle: {
-    session: () => get<{ operateur: string | null; configure: boolean }>("/controle/session"),
+    session: () => get<{ operateur: string | null; configure: boolean; abimes?: string[] }>("/controle/session"),
     connexion: (operateur: string, mot_de_passe: string) =>
       ecrire<{ operateur: string }>("/controle/connexion", { operateur, mot_de_passe }),
     deconnexion: () => ecrire<{ operateur: null }>("/controle/deconnexion", {}),

@@ -879,6 +879,16 @@ docker compose restart grafana                 # règles (notification_permise) 
 Une pause posée par le fichier (plafond à 0 modifié à la main) est remplacée par `satellites-pause` ; VIIRS reste en
 service (environ 0,76 € par mois). La première connexion se fait dans l'interface, icône « Contrôle » du rail.
 
+## Lot A, correctifs (21/10/2026)
+
+Trafic visible en plage et rejeu (interface), hôte du navigateur transmis par nginx (connexion des opérateurs), ligne
+MARS_OPERATEURS imprimée sans suffixe de trace et contrôlée à la lecture, libellé de la couche « Zones de vigilance »,
+bandeau de démonstration sous les détails des voyants. Aucune migration, aucune règle changée.
+
+Le correctif à chaud de nginx sur le serveur (« proxy_set_header Host $http_host; ») est remplacé par l'image web : rien
+à garder à la main. Une ligne MARS_OPERATEURS copiée avec « trace_id=… » se refait : `taches.py operateur-hacher <nom>`
+(la nouvelle ligne n'a plus de suffixe), puis `taches.py controle-diagnostic` doit dire PRÊT pour taches et backend.
+
 ## Vérifier
 
 ```bash

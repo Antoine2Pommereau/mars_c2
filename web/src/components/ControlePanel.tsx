@@ -36,7 +36,7 @@ function Section({ id, titre, droite, children }: { id: string; titre: string; d
 const champ = "w-full rounded border border-hair bg-abyss px-2 py-1 text-[12.5px] text-ink placeholder:text-faint focus:border-signal";
 const bouton = "rounded border border-hair px-2 py-0.5 text-[12px] text-ink hover:border-signal disabled:opacity-40";
 
-function Connexion({ operateur, configure }: { operateur: string | null; configure: boolean }) {
+function Connexion({ operateur, configure, abimes }: { operateur: string | null; configure: boolean; abimes: string[] }) {
   const qc = useQueryClient();
   const [nom, setNom] = useState(""), [mdp, setMdp] = useState("");
   const fin = () => qc.invalidateQueries({ queryKey: ["controle"] });
@@ -52,8 +52,11 @@ function Connexion({ operateur, configure }: { operateur: string | null; configu
       </div>
     );
   }
-  if (!configure) return <p className="text-[12px] text-muted">{C.nonConfigure}</p>;
+  // Ligne MARS_OPERATEURS abîmée (empreinte tronquée ou suivie d'un suffixe) : dite telle quelle, sans empreinte
+  const alerte = abimes.length > 0 && <p className="mb-1.5 text-[11.5px] text-gap">{abimes.join(" ; ")}</p>;
+  if (!configure) return <>{alerte}<p className="text-[12px] text-muted">{C.nonConfigure}</p></>;
   return (
+    <>{alerte}
     <form className="space-y-1.5" onSubmit={(e) => { e.preventDefault(); entrer.mutate(); }}>
       <input className={champ} placeholder={C.operateur} value={nom} onChange={(e) => setNom(e.target.value)}
         autoComplete="username" aria-label={C.operateur} />
@@ -63,7 +66,7 @@ function Connexion({ operateur, configure }: { operateur: string | null; configu
         <span className="text-[11.5px] text-gap">{entrer.error?.message}</span>
         <button type="submit" className={bouton} disabled={!nom || !mdp || entrer.isPending}>{C.seConnecter}</button>
       </div>
-    </form>
+    </form></>
   );
 }
 
@@ -601,7 +604,7 @@ export default function ControlePanel(pp: PanneauProps) {
       <div className="flex-1 overflow-y-auto">
         <Section id="connexion" titre={C.sections.connexion}
           droite={op ? <span className="normal-case text-ink">{op}</span> : null}>
-          <Connexion operateur={op} configure={sessionQ.data?.configure ?? true} />
+          <Connexion operateur={op} configure={sessionQ.data?.configure ?? true} abimes={sessionQ.data?.abimes ?? []} />
         </Section>
         {e && (
           <>

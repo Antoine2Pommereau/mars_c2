@@ -430,7 +430,8 @@ export default function App() {
         )}
         <main className="relative flex-1">
           {(demoQ.data?.masquage || aLInstant) && (
-            <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full border border-hair bg-panel/85 px-2.5 py-0.5 text-[11px] text-muted">
+            /* Sous la barre d'état (z-20) : le détail d'un voyant passe par dessus le bandeau */
+            <div className="pointer-events-none absolute left-1/2 top-3 z-[5] -translate-x-1/2 rounded-full border border-hair bg-panel/85 px-2.5 py-0.5 text-[11px] text-muted">
               {[demoQ.data?.masquage && L.controle.demo.bandeau, aLInstant && L.controle.demo.bandeauRejeu].filter(Boolean).join(" · ")}
             </div>
           )}

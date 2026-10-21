@@ -3,6 +3,10 @@ import type { FC } from "./types";
 /** Trafic reçu de l'API, en colonnes (version actuelle) ou en GeoJSON (ancienne API), vers une collection GeoJSON
  *  pour la carte. `age_s` est recalculé par rapport à l'instant affiché. */
 export function decodeTraffic(payload: any, instantMs: number): FC | null {
+  // Deux formes en colonnes : le flux en direct enveloppe le trafic ({navires: {cols, rows}}), la route /api/traffic
+  // des modes plage et rejeu le renvoie tel quel ({at, cols, rows}). N'accepter que la première vidait la carte hors
+  // du direct (constaté le 21/10/2026, lot U).
+  if (payload?.cols && payload?.rows) payload = { navires: payload };
   if (payload?.navires?.cols) {
     const { cols, rows } = payload.navires as { cols: string[]; rows: any[][] };
     const k = Object.fromEntries(cols.map((c, i) => [c, i]));

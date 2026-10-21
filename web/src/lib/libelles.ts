@@ -382,7 +382,7 @@ export const L = {
     noms: {
       navires: "Navires", trajectoires: "Trajectoires", telecoms: "Câbles télécoms", electriques: "Câbles électriques et interconnexions",
       pipelines: "Pipelines", eoliens: "Parcs éoliens", corridors: "Corridors de surveillance", couverture: "Couverture",
-      mouillages: "Mouillages", reception: "Réception fiable", passages: "Passages Sentinel 1 et 2",
+      mouillages: "Mouillages", vigilance: "Zones de vigilance", reception: "Réception fiable", passages: "Passages Sentinel 1 et 2",
       detections: "Détections radar et optiques", viirs: "Détections nocturnes VIIRS", chaleur: "Cartes de chaleur",
       predictions: "Trajectoires prédites",
     } as Record<string, string>,

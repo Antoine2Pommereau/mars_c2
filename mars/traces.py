@@ -429,6 +429,14 @@ def suffixe() -> str:
     return f" trace_id={c.trace_id:032x} span_id={c.span_id:016x}" if c.is_valid else ""
 
 
+def ligne_brute(texte: str):
+    """Ligne destinée à être copiée telle quelle (configuration, .env) : jamais de suffixe de trace (le 21/10/2026, une
+    ligne MARS_OPERATEURS copiée avec « trace_id=… span_id=… » rendait la connexion impossible)."""
+    flux = sys.stdout._flux if isinstance(sys.stdout, _Lignes) else sys.stdout
+    flux.write(texte + "\n")
+    flux.flush()
+
+
 class _Lignes:
     """Sortie standard dont chaque ligne écrite pendant un span se termine par ses identifiants."""
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 import hmac
 import json
 import os
@@ -580,14 +581,44 @@ def verifier_mot_de_passe(mot_de_passe: str, empreinte: str) -> bool:
         return False
 
 
-def operateurs(env: str | None = None) -> dict[str, str]:
-    """MARS_OPERATEURS=nom:pbkdf2_sha256:…,autre:pbkdf2_sha256:… ; noms sans deux points ni virgule."""
-    out = {}
+EMPREINTE = re.compile(r"pbkdf2_sha256:[0-9]{4,7}:[0-9a-f]{32}:[0-9a-f]{64}")
+
+
+def _entrees(env: str | None) -> list[tuple[str, str]]:
+    out = []
     for e in (env if env is not None else os.environ.get("MARS_OPERATEURS", "")).split(","):
         nom, _, h = e.strip().partition(":")
-        if nom and h:
-            out[nom.strip()] = h.strip()
+        if nom.strip():
+            out.append((nom.strip(), h.strip()))
     return out
+
+
+def operateurs(env: str | None = None) -> dict[str, str]:
+    """MARS_OPERATEURS=nom:pbkdf2_sha256:…,autre:pbkdf2_sha256:… ; noms sans deux points ni virgule. Seules les
+    entrées bien formées comptent (voir operateurs_abimes)."""
+    return {nom: h for nom, h in _entrees(env) if EMPREINTE.fullmatch(h)}
+
+
+def operateurs_abimes(env: str | None = None) -> dict[str, str]:
+    """Entrées de MARS_OPERATEURS abîmées, avec la raison : empreinte qui n'a pas 64 caractères hexadécimaux (ligne
+    copiée avec un suffixe de trace, le 21/10/2026 : 131 caractères), format ou sel faux. Jamais l'empreinte."""
+    out = {}
+    for nom, h in _entrees(env):
+        if EMPREINTE.fullmatch(h):
+            continue
+        parts = h.split(":")
+        if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+            out[nom] = "format attendu pbkdf2_sha256:itérations:sel:empreinte"
+        elif len(parts[3]) != 64 or any(c not in "0123456789abcdef" for c in parts[3]):
+            out[nom] = f"empreinte de {len(parts[3])} caractères au lieu de 64 caractères hexadécimaux"
+        else:
+            out[nom] = "itérations ou sel invalides"
+    return out
+
+
+def message_abime(nom: str, raison: str) -> str:
+    return (f"ligne MARS_OPERATEURS abîmée pour {nom} : {raison} ; la refaire avec taches.py operateur-hacher "
+            "(sans rien après l'empreinte)")
 
 
 def jeton_session() -> tuple[str, str]:

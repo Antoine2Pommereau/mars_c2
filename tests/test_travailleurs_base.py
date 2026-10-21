@@ -253,7 +253,9 @@ def test_reevaluation_of_existing_viirs_alerts(conn):
     (alerte vierge retirée, alerte portant une décision gardée en faible avec le motif)."""
     from mars.viirs import reevaluate
     ids, alerts = _viirs_cases(conn)
-    out = reevaluate(conn, RULES)
+    # Indépendant des infrastructures présentes dans la base de test (câbles réels du jeu d'essai UX au large
+    # d'Ouessant) : ce test porte sur l'évaluation, pas sur le critère du corridor
+    out = reevaluate(conn, {**RULES, "viirs": {**RULES["viirs"], "corridor_m": 0}})
     assert out["non_evaluables"] == 3 and out["alertes_retirees"] == 2 and out["alertes_gardees_avec_decision"] == 1
     det = {n: conn.execute("SELECT mask_reason, non_evaluable, ais_navires_rayon FROM viirs_detections WHERE id = %s",
                            (i,)).fetchone() for n, i in ids.items()}

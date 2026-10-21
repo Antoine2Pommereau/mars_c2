@@ -235,7 +235,7 @@ def test_write_routes_refused_without_login(client):
                        ("/api/controle/demandes", {"lon": -6, "lat": 48, "rayon_m": 5000, "motif": "essai"})):
         assert client.post(path, json=body).status_code == 401
     assert client.get("/api/controle/etat").status_code == 200                     # lecture sans connexion
-    assert client.get("/api/controle/session").json() == {"operateur": None, "configure": True}
+    assert client.get("/api/controle/session").json() == {"operateur": None, "configure": True, "abimes": []}
 
 
 def test_login_actions_and_journal(client, conn):
@@ -269,7 +269,7 @@ def test_login_actions_and_journal(client, conn):
     assert client.post("/api/controle/plafonds/sentinel1", json={"valeur": 2, "motif": "essai"}).status_code == 401
     actions = [(x["auteur"], x["action"], x["cible"]) for x in reversed(client.get("/api/controle/journal").json())]
     assert actions == [("antoine", "connexion_refusee", "operateur"), ("antoine", "connexion", "operateur"),
-                       ("antoine", "pause", "sentinel1"), ("antoine", "plafond", "sentinel1"),
+                       ("inconnu", "origine_refusee", "/api/controle/plafonds/sentinel1"), ("antoine", "pause", "sentinel1"), ("antoine", "plafond", "sentinel1"),
                        ("antoine", "demande", "tip_and_cue"), ("antoine", "deconnexion", "operateur")]
 
 
@@ -646,6 +646,74 @@ def test_tip_priority_raised_in_zone_and_for_followed_vessels(conn):
         assert conn.execute("SELECT priorite FROM demandes_observation WHERE id = %s", (d2["demande"],)).fetchone()[0] == prio
     finally:
         conn.execute("DELETE FROM followed_vessels WHERE vessel_id = %s", (vid,))
+
+
+# Lot A (21/10/2026) : origine derrière nginx, ligne MARS_OPERATEURS abîmée, ligne de configuration sans suffixe
+
+def test_damaged_operator_line_is_named_without_its_hash():
+    bonne = controle.hacher("bon mot de passe", iterations=1000)
+    suffixe = " trace_id=" + "a" * 32 + " span_id=" + "b" * 16             # copiée avec le suffixe de trace : 131
+    env = f"antoine:{bonne}{suffixe},invite:{bonne},vieux:md5:abc"
+    assert controle.operateurs(env) == {"invite": bonne}
+    abimes = controle.operateurs_abimes(env)
+    assert abimes["antoine"] == "empreinte de 131 caractères au lieu de 64 caractères hexadécimaux"
+    assert abimes["vieux"].startswith("format attendu")
+    m = controle.message_abime("antoine", abimes["antoine"])
+    assert m.startswith("ligne MARS_OPERATEURS abîmée pour antoine") and bonne.split(":")[3] not in m
+
+
+def test_config_line_printed_without_trace_suffix():
+    import io
+    from opentelemetry.sdk.trace import TracerProvider
+    from mars import traces
+    sortie = io.StringIO()
+    ancien = sys.stdout
+    sys.stdout = traces._Lignes(sortie)
+    try:
+        with TracerProvider().get_tracer("essai").start_as_current_span("commande operateur-hacher"):
+            print("journal ordinaire")
+            traces.ligne_brute("MARS_OPERATEURS=antoine:pbkdf2_sha256:600000:" + "0" * 32 + ":" + "1" * 64)
+    finally:
+        sys.stdout = ancien
+    journal, ligne = sortie.getvalue().splitlines()
+    assert "trace_id=" in journal, "les journaux gardent leur suffixe"
+    assert ligne.endswith("1" * 64) and "trace_id" not in ligne
+    assert "traces.ligne_brute(f\"MARS_OPERATEURS=" in (ROOT / "scripts" / "taches.py").read_text()
+
+
+def test_login_with_damaged_line_says_so(client, monkeypatch):
+    bonne = controle.hacher("bon mot de passe", iterations=1000)
+    monkeypatch.setenv("MARS_OPERATEURS", f"antoine:{bonne} trace_id={'a' * 32} span_id={'b' * 16}")
+    s = client.get("/api/controle/session").json()
+    assert s["configure"] is False and s["abimes"][0].startswith("ligne MARS_OPERATEURS abîmée pour antoine")
+    r = client.post("/api/controle/connexion", json={"operateur": "antoine", "mot_de_passe": "bon mot de passe"})
+    assert r.status_code == 503 and "131 caractères" in r.json()["detail"]
+
+
+def test_origin_behind_nginx_forwarded_host_and_refusal_journaled(client, conn):
+    navigateur = {"origin": "http://localhost:8080"}
+    corps = {"operateur": "antoine", "mot_de_passe": "bon mot de passe"}
+    # nginx sans proxy_set_header Host : l'API reçoit backend:8000 et refusait (connexion impossible le 21/10/2026)
+    r = client.post("/api/controle/connexion", json=corps, headers={**navigateur, "host": "backend:8000"})
+    assert r.status_code == 403
+    assert r.json()["detail"] == ("Origine refusée : la page vient de localhost:8080, la requête arrive pour l'hôte "
+                                  "backend:8000")
+    j = conn.execute("SELECT action, cible, apres FROM journal_controle WHERE action = 'origine_refusee'").fetchone()
+    assert j[0:2] == ("origine_refusee", "/api/controle/connexion") and j[2]["origine"] == "localhost:8080"
+    # Relais qui transmet l'hôte vu du navigateur : X-Forwarded-Host, ou Host gardé (web/nginx.conf)
+    assert client.post("/api/controle/connexion", json=corps, headers={
+        **navigateur, "host": "backend:8000", "x-forwarded-host": "localhost:8080"}).status_code == 200
+    assert client.post("/api/controle/connexion", json=corps, headers={**navigateur, "host": "localhost:8080"}
+                       ).status_code == 200
+    r = client.post("/api/controle/connexion", json=corps, headers={**navigateur, "host": "localhost:8080"})
+    assert "secure" not in r.headers["set-cookie"].lower(), "http://localhost : cookie sans Secure (Safari le refuserait)"
+
+
+def test_nginx_keeps_the_browser_host():
+    conf = (ROOT / "web" / "nginx.conf").read_text()
+    for bloc in ("location /api/stream {", "location /api/ {"):
+        corps = conf.split(bloc, 1)[1].split("}", 1)[0]
+        assert "proxy_set_header Host $http_host;" in corps and "proxy_set_header X-Forwarded-Host $http_host;" in corps
 
 
 def test_rules_file_untouched():
