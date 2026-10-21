@@ -1,6 +1,9 @@
 // Tous les libellés de l'interface, en français. Une traduction remplace ce fichier en entier (même structure) :
 // les composants n'écrivent aucun texte visible en dur. Sans tiret dans les textes, dates au format 17/06/2024.
 
+/** Durée lisible : minutes jusqu'à 90, puis heures (« AIS coupé 19 h » plutôt que 1168 min) */
+const duree = (min: number) => (min >= 90 ? `${Math.round(min / 60)} h` : `${Math.round(min)} min`);
+
 export const L = {
   app: { nom: "MARS C2" },
   commun: {
@@ -18,7 +21,7 @@ export const L = {
   // Rail et panneaux
   rail: {
     alertes: "Alertes", analyses: "Analyses satellites", couches: "Couches et légende",
-    suivis: "Navires suivis", recherche: "Recherche", observations: "Observations satellites", controle: "Contrôle",
+    suivis: "Navires suivis", recherche: "Recherche", observations: "Vérifications satellites", controle: "Contrôle",
   },
   // Panneau de contrôle (lot P)
   controle: {
@@ -83,7 +86,7 @@ export const L = {
   },
   // Panneau « Observations » (tip and cue, lot T1)
   observations: {
-    titre: "Observations", point: "point", filtre: "État", aucune: "Aucune demande d'observation",
+    titre: "Vérifications satellites", point: "point", filtre: "État", aucune: "Aucune demande d'observation",
     filtres: { toutes: "Toutes", planifiee: "Planifiées", en_attente: "En attente", analysee: "Analysées", closes: "Closes" },
     etats: { en_attente: "en attente", planifiee: "planifiée", analysee: "analysée", sans_passage: "sans passage",
       expiree: "expirée", refusee_budget: "refusée", annulee: "annulée" } as Record<string, string>,
@@ -175,14 +178,15 @@ export const L = {
   },
 
   gravite: { critique: "critique", elevee: "élevée", moyenne: "moyenne", faible: "faible" } as Record<string, string>,
-  statut: { nouvelle: "à traiter", acquittee: "acquittée", confirmee: "confirmée", classee: "classée" } as Record<string, string>,
+  statut: { nouvelle: "à traiter", acquittee: "vue", confirmee: "confirmée", classee: "classée" } as Record<string, string>,
   zones: { bretagne: "Bretagne", manche: "Manche", gascogne: "Gascogne", mediterranee: "Méditerranée" } as Record<string, string>,
 
   // Types d'alerte (registre : registres/alertes.tsx)
   alertes: {
-    WATCHLIST: "Navire sur liste", IDENTITY_CHANGE: "Changement d'identité", RENDEZVOUS: "Rendez vous suspect",
-    AIS_GAP: "Coupure AIS", INFRA_THREAT: "Menace sur infrastructure", DARK_SHIP: "Navire sombre",
-    AIS_UNCONFIRMED: "Position AIS non confirmée", IDENTITY_MISMATCH: "Identité contredite par satellite",
+    // Glossaire de l'opérateur (lot U, docs/ux_refonte.md) : le nom technique reste dans le détail et le journal
+    WATCHLIST: "Navire des listes", IDENTITY_CHANGE: "Changement d'identité", RENDEZVOUS: "Rendez vous en mer",
+    AIS_GAP: "AIS coupé", INFRA_THREAT: "Menace sur infrastructure", DARK_SHIP: "Sans AIS",
+    AIS_UNCONFIRMED: "Déclaré mais non vu", IDENTITY_MISMATCH: "Taille déclarée contredite",
     TRAJECTOIRE_ANORMALE: "Trajectoire anormale", PASSAGE_PREVU: "Passage prévu",
   } as Record<string, string>,
 
@@ -222,7 +226,7 @@ export const L = {
     vitesseDeclaree: "Vitesse déclarée", positionPassage: "Position à l'instant du passage",
     echoProche: "Écho radar le plus proche", aucun: "aucun", contexte: "Contexte", vignette: "Vignette radar",
     sousAutreMmsi: "sous un autre MMSI", pavillonChange: "pavillon changé", militaire: "militaire", militaireRow: "Militaire", puis: "puis", devenu: "devenu",
-    silenceDe: (min: number) => `silence de ${min} min`, rencontreDe: (min: number, m: number) => `${min} min, ${m} m au plus près`,
+    silenceDe: (min: number) => `AIS coupé ${duree(min)}`, rencontreDe: (min: number, m: number) => `${duree(min)}, ${m} m au plus près`,
     contrasteDe: (db: string) => `contraste ${db} dB`, sansEcho: (m: string) => `${m} m déclarés, aucun écho`,
     echo: (m: string) => `Écho de ${m} m sans AIS`, mmsiDe: (m: string | number) => `MMSI ${m}`, omiDe: (o: string | number) => `OMI ${o}`,
     deplacement: (km: string) => `, déplacement de ${km} km`, continuite: (n: number, pct: string) => `${n} navires, continuité ${pct} %`,
@@ -366,11 +370,11 @@ export const L = {
   // Décisions
   decisions: {
     titre: "Décision", statut: (s: string) => `Statut : ${s}`, note: "Note (facultative)",
-    acquitter: "Acquitter", confirmer: "Confirmer", classer: "Classer", rouvrir: "Rouvrir l'alerte",
+    acquitter: "Vu", confirmer: "Confirmer", classer: "Classer", rouvrir: "Rouvrir l'alerte",
     commenter: "Commenter", commentaire: "Commentaire", auteur: "Auteur", auteurDefaut: "Opérateur",
     motifRequis: "Motif du classement", envoyer: "Enregistrer",
     motifs: { faux_positif: "Faux positif", activite_legitime: "Activité légitime", doublon: "Doublon" } as Record<string, string>,
-    verbe: { acquitter: "Acquittée", confirmer: "Confirmée", classer: "Classée", rouvrir: "Rouverte", commenter: "Commentaire" } as Record<string, string>,
+    verbe: { acquitter: "Vue", confirmer: "Confirmée", classer: "Classée", rouvrir: "Rouverte", commenter: "Commentaire" } as Record<string, string>,
     par: (auteur: string, date: string) => ` par ${auteur}, le ${date}`,
   },
 

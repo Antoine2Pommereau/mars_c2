@@ -5,6 +5,7 @@ import { hm, jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
 import { naviresAlerte, TYPES_ALERTE, typeAlerte } from "../registres/alertes";
+import { URGENCE, urgenceGravite } from "../lib/urgence";
 import { Tag } from "./Elements";
 import { Vignette } from "./Fiches";
 
@@ -41,11 +42,14 @@ function Ligne({ a, vessels, now, selected, onPick, indent, vignette }:
   const zone = zoneAlerte(a);
   const low = a.properties.severity === "faible" || ["classee", "acquittee"].includes(statutDe(a));
   const quand = now - Date.parse(a.properties.event_time) < 20 * 3600_000 ? hm : jourHeure;
+  const urgence = urgenceGravite(a.properties.severity);
   return (
     <button onClick={() => onPick(a)}
+      style={{ boxShadow: urgence > 1 && !low ? `inset 3px 0 0 ${URGENCE[urgence]}` : undefined }}
       className={`grid w-full grid-cols-[16px_1fr_auto] items-start gap-x-2.5 border-b border-hair/70 py-2.5 pr-4 text-left transition-colors
         ${indent ? "pl-9" : "pl-4"} ${selected ? "bg-raised" : "hover:bg-raised/60"} ${low ? "opacity-55" : ""}`}>
-      <t.Icone size={14} strokeWidth={1.8} className="mt-0.5" style={{ color: t.couleur }} />
+      {/* Type par l'icône (neutre), urgence par la couleur (lot U) */}
+      <t.Icone size={14} strokeWidth={1.8} className="mt-0.5 text-muted" />
       <span className="min-w-0">
         <span className="flex items-center gap-1.5">
           {vignette && !indent && n?.vessel_id != null && <Vignette vesselId={n.vessel_id} taille="petite" />}
@@ -58,7 +62,8 @@ function Ligne({ a, vessels, now, selected, onPick, indent, vignette }:
       </span>
       <span className="text-right text-[12px]">
         <span className="block text-ink/80">{quand(a.properties.event_time)}</span>
-        <span className="block text-muted">{statutDe(a) === "nouvelle" ? L.gravite[a.properties.severity] : L.statut[statutDe(a)]}</span>
+        <span className="block text-muted" style={statutDe(a) === "nouvelle" && urgence > 1 ? { color: URGENCE[urgence] } : undefined}>
+          {statutDe(a) === "nouvelle" ? L.gravite[a.properties.severity] : L.statut[statutDe(a)]}</span>
       </span>
     </button>
   );
@@ -89,14 +94,15 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivi
           </span>
         </h2>
         <div className="mt-3 flex flex-wrap gap-1.5" role="group" aria-label={L.fil.type}>
-          {TYPES_ALERTE.map((t) => {
+          {/* Types « à venir » retirés de l'écran principal (lot U) : ils restent au registre */}
+          {TYPES_ALERTE.filter((t) => t.actif).map((t) => {
             const on = filtres.types.includes(t.type);
             const title = t.actif ? L.alertes[t.type] : `${L.alertes[t.type]}, ${L.commun.aVenir} (${L.etapes[t.etape] ?? t.etape})`;
             return (
               <button key={t.type} disabled={!t.actif} title={title} onClick={() => set({ types: toggle(filtres.types, t.type) })}
                 className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11.5px] transition-colors
                   ${!t.actif ? "border-transparent text-faint/50" : on ? "border-hair bg-raised text-ink" : "border-transparent text-faint"}`}>
-                <t.Icone size={11} strokeWidth={2} style={{ color: t.actif && on ? t.couleur : undefined }} />
+                <t.Icone size={11} strokeWidth={2} />
                 {L.alertes[t.type]}{t.actif && <span className="text-muted">{count(t.type)}</span>}
               </button>
             );

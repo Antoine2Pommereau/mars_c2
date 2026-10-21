@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.41"
+version: "2026.10.42"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -586,6 +586,7 @@ dossiers:
   fenetre_h: 72                 # alertes dont l'instant est dans les 72 h précédant l'instant affiché
   infrastructure_m: 1852        # « près d'un câble » : à 1 mille au plus
   en_mer_m: 2000                # navire des listes « en mer » : à plus de 2 km de la côte
+  transit_kn: 3                 # au delà, il est en transit (À noter même près d'une infrastructure) ; 2026.10.42
   point_fusion_m: 2000          # deux points sans navire fusionnés à moins de 2 km
   point_fusion_h: 6             # et de 6 heures
   # Base selon la gravité la plus haute ; navire des listes seul : À noter, À examiner en mer près d'une

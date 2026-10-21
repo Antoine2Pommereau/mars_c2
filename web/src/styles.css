@@ -15,6 +15,10 @@
   --color-gap: #ef6461;
   --color-unconf: #e8d45a;
   --color-watch: #b48cf2;
+  /* Échelle d'urgence (lot U) : la seule couleur de la veille */
+  --color-u3: #ef6461;
+  --color-u2: #f0a84b;
+  --color-u1: #aab6bf;
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-cond: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
 }

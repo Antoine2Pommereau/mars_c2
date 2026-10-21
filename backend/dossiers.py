@@ -54,7 +54,8 @@ async def _navires(c, ids: list[int]) -> dict:
 
 async def _contextes(c, alertes: list[dict], instant, rules: dict) -> dict:
     """Navires des listes : séjour prolongé (détail de l'alerte WATCHLIST), en mer près d'une infrastructure (dernière
-    position à l'instant à moins d'un mille d'une infrastructure et à plus de en_mer_m de la côte)."""
+    position à l'instant à moins d'un mille d'une infrastructure, à plus de en_mer_m de la côte, et lent : sous
+    transit_kn, sinon il passe)."""
     p, seuil = _p(rules), float(rules["watchlist"]["sejour_prolonge_h"])
     out: dict = {}
     for a in alertes:
@@ -62,12 +63,15 @@ async def _contextes(c, alertes: list[dict], instant, rules: dict) -> dict:
             continue
         sejour = (a.get("details") or {}).get("sejour") or {}
         r = await c.fetchrow(
-            """WITH d AS (SELECT geom FROM positions WHERE vessel_id = $1 AND ts <= $2 ORDER BY ts DESC LIMIT 1)
+            """WITH d AS (SELECT geom, sog_kn FROM positions WHERE vessel_id = $1 AND ts <= $2 ORDER BY ts DESC LIMIT 1)
                SELECT EXISTS (SELECT 1 FROM infrastructure i, d WHERE ST_DWithin(i.geom, d.geom, $3)) AS pres,
-                      NOT EXISTS (SELECT 1 FROM land l, d WHERE ST_DWithin(l.geom, d.geom, $4)) AS en_mer""",
+                      NOT EXISTS (SELECT 1 FROM land l, d WHERE ST_DWithin(l.geom, d.geom, $4)) AS en_mer,
+                      (SELECT sog_kn FROM d) AS sog""",
             a["vessel_id"], instant, float(p["infrastructure_m"]), float(p["en_mer_m"]))
+        # En transit (au delà de transit_kn), un navire des listes reste « à noter » même près d'une infrastructure
+        lent = r is not None and r["sog"] is not None and r["sog"] < float(p["transit_kn"])
         out[a["vessel_id"]] = {"sejour_prolonge": float(sejour.get("duree_h") or 0) >= seuil,
-                               "en_mer_pres_infra": bool(r and r["pres"] and r["en_mer"])}
+                               "en_mer_pres_infra": bool(r and r["pres"] and r["en_mer"] and lent)}
     return out
 
 
