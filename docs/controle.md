@@ -123,3 +123,27 @@ Préférences en base (`reglages_controle`, clé `notif:preferences`) par dessus
 * Calcul des heures calmes identique en Python et en SQL (testé sur les mêmes instants, heure d'été et d'hiver).
 * Bouton « Envoyer une notification de test » : part tout de suite (préférences ignorées), journalisé ; refusé si
   `NTFY_SUJET` manque.
+
+## Phase E : zones de vigilance (migration 36, règles 2026.10.39)
+
+Section « Zones de vigilance » : une zone se crée par un **polygone dessiné sur la carte** (« Dessiner sur la carte »,
+un clic par sommet, rien d'autre ne se sélectionne pendant le tracé) ou par un **tampon autour de l'infrastructure
+sélectionnée** (500 m à 20 km, 2 milles par défaut), avec un nom, un motif, une date de fin facultative et un profil
+choisi parmi ceux du fichier (`zones_vigilance.profils`). Une zone se retire avec un motif, jamais ne se supprime.
+
+| Profil | Gravité minimale | Tip and cue | Sélection Sentinel | Seuils abaissés dans la zone |
+|---|---|---|---|---|
+| Renforcé | moyenne | priorité relevée de 2 | point d'intérêt classé comme une demande de priorité 5 | rendez vous 60 min (120 ailleurs), coupure AIS 60 min (120 ailleurs) |
+| Attention | inchangée | relevée de 1 | priorité 3 | aucun |
+
+* Une zone ne fait qu'abaisser un seuil, jamais le relever. Les règles du flux cherchent au seuil le plus bas des
+  zones actives, puis jugent chaque épisode au seuil de sa position ; sans zone, le calcul est inchangé (mêmes
+  requêtes, mêmes paramètres).
+* L'alerte enregistre la zone et le profil appliqués (`details.zone_vigilance` : identifiant, nom, profil, gravité
+  avant) ; l'empreinte de l'état du panneau inclut les zones actives et leur profil.
+* **Priorité aux navires suivis** (oui ou non, motif obligatoire) : une demande d'observation d'un navire suivi est
+  relevée de `controle.suivis.priorite_plus` (1), donc servie d'abord par la sélection Sentinel.
+* Couche « Zones de vigilance » (groupe zones, active par défaut : trait clair en pointillé) ; un clic ouvre la fiche
+  de la zone : profil, motif, période, surface, alertes qui portent la zone (gravité relevée signalée), demandes
+  d'observation et passages qui la couvrent (7 jours avant, 3 jours après). La sélection est gardée dans l'adresse
+  (`sel=vigilance:<id>`).

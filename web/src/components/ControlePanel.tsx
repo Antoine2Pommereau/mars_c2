@@ -402,6 +402,110 @@ function Notifications({ actif }: { actif: boolean }) {
   );
 }
 
+const Z = C.zones;
+
+/** Zones de vigilance (phase E) : liste des zones actives, création (polygone dessiné ou tampon autour de
+ *  l'infrastructure sélectionnée, profil du fichier), retrait avec motif, priorité aux navires suivis */
+function Zones({ actif, trace, onTrace, infra, onPickZone }: PanneauProps & { actif: boolean }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["controle", "zones"], queryFn: () => api.controle.zones() });
+  const [ouvert, setOuvert] = useState(false);
+  const [source, setSource] = useState<"dessin" | "infra">("dessin");
+  const [nom, setNom] = useState(""), [motif, setMotif] = useState(""), [profil, setProfil] = useState("");
+  const [fin, setFin] = useState(""), [tampon, setTampon] = useState("");
+  const [retrait, setRetrait] = useState<number | null>(null), [motifRetrait, setMotifRetrait] = useState("");
+  const [motifSuivis, setMotifSuivis] = useState("");
+  const fini = () => { qc.invalidateQueries({ queryKey: ["controle"] }); };
+  const creer = useMutation({
+    mutationFn: () => api.controle.creerZone({ nom, motif, profil: profil || Object.keys(q.data!.profils)[0],
+      fin_le: fin ? new Date(fin).toISOString() : null,
+      ...(source === "dessin" ? { geometrie: { type: "Polygon", coordinates: [[...trace!, trace![0]]] } }
+        : { infrastructure_id: infra!.id, tampon_m: tampon ? Number(tampon) : undefined }) }),
+    onSuccess: () => { setOuvert(false); setNom(""); setMotif(""); setFin(""); onTrace(null); fini(); },
+  });
+  const retirer = useMutation({ mutationFn: (id: number) => api.controle.retirerZone(id, motifRetrait),
+    onSuccess: () => { setRetrait(null); setMotifRetrait(""); fini(); } });
+  const suivis = useMutation({ mutationFn: (v: boolean) => api.controle.suivis(v, motifSuivis),
+    onSuccess: () => { setMotifSuivis(""); fini(); } });
+  if (!q.data) return null;
+  const profils = q.data.profils;
+  const pret = actif && nom.trim().length >= 2 && motif.trim().length >= 3
+    && (source === "dessin" ? (trace?.length ?? 0) >= 3 : infra != null);
+  return (
+    <div className="space-y-2 text-[12px]">
+      {!q.data.features.length && <p className="text-muted">{Z.aucune}</p>}
+      <ul className="space-y-1">
+        {q.data.features.map((f) => {
+          const z = f.properties;
+          return (
+            <li key={z.id}>
+              <div className="flex items-center gap-2">
+                <button className="min-w-0 flex-1 truncate text-left text-ink hover:text-signal" onClick={() => onPickZone(z)}>{z.nom}</button>
+                <span className="text-[11px] text-muted">{z.profil_nom}</span>
+                <button className="text-[11px] text-faint hover:text-gap disabled:opacity-40" disabled={!actif}
+                  onClick={() => setRetrait(retrait === z.id ? null : z.id)}>{Z.retirer}</button>
+              </div>
+              {z.fin_le && <p className="text-[11px] text-faint">{Z.jusqua(jourHeure(z.fin_le))}</p>}
+              {retrait === z.id && (
+                <form className="mt-1 flex gap-1.5" onSubmit={(e) => { e.preventDefault(); retirer.mutate(z.id); }}>
+                  <input className={champ} placeholder={C.motif} value={motifRetrait} onChange={(e) => setMotifRetrait(e.target.value)} aria-label={C.motif} autoFocus />
+                  <button type="submit" className={bouton} disabled={motifRetrait.trim().length < 3}>{C.confirmer}</button>
+                </form>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {!ouvert ? (
+        <button className={bouton} disabled={!actif} onClick={() => setOuvert(true)}>{Z.nouvelle}</button>
+      ) : (
+        <form className="space-y-1.5 rounded border border-hair/60 p-2" onSubmit={(e) => { e.preventDefault(); creer.mutate(); }}>
+          <input className={champ} placeholder={Z.nom} value={nom} onChange={(e) => setNom(e.target.value)} aria-label={Z.nom} />
+          <input className={champ} placeholder={C.motif} value={motif} onChange={(e) => setMotif(e.target.value)} aria-label={C.motif} />
+          <select className={champ} value={profil || Object.keys(profils)[0]} onChange={(e) => setProfil(e.target.value)} aria-label={Z.profil}>
+            {Object.entries(profils).map(([k, p]) => <option key={k} value={k}>{p.nom}</option>)}
+          </select>
+          <label className="block text-[11.5px] text-muted">{Z.fin}
+            <input className={`${champ} mt-0.5`} type="datetime-local" value={fin} onChange={(e) => setFin(e.target.value)} />
+          </label>
+          <div className="flex gap-1" role="group">
+            {(["dessin", "infra"] as const).map((s) => (
+              <button type="button" key={s} aria-pressed={source === s} onClick={() => setSource(s)}
+                className={`rounded-full border px-2 py-0.5 text-[11px] ${source === s ? "border-hair bg-raised text-ink" : "border-transparent text-faint"}`}>
+                {s === "dessin" ? Z.sourceDessin : Z.sourceInfra}
+              </button>
+            ))}
+          </div>
+          {source === "dessin" ? (
+            <div className="flex items-center gap-2">
+              <button type="button" className={bouton} onClick={() => onTrace(trace ? null : [])}>{trace ? Z.effacer : Z.dessiner}</button>
+              {trace && <span className="text-[11px] text-muted">{Z.sommets(trace.length)}</span>}
+            </div>
+          ) : infra ? (
+            <div className="flex items-center gap-2">
+              <span className="flex-1 truncate text-[11.5px] text-ink">{Z.tampon(infra.nom ?? `n° ${infra.id}`)}</span>
+              <input className={`${champ} w-20`} placeholder={String(q.data.tampon_m?.defaut ?? 3704)} inputMode="numeric"
+                value={tampon} onChange={(e) => setTampon(e.target.value)} aria-label={Z.tamponM} />
+            </div>
+          ) : <p className="text-[11px] text-faint">{Z.choisirInfra}</p>}
+          <div className="flex justify-end gap-2">
+            <button type="button" className="text-[12px] text-muted hover:text-ink" onClick={() => { setOuvert(false); onTrace(null); }}>{C.annuler}</button>
+            <button type="submit" className={bouton} disabled={!pret || creer.isPending}>{Z.creer}</button>
+          </div>
+          {creer.error && <p className="text-[11.5px] text-gap">{creer.error.message}</p>}
+        </form>
+      )}
+      {retirer.error && <p className="text-[11.5px] text-gap">{retirer.error.message}</p>}
+      <div className="border-t border-hair/60 pt-2">
+        <Bascule on={q.data.suivis_prioritaires} actif={actif && motifSuivis.trim().length >= 3} label={Z.suivis}
+          onChange={(v) => suivis.mutate(v)} />
+        {actif && <input className={`${champ} mt-1`} placeholder={C.motif} value={motifSuivis} onChange={(e) => setMotifSuivis(e.target.value)} aria-label={C.motif} />}
+        {suivis.error && <p className="text-[11.5px] text-gap">{suivis.error.message}</p>}
+      </div>
+    </div>
+  );
+}
+
 function Journal({ lignes }: { lignes: Props[] }) {
   if (!lignes.length) return <p className="text-[12px] text-muted">{C.journalVide}</p>;
   return (
@@ -417,9 +521,15 @@ function Journal({ lignes }: { lignes: Props[] }) {
   );
 }
 
-/** Panneau de contrôle (lot P) : lecture pour tous, écriture après connexion d'un opérateur. Les sections suivantes
- *  (système, règles, notifications, zones de vigilance, démonstration) s'ajoutent à la liste. */
-export default function ControlePanel() {
+interface PanneauProps {
+  trace: number[][] | null;                       // polygone de zone en cours de tracé sur la carte
+  onTrace: (t: number[][] | null) => void;
+  infra: { id: number; nom: string | null } | null;   // infrastructure sélectionnée (tampon)
+  onPickZone: (z: Props) => void;
+}
+
+/** Panneau de contrôle (lot P) : lecture pour tous, écriture après connexion d'un opérateur. */
+export default function ControlePanel(pp: PanneauProps) {
   const sessionQ = useQuery({ queryKey: ["controle", "session"], queryFn: api.controle.session });
   const etatQ = useQuery({ queryKey: ["controle", "etat"], queryFn: api.controle.etat, refetchInterval: 30_000 });
   const journalQ = useQuery({ queryKey: ["controle", "journal"], queryFn: () => api.controle.journal(30), refetchInterval: 30_000 });
@@ -480,6 +590,9 @@ export default function ControlePanel() {
             <ul>{reglesQ.data.regles.map((r) => <Regle key={r.regle} r={r} actif={actif} />)}</ul>
           </Section>
         )}
+        <Section id="zones" titre={C.sections.zones}>
+          <Zones actif={actif} {...pp} />
+        </Section>
         <Section id="notifications" titre={C.sections.notifications}>
           <Notifications actif={actif} />
         </Section>

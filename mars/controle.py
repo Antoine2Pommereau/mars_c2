@@ -157,9 +157,10 @@ def regler(conn, cle: str, valeur, auteur: str, motif: str | None, action: str, 
     return {"cle": cle, "valeur": valeur}
 
 
-def appliquer_reglages(rules: dict, regl: dict, pauses_: dict) -> dict:
-    """Règles appliquées (calcul pur) : plafonds du panneau dans leurs bornes, pauses, modes des règles et empreinte
-    de l'état qui influence les alertes, dans rules["_controle"]."""
+def appliquer_reglages(rules: dict, regl: dict, pauses_: dict, zones: list | None = None) -> dict:
+    """Règles appliquées (calcul pur) : plafonds du panneau dans leurs bornes, pauses, modes des règles, zones de
+    vigilance actives (profil connu du fichier), priorité aux navires suivis, et empreinte de l'état qui influence les
+    alertes, dans rules["_controle"]."""
     r = copy.deepcopy(rules)
     for source, section in PLAFONDS.items():
         v = regl.get(f"plafond:{source}")
@@ -167,8 +168,16 @@ def appliquer_reglages(rules: dict, regl: dict, pauses_: dict) -> dict:
             lo, hi = bornes_plafond(rules, source)
             r[section]["scenes_max_par_jour"] = max(lo, min(hi, int(v)))
     modes = {k[len("mode:"):]: v for k, v in regl.items() if k.startswith("mode:") and v in MODES}
+    profils = profils_zones(rules)
+    zones = sorted([z for z in zones or [] if z.get("profil") in profils], key=lambda z: z["id"])
+    suivis = bool(regl.get("suivis:prioritaires", False))
     etat = {"modes": dict(sorted(modes.items()))}
-    r["_controle"] = {"pauses": pauses_, "modes": modes, "etat": etat, "empreinte": empreinte(etat), "observees": {}}
+    if zones:                    # sans zone, l'empreinte reste celle de la phase C
+        etat["zones"] = [[z["id"], z["profil"]] for z in zones]
+    if suivis:
+        etat["suivis_prioritaires"] = True
+    r["_controle"] = {"pauses": pauses_, "modes": modes, "zones": zones, "suivis_prioritaires": suivis, "etat": etat,
+                      "empreinte": empreinte(etat), "observees": {}}
     return r
 
 
@@ -252,15 +261,18 @@ def stamp(conn, rules: dict) -> str | None:
     return c["empreinte"]
 
 
-def filtrer_sync(conn, rules: dict, kind: str, details: dict | None, cle: str, gravite: str | None) -> bool:
-    """Alerte à écrire (psycopg : VIIRS, Sentinel) : vrai si la règle est active ; en observation, l'épisode est compté
-    et gardé ; coupée, rien."""
+def filtrer_sync(conn, rules: dict, kind: str, details: dict, cle: str, gravite: str | None,
+                 lon: float | None = None, lat: float | None = None) -> str | None:
+    """Alerte à écrire (psycopg : VIIRS, Sentinel) : la gravité à écrire si la règle est active (zone de vigilance
+    appliquée, inscrite dans `details`) ; en observation, l'épisode est compté et gardé ; coupée, rien. None : rien à
+    écrire."""
     mode, regle, sous = decision(rules, kind, details)
+    gravite = marquer_zone(rules, gravite, details, lon, lat) if gravite else gravite
     if mode == "observation":
         compter_observation(rules, regle, sous)
         conn.execute(EPISODE_SQL.format(p1="%s", p2="%s", p3="%s", p4="%s", p5="%s"),
                      (regle, sous, cle, gravite, stamp(conn, rules)))
-    return mode == "actif"
+    return gravite if mode == "actif" else None
 
 
 def seuils(section: dict, prefixe: str = "", limite: int = 40) -> list[list]:
@@ -297,7 +309,84 @@ def concerne(rules_regle: tuple[str, str | None], kind: str, details: dict | Non
 
 def appliquer(conn, rules: dict) -> dict:
     """Règles du fichier, avec l'état du panneau qui prime (psycopg)."""
-    return appliquer_reglages(rules, reglages(conn), pauses(conn))
+    return appliquer_reglages(rules, reglages(conn), pauses(conn), [dict(zip(COLS_ZONE, r)) for r in conn.execute(
+        ZONES_ACTIVES_SQL).fetchall()])
+
+
+# Zones de vigilance (phase E)
+
+COLS_ZONE = ("id", "nom", "profil", "geometrie")
+ZONES_ACTIVES_SQL = """SELECT id, nom, profil, ST_AsGeoJSON(geom, 6)::json FROM zones_vigilance
+WHERE retiree_le IS NULL AND (fin_le IS NULL OR fin_le > now()) ORDER BY id"""
+SEUILS_ZONE = ("rendezvous.min_duration_min", "ais_gap.min_gap_min")
+
+
+def profils_zones(rules: dict) -> dict:
+    return (rules.get("zones_vigilance") or {}).get("profils") or {}
+
+
+def _dans_anneau(lon: float, lat: float, anneau: list) -> bool:
+    dedans, j = False, len(anneau) - 1
+    for i in range(len(anneau)):
+        xi, yi = anneau[i][0], anneau[i][1]
+        xj, yj = anneau[j][0], anneau[j][1]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / ((yj - yi) or 1e-30) + xi:
+            dedans = not dedans
+        j = i
+    return dedans
+
+
+def dans_geometrie(g: dict, lon: float, lat: float) -> bool:
+    """Point dans un polygone ou un multipolygone GeoJSON (trous compris), calcul plan en degrés."""
+    t = (g or {}).get("type")
+    polys = [g["coordinates"]] if t == "Polygon" else g.get("coordinates", []) if t == "MultiPolygon" else []
+    if t == "GeometryCollection":
+        return any(dans_geometrie(x, lon, lat) for x in g.get("geometries", []))
+    return any(p and _dans_anneau(lon, lat, p[0]) and not any(_dans_anneau(lon, lat, h) for h in p[1:]) for p in polys)
+
+
+def zones_de(rules: dict, lon: float | None, lat: float | None) -> list[dict]:
+    if lon is None or lat is None:
+        return []
+    return [z for z in (rules.get("_controle") or {}).get("zones") or [] if dans_geometrie(z["geometrie"], lon, lat)]
+
+
+def seuil_zone(rules: dict, cle: str, defaut: float, lon: float | None, lat: float | None) -> float:
+    """Seuil applicable en un point : le plus bas des profils des zones qui le contiennent, jamais au dessus du fichier."""
+    profils = profils_zones(rules)
+    vals = [(profils[z["profil"]].get("seuils") or {}).get(cle) for z in zones_de(rules, lon, lat)]
+    return min([defaut] + [float(v) for v in vals if v is not None])
+
+
+def seuil_min(rules: dict, cle: str, defaut: float) -> float:
+    """Seuil le plus bas sur toutes les zones actives : la recherche part de lui, puis chaque épisode est jugé au seuil
+    de sa position (seuil_zone). Sans zone, le seuil du fichier : le calcul est inchangé."""
+    profils = profils_zones(rules)
+    vals = [(profils[z["profil"]].get("seuils") or {}).get(cle) for z in (rules.get("_controle") or {}).get("zones") or []]
+    return min([defaut] + [float(v) for v in vals if v is not None])
+
+
+def marquer_zone(rules: dict, gravite: str, details: dict, lon: float | None, lat: float | None) -> str:
+    """Alerte dans une zone de vigilance : zone et profil appliqués inscrits dans les détails ; gravité relevée au
+    minimum du profil. Retourne la gravité à écrire."""
+    zs = zones_de(rules, lon, lat)
+    if not zs:
+        return gravite
+    profils = profils_zones(rules)
+    z = max(zs, key=lambda x: GRAVITES.index(profils[x["profil"]].get("gravite_min", "faible")))
+    p = profils[z["profil"]]
+    plancher = p.get("gravite_min")
+    apres = gravite
+    if plancher in GRAVITES and gravite in GRAVITES and GRAVITES.index(gravite) < GRAVITES.index(plancher):
+        apres = plancher
+    details["zone_vigilance"] = {"id": z["id"], "nom": z["nom"], "profil": z["profil"], "profil_nom": p.get("nom"),
+                                 "autres": [x["id"] for x in zs if x is not z], "gravite_avant": gravite}
+    return apres
+
+
+def priorite_zone(rules: dict, lon: float | None, lat: float | None, cle: str = "priorite_plus") -> int:
+    profils = profils_zones(rules)
+    return max([0] + [int(profils[z["profil"]].get(cle) or 0) for z in zones_de(rules, lon, lat)])
 
 
 # Budget du mois et coût des travailleurs

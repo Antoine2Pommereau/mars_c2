@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.38"
+version: "2026.10.39"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -544,4 +544,26 @@ controle:
     categories: {pannes: true, disque: true, collecte: true, travailleurs: true}
     heures_calmes: {actif: true, debut: "23:00", fin: "07:00"}
     par_minute_max: 5            # nouvelles alertes : au delà, un seul message de synthèse
+  # Phase E : priorité aux navires suivis (réglage oui ou non du panneau) : demandes d'observation d'un navire suivi
+  # relevées de priorite_plus dans tip and cue, donc servies d'abord par la sélection Sentinel
+  suivis:
+    priorite_plus: 1
+
+# Zones de vigilance (lot P, phase E) : dessinées dans le panneau de contrôle, un profil choisi parmi ceux ci. Les
+# valeurs restent ici ; une zone ne fait qu'abaisser un seuil (jamais le relever), relever une gravité ou une priorité.
+# Seuils réglables par zone : rendezvous.min_duration_min, ais_gap.min_gap_min.
+zones_vigilance:
+  tampon_m: {min: 500, max: 20000, defaut: 3704}     # tampon autour d'une infrastructure (2 milles par défaut)
+  profils:
+    renforce:
+      nom: Renforcé
+      gravite_min: moyenne      # alerte dans la zone : gravité moyenne au moins
+      priorite_plus: 2          # tip and cue : demande dans la zone relevée de 2
+      priorite_sentinel: 5      # sélection Sentinel : point d'intérêt de la zone classé comme une demande de priorité 5
+      seuils: {rendezvous.min_duration_min: 60, ais_gap.min_gap_min: 60}
+    attention:
+      nom: Attention
+      priorite_plus: 1
+      priorite_sentinel: 3
+      seuils: {}
 

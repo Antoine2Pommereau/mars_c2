@@ -647,7 +647,10 @@ conteneur lue dans son cgroup, retard, disque, échecs avec lien vers la trace, 
 (`ais_gap.mode` compris), aucune alerte supprimée, épisodes observés comptés, empreinte de l'état du panneau dans
 chaque alerte (`alerts.controle_empreinte`). Phase D (migration 35, règles 2026.10.38) : préférences de notification par
 gravité et type d'alerte, tip and cue, catégories système, heures calmes de Paris avec résumé au réveil, appliquées à
-taches, à l'API et à Grafana (`notification_permise`), notification de test.
+taches, à l'API et à Grafana (`notification_permise`), notification de test. Phase E (migration 36, règles 2026.10.39) :
+zones de vigilance (polygone dessiné ou tampon d'infrastructure, profils du fichier : gravité minimale, seuils
+abaissés dans la zone, priorité tip and cue et Sentinel), zone et profil inscrits dans l'alerte, couche et fiche,
+priorité aux navires suivis.
 
 ## 10. Tests
 

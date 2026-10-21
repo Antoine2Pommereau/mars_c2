@@ -36,6 +36,7 @@ const arrondi = (ms: number) => Math.floor(ms / 30_000) * 30_000;
 const selKey = (s: Selection | null) => !s ? null : s.kind === "alert" ? `alerte:${s.feature.properties.id}`
   : s.kind === "vessel" ? `navire:${s.properties.vessel_id}` : s.kind === "infrastructure" ? `infrastructure:${s.properties.id}`
   : s.kind === "zone" ? `zone:${s.properties.zone}` : s.kind === "passage" ? `passage:${s.properties.id}`
+  : s.kind === "vigilance" ? `vigilance:${s.properties.id}`
   : s.kind === "detection" && s.properties.source === "viirs" ? `viirs:${s.properties.id}`
   : s.kind === "detection" && s.properties.source === "sentinel1" ? `s1:${s.properties.id}`
   : s.kind === "detection" && s.properties.source === "sentinel2" ? `s2:${s.properties.id}` : null;
@@ -199,6 +200,9 @@ export default function App() {
     } else if (kind === "passage") {
       setSelection({ kind: "passage", properties: { id: Number(id) } });
       setPendingSel(null);
+    } else if (kind === "vigilance") {
+      setSelection({ kind: "vigilance", properties: { id: Number(id) } });
+      setPendingSel(null);
     } else if (kind === "viirs") {
       setSelection({ kind: "detection", properties: { id: Number(id), source: "viirs" } });
       setPendingSel(null);
@@ -304,6 +308,10 @@ export default function App() {
     return () => { cancelled = true; };
   }, [selection, qDebut, qFin, actives]);
 
+  // Zones de vigilance du panneau de contrôle (lot P) et polygone en cours de tracé
+  const vigilanceQ = useQuery({ queryKey: ["controle", "zones"], queryFn: () => api.controle.zones(), refetchInterval: 60_000 });
+  const [trace, setTrace] = useState<number[][] | null>(null);
+
   // Mode focus : navires concernés par la sélection
   const infraCardQ = useQuery({ queryKey: ["infraCard", selection?.kind === "infrastructure" ? Number(selection.properties.id) : -1, qDebut, qFin],
     queryFn: () => api.infraCard(Number((selection as any).properties.id), qDebut, qFin),
@@ -314,7 +322,7 @@ export default function App() {
     if (selection.kind === "infrastructure") return { alertId: null, infraId: Number(selection.properties.id),
       vesselIds: (infraCardQ.data?.navires ?? []).map((v: Props) => Number(v.vessel_id)) };
     if (selection.kind === "zone") return { alertId: null, vesselIds: [], zone: selection.properties.zone as string };
-    if (selection.kind === "passage") return null;
+    if (selection.kind === "passage" || selection.kind === "vigilance") return null;
     return { alertId: selection.feature.properties.id as number, vesselIds: naviresAlerte(selection.feature).map((v) => v.vessel_id) };
   }, [selection, infraCardQ.data]);
   const focusGeom = useMemo<FC>(() => {
@@ -331,8 +339,12 @@ export default function App() {
       const f = passagesQ.data?.features.find((x) => x.properties.id === Number(selection.properties.id));
       return f ? { type: "FeatureCollection", features: [f] } : EMPTY;
     }
+    if (selection?.kind === "vigilance") {
+      const f = vigilanceQ.data?.features.find((x) => x.properties.id === Number(selection.properties.id));
+      return f ? { type: "FeatureCollection", features: [f] } : EMPTY;
+    }
     return EMPTY;
-  }, [selection, infraQ.data, passagesQ.data, observation]);
+  }, [selection, infraQ.data, passagesQ.data, observation, vigilanceQ.data]);
 
   // Infrastructures concernées : liées à une alerte ouverte, ou à moins de 2 milles de la sélection
   const concernedInfra = useMemo(() => {
@@ -391,7 +403,9 @@ export default function App() {
               suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />}
             {panel === "observations" && <ObservationsPanel demandes={observationsQ.data?.demandes ?? []}
               selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} />}
-            {panel === "controle" && <ControlePanel />}
+            {panel === "controle" && <ControlePanel trace={trace} onTrace={setTrace}
+              infra={selection?.kind === "infrastructure" ? { id: Number(selection.properties.id), nom: selection.properties.name ?? null } : null}
+              onPickZone={(p) => setSelection({ kind: "vigilance", properties: p })} />}
             {panel === "suivis" && <SuivisPanel suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
             {panel === "analyses" && (
               <AnalysesPanel jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0} history={done.slice(0, 8)}
@@ -411,6 +425,7 @@ export default function App() {
             reception={receptionQ.data ?? null} infrastructure={infraQ.data ?? null} highlight={highlight} actives={actives}
             byType={byType} region={region} passages={passagesQ.data ?? EMPTY} viirs={viirsQ.data ?? EMPTY} sentinel={sentinelQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
             drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom}
+            vigilance={(vigilanceQ.data as FC | undefined) ?? EMPTY} trace={trace} onTracePoint={(c) => setTrace((t) => (t ? [...t, c] : t))}
             onContexte={setMenu} />
           </Garde>
           {menu && <MenuCarte key={`${menu.lon},${menu.lat}`} point={menu} onClose={() => setMenu(null)} />}

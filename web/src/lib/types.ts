@@ -37,7 +37,8 @@ export type Selection =
   | { kind: "detection"; properties: Props }
   | { kind: "infrastructure"; properties: Props }
   | { kind: "zone"; properties: Props }
-  | { kind: "passage"; properties: Props };
+  | { kind: "passage"; properties: Props }
+  | { kind: "vigilance"; properties: Props };
 
 export const EMPTY: FC = { type: "FeatureCollection", features: [] };
 

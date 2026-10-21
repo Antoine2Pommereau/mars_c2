@@ -333,6 +333,13 @@ def interest_points(conn, pass_id: int, rules: dict, ecartes: list | None = None
     out, dropped = en_mer(conn, out, rules)
     if ecartes is not None:
         ecartes += dropped
+    # Zones de vigilance (lot P) : un point d'intérêt dans une zone est servi comme une demande de la priorité du profil
+    from mars import controle
+    for p in out:
+        zs = controle.zones_de(rules, p["lon"], p["lat"])
+        if zs:
+            p["zone_vigilance"] = zs[0]["id"]
+            p["priorite"] = controle.priorite_zone(rules, p["lon"], p["lat"], "priorite_sentinel")
     return tip_and_cue.points_passage(conn, rules, pass_id) + out     # demandes d'observation : déjà en mer
 
 
@@ -1396,7 +1403,8 @@ def _alert(conn, kind, sev, t0, lon, lat, details, rules, key, evidence):
     """Alerte d'une analyse Sentinel 1 ou 2 ; None si sa règle est en observation (épisode compté) ou coupée au
     panneau de contrôle (lot P)."""
     from mars import controle
-    if not controle.filtrer_sync(conn, rules, kind, details, key, sev):
+    sev = controle.filtrer_sync(conn, rules, kind, details, key, sev, lon, lat)     # zone de vigilance appliquée
+    if sev is None:
         return None
     aid = conn.execute(
         """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key, controle_empreinte)

@@ -157,10 +157,10 @@ def creer(conn, rules: dict, now: datetime, *, cle: str, tip: str, lon: float, l
     moins de regroupement_m). Une clé déjà vue ne fait rien (alerte mise à jour en place, épisode revu à chaque
     cycle). Retourne {"demande": id, "nouvelle": bool} ou {"deja": id}."""
     tc = rules["tip_and_cue"]
-    prio = int(tc["tips"][tip]["priorite"])
     vu = conn.execute("SELECT demande_id FROM demandes_origines WHERE cle = %s", (cle,)).fetchone()
     if vu:
         return {"deja": vu[0]}
+    prio = int(tc["tips"][tip]["priorite"]) + bonus_priorite(conn, rules, lon, lat, vessel_id)
     with traces.span("tip_and_cue.demande", liens=[trace_origine], **{"tip.type": tip, "tip.cle": cle,
                                                                        "tip.navire": vessel_id}) as sp:
         if vessel_id is not None:
@@ -198,6 +198,18 @@ def creer(conn, rules: dict, now: datetime, *, cle: str, tip: str, lon: float, l
                      (cle, did, tip, prio, alerte_id, detection_viirs_id, motif, trace_origine))
         sp.set_attributes({"tip.demande": did, "tip.regroupee": not nouvelle})
     return {"demande": did, "nouvelle": nouvelle}
+
+
+def bonus_priorite(conn, rules: dict, lon: float, lat: float, vessel_id: int | None) -> int:
+    """Lot P : priorité relevée dans une zone de vigilance (profil, priorite_plus) et, si le panneau le demande, pour un
+    navire suivi (controle.suivis.priorite_plus)."""
+    from mars import controle
+    bonus = controle.priorite_zone(rules, lon, lat)
+    ctrl = rules.get("_controle") or {}
+    if ctrl.get("suivis_prioritaires") and vessel_id is not None and conn.execute(
+            "SELECT 1 FROM followed_vessels WHERE vessel_id = %s", (vessel_id,)).fetchone():
+        bonus += int(((rules.get("controle") or {}).get("suivis") or {}).get("priorite_plus", 1))
+    return bonus
 
 
 def _derniere_position(conn, vessel_id: int, avant: datetime | None = None):
@@ -601,7 +613,10 @@ def points_passage(conn, rules: dict, pass_id: int) -> list[dict]:
 
 
 def priorite(points: list[dict]) -> int:
-    return max((p.get("priorite") or 0 for p in points if p.get("motif") == "tip_and_cue"), default=-1)
+    """Priorité d'un passage ou d'une scène : la plus haute de ses demandes d'observation, et des points d'intérêt
+    situés dans une zone de vigilance (lot P, profil priorite_sentinel)."""
+    return max((p.get("priorite") or 0 for p in points if p.get("motif") == "tip_and_cue" or p.get("zone_vigilance")),
+               default=-1)
 
 
 def rattacher(conn, pass_id: int, aid: int, demandes: list[int]) -> int:

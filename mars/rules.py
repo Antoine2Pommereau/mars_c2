@@ -48,6 +48,8 @@ async def save_alerts(c, kind: str, items: list[dict], prune_from=None, prune_to
             await c.execute(controle.EMPREINTE_SQL.format(p1="$1", p2="$2::text::jsonb"), emp, json.dumps(ctrl["etat"]))
         for it in items:
             mode, regle, sous = controle.decision(rules, kind, it["details"])
+            # Zone de vigilance (lot P) : zone et profil inscrits dans l'alerte, gravité relevée au minimum du profil
+            it = {**it, "severity": controle.marquer_zone(rules, it["severity"], it["details"], it["lon"], it["lat"])}
             if mode == "observation":
                 observed += 1
                 await c.execute(controle.EPISODE_SQL.format(p1="$1", p2="$2", p3="$3", p4="$4", p5="$5"),
@@ -155,10 +157,14 @@ LEFT JOIN LATERAL (
 
 async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
     """Évalue la règle sur [day_start, day_end[ et met à jour les alertes RENDEZVOUS de cette période."""
+    from mars import controle
     r = rules["rendezvous"]
+    # Zones de vigilance (lot P) : recherche au seuil le plus bas des zones actives, chaque épisode jugé ensuite au seuil
+    # de sa position (sans zone : seuil du fichier, calcul inchangé)
+    duree_min = controle.seuil_min(rules, "rendezvous.min_duration_min", r["min_duration_min"])
     rows = await c.fetch(RENDEZVOUS_SQL, day_start, day_end, r["slot_min"], r["max_speed_kn"], r["max_distance_m"],
                          r["max_gap_min"], r["stationary_zone_buffer_m"], r["excluded_ship_types"],
-                         r["min_duration_min"], r["excluded_nav_status"], r["min_coast_km"] * 1000.0,
+                         int(duree_min), r["excluded_nav_status"], r["min_coast_km"] * 1000.0,
                          float(r.get("coast_prefilter_m", 0)))
     names = {}
     if rows:
@@ -175,6 +181,10 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
             continue
         coast_km = None if x["coast_m"] is None else x["coast_m"] / 1000
         duration_min = (x["t_end"] - x["t_start"]).total_seconds() / 60
+        seuil = controle.seuil_zone(rules, "rendezvous.min_duration_min", r["min_duration_min"], x["lon"], x["lat"])
+        if duration_min < seuil:                      # retenu par le seuil d'une zone de vigilance, ailleurs trop court
+            excluded["hors_zone_de_vigilance"] = excluded.get("hors_zone_de_vigilance", 0) + 1
+            continue
         alongside = x["d_min"] <= r["alongside_m"]
         in_zone = bool(x["in_stationary_zone"])
         context = []
@@ -206,12 +216,13 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
             "contexte": context,
             "motif": "Deux navires quasi immobiles, à moins de 500 m l'un de l'autre, pendant plus de deux heures, "
                      "loin des côtes",
-            "parametres": {k: r[k] for k in ("max_distance_m", "max_speed_kn", "min_duration_min", "min_coast_km",
-                                             "alongside_m")},
+            "parametres": {**{k: r[k] for k in ("max_distance_m", "max_speed_kn", "min_duration_min", "min_coast_km",
+                                                "alongside_m")}, "min_duration_min": seuil},
         }
-        # Instant où la règle aurait été franchie en direct : deux heures après le début de l'épisode
-        event_time = x["t_start"] + timedelta(minutes=r["min_duration_min"])
-        items.append({"v1": x["v1"], "v2": x["v2"], "severity": severity, "event_time": event_time,
+        # Instant où la règle aurait été franchie en direct : deux heures après le début de l'épisode (moins dans une
+        # zone de vigilance au seuil abaissé)
+        event_time = x["t_start"] + timedelta(minutes=seuil)
+        items.append({"v1": x["v1"], "v2": x["v2"], "severity": severity, "event_time": event_time, "seuil": seuil,
                       "lon": x["lon"], "lat": x["lat"], "details": details, "vessels": [x["v1"], x["v2"]],
                       "t_start": x["t_start"], "t_end": x["t_end"]})
 
@@ -234,7 +245,7 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
             if first["debut"] < it["t_start"]:
                 it["details"]["debut"] = first["debut"].isoformat()
                 it["details"]["duree_min"] = round((it["t_end"] - first["debut"]).total_seconds() / 60)
-                it["event_time"] = first["debut"] + timedelta(minutes=r["min_duration_min"])
+                it["event_time"] = first["debut"] + timedelta(minutes=it["seuil"])
         else:
             it["key"] = f"{it['v1']}:{it['v2']}:{stamp(it['t_start'])}"
     saved = await save_alerts(c, "RENDEZVOUS", items, day_start, day_end, "debut", rules["version"], rules=rules)
@@ -419,8 +430,11 @@ async def feed_outage(c, start, end, ratio: float) -> set:
 async def find_gaps(c, day_start, day_end, rules: dict, min_prior: int | None = None):
     """Silences candidats. `min_prior` : historique exigé avant le silence (par défaut `min_prior_messages`) ; abaissé
     par run_ais_gap quand le flux a été coupé, l'exigence étant alors appliquée silence par silence au prorata."""
+    from mars import controle
     g, rc = rules["ais_gap"], rules["reception"]
-    return await c.fetch(AIS_GAP_SQL, day_start, day_end, g["min_gap_min"], g["min_speed_kn"],
+    # Zones de vigilance (lot P) : recherche au seuil le plus bas des zones actives (sans zone : celui du fichier)
+    return await c.fetch(AIS_GAP_SQL, day_start, day_end,
+                         int(controle.seuil_min(rules, "ais_gap.min_gap_min", g["min_gap_min"])), g["min_speed_kn"],
                          rc["cell_deg_lon"], rc["cell_deg_lat"], g["ais_classes"], g["excluded_ship_types"],
                          g["edge_margin_deg"], g["min_coast_km"] * 1000.0, g["prior_window_min"],
                          g["min_prior_messages"] if min_prior is None else min_prior,
@@ -489,8 +503,16 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
     # copie réelle du 11/10/2026 : arrêts simulés de 20 et 140 minutes sans effet sur les coupures retenues.
     raw = await find_gaps(c, day_start, day_end, rules, min_prior=1 if outage else None)
     window, margin = g["prior_window_min"], timedelta(minutes=g.get("debut_incertain_min", 10))
-    rows, real, outages, uncertain = [], [], 0, 0
+    rows, real, outages, uncertain, hors_zone = [], [], 0, 0, 0
+    from mars import controle
+    seuils: dict = {}                                 # seuil de durée à la position du silence (zones de vigilance)
     for x in raw:
+        seuil = controle.seuil_zone(rules, "ais_gap.min_gap_min", g["min_gap_min"], x["lon"], x["lat"])
+        if seuil < g["min_gap_min"]:
+            seuils[(x["vessel_id"], x["t_last"])] = seuil
+        if ((day_end if x["t_next"] is None else x["t_next"]) - x["t_last"]).total_seconds() / 60 < seuil:
+            hors_zone += 1                            # assez long pour une zone de vigilance, pas ici
+            continue
         if outage:
             avail = window - outage_overlap_min(outage, x["t_last"] - timedelta(minutes=window), x["t_last"])
             if x["prior_n"] < max(1, math.ceil(g["min_prior_messages"] * max(avail, 0) / window)):
@@ -501,7 +523,7 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
             continue
         t_end = day_end if x["t_next"] is None else x["t_next"]
         lost = outage_overlap_min(outage, x["t_last"], t_end)
-        if (t_end - x["t_last"]).total_seconds() / 60 - lost < g["min_gap_min"]:
+        if (t_end - x["t_last"]).total_seconds() / 60 - lost < seuil:
             outages += 1                                  # silence dû au flux coupé, pas au navire
             continue
         real.append(x)
@@ -628,7 +650,7 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
         details["disparition_collective"] = collective.get(point)
         details["nature_point_collectif"] = kinds.get(point)
         details["gravite_avant_declassement"] = before
-        event_time = x["t_last"] + timedelta(minutes=g["min_gap_min"])
+        event_time = x["t_last"] + timedelta(minutes=seuils.get((x["vessel_id"], x["t_last"]), g["min_gap_min"]))
         items.append({"key": f"{x['vessel_id']}:{stamp(x['t_last'])}", "severity": severity,
                       "event_time": event_time, "lon": x["lon"], "lat": x["lat"], "details": details,
                       "vessels": [x["vessel_id"]] + [p["vessel_id"] for p in partners]})
@@ -647,6 +669,8 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
                                                                             if x["cog_deg"] is not None] or [0]))}
                              for k, n in sorted(collective.items(), key=lambda kv: -kv[1])[:20]],
               "avec_partenaire_possible": with_partner, "minutes_de_flux_coupe": len(outage)}
+    if hors_zone:
+        counts["exclus_hors_zone_de_vigilance"] = hors_zone
     from mars import controle
     if controle.mode_effectif(rules, "ais_gap") == "observation":
         # Seuils encore danois : les épisodes sont comptés et décrits pour la recalibration, aucune alerte n'est créée,

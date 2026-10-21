@@ -541,7 +541,8 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
         }
         cle = f"viirs:{nom}:{lon:.4f}:{lat:.4f}"
         from mars import controle
-        if not controle.filtrer_sync(conn, rules, "DARK_SHIP", details, cle, sev):
+        sev = controle.filtrer_sync(conn, rules, "DARK_SHIP", details, cle, sev, lon, lat)
+        if sev is None:
             continue                     # règle en observation (épisode compté) ou coupée au panneau (lot P)
         aid = conn.execute(
             """INSERT INTO alerts (type, severity, event_time, geom, details, rule_version, rule_key, controle_empreinte)

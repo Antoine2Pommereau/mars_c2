@@ -83,6 +83,7 @@ def conn():
 
 
 def _remise_a_zero(c):
+    c.execute("DELETE FROM zones_vigilance")
     c.execute("DELETE FROM notifications_retenues")
     c.execute("DELETE FROM notifications_etat")
     c.execute("UPDATE interrupteurs_satellites SET en_pause = false, depuis = NULL, jusqu_a = NULL, motif = NULL, "
@@ -540,6 +541,111 @@ def test_grafana_rules_read_pauses_and_preferences_under_their_role(conn):
                     rows = conn.execute(x["model"]["rawSql"]).fetchall()
                     if uid == "mars-viirs" and x["refId"] == "B":
                         assert rows == [(0,)], "nuit VIIRS absente muette en pause"
+
+
+# Phase E : zones de vigilance
+
+CARRE = {"type": "Polygon", "coordinates": [[[-6.5, 47.8], [-5.5, 47.8], [-5.5, 48.4], [-6.5, 48.4], [-6.5, 47.8]]]}
+TROU = {"type": "Polygon", "coordinates": [CARRE["coordinates"][0],
+                                           [[-6.2, 48.0], [-5.8, 48.0], [-5.8, 48.2], [-6.2, 48.2], [-6.2, 48.0]]]}
+
+
+def _zones(*profils):
+    return [{"id": k + 1, "nom": f"zone {k + 1}", "profil": p, "geometrie": CARRE} for k, p in enumerate(profils)]
+
+
+def test_zone_geometry_thresholds_severity_and_fingerprint():
+    assert controle.dans_geometrie(CARRE, -6.0, 48.1) and not controle.dans_geometrie(CARRE, -4.0, 48.1)
+    assert not controle.dans_geometrie(TROU, -6.0, 48.1) and controle.dans_geometrie(TROU, -6.4, 48.3)
+    assert controle.dans_geometrie({"type": "MultiPolygon", "coordinates": [CARRE["coordinates"]]}, -6.0, 48.1)
+    r = controle.appliquer_reglages(RULES, {}, {}, _zones("renforce", "inconnu"))
+    assert [z["profil"] for z in r["_controle"]["zones"]] == ["renforce"], "profil absent du fichier : zone ignorée"
+    assert controle.seuil_min(r, "rendezvous.min_duration_min", 120) == 60
+    assert controle.seuil_zone(r, "rendezvous.min_duration_min", 120, -6.0, 48.1) == 60
+    assert controle.seuil_zone(r, "rendezvous.min_duration_min", 120, -4.0, 48.1) == 120
+    assert controle.seuil_zone(r, "rendezvous.min_duration_min", 45, -6.0, 48.1) == 45, "une zone n'élève jamais un seuil"
+    sans = controle.appliquer_reglages(RULES, {}, {})
+    assert controle.seuil_min(sans, "ais_gap.min_gap_min", 120) == 120
+    d = {}
+    assert controle.marquer_zone(r, "faible", d, -6.0, 48.1) == "moyenne"
+    assert d["zone_vigilance"] == {"id": 1, "nom": "zone 1", "profil": "renforce", "profil_nom": "Renforcé", "autres": [],
+                                   "gravite_avant": "faible"}
+    assert controle.marquer_zone(r, "elevee", {}, -6.0, 48.1) == "elevee"
+    assert controle.marquer_zone(r, "faible", {}, -4.0, 48.1) == "faible"
+    assert controle.priorite_zone(r, -6.0, 48.1) == 2 and controle.priorite_zone(r, -6.0, 48.1, "priorite_sentinel") == 5
+    assert r["_controle"]["empreinte"] != sans["_controle"]["empreinte"]
+    assert sans["_controle"]["empreinte"] == controle.empreinte({"modes": {}}), "sans zone, empreinte de la phase C"
+    from mars import tip_and_cue as tcm
+    assert tcm.priorite([{"motif": "corridor_liste", "zone_vigilance": 1, "priorite": 5}]) == 5
+
+
+def test_zone_routes_alert_marking_and_withdrawal(client, conn):
+    import asyncio
+    import json as js
+    import asyncpg
+    from mars.rules import save_alerts
+    client.post("/api/controle/connexion", json={"operateur": "antoine", "mot_de_passe": "bon mot de passe"})
+    base = {"nom": "Rail d'Ouessant", "motif": "navires des listes signalés", "profil": "renforce"}
+    assert client.post("/api/controle/zones", json={**base, "profil": "inconnu", "geometrie": CARRE}).status_code == 422
+    croise = {"type": "Polygon", "coordinates": [[[-6, 48], [-5, 49], [-5, 48], [-6, 49], [-6, 48]]]}
+    assert client.post("/api/controle/zones", json={**base, "geometrie": croise}).status_code == 422
+    assert client.post("/api/controle/zones", json=base).status_code == 422                 # ni polygone ni infrastructure
+    zid = client.post("/api/controle/zones", json={**base, "geometrie": CARRE}).json()["id"]
+    iid = conn.execute("INSERT INTO infrastructure (region_id, kind, name, geom) SELECT min(id), 'cable', 'essai', "
+                       "ST_GeogFromText('LINESTRING(-4 47, -4 48)') FROM regions RETURNING id").fetchone()[0]
+    try:
+        z2 = client.post("/api/controle/zones", json={**base, "nom": "Câble", "profil": "attention",
+                                                      "infrastructure_id": iid, "tampon_m": 3000}).json()["id"]
+        g = client.get("/api/controle/zones").json()
+        assert {f["properties"]["id"] for f in g["features"]} == {zid, z2} and "renforce" in g["profils"]
+        r = controle.appliquer(conn, RULES)
+        assert [z["id"] for z in r["_controle"]["zones"]] == [zid, z2] and controle.zones_de(r, -4.01, 47.5)
+        conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_z:%'")
+
+        async def go():
+            c = await asyncpg.connect(URL)
+            for t in ("json", "jsonb"):
+                await c.set_type_codec(t, encoder=js.dumps, decoder=js.loads, schema="pg_catalog")
+            try:
+                return await save_alerts(c, "WATCHLIST", [{**_alerte_item("essai_z:1", "faible"), "lon": -6.0, "lat": 48.1}],
+                                         rules=r)
+            finally:
+                await c.close()
+        asyncio.run(go())
+        sev, det, emp = conn.execute("SELECT severity, details, controle_empreinte FROM alerts WHERE rule_key = 'essai_z:1'"
+                                     ).fetchone()
+        assert sev == "moyenne" and det["zone_vigilance"]["id"] == zid and det["zone_vigilance"]["gravite_avant"] == "faible"
+        assert conn.execute("SELECT etat FROM empreintes_controle WHERE empreinte = %s", (emp,)).fetchone()[0]["zones"] == \
+            [[zid, "renforce"], [z2, "attention"]]
+        f = client.get(f"/api/controle/zones/{zid}").json()
+        assert [a["severity"] for a in f["alertes"]] == ["moyenne"] and f["km2"] > 1000
+        assert client.post(f"/api/controle/zones/{zid}/retirer", json={"motif": "fin de l'opération"}).status_code == 200
+        assert [z["id"] for z in controle.appliquer(conn, RULES)["_controle"]["zones"]] == [z2]
+        assert conn.execute("SELECT details->'zone_vigilance'->>'id' FROM alerts WHERE rule_key = 'essai_z:1'"
+                            ).fetchone()[0] == str(zid), "l'alerte garde la zone appliquée"
+        actions = [x["action"] for x in client.get("/api/controle/journal").json()]
+        assert actions.count("zone_creee") == 2 and "zone_retiree" in actions
+    finally:
+        conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_z:%'")
+        conn.execute("DELETE FROM zones_vigilance")
+        conn.execute("DELETE FROM infrastructure WHERE id = %s", (iid,))
+
+
+def test_tip_priority_raised_in_zone_and_for_followed_vessels(conn):
+    rules = controle.appliquer_reglages({**RULES, "tip_and_cue": {**RULES["tip_and_cue"], "actif": True}},
+                                        {"suivis:prioritaires": True}, {}, _zones("renforce"))
+    base = int(RULES["tip_and_cue"]["tips"]["viirs"]["priorite"])
+    d1 = tc.creer(conn, rules, NOW, cle="essai_z:viirs", tip="viirs", lon=-6.0, lat=48.1, position_le=NOW)
+    assert conn.execute("SELECT priorite FROM demandes_observation WHERE id = %s", (d1["demande"],)).fetchone()[0] == base + 2
+    vid = conn.execute("SELECT id FROM vessels LIMIT 1").fetchone()[0]
+    conn.execute("INSERT INTO followed_vessels (vessel_id) VALUES (%s) ON CONFLICT DO NOTHING", (vid,))
+    try:
+        d2 = tc.creer(conn, rules, NOW, cle="essai_z:suivi", tip="identite", lon=-4.0, lat=47.0, position_le=NOW,
+                      vessel_id=vid)
+        prio = int(RULES["tip_and_cue"]["tips"]["identite"]["priorite"]) + RULES["controle"]["suivis"]["priorite_plus"]
+        assert conn.execute("SELECT priorite FROM demandes_observation WHERE id = %s", (d2["demande"],)).fetchone()[0] == prio
+    finally:
+        conn.execute("DELETE FROM followed_vessels WHERE vessel_id = %s", (vid,))
 
 
 def test_rules_file_untouched():

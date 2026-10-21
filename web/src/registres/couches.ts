@@ -33,6 +33,8 @@ export const COUCHES: Couche[] = [
   { id: "corridors", groupe: "infrastructures", etape: 2, defaut: false, calques: [], legende: "surface" },
   { id: "couverture", groupe: "zones", etape: null, defaut: false, calques: ["couverture", "couverture-fond"], legende: "trait", couleur: "#4fb6c8" },
   { id: "mouillages", groupe: "zones", etape: null, defaut: false, calques: ["zones"], legende: "surface", couleur: "#f0a84b" },
+  // Zones de vigilance du panneau de contrôle (lot P) : trait clair en pointillé
+  { id: "vigilance", groupe: "zones", etape: null, defaut: true, calques: ["vigilance-fond", "vigilance"], legende: "trait", couleur: "#c2ccd3" },
   { id: "reception", groupe: "zones", etape: null, defaut: false, calques: ["reception"], legende: "surface", couleur: "#4fb6c8" },
   // Analyses du Mac (zone tracée), échos Sentinel 1 (anneaux) et navires vus en optique Sentinel 2 (points pleins)
   { id: "detections", groupe: "satellites", etape: null, defaut: true, calques: ["aoi", "det", "alerts", "s1", "s2"], legende: "cercles" },

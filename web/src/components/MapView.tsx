@@ -78,6 +78,9 @@ interface Props {
   spotlight: { alertId: number | null; vesselIds: number[]; infraId?: number; zone?: string } | null;
   focusGeom: FC;                         // géométrie de l'objet sélectionné, surlignée (infrastructure, zone)
   onContexte?: (pt: { lon: number; lat: number; x: number; y: number }) => void;   // clic droit (lot T1)
+  vigilance: FC;                         // zones de vigilance actives (lot P)
+  trace: number[][] | null;              // polygone d'une zone en cours de tracé (lot P) : un clic, un sommet
+  onTracePoint: (lonLat: number[]) => void;
 }
 
 // Mode focus : tout ce qui ne concerne pas la sélection s'efface
@@ -92,7 +95,12 @@ export default function MapView(p: Props) {
   onSelect.current = p.onSelect;
   const alertIndex = useRef(new Map<number, Feature>());
   const drawing = useRef(p.drawing);
-  drawing.current = p.drawing;
+  // Tracé d'une zone de vigilance : les clics ajoutent des sommets, rien d'autre ne se sélectionne
+  drawing.current = p.drawing || p.trace != null;
+  const traceRef = useRef(p.trace);
+  traceRef.current = p.trace;
+  const onTracePoint = useRef(p.onTracePoint);
+  onTracePoint.current = p.onTracePoint;
   const onDraw = useRef(p.onDraw);
   onDraw.current = p.onDraw;
   const onContexte = useRef(p.onContexte);
@@ -106,7 +114,8 @@ export default function MapView(p: Props) {
 
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages", "viirs", "s1"].forEach(src);
+      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages", "viirs", "s1",
+        "vigilance", "trace"].forEach(src);
       // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
       map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
       map.addSource("couverture", { type: "geojson", data: zonesGeoJSON() as any });
@@ -226,6 +235,13 @@ export default function MapView(p: Props) {
           } });
       }
 
+      // Zones de vigilance (lot P) : trait clair en pointillé, surface à peine visible (la couleur reste aux alertes)
+      map.addLayer({ id: "vigilance-fond", type: "fill", source: "vigilance", paint: { "fill-color": "#c2ccd3", "fill-opacity": 0.05 } });
+      map.addLayer({ id: "vigilance", type: "line", source: "vigilance",
+        paint: { "line-color": "#c2ccd3", "line-width": 1.4, "line-opacity": 0.8, "line-dasharray": [3, 2] } });
+      map.addLayer({ id: "trace-ligne", type: "line", source: "trace", paint: { "line-color": "#4fb6c8", "line-width": 1.5 } });
+      map.addLayer({ id: "trace-points", type: "circle", source: "trace", filter: ["==", ["geometry-type"], "Point"],
+        paint: { "circle-radius": 3.5, "circle-color": "#4fb6c8" } });
       // Zone en cours de tracé : rouge si elle dépasse la taille maximale
       map.addLayer({ id: "draft-fill", type: "fill", source: "draft",
         paint: { "fill-color": ["case", ["get", "tooBig"], "#ef6461", "#4fb6c8"], "fill-opacity": 0.1 } });
@@ -237,6 +253,7 @@ export default function MapView(p: Props) {
       const box = (a: maplibregl.LngLat, b: maplibregl.LngLat) =>
         [Math.min(a.lng, b.lng), Math.min(a.lat, b.lat), Math.max(a.lng, b.lng), Math.max(a.lat, b.lat)];
       map.on("click", (e) => {
+        if (traceRef.current) { onTracePoint.current([e.lngLat.lng, e.lngLat.lat]); return; }
         if (!drawing.current) { start = null; return; }
         if (!start) { start = e.lngLat; return; }
         const b = box(start, e.lngLat);
@@ -284,6 +301,11 @@ export default function MapView(p: Props) {
         const fs = e.features!.map((f) => f.properties as any).sort((a, b) => String(b.acquired_at).localeCompare(String(a.acquired_at)));
         onSelect.current({ kind: "passage", properties: fs[0] });
       });
+      map.on("click", "vigilance-fond", (e) => {
+        const dessus = ["traffic", "live", "alerts", "det", "viirs", "s1", "s2"].filter((l) => map.getLayoutProperty(l, "visibility") !== "none");
+        if (drawing.current || map.queryRenderedFeatures(e.point, { layers: dessus }).length) return;
+        onSelect.current({ kind: "vigilance", properties: e.features![0].properties as any });
+      });
       map.on("click", "couverture-fond", (e) => {
         if (drawing.current || map.queryRenderedFeatures(e.point, { layers: ["traffic", "live", "alerts", "det"] }).length) return;
         onSelect.current({ kind: "zone", properties: { zone: (e.features![0].properties as any).zone } });
@@ -328,6 +350,15 @@ export default function MapView(p: Props) {
   useEffect(() => setData("focus", p.focusGeom), [ready, p.focusGeom]);
   useEffect(() => setData("passages", p.passages), [ready, p.passages]);
   useEffect(() => setData("viirs", p.viirs), [ready, p.viirs]);
+  useEffect(() => setData("vigilance", p.vigilance), [ready, p.vigilance]);
+  useEffect(() => {
+    const t = p.trace ?? [];
+    setData("trace", { type: "FeatureCollection", features: [
+      ...t.map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: c }, properties: {} })),
+      ...(t.length > 1 ? [{ type: "Feature", geometry: { type: "LineString", coordinates: t.length > 2 ? [...t, t[0]] : t }, properties: {} }] : []),
+    ] } as FC);
+    if (ready && mapRef.current) mapRef.current.getCanvas().style.cursor = p.trace ? "crosshair" : "";
+  }, [ready, p.trace]);
   useEffect(() => setData("s1", p.sentinel), [ready, p.sentinel]);
   useEffect(() => {
     const z = zonesGeoJSON();

@@ -24,7 +24,16 @@ export const L = {
   controle: {
     titre: "Contrôle", regles: (v: string) => `règles ${v}`,
     sections: { connexion: "Opérateur", capteurs: "Capteurs", depenses: "Dépenses", demande: "Demande d'observation",
-      systeme: "Système", regles: "Règles", notifications: "Notifications", journal: "Journal" } as Record<string, string>,
+      systeme: "Système", regles: "Règles", notifications: "Notifications", zones: "Zones de vigilance",
+      journal: "Journal" } as Record<string, string>,
+    zones: {
+      aucune: "Aucune zone active", nouvelle: "Nouvelle zone", nom: "Nom", profil: "Profil", fin: "Fin (facultative)",
+      dessiner: "Dessiner sur la carte", sommets: (n: number) => `${n} sommet(s), un clic par sommet`,
+      effacer: "Effacer", tampon: (nom: string) => `Tampon autour de ${nom}`, tamponM: "Tampon (m)",
+      creer: "Créer", retirer: "Retirer", jusqua: (t: string) => `jusqu'au ${t}`,
+      suivis: "Priorité aux navires suivis (tip and cue, sélection Sentinel)",
+      sourceDessin: "Polygone dessiné", sourceInfra: "Infrastructure sélectionnée", choisirInfra: "Sélectionner une infrastructure sur la carte",
+    },
     notif: {
       alertes: "Nouvelles alertes", gravite: "À partir de", tip: "Résultat de tip and cue qui relève une alerte",
       systeme: "Système", categories: { pannes: "Pannes", disque: "Disque", collecte: "Collecte", travailleurs: "Travailleurs" } as Record<string, string>,
@@ -61,6 +70,7 @@ export const L = {
       pause: "pause", reprise: "reprise", plafond: "plafond", demande: "demande", connexion: "connexion",
       connexion_refusee: "connexion refusée", deconnexion: "déconnexion", malgre_pause: "malgré la pause",
       mode_regle: "mode de règle", notifications: "notifications", notification_test: "notification de test",
+      zone_creee: "zone créée", zone_retiree: "zone retirée", suivis_prioritaires: "priorité des suivis",
     } as Record<string, string>,
   },
   // Panneau « Observations » (tip and cue, lot T1)
@@ -234,6 +244,14 @@ export const L = {
 
   // Fiche (registre : registres/sections.tsx)
   fiche: {
+    // Zone de vigilance du panneau de contrôle (lot P)
+    vigilance: {
+      titre: "Zone de vigilance", creee: (t: string, par: string) => `Créée le ${t} par ${par}`,
+      fin: (t: string) => `jusqu'au ${t}`, retiree: (t: string, par: string) => `Retirée le ${t} par ${par}`,
+      surface: (km2: number) => `${String(km2).replace(".", ",")} km²`, tampon: (m: number) => `tampon de ${Math.round(m)} m`,
+      alertes: (n: number) => `Alertes (${n})`, demandes: (n: number) => `Demandes d'observation (${n})`,
+      passages: (n: number) => `Passages satellites (${n})`, relevee: (g: string) => `relevée, avant ${g}`,
+    },
     sections: {
       motif: "Motif", preuves: "Preuves", contexte: "Contexte", vignette: "Image", decisions: "Décisions",
       listes: "Listes de surveillance", identite: "Identité", identites: "Identités successives", alertes: "Alertes",

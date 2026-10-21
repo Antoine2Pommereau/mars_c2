@@ -8,6 +8,56 @@ import { COULEUR_LISTE, libelleAlerte, typeAlerte } from "../registres/alertes";
 import { COULEUR_PASSAGE, COULEURS_INFRA } from "../registres/couches";
 import { sectionsDe, type Contexte } from "../registres/sections";
 import { useInfraCard, usePassage } from "./Fiches";
+import { jourHeure } from "../lib/format";
+
+/** Fiche d'une zone de vigilance (lot P) : profil, motif, période, surface ; alertes qui portent la zone, demandes
+ *  d'observation et passages qui la couvrent */
+function FicheVigilance({ id, onPickAlert }: { id: number; onPickAlert: (f: Feature) => void }) {
+  const V = L.fiche.vigilance;
+  const q = useQuery({ queryKey: ["controle", "zone", id], queryFn: () => api.controle.zone(id), staleTime: 30_000 });
+  const z = q.data;
+  if (!z) return <p className="text-muted">{L.commun.chargement}</p>;
+  const ouvrir = (aid: number) => api.alert(aid).then(onPickAlert).catch(() => undefined);
+  return (
+    <div className="space-y-3 text-[12.5px]">
+      <div className="space-y-0.5 text-muted">
+        <p><span className="text-ink">{z.profil}</span> · {z.motif}</p>
+        <p>{V.creee(jourHeure(z.cree_le), z.cree_par)}{z.fin_le ? `, ${V.fin(jourHeure(z.fin_le))}` : ""}</p>
+        {z.retiree_le && <p className="text-gap">{V.retiree(jourHeure(z.retiree_le), z.retiree_par)}</p>}
+        <p className="tabular-nums">{V.surface(z.km2)}{z.tampon_m ? `, ${V.tampon(z.tampon_m)}` : ""}</p>
+      </div>
+      <div>
+        <p className="mb-1 font-semibold text-ink">{V.alertes(z.alertes.length)}</p>
+        <ul className="space-y-0.5">
+          {z.alertes.slice(0, 20).map((a: Props) => (
+            <li key={a.id}>
+              <button className="w-full text-left text-muted hover:text-ink" onClick={() => ouvrir(a.id)}>
+                <span className="tabular-nums text-faint">{jourHeure(a.event_time)}</span> {libelleAlerte(a.type)}, {L.gravite[a.severity] ?? a.severity}
+                {a.gravite_avant && a.gravite_avant !== a.severity ? ` (${V.relevee(L.gravite[a.gravite_avant] ?? a.gravite_avant)})` : ""}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <p className="mb-1 font-semibold text-ink">{V.demandes(z.demandes.length)}</p>
+        <ul className="space-y-0.5 text-muted">
+          {z.demandes.slice(0, 10).map((d: Props) => (
+            <li key={d.id}><span className="tabular-nums text-faint">{jourHeure(d.cree_le)}</span> {d.tip} · {L.observations.etats[d.etat] ?? d.etat}</li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <p className="mb-1 font-semibold text-ink">{V.passages(z.passages.length)}</p>
+        <ul className="space-y-0.5 text-muted">
+          {z.passages.slice(0, 10).map((s: Props) => (
+            <li key={s.id}><span className="tabular-nums text-faint">{jourHeure(s.acquired_at)}</span> {s.satellite} · {s.statut}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
 
 interface PanelProps {
   selection: Selection | null;
@@ -65,6 +115,9 @@ export default function DetailPanel(p: PanelProps) {
     title = sat ? L.fiche.passage.titre(sat) : L.fiche.sections.passage;
     color = COULEUR_PASSAGE;
     badge = passage.data?.statut === "prevu" ? L.fiche.passage.statuts.prevu.split(",")[0] : null;
+  } else if (selection.kind === "vigilance") {
+    title = selection.properties.nom ?? L.fiche.vigilance.titre;
+    color = "#c2ccd3";
   } else if (selection.kind === "zone") {
     Object.assign(ctx, { objet: "zone", zone: selection.properties.zone });
     title = L.zones[selection.properties.zone] ?? selection.properties.zone;
@@ -88,7 +141,8 @@ export default function DetailPanel(p: PanelProps) {
         </div>
         <button onClick={p.onClose} className="text-muted hover:text-ink" aria-label={L.commun.fermer}><X size={16} /></button>
       </div>
-      {sectionsDe(ctx).map((s) => s.titre ? (
+      {selection.kind === "vigilance" && <FicheVigilance id={Number(selection.properties.id)} onPickAlert={p.onPickAlert} />}
+      {selection.kind !== "vigilance" && sectionsDe(ctx).map((s) => s.titre ? (
         <details key={s.id} open className="group mt-3 border-t border-hair pt-2">
           <summary className="mb-1.5 cursor-pointer list-none font-semibold text-ink marker:hidden">
             <span className="mr-1.5 inline-block text-faint transition-transform group-open:rotate-90">›</span>{L.fiche.sections[s.id]}

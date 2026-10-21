@@ -236,7 +236,10 @@ async def regles(request: Request):
         observes = await c.fetch(
             """SELECT regle, sous_type, count(*) AS n FROM episodes_observes
                WHERE derniere_le >= now() - interval '7 days' GROUP BY 1, 2""")
-    r = controle.appliquer_reglages(rules, regl, {})
+        regl.update({r["cle"]: r["valeur"] for r in await c.fetch(
+            "SELECT cle, valeur FROM reglages_controle WHERE cle = 'suivis:prioritaires'")})
+        zones = [dict(zip(controle.COLS_ZONE, tuple(z))) for z in await c.fetch(controle.ZONES_ACTIVES_SQL)]
+    r = controle.appliquer_reglages(rules, regl, {}, zones)
     n_alertes: dict = {}
     for a in alertes:
         regle, sous = controle.regle_de(a["type"], {"source": a["source"], "changement": a["changement"]})
@@ -391,6 +394,147 @@ async def notification_test(request: Request, op: str = Depends(exiger_operateur
     if code is None:
         raise HTTPException(502, "ntfy injoignable ou refus (voir les journaux de l'API)")
     return {"envoyee": True, "http": code}
+
+
+# Zones de vigilance (phase E) et priorité aux navires suivis
+
+ZONE_COLS = """z.id, z.nom, z.motif, z.profil, z.infrastructure_id, z.tampon_m, z.fin_le, z.cree_le, z.cree_par,
+               z.retiree_le, z.retiree_par,
+               (z.retiree_le IS NULL AND (z.fin_le IS NULL OR z.fin_le > now())) AS active"""
+
+
+@router.get("/api/controle/zones")
+async def zones(request: Request, toutes: bool = False):
+    """Zones de vigilance (actives, ou toutes) en GeoJSON, profils du fichier, réglage des navires suivis."""
+    rules = load_rules()
+    async with request.app.state.pool.acquire() as c:
+        rows = await c.fetch(f"""SELECT {ZONE_COLS}, ST_AsGeoJSON(z.geom, 5)::json AS geometry FROM zones_vigilance z
+                                 WHERE $1 OR (z.retiree_le IS NULL AND (z.fin_le IS NULL OR z.fin_le > now()))
+                                 ORDER BY z.id""", toutes)
+        suivis = await c.fetchval("SELECT valeur FROM reglages_controle WHERE cle = 'suivis:prioritaires'")
+    profils = controle.profils_zones(rules)
+    return {"type": "FeatureCollection",
+            "features": [{"type": "Feature", "geometry": r["geometry"],
+                          "properties": {**{k: v for k, v in dict(r).items() if k != "geometry"},
+                                         "profil_nom": (profils.get(r["profil"]) or {}).get("nom", r["profil"])}}
+                         for r in rows],
+            "profils": {k: {"nom": v.get("nom", k), "gravite_min": v.get("gravite_min"),
+                            "priorite_plus": v.get("priorite_plus"), "priorite_sentinel": v.get("priorite_sentinel"),
+                            "seuils": v.get("seuils") or {}} for k, v in profils.items()},
+            "tampon_m": (rules.get("zones_vigilance") or {}).get("tampon_m"),
+            "suivis_prioritaires": bool(suivis)}
+
+
+@router.get("/api/controle/zones/{zid}")
+async def zone(request: Request, zid: int):
+    """Fiche d'une zone : alertes qui la portent, demandes d'observation et passages qui la couvrent (7 jours avant,
+    3 jours après)."""
+    async with request.app.state.pool.acquire() as c:
+        z = await c.fetchrow(f"SELECT {ZONE_COLS}, ST_AsGeoJSON(z.geom, 5)::json AS geometry, "
+                             "round((ST_Area(z.geom) / 1e6)::numeric, 1)::float8 AS km2 FROM zones_vigilance z "
+                             "WHERE z.id = $1", zid)
+        if z is None:
+            raise HTTPException(404, "Zone inconnue")
+        alertes = await c.fetch(
+            """SELECT id, type, severity, status, event_time, details->'zone_vigilance'->>'gravite_avant' AS gravite_avant
+               FROM alerts WHERE details ? 'zone_vigilance' AND (details->'zone_vigilance'->>'id')::bigint = $1
+               ORDER BY event_time DESC LIMIT 100""", zid)
+        demandes = await c.fetch(
+            """SELECT d.id, d.tip, d.etat, d.priorite, d.cree_le, d.heure_passage, d.resultat
+               FROM demandes_observation d, zones_vigilance z
+               WHERE z.id = $1 AND ST_Intersects(coalesce(d.position_predite, d.position), z.geom)
+                 AND d.cree_le >= z.cree_le ORDER BY d.cree_le DESC LIMIT 50""", zid)
+        passages = await c.fetch(
+            """SELECT p.id, p.mission, p.satellite, p.acquired_at, p.statut FROM sar_passes p, zones_vigilance z
+               WHERE z.id = $1 AND p.footprint IS NOT NULL AND ST_Intersects(p.footprint, z.geom)
+                 AND p.acquired_at BETWEEN now() - interval '7 days' AND now() + interval '3 days'
+               ORDER BY p.acquired_at DESC LIMIT 50""", zid)
+    return {**dict(z), "alertes": [dict(r) for r in alertes], "demandes": [dict(r) for r in demandes],
+            "passages": [dict(r) for r in passages]}
+
+
+class NouvelleZone(BaseModel):
+    nom: str = Field(min_length=2, max_length=80)
+    motif: str = Field(min_length=3, max_length=300)
+    profil: str
+    fin_le: datetime | None = None
+    geometrie: dict | None = None                 # polygone GeoJSON dessiné sur la carte
+    infrastructure_id: int | None = None          # ou tampon autour d'une infrastructure
+    tampon_m: float | None = None
+
+
+@router.post("/api/controle/zones")
+async def creer_zone(request: Request, x: NouvelleZone, op: str = Depends(exiger_operateur)):
+    rules = load_rules()
+    if x.profil not in controle.profils_zones(rules):
+        raise HTTPException(422, f"Profil inconnu : {x.profil} (zones_vigilance.profils de config/rules.yaml)")
+    if x.fin_le is not None and (x.fin_le.tzinfo is None or x.fin_le <= datetime.now(timezone.utc)):
+        raise HTTPException(422, "Date de fin absente de fuseau ou déjà passée")
+    if (x.geometrie is None) == (x.infrastructure_id is None):
+        raise HTTPException(422, "Préciser un polygone dessiné ou une infrastructure, l'un des deux")
+    async with request.app.state.pool.acquire() as c, c.transaction():
+        if x.geometrie is not None:
+            if x.geometrie.get("type") not in ("Polygon", "MultiPolygon") or len(json.dumps(x.geometrie)) > 200_000:
+                raise HTTPException(422, "Polygone GeoJSON attendu (200 Ko au plus)")
+            try:
+                g = await c.fetchrow(
+                    "SELECT ST_IsValid(g) AS valide, ST_Area(g::geography) / 1e6 AS km2 "
+                    "FROM (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1), 4326) AS g) x", json.dumps(x.geometrie))
+            except Exception:
+                raise HTTPException(422, "Polygone illisible") from None
+            if not g["valide"] or not 0.01 <= g["km2"] <= 50_000:
+                raise HTTPException(422, "Polygone invalide (côtés croisés) ou surface hors de 0,01 à 50 000 km²")
+            zid = await c.fetchval(
+                "INSERT INTO zones_vigilance (nom, motif, profil, geom, fin_le, cree_par) VALUES ($1, $2, $3, "
+                "ST_SetSRID(ST_GeomFromGeoJSON($4), 4326)::geography, $5, $6) RETURNING id",
+                x.nom.strip(), x.motif.strip(), x.profil, json.dumps(x.geometrie), x.fin_le, op)
+        else:
+            b = (rules.get("zones_vigilance") or {}).get("tampon_m") or {"min": 500, "max": 20000, "defaut": 3704}
+            tampon = x.tampon_m if x.tampon_m is not None else b["defaut"]
+            if not b["min"] <= tampon <= b["max"]:
+                raise HTTPException(422, f"Tampon hors de la plage {b['min']} à {b['max']} m")
+            zid = await c.fetchval(
+                "INSERT INTO zones_vigilance (nom, motif, profil, geom, infrastructure_id, tampon_m, fin_le, cree_par) "
+                "SELECT $1, $2, $3, ST_Buffer(geom, $5), id, $5, $6, $7 FROM infrastructure WHERE id = $4 RETURNING id",
+                x.nom.strip(), x.motif.strip(), x.profil, x.infrastructure_id, tampon, x.fin_le, op)
+            if zid is None:
+                raise HTTPException(404, "Infrastructure inconnue")
+        await journaliser(c, op, "zone_creee", f"zone:{zid}", None,
+                          {"id": zid, "nom": x.nom.strip(), "profil": x.profil, "fin_le": x.fin_le,
+                           "infrastructure_id": x.infrastructure_id}, x.motif.strip())
+    return {"id": zid}
+
+
+class Retrait(BaseModel):
+    motif: str = Field(min_length=3, max_length=300)
+
+
+@router.post("/api/controle/zones/{zid}/retirer")
+async def retirer_zone(request: Request, zid: int, x: Retrait, op: str = Depends(exiger_operateur)):
+    """Zone retirée (jamais supprimée) : les alertes qui la portent gardent la zone et le profil appliqués."""
+    async with request.app.state.pool.acquire() as c, c.transaction():
+        nom = await c.fetchval("UPDATE zones_vigilance SET retiree_le = now(), retiree_par = $2 WHERE id = $1 "
+                               "AND retiree_le IS NULL RETURNING nom", zid, op)
+        if nom is None:
+            raise HTTPException(409, "Zone inconnue ou déjà retirée")
+        await journaliser(c, op, "zone_retiree", f"zone:{zid}", {"id": zid, "nom": nom}, None, x.motif.strip())
+    return {"id": zid, "retiree": True}
+
+
+class Suivis(BaseModel):
+    actif: bool
+    motif: str = Field(min_length=3, max_length=300)
+
+
+@router.post("/api/controle/suivis")
+async def suivis_prioritaires(request: Request, x: Suivis, op: str = Depends(exiger_operateur)):
+    async with request.app.state.pool.acquire() as c, c.transaction():
+        avant = await c.fetchval("SELECT valeur FROM reglages_controle WHERE cle = 'suivis:prioritaires' FOR UPDATE")
+        await c.execute("INSERT INTO reglages_controle (cle, valeur, auteur) VALUES ('suivis:prioritaires', "
+                        "$1::text::jsonb, $2) ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur, "
+                        "auteur = EXCLUDED.auteur, mis_a_jour_le = now()", json.dumps(x.actif), op)
+        await journaliser(c, op, "suivis_prioritaires", "suivis", {"valeur": avant}, {"valeur": x.actif}, x.motif.strip())
+    return {"suivis_prioritaires": x.actif}
 
 
 class Plafond(BaseModel):

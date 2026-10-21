@@ -201,6 +201,14 @@ export const api = {
       heures_calmes_maintenant: boolean; gravites: string[]; categories: string[]; ntfy: boolean }>("/controle/notifications"),
     reglerNotifications: (preferences: PrefsNotification) => ecrire<Props>("/controle/notifications", { preferences }),
     notificationTest: () => ecrire<{ envoyee: boolean }>("/controle/notifications/test", {}),
+    zones: (toutes = false) => get<FC & { profils: Record<string, { nom: string; gravite_min?: string | null;
+      priorite_plus?: number | null; priorite_sentinel?: number | null; seuils: Record<string, number> }>;
+      tampon_m: { min: number; max: number; defaut: number } | null; suivis_prioritaires: boolean }>(`/controle/zones${toutes ? "?toutes=true" : ""}`),
+    zone: (id: number) => get<Props>(`/controle/zones/${id}`),
+    creerZone: (body: { nom: string; motif: string; profil: string; fin_le?: string | null; geometrie?: unknown;
+      infrastructure_id?: number; tampon_m?: number }) => ecrire<{ id: number }>("/controle/zones", body),
+    retirerZone: (id: number, motif: string) => ecrire<Props>(`/controle/zones/${id}/retirer`, { motif }),
+    suivis: (actif: boolean, motif: string) => ecrire<Props>("/controle/suivis", { actif, motif }),
     mode: (regle: string, body: { mode: string; sous_type?: string | null; motif: string }) =>
       ecrire<Props>(`/controle/regles/${regle}`, body),
     basculer: (source: string, body: { en_pause: boolean; motif?: string; jusqu_a?: string | null }) =>
