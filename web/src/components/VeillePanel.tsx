@@ -10,7 +10,7 @@ const V = L.veille;
 
 /** Icône d'un type de signal : celle du registre des alertes, la lune pour une lumière la nuit, l'objectif pour une
  *  image optique ; toujours neutre (la couleur est réservée à l'urgence) */
-function IconeSignal({ type, taille = 13 }: { type: string; taille?: number }) {
+export function IconeSignal({ type, taille = 13 }: { type: string; taille?: number }) {
   if (type === "VIIRS") return <Moon size={taille} strokeWidth={1.8} />;
   if (type === "OPTIQUE") return <Aperture size={taille} strokeWidth={1.8} />;
   const I = typeAlerte(type).Icone;

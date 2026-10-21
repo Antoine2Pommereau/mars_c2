@@ -212,7 +212,7 @@ class Decision(BaseModel):
     motif: str | None = None
     note: str | None = Field(default=None, max_length=1000)
     author: str | None = Field(default=None, max_length=80)
-    a_l_instant: datetime | None = None
+    instant: datetime | None = None                   # instant affiché (plage) ; jamais au delà de maintenant
 
 
 ACTIONS = {"vu": ("acquitter", "acquittee"), "confirmer": ("confirmer", "confirmee"), "classer": ("classer", "classee"),
@@ -232,7 +232,10 @@ async def decision(request: Request, cle: str, x: Decision):
         raise HTTPException(422, f"Motif de classement obligatoire : {', '.join(MOTIFS)}")
     rules = load_rules()
     auteur = await operateur_connecte(request) or (x.author or "").strip() or "Opérateur"
+    # Fenêtre du dossier à l'instant affiché (un dossier d'une plage passée reste décidable), statuts actuels
     instant = datetime.now(timezone.utc)
+    if x.instant is not None:
+        instant = min(instant, x.instant if x.instant.tzinfo else x.instant.replace(tzinfo=timezone.utc))
     action, statut = ACTIONS[x.action]
     note = f"Décision prise sur le dossier {cle}" + (f" : {x.note.strip()}" if (x.note or "").strip() else "")
     with traces.span("dossiers.decision", **{"dossiers.cle": cle, "dossiers.action": x.action}) as sp:
@@ -263,15 +266,17 @@ async def decision(request: Request, cle: str, x: Decision):
 
 
 @router.get("/api/dossiers/{cle}/verification")
-async def devis_verification(request: Request, cle: str):
+async def devis_verification(request: Request, cle: str, end: datetime | None = None):
     """Avant une vérification satellite (touche V) : prochain passage qui couvre la dernière position, coût estimé
     d'une fenêtre, et refus si le capteur ou la vérification satellite est en pause (panneau de contrôle)."""
     from mars import sentinel
     rules = load_rules()
     instant = datetime.now(timezone.utc)
+    # Dossier lu à l'instant affiché (jamais au delà de maintenant) ; le prochain passage se cherche après maintenant
+    vu_a = min(instant, end if end is None or end.tzinfo else end.replace(tzinfo=timezone.utc)) if end else instant
     with traces.span("dossiers.verification", **{"dossiers.cle": cle}) as sp:
         async with request.app.state.pool.acquire() as c:
-            d = await _trouver(c, cle, instant, False, rules)
+            d = await _trouver(c, cle, vu_a, False, rules)
             pauses = {r["source"]: r["motif"] for r in await c.fetch(
                 "SELECT source, motif FROM interrupteurs_satellites WHERE en_pause")}
             missions = [m for m, s in (("S1", "sentinel1"), ("S2", "sentinel2")) if s not in pauses]

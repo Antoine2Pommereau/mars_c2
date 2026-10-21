@@ -143,6 +143,41 @@ def test_api_decision_needs_a_reason_and_an_open_dossier(api):
     # La décision vaut à l'instant réel : le dossier de 2031 n'y est pas encore ouvert
     r = c.post(f"/api/dossiers/navire:{vid}/decision", json={"action": "vu"})
     assert r.status_code == 404 and r.json()["detail"] == "Dossier introuvable ou clos à cet instant"
+    # Un instant affiché dans le futur est ramené à maintenant
+    r = c.post(f"/api/dossiers/navire:{vid}/decision", json={"action": "vu", "instant": T.isoformat()})
+    assert r.status_code == 404
+
+
+def test_api_verification_quote_at_the_displayed_instant(api, monkeypatch):
+    """Plage passée : le devis lit le dossier à l'instant affiché ; maintenant, il serait déjà hors de la fenêtre."""
+    c, _conn, vid, _ids = api
+    import dossiers as api_dossiers
+    real = api_dossiers.datetime
+
+    class Plus_tard(real):
+        @classmethod
+        def now(cls, tz=None):                       # noqa: ARG003
+            return T + timedelta(days=10)
+    monkeypatch.setattr(api_dossiers, "datetime", Plus_tard)
+    assert c.get(f"/api/dossiers/navire:{vid}/verification").status_code == 404
+    r = c.get(f"/api/dossiers/navire:{vid}/verification", params={"end": T.isoformat()})
+    assert r.status_code == 200 and r.json()["vessel_id"] == vid
+
+
+def test_api_decision_at_the_displayed_instant(api, monkeypatch):
+    """Plage passée : le dossier affiché reste décidable, sur les alertes encore ouvertes aujourd'hui."""
+    c, conn, vid, ids = api
+    import dossiers as api_dossiers
+    real = api_dossiers.datetime
+
+    class Plus_tard(real):
+        @classmethod
+        def now(cls, tz=None):                       # noqa: ARG003
+            return T + timedelta(days=10)
+    monkeypatch.setattr(api_dossiers, "datetime", Plus_tard)
+    assert c.post(f"/api/dossiers/navire:{vid}/decision", json={"action": "vu"}).status_code == 404
+    r = c.post(f"/api/dossiers/navire:{vid}/decision", json={"action": "vu", "instant": T.isoformat()}).json()
+    assert sorted(r["alertes"]) == sorted([ids["liste"], ids["coupure"], ids["echo"]]) and r["statut"] == "acquittee"
 
 
 def test_api_decision_at_the_dossier_instant(api, monkeypatch):

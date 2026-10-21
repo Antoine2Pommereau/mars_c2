@@ -16,6 +16,8 @@ import SuivisPanel from "./components/SuivisPanel";
 import ObservationsPanel from "./components/ObservationsPanel";
 import ControlePanel from "./components/ControlePanel";
 import VeillePanel from "./components/VeillePanel";
+import Recit from "./components/Recit";
+import { emprise, preuveGeoJSON } from "./lib/preuve";
 import type { Dossier } from "./lib/api";
 import type { Vue } from "./components/MapView";
 import { api, type Pass } from "./lib/api";
@@ -270,9 +272,7 @@ export default function App() {
   }, []);
   const onSelect = useCallback((s: Selection) => setSelection(s), []);
   // Un dossier choisi dans la Veille : fiche du navire (son dossier en tête à l'étape 4), ou alerte d'un point
-  const [dossierFocus, setDossierFocus] = useState<string | null>(null);
   const pickDossier = useCallback((d: Dossier) => {
-    setDossierFocus(d.cle);
     setFocus({ center: [d.lon, d.lat], zoom: 8.5 });
     if (d.vessel_id != null) {
       setSelection({ kind: "vessel", properties: vessels.get(d.vessel_id) ?? { vessel_id: d.vessel_id, name: d.nom } });
@@ -280,6 +280,27 @@ export default function App() {
       api.alert(d.alertes[0]).then((a) => setSelection({ kind: "alert", feature: a })).catch(() => undefined);
     }
   }, [vessels]);
+  // Dossier de l'objet sélectionné (navire, ou alerte d'un dossier) : son récit en tête de la fiche, sa preuve sur la carte
+  const dossierSel = useMemo(() => {
+    const ds = dossiersQ.data?.dossiers ?? [];
+    if (selection?.kind === "vessel") return ds.find((d) => d.vessel_id === Number(selection.properties.vessel_id)) ?? null;
+    if (selection?.kind === "alert") return ds.find((d) => d.alertes.includes(selection.feature.properties.id)) ?? null;
+    return null;
+  }, [selection, dossiersQ.data]);
+  const recitQ = useQuery({ queryKey: ["dossier", dossierSel?.cle, instantDossiers, aLInstant],
+    queryFn: () => api.dossier(dossierSel!.cle, instantDossiers, aLInstant), enabled: !!dossierSel,
+    placeholderData: (prev) => (prev?.cle === dossierSel?.cle ? prev : undefined), retry: 2 });
+  const recit = dossierSel && recitQ.data?.cle === dossierSel.cle ? recitQ.data : undefined;
+  const preuveCarte = useMemo<FC>(() => (recit ? preuveGeoJSON(recit.preuve, recit.route) as FC : EMPTY), [recit]);
+  // À l'ouverture d'un dossier, la carte cadre sa preuve (cercle compris), une fois par dossier
+  const [preuveCadree, setPreuveCadree] = useState<string | null>(null);
+  useEffect(() => {
+    if (!recit || preuveCadree === recit.cle) return;
+    setPreuveCadree(recit.cle);
+    const b = emprise(recit.preuve);
+    if (b) setFocus({ bounds: b });
+  }, [recit, preuveCadree]);
+  useEffect(() => { if (!dossierSel) setPreuveCadree(null); }, [dossierSel]);
   const choisirVue = useCallback((v: Vue | "couches") => {
     if (v === "couches") { setPanel("couches"); return; }
     setVue(v);
@@ -441,7 +462,7 @@ export default function App() {
           observationCount={observationsQ.data?.actives ?? 0} />
         {panel && (
           <aside className="h-full w-[350px] shrink-0 border-r border-hair bg-panel">
-            {panel === "alertes" && <VeillePanel liste={dossiersQ.data} instant={instant} focus={dossierFocus} onPick={pickDossier}
+            {panel === "alertes" && <VeillePanel liste={dossiersQ.data} instant={instant} focus={dossierSel?.cle ?? null} onPick={pickDossier}
               fil={<AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels}
                 suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />} />}
             {panel === "observations" && <ObservationsPanel demandes={observationsQ.data?.demandes ?? []}
@@ -476,7 +497,7 @@ export default function App() {
             byType={byType} region={region} passages={passagesQ.data ?? EMPTY} viirs={viirsQ.data ?? EMPTY} sentinel={sentinelQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
             drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom}
             vigilance={(vigilanceQ.data as FC | undefined) ?? EMPTY} trace={trace} onTracePoint={(c) => setTrace((t) => (t ? [...t, c] : t))}
-            vue={vue} infraProches={dossiersQ.data?.infrastructures_proches ?? []} dossiersPoints={dossiersPoints}
+            vue={vue} infraProches={dossiersQ.data?.infrastructures_proches ?? []} dossiersPoints={dossiersPoints} preuve={preuveCarte}
             onContexte={setMenu} />
           </Garde>
           {menu && <MenuCarte key={`${menu.lon},${menu.lat}`} point={menu} onClose={() => setMenu(null)} />}
@@ -496,7 +517,10 @@ export default function App() {
             plage={{ debut: qDebut, fin: qFin }} suivis={suivis} vessels={vessels} alerts={filtered} onStatus={onStatus}
             onPickAlert={pickAlert} onPickVessel={pickVessel} onPickInfra={(id) => pickInfra(id)}
             onSuivre={(id, on) => suivre.mutate({ id, on })} onRejeu={onRejeu}
-            onPickDetection={(source, id) => setSelection({ kind: "detection", properties: { id, source } })} />
+            onPickDetection={(source, id) => setSelection({ kind: "detection", properties: { id, source } })}
+            recit={dossierSel ? <Recit key={dossierSel.cle} dossier={dossierSel} recit={recit} instant={instantDossiers}
+              suivi={dossierSel.vessel_id != null && suivis.has(dossierSel.vessel_id)} onSuivre={(id, on) => suivre.mutate({ id, on })}
+              onPickAlert={pickAlert} /> : undefined} />
           <Frise temps={temps} now={now} onChange={setTemps} alerts={{ type: "FeatureCollection", features: filtered }}
             timeline={timelineQ.isError ? null : timelineQ.data ?? null} onPickAlert={pickAlert}
             passages={passagesQ.data ?? EMPTY} onPickPassage={pickPassage} nuits={nuitsQ.isError ? [] : nuitsQ.data ?? []} />

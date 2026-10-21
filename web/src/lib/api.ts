@@ -206,9 +206,9 @@ export const api = {
     get<ListeDossiers>(`/dossiers?end=${enc(instant)}${rg(region)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
   dossier: (cle: string, instant: string, aLInstant?: string | null) =>
     get<Props>(`/dossiers/${enc(cle)}?end=${enc(instant)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
-  decisionDossier: (cle: string, body: { action: string; motif?: string; note?: string; author?: string }) =>
+  decisionDossier: (cle: string, body: { action: string; motif?: string; note?: string; author?: string; instant?: string }) =>
     ecrire<{ alertes: number[]; statut: string }>(`/dossiers/${enc(cle)}/decision`, body),
-  verificationDossier: (cle: string) => get<Props>(`/dossiers/${enc(cle)}/verification`),
+  verificationDossier: (cle: string, instant: string) => get<Props>(`/dossiers/${enc(cle)}/verification?end=${enc(instant)}`),
   /** Panneau de contrôle (lot P) : session d'opérateur, état, journal, et écritures (connexion exigée) */
   controle: {
     session: () => get<{ operateur: string | null; configure: boolean; abimes?: string[] }>("/controle/session"),

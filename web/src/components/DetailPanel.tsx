@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
+import type { ReactNode } from "react";
 import { api } from "../lib/api";
 import { utc } from "../lib/format";
 import { L } from "../lib/libelles";
@@ -74,6 +75,7 @@ interface PanelProps {
   onSuivre: (vesselId: number, on: boolean) => void;
   onRejeu: (vesselId: number) => void;
   onPickDetection: (source: SourceDetection, id: number) => void;
+  recit?: ReactNode;                     // récit du dossier de l'objet (lot U), en tête ; la fiche complète suit, repliée
 }
 
 /** Fiche de l'objet sélectionné (navire, alerte, infrastructure, zone, détection) : un en tête, puis les sections du
@@ -87,6 +89,8 @@ export default function DetailPanel(p: PanelProps) {
   const passageId = selection?.kind === "passage" ? Number(selection.properties.id) : -1;
   const passage = usePassage(passageId);
   if (!selection) return null;
+  // Fiche allégée (lot U) : sections repliées pour un navire, et pour tout objet qui a un dossier (le récit est en tête)
+  const replier = selection.kind === "vessel" || !!p.recit;
 
   let title = "", color = "#4fb6c8", badge: string | null = null, footer: string | null = null, trace: string | null = null;
   const ctx: Contexte = { objet: "detection", passTime: p.passTime, plage: p.plage, suivis: p.suivis, vessels: p.vessels,
@@ -141,9 +145,10 @@ export default function DetailPanel(p: PanelProps) {
         </div>
         <button onClick={p.onClose} className="text-muted hover:text-ink" aria-label={L.commun.fermer}><X size={16} /></button>
       </div>
+      {p.recit}
       {selection.kind === "vigilance" && <FicheVigilance id={Number(selection.properties.id)} onPickAlert={p.onPickAlert} />}
       {selection.kind !== "vigilance" && sectionsDe(ctx).map((s) => s.titre ? (
-        <details key={s.id} open className="group mt-3 border-t border-hair pt-2">
+        <details key={s.id} open={!replier} className="group mt-3 border-t border-hair pt-2">
           <summary className="mb-1.5 cursor-pointer list-none font-semibold text-ink marker:hidden">
             <span className="mr-1.5 inline-block text-faint transition-transform group-open:rotate-90">›</span>{L.fiche.sections[s.id]}
           </summary>

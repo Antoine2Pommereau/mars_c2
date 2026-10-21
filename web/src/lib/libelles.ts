@@ -3,6 +3,8 @@
 
 /** Durée lisible : minutes jusqu'à 90, puis heures (« AIS coupé 19 h » plutôt que 1168 min) */
 const duree = (min: number) => (min >= 90 ? `${Math.round(min / 60)} h` : `${Math.round(min)} min`);
+/** Accord en nombre : « 1 alerte », « 3 alertes » (pluriel régulier sauf si précisé) */
+const nb = (n: number, sing: string, plur = `${sing}s`) => `${n} ${n > 1 ? plur : sing}`;
 
 export const L = {
   app: { nom: "MARS C2" },
@@ -31,6 +33,39 @@ export const L = {
     calmeDetail: "La veille continue : AIS, listes, satellites.",
     niveaux: { urgent: "Urgent", a_examiner: "À examiner", a_noter: "À noter" } as Record<string, string>,
     vues: { veille: "Veille", trafic: "Trafic complet", satellites: "Satellites", couches: "Couches" } as Record<string, string>,
+  },
+  // Récit d'un dossier (lot U, étape 4), en tête de la fiche
+  recit: {
+    qui: (type: string | null, longueur: number | null) => [type, longueur ? `${Math.round(longueur)} m` : null].filter(Boolean).join(", "),
+    point: "Sans navire identifié",
+    gestes: { vu: "Vu", confirmer: "Confirmer", classer: "Classer", suivre: "Suivre", suivi: "Suivi", verifier: "Vérifier",
+      rouvrir: "Rouvrir" } as Record<string, string>,
+    touches: { confirmer: "F", classer: "C", suivre: "S", verifier: "V" } as Record<string, string>,
+    motif: "Motif du classement",
+    fait: (verbe: string, n: number) => `${verbe} : ${nb(n, "alerte journalisée", "alertes journalisées")}`,
+    verbes: { vu: "Vu", confirmer: "Confirmé", classer: "Classé", rouvrir: "Rouvert" } as Record<string, string>,
+    clos: "Dossier traité à cet instant",
+    chronologie: "Chronologie",
+    verificationDemandee: "Vérification satellite demandée",
+    passage: (sat: string | null) => `Passage ${sat ?? "satellite"}`,
+    decision: (verbe: string, auteur: string) => `${verbe} par ${auteur}`,
+    legende: "Sur la carte",
+    derniere: (h: string) => `Dernière position AIS, ${h}`,
+    silence: "Silence AIS jusqu'à l'écho",
+    estimee: (rayon: string) => `Position estimée, cercle de ${rayon}`,
+    echo: (h: string, longueur: number | null | undefined, optique: boolean) =>
+      `${optique ? "Navire vu en image" : "Écho radar"}, ${h}${longueur ? `, ${Math.round(longueur)} m` : ""}`,
+    ecart: (d: string) => `${d} entre position estimée et écho`,
+    depuisDerniere: (d: string) => `${d} depuis la dernière position AIS`,
+    verifier: {
+      titre: "Vérification satellite", cout: (eur: number) => `Coût estimé ${eur.toLocaleString("fr-FR", { minimumFractionDigits: 2 })} €`,
+      passage: (sat: string, h: string) => `Prochain passage ${sat}, ${h}`, aucunPassage: "Aucun passage prévu dans les 36 h",
+      demander: "Demander", annuler: "Annuler", demandee: (id: number) => `Demande ${id} enregistrée`,
+      regroupee: (id: number) => `Ajoutée à la demande ${id} en cours`,
+    },
+    technique: "Détail technique", niveau: "Niveau", versions: "Versions des règles", empreintes: "Empreintes",
+    traces: "Traces", alerte: (id: number) => `Alerte ${id}`,
+    ficheComplete: "Fiche complète",
   },
   rail: {
     alertes: "Veille", analyses: "Analyses satellites", couches: "Couches et légende",

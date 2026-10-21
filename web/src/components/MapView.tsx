@@ -7,6 +7,7 @@ import { zonesGeoJSON } from "../lib/zones";
 import { COULEUR_LISTE, COULEUR_SUIVI, STROKE_ALERTE } from "../registres/alertes";
 import { COUCHES, COULEUR_PASSAGE, COULEURS_INFRA } from "../registres/couches";
 import { URGENCE } from "../lib/urgence";
+import { COULEURS_PREUVE as CP } from "../lib/preuve";
 
 const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
@@ -101,6 +102,7 @@ interface Props {
   vue: Vue;                              // vue prédéfinie (lot U) : Veille, Trafic complet, Satellites
   infraProches: number[];                // infrastructures à moins d'un mille d'un dossier (restent nettes en Veille)
   dossiersPoints: FC;                    // dossiers « point » (lumière, écho sans navire), colorés par l'urgence
+  preuve: FC;                            // preuve du dossier ouvert (lib/preuve.ts), au dessus de tout
 }
 
 // Mode focus : tout ce qui ne concerne pas la sélection s'efface
@@ -135,7 +137,7 @@ export default function MapView(p: Props) {
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
       ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages", "viirs", "s1",
-        "vigilance", "trace", "dossiers"].forEach(src);
+        "vigilance", "trace", "dossiers", "preuve"].forEach(src);
       // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
       map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
       map.addSource("couverture", { type: "geojson", data: zonesGeoJSON() as any });
@@ -277,6 +279,30 @@ export default function MapView(p: Props) {
       map.addLayer({ id: "draft-line", type: "line", source: "draft",
         paint: { "line-color": ["case", ["get", "tooBig"], "#ef6461", "#4fb6c8"], "line-width": 1.5 } });
 
+      // Preuve du dossier ouvert (lot U) : route, silence en tirets jusqu'à l'écho, cercle d'incertitude autour de la
+      // position estimée, écart estimée vers écho avec sa distance ; mêmes couleurs que la légende du récit
+      const role = (r: string): any => ["==", ["get", "role"], r];
+      map.addLayer({ id: "preuve-route", type: "line", source: "preuve", filter: role("route"),
+        paint: { "line-color": CP.route, "line-width": 1.5, "line-opacity": 0.85 } });
+      map.addLayer({ id: "preuve-cercle-fond", type: "fill", source: "preuve", filter: role("cercle"),
+        paint: { "fill-color": CP.cercle, "fill-opacity": 0.05 } });
+      map.addLayer({ id: "preuve-cercle", type: "line", source: "preuve", filter: role("cercle"),
+        paint: { "line-color": CP.cercle, "line-width": 1, "line-opacity": 0.6 } });
+      map.addLayer({ id: "preuve-silence", type: "line", source: "preuve", filter: role("silence"),
+        paint: { "line-color": CP.silence, "line-width": 1.8, "line-dasharray": [2, 2] } });
+      map.addLayer({ id: "preuve-ecart", type: "line", source: "preuve", filter: role("ecart"),
+        paint: { "line-color": CP.ecart, "line-width": 1, "line-opacity": 0.8 } });
+      map.addLayer({ id: "preuve-ecart-texte", type: "symbol", source: "preuve", filter: role("ecart"),
+        layout: { "symbol-placement": "line-center", "text-field": ["get", "etiquette"], "text-size": 12, "text-offset": [0, -0.8],
+                  "text-font": ["Montserrat Medium", "Open Sans Semibold", "Noto Sans Regular"], "text-allow-overlap": true },
+        paint: { "text-color": CP.ecart, "text-halo-color": "#0e1419", "text-halo-width": 1.6 } });
+      map.addLayer({ id: "preuve-estimee", type: "circle", source: "preuve", filter: role("estimee"),
+        paint: { "circle-radius": 3, "circle-color": "rgba(0,0,0,0)", "circle-stroke-width": 1.2, "circle-stroke-color": CP.cercle } });
+      map.addLayer({ id: "preuve-derniere", type: "circle", source: "preuve", filter: role("derniere"),
+        paint: { "circle-radius": 4, "circle-color": CP.derniere, "circle-stroke-width": 1.5, "circle-stroke-color": "#0e1419" } });
+      map.addLayer({ id: "preuve-echo", type: "circle", source: "preuve", filter: role("echo"),
+        paint: { "circle-radius": 7, "circle-color": "rgba(0,0,0,0)", "circle-stroke-width": 2.5, "circle-stroke-color": CP.echo } });
+
       // Tracé d'une zone en deux clics : un coin, puis le coin opposé (fiable au trackpad comme à la souris)
       let start: maplibregl.LngLat | null = null;
       const box = (a: maplibregl.LngLat, b: maplibregl.LngLat) =>
@@ -381,6 +407,7 @@ export default function MapView(p: Props) {
   useEffect(() => setData("viirs", p.viirs), [ready, p.viirs]);
   useEffect(() => setData("vigilance", p.vigilance), [ready, p.vigilance]);
   useEffect(() => setData("dossiers", p.dossiersPoints), [ready, p.dossiersPoints]);
+  useEffect(() => setData("preuve", p.preuve), [ready, p.preuve]);
   useEffect(() => {
     const t = p.trace ?? [];
     setData("trace", { type: "FeatureCollection", features: [
@@ -446,7 +473,7 @@ export default function MapView(p: Props) {
     if (!ready || !p.focus) return;
     if ("bounds" in p.focus) {
       const [x0, y0, x1, y1] = p.focus.bounds;
-      mapRef.current!.fitBounds([[x0, y0], [x1, y1]], { padding: 80, duration: 800, maxZoom: 11 });
+      mapRef.current!.fitBounds([[x0, y0], [x1, y1]], { padding: { top: 80, bottom: 200, left: 60, right: 430 }, duration: 800, maxZoom: 11 });
     } else mapRef.current!.flyTo({ center: p.focus.center, zoom: p.focus.zoom });
   }, [ready, p.focus]);
 
