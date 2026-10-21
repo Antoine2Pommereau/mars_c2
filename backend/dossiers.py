@@ -70,7 +70,10 @@ async def _contextes(c, alertes: list[dict], instant, rules: dict) -> dict:
             a["vessel_id"], instant, float(p["infrastructure_m"]), float(p["en_mer_m"]))
         # En transit (au delà de transit_kn), un navire des listes reste « à noter » même près d'une infrastructure
         lent = r is not None and r["sog"] is not None and r["sog"] < float(p["transit_kn"])
-        out[a["vessel_id"]] = {"sejour_prolonge": float(sejour.get("duree_h") or 0) >= seuil,
+        # Séjour prolongé : « à examiner » seulement s'il se passe en bonne part à l'arrêt hors port (2026.10.43) ; une
+        # alerte écrite avant cette version n'a pas la mesure : séjour noté, sans relever le niveau
+        s = D.sejour(sejour, seuil, float(p["sejour_hors_port_part"]))
+        out[a["vessel_id"]] = {"sejour_prolonge": s == "hors_port", "sejour": s,
                                "en_mer_pres_infra": bool(r and r["pres"] and r["en_mer"] and lent)}
     return out
 

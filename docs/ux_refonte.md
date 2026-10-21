@@ -305,3 +305,8 @@ d'après le moteur (des traversiers, à trancher).
 couches détaillées, fiches infrastructure, zone, passage et détection, fil complet, Cmd + K, direct, plage et rejeu,
 frise, démonstration, masquage et adresse de la page fonctionnent. La décision et le devis lisent le dossier à
 l'instant affiché (jamais au delà de maintenant), sinon un dossier d'une plage passée serait introuvable.
+
+**Après la phase 2 (21/10/2026)** : un séjour prolongé n'est « à examiner » qu'avec au moins 20 % du séjour à l'arrêt
+hors port (règles 2026.10.43) ; sur le jeu d'essai, le compteur passe de 6 à 3, comme la maquette (les trois
+traversiers n'ont plus le niveau 2). Sur le serveur, il n'y a pas de traversier : le bruit venait des pétroliers des
+listes en transit de 26 à 37 h, désormais « à noter ». La Veille cadre la carte sur les dossiers à examiner.

@@ -8,7 +8,7 @@ suspicion à trois niveaux et une phrase d'explication tirée des faits. Calcul 
   écho radar ou optique sans AIS), rattaché au dossier d'un navire quand une vérification satellite les relie (même
   détection en preuve), sinon fusionné avec un autre point à moins de point_fusion_m et point_fusion_h.
 * Niveau : base selon la gravité la plus haute (navire des listes seul : À noter, sauf en mer près d'une
-  infrastructure ou en séjour prolongé : À examiner) ; plus un si deux familles de signaux au moins se recoupent ; plus
+  infrastructure ou en séjour prolongé surtout à l'arrêt hors port : À examiner) ; plus un si deux familles de signaux au moins se recoupent ; plus
   un si une vérification satellite a vu le navire sans AIS ; ramené à 1 si tout est à confirmer ; de 1 à 3.
 * Phrase : un fragment par type de signal, du plus fort au plus faible, trois au plus.
 """
@@ -76,6 +76,18 @@ def _a_confirmer(a: dict) -> bool:
     return bool((a.get("details") or {}).get("a_confirmer"))
 
 
+def sejour(s: dict | None, seuil_h: float, seuil_part: float) -> str | None:
+    """Séjour prolongé d'un navire des listes (détail de l'alerte WATCHLIST) : « hors_port » (relève le niveau),
+    « quai_ou_transit », « non_mesure » (alerte écrite avant les règles 2026.10.43), ou None (pas de séjour prolongé)."""
+    s = s or {}
+    if float(s.get("duree_h") or 0) < seuil_h:
+        return None
+    part = s.get("arret_hors_port_part")
+    if part is None:
+        return "non_mesure"
+    return "hors_port" if float(part) >= seuil_part else "quai_ou_transit"
+
+
 def niveau(alertes: list[dict], p: dict, contexte: dict | None = None) -> tuple[int, list[str]]:
     """Niveau (1 à 3) et ses contributions, lisibles. `contexte` (navire) : en_mer_pres_infra, sejour_prolonge."""
     ctx = contexte or {}
@@ -85,8 +97,11 @@ def niveau(alertes: list[dict], p: dict, contexte: dict | None = None) -> tuple[
         if a["type"] == "WATCHLIST":
             fort = ctx.get("sejour_prolonge") or ctx.get("en_mer_pres_infra")
             bases.append((2 if fort else 1, "navire des listes " + (
-                "en séjour prolongé" if ctx.get("sejour_prolonge") else
-                "en mer près d'une infrastructure" if fort else "à quai ou en transit")))
+                "en séjour prolongé, surtout à l'arrêt hors port" if ctx.get("sejour_prolonge") else
+                "en mer près d'une infrastructure" if fort else
+                {"quai_ou_transit": "en séjour prolongé, mais à quai ou en transit",
+                 "non_mesure": "en séjour prolongé, part hors port non mesurée (règles antérieures)"}.get(
+                    ctx.get("sejour"), "à quai ou en transit"))))
         else:
             bases.append((base_g.get(a["severity"], 1), f"gravité {a['severity']}"))
     n, pourquoi = max(bases, key=lambda b: b[0])

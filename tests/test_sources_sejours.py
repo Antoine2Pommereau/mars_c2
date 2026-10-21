@@ -40,6 +40,41 @@ def test_stay_without_halt_and_text():
     assert t == ("Séjour prolongé : 31 h dans nos eaux, 82 % du temps à l'arrêt, hors de tout mouillage connu, "
                  "à 7,5 km des côtes")
     assert stay([pos(0, 0.0)], 1.0)["arret_part"] is None
+    t = stay_text({"duree_h": 40, "arret_part": 0.6, "arret_hors_port_part": 0.33})
+    assert t == "Séjour prolongé : 40 h dans nos eaux, 60 % du temps à l'arrêt dont 33 % hors port"
+    assert "hors port" not in stay_text({"duree_h": 40, "arret_part": 0.0, "arret_hors_port_part": 0.0})
+
+
+def test_stay_offshore_tells_port_from_open_sea():
+    """Arrêt « hors port » (règles 2026.10.43) : 30 h dont 28 h à l'arrêt, à quai à Marseille (à la côte) puis au
+    large d'Ouessant (à plus de 2 km de toute terre) ; trait de côte de la base de test (masques construits)."""
+    import asyncio
+
+    import asyncpg
+
+    from mars.rules import stay_offshore
+    if not URL:
+        pytest.skip("MARS_TEST_DATABASE_URL absente : base de test requise")
+
+    def sejour(lon, lat):
+        pts = [pos(m, 12.0, lon=lon - 0.3 + m / 1000, lat=lat) for m in range(0, 120, 2)]
+        return pts + [pos(120 + 10 * k, 0.1, lon=lon, lat=lat) for k in range(169)]
+
+    async def go():
+        c = await asyncpg.connect(URL)
+        try:
+            if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
+                pytest.skip("trait de côte absent de la base de test")
+            quai = await stay_offshore(c, sejour(5.3422, 43.3325), 1.0, 2000)
+            large = await stay_offshore(c, sejour(-6.0, 48.0), 1.0, 2000)
+            route = await stay_offshore(c, [pos(m, 12.0, lon=-6 + m / 1000, lat=48.0) for m in range(0, 1800, 30)], 1.0, 2000)
+        finally:
+            await c.close()
+        return quai, large, route
+    quai, large, route = asyncio.run(go())
+    assert quai == {"arret_hors_port_part": 0.0, "arret_hors_port_h": 0.0}
+    assert large["arret_hors_port_part"] == pytest.approx(28 / 30, abs=0.01) and large["arret_hors_port_h"] == pytest.approx(28, abs=0.1)
+    assert route["arret_hors_port_part"] == 0.0
 
 
 def test_clean_positions_keeps_or_fills_source():
@@ -132,6 +167,8 @@ def test_watchlist_stay_spans_beyond_the_rules_window():
                 assert s["duree_h"] == pytest.approx(30, abs=0.1)
                 assert s["arret_part"] == pytest.approx(28 / 30, abs=0.01)
                 assert s["lieu"] == [-4.5, 48.3] and s["mouillage_connu"] is False
+                if await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
+                    assert s["arret_hors_port_part"] == 0.0, "à moins de 2 km de la côte de Crozon : pas hors port"
                 assert any(t.startswith("Séjour prolongé : 30 h") for t in rows[0]["details"]["contexte"])
                 raise _Rollback
         except _Rollback:

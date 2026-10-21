@@ -19,6 +19,7 @@ import ControlePanel from "./components/ControlePanel";
 import VeillePanel from "./components/VeillePanel";
 import Recit from "./components/Recit";
 import { emprise, preuveGeoJSON } from "./lib/preuve";
+import { cadreDossiers } from "./lib/cadre";
 import type { Dossier } from "./lib/api";
 import type { Vue } from "./components/MapView";
 import { api, type Pass } from "./lib/api";
@@ -282,6 +283,15 @@ export default function App() {
       api.alert(d.alertes[0]).then((a) => setSelection({ kind: "alert", feature: a })).catch(() => undefined);
     }
   }, [vessels]);
+  // À l'ouverture de la Veille, la carte cadre les dossiers à examiner, une fois (pas à chaque rafraîchissement) ; un
+  // lien qui désigne un objet garde son propre cadrage
+  const [veilleCadree, setVeilleCadree] = useState(!!INITIAL.sel);
+  useEffect(() => {
+    if (veilleCadree || vue !== "veille" || selection || !dossiersQ.data) return;
+    setVeilleCadree(true);
+    const b = cadreDossiers(dossiersQ.data.dossiers);
+    if (b) setFocus({ bounds: b });
+  }, [veilleCadree, vue, selection, dossiersQ.data]);
   // Dossier de l'objet sélectionné (navire, ou alerte d'un dossier) : son récit en tête de la fiche, sa preuve sur la carte
   const dossierSel = useMemo(() => {
     const ds = dossiersQ.data?.dossiers ?? [];

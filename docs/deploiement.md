@@ -908,6 +908,22 @@ regroupées par navire) ; les mesures par type d'alerte (vide tant qu'aucune dé
 l'interface : la Veille s'ouvre par défaut, la barre d'état n'a plus que le voyant Système, les anciens panneaux sont
 dans les Coulisses ; une adresse avec `vue=trafic` rouvre la vue d'avant la refonte.
 
+## Séjour hors port et cadrage de la Veille (21/10/2026)
+
+Règles 2026.10.43 (`watchlist.hors_port_m`, `dossiers.sejour_hors_port_part`), arrivées par `git pull`. Aucune
+migration. Images qui changent : scripts (mesure dans le moteur, conteneur taches), backend (niveau des dossiers), web
+(cadrage). La mesure apparaît dans les alertes WATCHLIST au premier cycle des règles (5 minutes) pour les passages en
+cours ; les plus anciens restent « séjour non mesuré » et sortent de la fenêtre de 72 h en trois jours.
+
+```bash
+docker compose exec -T db psql -U mars -d mars -c "SELECT id, details->'navire'->>'name' AS navire,
+  details->'sejour'->>'duree_h' AS h, details->'sejour'->>'arret_hors_port_part' AS hors_port, rule_version
+  FROM alerts WHERE type = 'WATCHLIST' AND details->'sejour' IS NOT NULL AND detected_at > now() - interval '3 days'"
+```
+
+Ce qu'on doit lire : `rule_version` à 2026.10.43 et `hors_port` renseigné pour les passages en cours (0 pour une
+escale à quai comme VICTOR ANDRYUKHIN à Marseille).
+
 ## Vérifier
 
 ```bash

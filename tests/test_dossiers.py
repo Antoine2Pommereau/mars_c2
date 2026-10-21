@@ -52,6 +52,22 @@ def test_listed_vessel_alone_depends_on_where_it_is():
         assert d["niveau_cle"] == "a_examiner" and d["phrase"] == "Flotte fantôme"
 
 
+def test_long_stay_counts_only_when_stopped_away_from_port():
+    """Règles 2026.10.43 : un séjour prolongé n'est « à examiner » que s'il se passe en bonne part à l'arrêt hors port.
+    Valeurs du serveur au 21/10 : transits et escales à quai à 0, NOSTOS 0,09, SAFEEN BARONESS 0,33, SMYRTOS 1."""
+    assert D.sejour({"duree_h": 20, "arret_hors_port_part": 1.0}, 24, 0.2) is None              # pas prolongé
+    assert D.sejour({"duree_h": 33.1, "arret_hors_port_part": 0.09}, 24, 0.2) == "quai_ou_transit"   # NOSTOS
+    assert D.sejour({"duree_h": 56.7, "arret_part": 1.0, "arret_hors_port_part": 0.0}, 24, 0.2) == "quai_ou_transit"
+    assert D.sejour({"duree_h": 110.1, "arret_hors_port_part": 0.33}, 24, 0.2) == "hors_port"   # SAFEEN BARONESS
+    assert D.sejour({"duree_h": 30, "arret_part": 0.0}, 24, 0.2) == "non_mesure"               # règles antérieures
+    xs = [alerte(1, "WATCHLIST", "critique", 3, 7, {"niveau": "sanctionne"})]
+    for s, cle, texte in (("quai_ou_transit", "a_noter", "à quai ou en transit"),
+                          ("non_mesure", "a_noter", "part hors port non mesurée"),
+                          ("hors_port", "a_examiner", "surtout à l'arrêt hors port")):
+        d = D.regrouper(xs, P, NAVIRES, {7: {"sejour": s, "sejour_prolonge": s == "hors_port"}})[0]
+        assert d["niveau_cle"] == cle and texte in d["contributions"][0], (s, d["contributions"])
+
+
 def test_gap_alone_levels_and_unconfirmed_points():
     assert D.regrouper([alerte(1, "AIS_GAP", "elevee", 3, 8, {"duree_min": 300})], P, NAVIRES)[0]["niveau_cle"] == "a_examiner"
     assert D.regrouper([alerte(1, "AIS_GAP", "faible", 3, 8, {"duree_min": 150})], P, NAVIRES)[0]["niveau_cle"] == "a_noter"

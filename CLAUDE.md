@@ -685,6 +685,16 @@ le jeu d'essai : écran par défaut de 231 à 149 mots et de 10 à 5 couleurs vi
 mots ; navire le plus suspect trouvé sans geste (environ 7 s au lieu de 20, réponse juste), compris par la phrase de
 sa ligne, classé en deux touches pour tout le dossier (au lieu de 6 s par alerte).
 
+**Séjour hors port et cadrage de la Veille (21/10/2026)** (règles 2026.10.43, aucune migration) : le séjour prolongé
+d'un navire des listes mesure aussi sa part à l'arrêt hors port (`arret_hors_port_part`, à plus de
+`watchlist.hors_port_m`, 2 km, de la côte ; `stay_offshore` dans `mars/rules.py`) ; il ne rend le dossier « à
+examiner » qu'à partir de `dossiers.sejour_hors_port_part` (0,2). Mesuré sur le serveur (lecture seule) : sur 30 jours,
+18 séjours prolongés, 15 à 0 (transits de 26 à 37 h, escales à quai), NOSTOS 0,09, SAFEEN BARONESS 0,33, SMYRTOS 1 ;
+16 redescendent à « à noter ». Sur les 72 h du 21/10, 17 dossiers, un seul change (VICTOR ANDRYUKHIN, à quai à
+Marseille) : 0 à examiner au lieu de 1. Une alerte écrite avant cette version n'a pas la mesure : séjour noté « non
+mesuré », sans relever le niveau. La Veille cadre la carte sur les dossiers à examiner à son ouverture
+(`lib/cadre.ts`).
+
 ## 10. Tests
 
 `python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :
@@ -695,7 +705,7 @@ trace ; origine des positions écrite par l'ingestion ; séjour prolongé au del
 de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 272 réussis, 1 ignoré (lot C4 : GPU inutilisable, échec signalé, instance arrêtée, essai forcé sur processeur ; script de démarrage exécuté avec de fausses commandes, `tests/test_demarrage.py`, avec `gdate` ; lot C3 : rupture de stock, attente, reprise, repli sur processeur, abandon, plafond de l'essai manuel, reclassement des analyses sans scène aboutie ; identifiant de trace des alertes par le déclencheur ; rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
 direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
 création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `tests/test_traces.py` : chaque commande de `taches.py` et chaque type de travailleur tracés (échoue sinon), filtre des données sensibles, script de démarrage bash (avec `gdate` sur le Mac). `npx knip` et `npm run typecheck` pour
-l'interface ; `npm test` (node --test, `web/tests/` : trafic, preuve, clavier, état dégradé ; 13 réussis) ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. Lot U : 404 réussis, 1 ignoré avec la base de test.
+l'interface ; `npm test` (node --test, `web/tests/` : trafic, preuve, clavier, état dégradé, cadrage ; 15 réussis) ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. Lot U et séjour hors port : 406 réussis, 1 ignoré avec la base de test ; 293 réussis, 114 ignorés sans.
 
 ## 11. Pièges connus
 

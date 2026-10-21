@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.42"
+version: "2026.10.43"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -157,6 +157,7 @@ watchlist:
   passage_gap_h: 12        # sans position pendant 12 h : le passage suivant est une nouvelle alerte
   sejour_prolonge_h: 24    # passage de plus de 24 h : séjour prolongé signalé (durée, part à l'arrêt, lieu)
   arret_kn: 1.0            # à l'arrêt sous 1 nœud
+  hors_port_m: 2000        # arrêt « hors port » : à plus de 2 km de la côte (un port est à la côte) ; 2026.10.43
 
 identite:
   # Un nouveau nom n'est signalé qu'après 6 h sans retour à un nom antérieur : les alternances (deux émetteurs,
@@ -589,7 +590,10 @@ dossiers:
   transit_kn: 3                 # au delà, il est en transit (À noter même près d'une infrastructure) ; 2026.10.42
   point_fusion_m: 2000          # deux points sans navire fusionnés à moins de 2 km
   point_fusion_h: 6             # et de 6 heures
+  # Séjour prolongé « À examiner » seulement si la part du séjour à l'arrêt hors port l'atteint (2026.10.43) : sur le
+  # serveur, 30 jours au 21/10, transits et escales à quai à 0, NOSTOS à 0,09, SAFEEN BARONESS à 0,33, SMYRTOS à 1
+  sejour_hors_port_part: 0.2
   # Base selon la gravité la plus haute ; navire des listes seul : À noter, À examiner en mer près d'une
-  # infrastructure ou en séjour prolongé (watchlist.sejour_prolonge_h)
+  # infrastructure ou en séjour prolongé surtout à l'arrêt hors port (watchlist.sejour_prolonge_h)
   base: {critique: 3, elevee: 2, moyenne: 1, faible: 1}
 

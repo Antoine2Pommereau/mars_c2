@@ -836,6 +836,28 @@ def watch_severity(level: str, matched_by: str) -> str:
     return s if matched_by == "omi" else SEVERITIES[max(0, SEVERITIES.index(s) - 1)]
 
 
+async def stay_offshore(c, points: list[dict], stop_kn: float, port_m: float) -> dict:
+    """Part du séjour à l'arrêt hors port (règles 2026.10.43) : intervalles à l'arrêt dont la position de départ est à
+    plus de port_m de la côte. Un port est à la côte ; un mouillage au large compte. Pondérée par le temps, comme
+    arret_part. Sur le serveur du 21/10 (18 séjours en 30 jours) : 0 pour les transits et les escales à quai, 0,09
+    (NOSTOS), 0,33 (SAFEEN BARONESS), 1,0 (SMYRTOS)."""
+    total = (points[-1]["ts"] - points[0]["ts"]).total_seconds() if len(points) > 1 else 0
+    arrets = [(a, (b["ts"] - a["ts"]).total_seconds()) for a, b in zip(points, points[1:])
+              if a.get("sog") is not None and a["sog"] < stop_kn]
+    if not total:
+        return {"arret_hors_port_part": None, "arret_hors_port_h": None}
+    loin = []
+    if arrets:
+        # Trait de côte subdivisé et indexé (land) ; petit rayon : un parcours d'index par point d'arrêt
+        loin = [r["loin"] for r in await c.fetch(
+            """SELECT NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(
+                        l.geom, ST_SetSRID(ST_MakePoint(p.lon, p.lat), 4326)::geography, $3)) AS loin
+               FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS p(lon, lat, k) ORDER BY k""",
+            [a["lon"] for a, _ in arrets], [a["lat"] for a, _ in arrets], float(port_m))]
+    s = sum(dt for (_, dt), large in zip(arrets, loin) if large)
+    return {"arret_hors_port_part": round(s / total, 2), "arret_hors_port_h": round(s / 3600, 1)}
+
+
 async def stay_place(c, place) -> dict:
     """Lieu d'un arrêt : mouillage connu (zone de mouillage à moins de 1 km) et distance à la côte."""
     if not place:
@@ -853,6 +875,8 @@ def stay_text(s: dict) -> str:
     txt = f"Séjour prolongé : {s['duree_h']:.0f} h dans nos eaux".replace(".", ",")
     if s.get("arret_part") is not None:
         txt += f", {round(100 * s['arret_part'])} % du temps à l'arrêt"
+        if s.get("arret_hors_port_part") is not None and s["arret_part"] > 0:
+            txt += f" dont {round(100 * s['arret_hors_port_part'])} % hors port"
     if s.get("lieu"):
         txt += ", au mouillage connu" if s.get("mouillage_connu") else ", hors de tout mouillage connu"
         if s.get("distance_cote_km") is not None:
@@ -901,6 +925,7 @@ async def run_watchlist(c, start, end, rules: dict) -> dict:
             sejour = stay([dict(p) for p in seg], w["arret_kn"])
             if sejour["duree_h"] >= w["sejour_prolonge_h"]:
                 sejour.update(await stay_place(c, sejour["lieu"]))
+                sejour.update(await stay_offshore(c, [dict(p) for p in seg], w["arret_kn"], w["hors_port_m"]))
                 context.append(stay_text(sejour))
             else:
                 sejour = None
