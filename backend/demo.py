@@ -105,7 +105,8 @@ class Masque:
             rows = [[self._cellule(idx[i], v) if i in idx else self._structure(v, False) for i, v in enumerate(r)]
                     for r in o["rows"]]
             return {**{k: self._structure(v, False) for k, v in o.items() if k not in ("rows",)}, "rows": rows}
-        est_navire = navire or bool(INDICES & o.keys())
+        # Un objet est un navire s'il en porte un indice renseigné (un dossier « point » a vessel_id nul)
+        est_navire = navire or any(o.get(k) is not None for k in INDICES)
         out = {}
         for k, v in o.items():
             if k in RETIRES and (est_navire or k != "url"):

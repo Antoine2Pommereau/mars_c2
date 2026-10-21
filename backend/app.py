@@ -26,6 +26,7 @@ from travailleurs import router as travailleurs_router, viirs_status
 from sentinel import router as sentinel_router, sentinel_status
 from demandes import demandes_status, router as demandes_router
 from controle import router as controle_router
+from dossiers import router as dossiers_router
 import demo
 from mars import traces
 from mars.config import load_rules
@@ -107,6 +108,7 @@ app.include_router(preuves_router)      # preuves images des détections satelli
 app.include_router(sentinel_router)     # détections Sentinel 1, vérification satellite (backend/sentinel.py)
 app.include_router(demandes_router)     # tip and cue : demandes d'observation satellite (backend/demandes.py)
 app.include_router(controle_router)     # panneau de contrôle, connexion des opérateurs (backend/controle.py, lot P)
+app.include_router(dossiers_router)     # dossiers par navire ou par point (backend/dossiers.py, lot U)
 
 
 def feature(geometry, properties):
