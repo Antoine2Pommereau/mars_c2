@@ -2,7 +2,8 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AlertsPanel from "./components/AlertsPanel";
 import AnalysesPanel from "./components/AnalysesPanel";
-import BarreEtat from "./components/BarreEtat";
+import BarreEtat, { ListeIndicateurs, useEtat } from "./components/BarreEtat";
+import Coulisses, { type Cible } from "./components/Coulisses";
 import DetailPanel from "./components/DetailPanel";
 import Frise from "./components/Frise";
 import Garde from "./components/Garde";
@@ -27,6 +28,7 @@ import { cercle, nearInfra } from "./lib/geo";
 import { L } from "./lib/libelles";
 import { avecPlage, iso, resolve, type Temps } from "./lib/temps";
 import { decodeTraffic } from "./lib/trafic";
+import { aveugle } from "./lib/systeme";
 import { EMPTY, type FC, type Feature, type Props, type Selection } from "./lib/types";
 import { ecrireAdresse, lireAdresse } from "./lib/url";
 import { FRANCE, zoneBbox, zoneOf, zonesGeoJSON } from "./lib/zones";
@@ -301,8 +303,17 @@ export default function App() {
     if (b) setFocus({ bounds: b });
   }, [recit, preuveCadree]);
   useEffect(() => { if (!dossierSel) setPreuveCadree(null); }, [dossierSel]);
+  // Coulisses : une carte ouvre un panneau, ou une section du panneau de contrôle
+  const [cibleControle, setCibleControle] = useState<string | null>(null);
+  const ouvrirCoulisse = useCallback((c: Cible) => {
+    if ("controle" in c) { setCibleControle(c.controle); setPanel("controle"); } else { setCibleControle(null); setPanel(c.panneau); }
+  }, []);
+  // État dégradé : en direct, plus de 15 minutes sans position AIS, la Veille le dit en tête
+  const etatQ = useEtat(region);
+  const etatSysteme = etatQ.isError ? null : etatQ.data;
+  const veilleAveugle = aveugle(etatSysteme?.derniere_heure?.derniere_position, now, direct);
   const choisirVue = useCallback((v: Vue | "couches") => {
-    if (v === "couches") { setPanel("couches"); return; }
+    if (v === "couches") { setCibleControle(null); setPanel("couches"); return; }
     setVue(v);
     setActives([...VUES[v]]);
   }, []);
@@ -461,8 +472,25 @@ export default function App() {
           running={jobs.some((a) => a.status === "pending" || a.status === "running")}
           observationCount={observationsQ.data?.actives ?? 0} />
         {panel && (
-          <aside className="h-full w-[350px] shrink-0 border-r border-hair bg-panel">
+          <aside className={`flex h-full ${panel === "coulisses" ? "w-[460px]" : "w-[350px]"} shrink-0 flex-col border-r border-hair bg-panel`}>
+            {panel !== "alertes" && panel !== "coulisses" && (
+              <button onClick={() => setPanel("coulisses")} className="border-b border-hair px-4 py-2 text-left text-[12px] text-muted hover:text-ink">
+                ‹ {L.coulisses.retour}
+              </button>
+            )}
+            <div className="min-h-0 flex-1">
+            {panel === "coulisses" && <Coulisses region={region} now={now} onOuvrir={ouvrirCoulisse} compte={{
+              observations: observationsQ.data?.actives ?? 0, suivis: suivis.size,
+              analyse: jobs.some((a) => a.status === "pending" || a.status === "running"), couches: actives.length,
+              masquage: demoQ.data?.masquage ?? false, rejeu: rejeuFidele }} />}
+            {panel === "systeme" && (
+              <div className="h-full overflow-y-auto px-4 pt-4 text-[12.5px]">
+                <h2 className="mb-2 text-[15px] font-semibold">{L.etat.titre}</h2>
+                <ListeIndicateurs status={etatSysteme} now={now} />
+              </div>
+            )}
             {panel === "alertes" && <VeillePanel liste={dossiersQ.data} instant={instant} focus={dossierSel?.cle ?? null} onPick={pickDossier}
+              aveugle={veilleAveugle}
               fil={<AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels}
                 suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />} />}
             {panel === "observations" && <ObservationsPanel demandes={observationsQ.data?.demandes ?? []}
@@ -470,7 +498,7 @@ export default function App() {
             {panel === "controle" && <ControlePanel trace={trace} onTrace={setTrace}
               masquage={demoQ.data?.masquage ?? false} rejeuFidele={rejeuFidele} onRejeuFidele={choisirRejeuFidele}
               infra={selection?.kind === "infrastructure" ? { id: Number(selection.properties.id), nom: selection.properties.name ?? null } : null}
-              onPickZone={(p) => setSelection({ kind: "vigilance", properties: p })} />}
+              onPickZone={(p) => setSelection({ kind: "vigilance", properties: p })} cible={cibleControle} />}
             {panel === "suivis" && <SuivisPanel suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
             {panel === "analyses" && (
               <AnalysesPanel jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0} history={done.slice(0, 8)}
@@ -481,6 +509,7 @@ export default function App() {
               onConcernees={setConcernees} byType={byType} onByType={setByType} infraCounts={infraCounts}
               vesselCount={traffic.features.length} passageCount={passagesQ.data?.features.length ?? 0}
               viirsCount={viirsQ.data?.features.length ?? 0} />}
+            </div>
           </aside>
         )}
         <main className="relative flex-1">

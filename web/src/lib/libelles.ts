@@ -41,6 +41,7 @@ export const L = {
     calme: (h: number | null, fenetre: number) => (h == null || h > fenetre ? `Aucun navire inhabituel sur ${fenetre} h`
       : `Aucun navire inhabituel depuis ${Math.max(1, Math.round(h))} h`),
     calmeDetail: "La veille continue : AIS, listes, satellites.",
+    aveugle: (min: number, derniere: string | null) => `${Number.isFinite(min) ? `AIS coupé depuis ${duree(min)}` : "Aucune position AIS reçue"} : la veille est aveugle.${derniere ? ` Les dossiers ci dessous datent d'avant ${derniere}.` : ""}`,
     niveaux: { urgent: "Urgent", a_examiner: "À examiner", a_noter: "À noter" } as Record<string, string>,
     vues: { veille: "Veille", trafic: "Trafic complet", satellites: "Satellites", couches: "Couches" } as Record<string, string>,
   },
@@ -77,7 +78,28 @@ export const L = {
     traces: "Traces", alerte: (id: number) => `Alerte ${id}`,
     ficheComplete: "Fiche complète",
   },
+  // Coulisses (lot U, étape 6) : une carte par réglage ou état, chacune ouvre son panneau
+  coulisses: {
+    titre: "Coulisses", retour: "Coulisses",
+    cartes: { systeme: "Système", capteurs: "Capteurs et dépenses", regles: "Règles et faux positifs",
+      satellites: "Vérifications satellites", analyses: "Analyses satellites", suivis: "Navires suivis",
+      zones: "Zones de vigilance", notifications: "Notifications", demo: "Démonstration", couches: "Couches détaillées",
+      operateur: "Opérateur" } as Record<string, string>,
+    enPause: (noms: string[]) => (noms.length ? `${noms.join(", ")} en pause` : "Tous les capteurs en service"),
+    budget: (engage: number, plafond: number) => `Budget Sentinel : ${engage.toLocaleString("fr-FR", { maximumFractionDigits: 2 })} € sur ${plafond.toLocaleString("fr-FR", { maximumFractionDigits: 2 })} €`,
+    version: (v: string) => `Version des règles ${v}`,
+    faux: (fp: number, n: number, j: number) => `Faux positifs sur ${j} jours : ${fp} sur ${nb(n, "décision")}`,
+    actives: (n: number) => (n ? `${nb(n, "demande active", "demandes actives")}` : "Aucune demande active"),
+    enCours: (on: boolean) => (on ? "Une analyse en cours" : "Aucune analyse en cours"),
+    suivis: (n: number) => (n ? nb(n, "navire suivi", "navires suivis") : "Aucun navire suivi"),
+    zones: "Zones actives, tracé, retrait",
+    notifications: "Heures calmes, seuil, essai",
+    demo: (masque: boolean, rejeu: boolean) => [masque ? "Navires masqués" : "Navires visibles", rejeu ? "rejeu tel qu'il était" : null].filter(Boolean).join(", "),
+    couches: (n: number) => `${nb(n, "couche active", "couches actives")}`,
+    operateur: (op: string | null) => (op ? `Connecté : ${op}` : "Non connecté"),
+  },
   rail: {
+    coulisses: "Coulisses",
     alertes: "Veille", analyses: "Analyses satellites", couches: "Couches et légende",
     suivis: "Navires suivis", recherche: "Recherche", observations: "Vérifications satellites", controle: "Contrôle",
   },
@@ -153,7 +175,7 @@ export const L = {
 
   // Barre d'état
   etat: {
-    titre: "État de la plateforme",
+    titre: "État de la plateforme", systeme: "Système", toutVa: "tout fonctionne",
     flux: "Flux AIS", ingestion: "Ingestion", listes: "Listes", disque: "Disque", archivage: "Archivage",
     satellites: "Satellites",
     niveau: { vert: "normal", orange: "à surveiller", rouge: "anomalie", gris: "sans mesure" },

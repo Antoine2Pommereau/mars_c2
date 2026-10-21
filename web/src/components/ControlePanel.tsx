@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, LogOut, Minus, Plus } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { api, type PrefsNotification, type BlocRegle, type EtatControle, type Interrupteur, type RegleControle, type SystemeControle } from "../lib/api";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
@@ -10,18 +10,28 @@ import { libelleAlerte } from "../registres/alertes";
 const C = L.controle;
 const euros = (v: number) => `${v.toFixed(2).replace(".", ",")} €`;
 
+// Section visée depuis une carte des Coulisses : ouverte et amenée à l'écran
+const Visee = createContext<string | null>(null);
+
 /** Section repliable du panneau ; l'état ouvert est gardé dans le navigateur */
 function Section({ id, titre, droite, children }: { id: string; titre: string; droite?: ReactNode; children: ReactNode }) {
   const cle = `mars.controle.${id}`;
   const [ouverte, setOuverte] = useState(() => {
     try { return localStorage.getItem(cle) !== "0"; } catch { return true; }
   });
+  const visee = useContext(Visee) === id;
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!visee) return;
+    setOuverte(true);
+    ref.current?.scrollIntoView({ block: "start" });
+  }, [visee]);
   const basculer = () => {
     setOuverte(!ouverte);
     try { localStorage.setItem(cle, ouverte ? "0" : "1"); } catch { /* stockage indisponible */ }
   };
   return (
-    <section className="border-b border-hair">
+    <section ref={ref} data-section={id} className="border-b border-hair">
       <button onClick={basculer} aria-expanded={ouverte}
         className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wide text-muted hover:text-ink">
         <ChevronRight size={13} className={`transition-transform ${ouverte ? "rotate-90" : ""}`} />
@@ -581,6 +591,7 @@ interface PanneauProps {
   masquage: boolean;
   rejeuFidele: boolean;
   onRejeuFidele: (v: boolean) => void;
+  cible?: string | null;                          // section visée depuis les Coulisses
 }
 
 /** Panneau de contrôle (lot P) : lecture pour tous, écriture après connexion d'un opérateur. */
@@ -595,6 +606,7 @@ export default function ControlePanel(pp: PanneauProps) {
   const e = etatQ.data;
   const pauses = e?.interrupteurs.filter((i) => i.en_pause).length ?? 0;
   return (
+    <Visee.Provider value={pp.cible ?? null}>
     <div className="flex h-full flex-col">
       <header className="border-b border-hair px-4 pb-3 pt-4">
         <h2 className="flex items-baseline justify-between text-[15px] font-semibold">
@@ -664,5 +676,6 @@ export default function ControlePanel(pp: PanneauProps) {
         </Section>
       </div>
     </div>
+    </Visee.Provider>
   );
 }

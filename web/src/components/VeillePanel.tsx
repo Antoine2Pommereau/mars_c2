@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { api, type Dossier, type ListeDossiers } from "../lib/api";
 import { deplacer, toucheLibre } from "../lib/clavier";
+import { hm } from "../lib/format";
 import { L } from "../lib/libelles";
 import { URGENCE } from "../lib/urgence";
 import { typeAlerte } from "../registres/alertes";
@@ -43,8 +44,9 @@ function Ligne({ d, instant, focus, curseur, onPick }:
 
 /** Veille (lot U) : les dossiers à examiner, triés par urgence ; les dossiers à noter repliés ; le fil d'alertes
  *  complet en second onglet. La question unique : quel navire regarder maintenant, et pourquoi. */
-export default function VeillePanel({ liste, instant, focus, onPick, fil }:
-  { liste: ListeDossiers | undefined; instant: number; focus: string | null; onPick: (d: Dossier) => void; fil: ReactNode }) {
+export default function VeillePanel({ liste, instant, focus, onPick, fil, aveugle }:
+  { liste: ListeDossiers | undefined; instant: number; focus: string | null; onPick: (d: Dossier) => void; fil: ReactNode;
+    aveugle: { minutes: number; derniere: string | null } | null }) {
   const [onglet, setOnglet] = useState<"dossiers" | "alertes">("dossiers");
   const [noterOuvert, setNoterOuvert] = useState(false);
   const examiner = liste?.dossiers.filter((d) => d.niveau >= 2) ?? [];
@@ -97,6 +99,13 @@ export default function VeillePanel({ liste, instant, focus, onPick, fil }:
           <p className="mt-5 text-[11.5px] text-faint">{V.aide.fermer}</p>
         </div>
       )}
+      {aveugle && (
+        // État dégradé : dans la Veille, jamais par dessus la carte ni le sélecteur de vues
+        <p role="alert" className="border-b border-hair bg-gap/10 px-4 py-2.5 text-[12.5px] leading-snug text-ink"
+          style={{ boxShadow: `inset 3px 0 0 ${URGENCE[3]}` }}>
+          {V.aveugle(aveugle.minutes, aveugle.derniere ? hm(aveugle.derniere) : null)}
+        </p>
+      )}
       <div className="flex gap-1 border-b border-hair px-3 pt-3" role="tablist">
         {(["dossiers", "alertes"] as const).map((o) => (
           <button key={o} role="tab" aria-selected={onglet === o} onClick={() => setOnglet(o)}
@@ -115,7 +124,7 @@ export default function VeillePanel({ liste, instant, focus, onPick, fil }:
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {!liste && <p className="px-4 py-6 text-muted">{L.commun.chargement}</p>}
-            {calme && (
+            {calme && !aveugle && (
               <div className="px-6 py-8 text-center text-muted">
                 <p className="text-[15px] text-ink">{V.calme(liste.dernier_inhabituel ? (instant - Date.parse(liste.dernier_inhabituel)) / 3600_000 : null, liste.fenetre_h)}</p>
                 <p className="mt-1 text-[12.5px]">{V.calmeDetail}</p>

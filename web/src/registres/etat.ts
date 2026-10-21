@@ -22,7 +22,7 @@ const palier = (v: number, vert: number, orange: number): Niveau => (v < vert ? 
 const pire = (ns: Niveau[]): Niveau => (["rouge", "orange", "gris", "vert"] as Niveau[]).find((n) => ns.includes(n)) ?? "gris";
 const E = L.etat;
 
-export const INDICATEURS: Indicateur[] = [
+const INDICATEURS: Indicateur[] = [
   {
     id: "flux", libelle: E.flux, etape: null,
     evaluer: (s, now) => {
@@ -175,3 +175,16 @@ export const INDICATEURS: Indicateur[] = [
 ];
 
 export const COULEUR_NIVEAU: Record<Niveau, string> = { vert: "#5fd38d", orange: "#f0a84b", rouge: "#ef6461", gris: "#4c5a66" };
+
+/** Toutes les mesures en place, dans l'ordre du registre */
+export const mesurer = (s: any, now: number) =>
+  INDICATEURS.filter((i) => i.etape == null).map((ind) => ({ ind, m: ind.evaluer(s, now) }));
+
+/** Voyant Système (lot U) : le pire niveau mesuré (une mesure absente ne l'emporte pas sur les autres), et
+ *  l'indicateur qui le cause */
+export function systeme(mesures: ReturnType<typeof mesurer>): { niveau: Niveau; cause: (typeof mesures)[number] | null } {
+  const mesures_ = mesures.filter((x) => x.m.niveau !== "gris");
+  if (!mesures_.length) return { niveau: "gris", cause: null };
+  const niveau = pire(mesures_.map((x) => x.m.niveau));
+  return { niveau, cause: niveau === "vert" ? null : mesures_.find((x) => x.m.niveau === niveau) ?? null };
+}
