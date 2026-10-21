@@ -128,8 +128,8 @@ export const api = {
   act: (id: number, body: { action: string; note?: string; motif?: string; author?: string }) =>
     post<{ id: number; status: string }>(`/alerts/${id}/actions`, body),
   /** Alertes d'une plage ; l'ancienne API ignore la plage et renvoie tout (filtré ensuite par l'interface) */
-  alertsRange: (start: string, end: string, region: string | null) =>
-    get<FC>(`/alerts?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
+  alertsRange: (start: string, end: string, region: string | null, aLInstant?: string | null) =>
+    get<FC>(`/alerts?start=${enc(start)}&end=${enc(end)}${rg(region)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
   timeline: (start: string, end: string, bins: number, region: string | null) =>
     get<Timeline>(`/timeline?start=${enc(start)}&end=${enc(end)}&bins=${bins}${rg(region)}`),
   traffic: (at: string, region: string | null) => get<any>(`/traffic?at=${enc(at)}${rg(region)}`),
@@ -185,8 +185,8 @@ export const api = {
     post<{ id: number; regroupee: boolean; etat: string }>("/demandes", body),
   annulerDemande: (id: number) => post<Props>(`/demandes/${id}/annuler`, {}),
   /** Panneau « Observations » : demandes de la plage et de la région, compteur des actives */
-  observations: (start: string, end: string, region: string | null) =>
-    get<{ actives: number; demandes: Props[] }>(`/observations?start=${enc(start)}&end=${enc(end)}${rg(region)}`),
+  observations: (start: string, end: string, region: string | null, aLInstant?: string | null) =>
+    get<{ actives: number; demandes: Props[] }>(`/observations?start=${enc(start)}&end=${enc(end)}${rg(region)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
   /** Panneau de contrôle (lot P) : session d'opérateur, état, journal, et écritures (connexion exigée) */
   controle: {
     session: () => get<{ operateur: string | null; configure: boolean }>("/controle/session"),
@@ -209,6 +209,11 @@ export const api = {
       infrastructure_id?: number; tampon_m?: number }) => ecrire<{ id: number }>("/controle/zones", body),
     retirerZone: (id: number, motif: string) => ecrire<Props>(`/controle/zones/${id}/retirer`, { motif }),
     suivis: (actif: boolean, motif: string) => ecrire<Props>("/controle/suivis", { actif, motif }),
+    demo: () => get<{ masquage: boolean }>("/controle/demo"),
+    masquage: (masquage: boolean) => ecrire<{ masquage: boolean }>("/controle/demo", { masquage }),
+    scenarios: () => get<Props[]>("/controle/scenarios"),
+    enregistrerScenario: (nom: string, adresse: string) => ecrire<{ id: number }>("/controle/scenarios", { nom, adresse }),
+    retirerScenario: (id: number) => ecrire<Props>(`/controle/scenarios/${id}/retirer`, {}),
     mode: (regle: string, body: { mode: string; sous_type?: string | null; motif: string }) =>
       ecrire<Props>(`/controle/regles/${regle}`, body),
     basculer: (source: string, body: { en_pause: boolean; motif?: string; jusqu_a?: string | null }) =>

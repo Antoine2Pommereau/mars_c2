@@ -12,5 +12,5 @@ ARG MARS_VERSION=dev
 ENV MARS_VERSION=$MARS_VERSION
 LABEL org.opencontainers.image.revision=$MARS_VERSION
 COPY mars ./mars
-COPY backend/app.py backend/contenu.py backend/regions.py backend/satellites.py backend/travailleurs.py backend/preuves.py backend/sentinel.py backend/demandes.py backend/controle.py ./
+COPY backend/app.py backend/contenu.py backend/regions.py backend/satellites.py backend/travailleurs.py backend/preuves.py backend/sentinel.py backend/demandes.py backend/controle.py backend/demo.py ./
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

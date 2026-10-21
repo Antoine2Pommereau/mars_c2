@@ -58,7 +58,8 @@ ACTIVES = "d.etat IN ('en_attente', 'planifiee')"
 
 @router.get("/api/observations")
 async def observations(request: Request, start: datetime | None = None, end: datetime | None = None,
-                       region: str | None = None, etat: str | None = None, limit: int = 300):
+                       region: str | None = None, etat: str | None = None, limit: int = 300,
+                       a_l_instant: datetime | None = None):
     """Demandes d'observation pour le panneau du rail : navire (pavillon, nom), alerte d'origine et son type, passage,
     résultat, position prédite et cercle d'incertitude. Les demandes actives sont toujours listées ; les closes,
     seulement si elles ont vécu sur la plage. Région : position prédite, sinon dernière position connue. Ordre : voir
@@ -85,7 +86,17 @@ async def observations(request: Request, start: datetime | None = None, end: dat
         actives = await c.fetchval(f"SELECT count(*) FROM demandes_observation d WHERE {ACTIVES} AND {dans_region(geo, 1)}",
                                    ewkt)
     traces.attributs(**{"observations.lignes": len(rows), "observations.actives": actives, "observations.region": region})
-    return {"actives": actives, "demandes": [_row(r) for r in rows]}
+    demandes = [_row(r) for r in rows]
+    if a_l_instant is not None:
+        # Rejeu de démonstration (lot P), lecture seule : demandes déjà créées à l'instant ; une demande close après lui
+        # y était encore active (planifiée si un passage lui était retenu), sans résultat
+        t = a_l_instant if a_l_instant.tzinfo else a_l_instant.replace(tzinfo=timezone.utc)
+        avant = lambda v: v is not None and datetime.fromisoformat(v) <= t      # noqa: E731
+        demandes = [d if avant(d["fini_le"]) else
+                    {**d, "etat": "planifiee" if d["heure_passage"] else "en_attente", "resultat": None, "fini_le": None}
+                    for d in demandes if avant(d["cree_le"])]
+        actives = sum(1 for d in demandes if d["etat"] in ("en_attente", "planifiee"))
+    return {"actives": actives, "demandes": demandes}
 
 
 @router.get("/api/demandes/{did}")

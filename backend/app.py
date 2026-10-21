@@ -26,6 +26,7 @@ from travailleurs import router as travailleurs_router, viirs_status
 from sentinel import router as sentinel_router, sentinel_status
 from demandes import demandes_status, router as demandes_router
 from controle import router as controle_router
+import demo
 from mars import traces
 from mars.config import load_rules
 from mars.frise import timeline
@@ -76,6 +77,27 @@ async def lifespan(app):
 
 
 app = FastAPI(title="MARS C2", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def demonstration(request: Request, call_next):
+    """Mode démonstration (lot P, backend/demo.py) : réponses JSON de l'API masquées (noms, MMSI, OMI, photos) quand le
+    cookie de session mars_demo est présent ; photos et traces GPX refusées."""
+    graine = demo.graine_valide(request.cookies.get(demo.COOKIE))
+    if graine is None or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    if request.url.path.endswith(("/photo", "/track.gpx")):
+        return Response(status_code=404, content="Masqué en démonstration")
+    response = await call_next(request)
+    if not (response.headers.get("content-type") or "").startswith("application/json"):
+        return response
+    corps = b"".join([part async for part in response.body_iterator])
+    try:
+        corps = demo.masquer_json(graine, corps)
+    except ValueError:
+        pass                                         # corps non JSON malgré l'en tête : rendu tel quel
+    headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+    return Response(content=corps, status_code=response.status_code, headers=headers, media_type="application/json")
 if FastAPIInstrumentor is not None:
     FastAPIInstrumentor.instrument_app(app, excluded_urls=traces.API_NON_TRACEES)
 app.include_router(contenu_router)      # recherche, fiches, notes, navires suivis, photo (backend/contenu.py)
@@ -377,6 +399,7 @@ async def stream(request: Request, direct: bool = False, region: str | None = No
     réelle, quel que soit l'état de l'horloge partagée (l'instant des autres modes est tenu par l'interface)."""
     async with app.state.pool.acquire() as c:
         reg = await region_ewkt(c, region)
+    graine = demo.graine_valide(request.cookies.get(demo.COOKIE))     # mode démonstration : flux masqué aussi
 
     async def events():
         last_ingest, last_sent = None, 0.0
@@ -393,6 +416,8 @@ async def stream(request: Request, direct: bool = False, region: str | None = No
                 if not direct or ingest != last_ingest or loop.time() - last_sent >= STREAM_TRAFFIC_MAX_S:
                     payload["navires"] = await read_traffic(c, clock["now"], reg)
                     last_ingest, last_sent = ingest, loop.time()
+            if graine:
+                payload = demo.Masque(graine).masquer(json.loads(json.dumps(payload, default=str)))
             yield f"event: traffic\ndata: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1)
 
@@ -963,12 +988,19 @@ async def detections(analysis_id: int):
 
 @app.get("/api/alerts")
 async def alerts(analysis_id: int | None = None, start: datetime | None = None, end: datetime | None = None,
-                 limit: int = 2000, region: str | None = None):
+                 limit: int = 2000, region: str | None = None, a_l_instant: datetime | None = None):
     """Alertes d'une analyse radar, ou d'une plage de temps [start, end] : instant de l'alerte dans la plage, ou, pour
     un navire des listes, passage qui chevauche la plage. `vessel_ids` : navires preuves de l'alerte (regroupement
-    du fil d'alertes, navires en alerte sur la carte)."""
+    du fil d'alertes, navires en alerte sur la carte). `a_l_instant` (rejeu de démonstration, lot P) : seulement les
+    alertes déjà levées à cet instant, avec leur statut d'alors (décisions des opérateurs antérieures) ; lecture seule."""
     q = """
-    SELECT al.id, al.type, al.severity, al.status, al.event_time, al.detected_at, al.details, al.rule_version,
+    SELECT al.id, al.type, al.severity,
+           CASE WHEN $6::timestamptz IS NULL THEN al.status ELSE coalesce((
+               SELECT CASE x.action WHEN 'acquitter' THEN 'acquittee' WHEN 'confirmer' THEN 'confirmee'
+                                    WHEN 'classer' THEN 'classee' ELSE 'nouvelle' END
+               FROM alert_actions x WHERE x.alert_id = al.id AND x.at <= $6::timestamptz AND x.action <> 'commenter'
+               ORDER BY x.at DESC LIMIT 1), 'nouvelle') END AS status,
+           al.event_time, al.detected_at, al.details, al.rule_version,
            al.controle_empreinte, ST_AsGeoJSON(al.geom, 5)::json AS geometry,
            coalesce((SELECT array_agg(e.evidence_id) FROM alert_evidence e
                      WHERE e.alert_id = al.id AND e.evidence_type = 'vessel'), '{}') AS vessel_ids
@@ -980,10 +1012,11 @@ async def alerts(analysis_id: int | None = None, start: datetime | None = None, 
             al.event_time >= $2::timestamptz
             OR (al.type = 'WATCHLIST' AND (al.details->>'fin')::timestamptz >= $2::timestamptz)))
       AND """ + dans_region("al.geom::geometry", 5) + """
+      AND ($6::timestamptz IS NULL OR al.detected_at <= $6::timestamptz)
     ORDER BY al.event_time DESC
     LIMIT $4::int
     """
     async with app.state.pool.acquire() as c:
         rows = await c.fetch(q, analysis_id, start, end or (start and datetime.now(start.tzinfo)), limit,
-                             await region_ewkt(c, region))
+                             await region_ewkt(c, region), a_l_instant)
     return collection([feature(r["geometry"], clean(r)) for r in rows])

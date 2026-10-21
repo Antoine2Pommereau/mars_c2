@@ -537,6 +537,80 @@ async def suivis_prioritaires(request: Request, x: Suivis, op: str = Depends(exi
     return {"suivis_prioritaires": x.actif}
 
 
+# Démonstration (phase F) : masquage des navires (cookie de session) et scénarios enregistrés
+
+@router.get("/api/controle/demo")
+async def demo_etat(request: Request):
+    import demo
+    return {"masquage": demo.graine_valide(request.cookies.get(demo.COOKIE)) is not None}
+
+
+class Demo(BaseModel):
+    masquage: bool
+
+
+@router.post("/api/controle/demo")
+async def demo_basculer(request: Request, response: Response, x: Demo):
+    """Masquage pour une démonstration publique, propre à ce navigateur : graine aléatoire dans un cookie de session
+    (effacé à la fermeture). Sans connexion requise : il ne fait que cacher ; journalisé avec l'opérateur s'il y en a un."""
+    import demo
+    _meme_origine(request)
+    if x.masquage:
+        response.set_cookie(demo.COOKIE, demo.nouvelle_graine(), httponly=True, samesite="strict",
+                            secure=_https(request), path="/api")
+    else:
+        response.delete_cookie(demo.COOKIE, path="/api")
+    async with request.app.state.pool.acquire() as c:
+        await journaliser(c, await operateur_connecte(request) or "visiteur", "demonstration", "masquage", None,
+                          {"masquage": x.masquage})
+    return {"masquage": x.masquage}
+
+
+@router.get("/api/controle/scenarios")
+async def scenarios(request: Request):
+    async with request.app.state.pool.acquire() as c:
+        rows = await c.fetch("SELECT id, nom, adresse, debut, fin, region, selection, cree_le, cree_par "
+                             "FROM scenarios_demo WHERE retire_le IS NULL ORDER BY cree_le DESC")
+    return [dict(r) for r in rows]
+
+
+class Scenario(BaseModel):
+    nom: str = Field(min_length=2, max_length=80)
+    adresse: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/api/controle/scenarios")
+async def enregistrer_scenario(request: Request, x: Scenario, op: str = Depends(exiger_operateur)):
+    """Vue courante enregistrée (adresse de la page) : période, instant, région, objet sélectionné, couches."""
+    from urllib.parse import parse_qs
+    q = {k: v[0] for k, v in parse_qs(x.adresse.lstrip("?")).items()}
+    if not set(q) <= {"mode", "duree", "debut", "fin", "instant", "vitesse", "sel", "couches", "region", "zone"}:
+        raise HTTPException(422, "Adresse inattendue : paramètres de la page seulement")
+
+    def instant(k):
+        try:
+            return datetime.fromisoformat(q[k].replace("Z", "+00:00")) if k in q else None
+        except ValueError:
+            raise HTTPException(422, f"Date illisible : {k}") from None
+    async with request.app.state.pool.acquire() as c, c.transaction():
+        sid = await c.fetchval("INSERT INTO scenarios_demo (nom, adresse, debut, fin, region, selection, cree_par) "
+                               "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id", x.nom.strip(), x.adresse.lstrip("?"),
+                               instant("debut"), instant("fin"), q.get("region"), q.get("sel"), op)
+        await journaliser(c, op, "scenario", f"scenario:{sid}", None, {"nom": x.nom.strip(), "adresse": x.adresse})
+    return {"id": sid}
+
+
+@router.post("/api/controle/scenarios/{sid}/retirer")
+async def retirer_scenario(request: Request, sid: int, op: str = Depends(exiger_operateur)):
+    async with request.app.state.pool.acquire() as c, c.transaction():
+        nom = await c.fetchval("UPDATE scenarios_demo SET retire_le = now() WHERE id = $1 AND retire_le IS NULL "
+                               "RETURNING nom", sid)
+        if nom is None:
+            raise HTTPException(409, "Scénario inconnu ou déjà retiré")
+        await journaliser(c, op, "scenario_retire", f"scenario:{sid}", {"nom": nom}, None)
+    return {"id": sid, "retire": True}
+
+
 class Plafond(BaseModel):
     valeur: int
     motif: str = Field(min_length=3, max_length=300)

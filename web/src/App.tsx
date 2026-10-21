@@ -87,6 +87,15 @@ export default function App() {
   const { debut, fin, instant } = resolve(temps, now);
   const direct = temps.mode === "direct";
   const qDebut = iso(direct ? arrondi(debut) : debut), qFin = iso(direct ? arrondi(fin) : fin);
+  // Démonstration (lot P) : masquage des navires (cookie de session, côté API) et rejeu « tel qu'il était » (alertes
+  // et demandes d'observation à leur état de l'instant, à la minute ; lecture seule), propre à ce navigateur
+  const demoQ = useQuery({ queryKey: ["controle", "demo"], queryFn: api.controle.demo, staleTime: 60_000 });
+  const [rejeuFidele, setRejeuFidele] = useState(() => { try { return localStorage.getItem("mars.rejeuFidele") === "1"; } catch { return false; } });
+  const choisirRejeuFidele = (v: boolean) => {
+    setRejeuFidele(v);
+    try { localStorage.setItem("mars.rejeuFidele", v ? "1" : "0"); } catch { /* stockage indisponible */ }
+  };
+  const aLInstant = rejeuFidele && !direct ? iso(Math.floor(instant / 60_000) * 60_000) : null;
 
   // Trafic : flux temps réel en direct ; instant choisi en plage et en rejeu
   const { data: stream, traffic: streamTraffic, connected } = useStream(direct, region);
@@ -99,7 +108,7 @@ export default function App() {
     refetchInterval: direct ? 30_000 : false, placeholderData: keepPreviousData });
 
   // Alertes et frise de la plage
-  const alertsQ = useQuery({ queryKey: ["alertsRange", qDebut, qFin, region], queryFn: () => api.alertsRange(qDebut, qFin, region),
+  const alertsQ = useQuery({ queryKey: ["alertsRange", qDebut, qFin, region, aLInstant], queryFn: () => api.alertsRange(qDebut, qFin, region, aLInstant),
     refetchInterval: direct ? 30_000 : false, placeholderData: keepPreviousData });
   const timelineQ = useQuery({ queryKey: ["timeline", qDebut, qFin, region], queryFn: () => api.timeline(qDebut, qFin, 240, region),
     // Deux nouvelles tentatives : en plage, la clé ne change plus et une erreur passagère resterait affichée
@@ -218,8 +227,8 @@ export default function App() {
   }, [temps, selection, pendingSel, actives, region]);
 
   // Panneau « Observations » (tip and cue) : demandes de la plage et de la région, compteur sur l'icône du rail
-  const observationsQ = useQuery({ queryKey: ["demandes", "observations", qDebut, qFin, region],
-    queryFn: () => api.observations(qDebut, qFin, region), refetchInterval: 60_000, retry: 2 });
+  const observationsQ = useQuery({ queryKey: ["demandes", "observations", qDebut, qFin, region, aLInstant],
+    queryFn: () => api.observations(qDebut, qFin, region, aLInstant), refetchInterval: 60_000, retry: 2 });
   const [observation, setObservation] = useState<{ id: number; sel: Selection | null; geom: FC } | null>(null);
   const pickObservation = useCallback((d: Props) => {
     const c = cercle(Number(d.lon), Number(d.lat), Number(d.rayon_m ?? 3000));
@@ -404,6 +413,7 @@ export default function App() {
             {panel === "observations" && <ObservationsPanel demandes={observationsQ.data?.demandes ?? []}
               selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} />}
             {panel === "controle" && <ControlePanel trace={trace} onTrace={setTrace}
+              masquage={demoQ.data?.masquage ?? false} rejeuFidele={rejeuFidele} onRejeuFidele={choisirRejeuFidele}
               infra={selection?.kind === "infrastructure" ? { id: Number(selection.properties.id), nom: selection.properties.name ?? null } : null}
               onPickZone={(p) => setSelection({ kind: "vigilance", properties: p })} />}
             {panel === "suivis" && <SuivisPanel suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
@@ -419,6 +429,11 @@ export default function App() {
           </aside>
         )}
         <main className="relative flex-1">
+          {(demoQ.data?.masquage || aLInstant) && (
+            <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full border border-hair bg-panel/85 px-2.5 py-0.5 text-[11px] text-muted">
+              {[demoQ.data?.masquage && L.controle.demo.bandeau, aLInstant && L.controle.demo.bandeauRejeu].filter(Boolean).join(" · ")}
+            </div>
+          )}
           <Garde message={L.carte.indisponible}>
           <MapView traffic={traffic} trails={trailsQ.data ?? EMPTY} aoi={showDet ? analysis : null} detections={detQ.data ?? EMPTY}
             analysisAlerts={analysisAlertsQ.data ?? EMPTY} liveAlerts={mapAlerts} zones={zonesQ.data ?? null}

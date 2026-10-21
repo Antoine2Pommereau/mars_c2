@@ -650,7 +650,9 @@ gravité et type d'alerte, tip and cue, catégories système, heures calmes de P
 taches, à l'API et à Grafana (`notification_permise`), notification de test. Phase E (migration 36, règles 2026.10.39) :
 zones de vigilance (polygone dessiné ou tampon d'infrastructure, profils du fichier : gravité minimale, seuils
 abaissés dans la zone, priorité tip and cue et Sentinel), zone et profil inscrits dans l'alerte, couche et fiche,
-priorité aux navires suivis.
+priorité aux navires suivis. Phase F (migration 37) : rejeu tel qu'il était (alertes et demandes à leur état
+de l'instant, lecture seule), scénarios enregistrés, masquage des navires par l'API sous un cookie de session
+(pseudonymes stables, photos et GPX refusés, bandeau « démonstration »).
 
 ## 10. Tests
 
@@ -859,6 +861,12 @@ l'interface ; en développement, `MARS_API=http://localhost:8765 npm run dev` re
 * L'image `vessel-detection-sentinels` d'AI2 n'a pas les poids de son détecteur Sentinel 2 (seulement `cfg.json`) ; le
   modèle Sentinel 2 d'AI2 est celui de rslearn (`sentinel2-vessel-detection`), poids hors de l'image. Lancer avec
   `--shm-size=2g` et un dossier des poids accessible en écriture.
+* **Panneau de contrôle (lot P)** : ne plus modifier `config/rules.yaml` sur le serveur pour suspendre quoi que ce soit
+  (pause, plafond, mode d'une règle) : l'état est en base et prime, et une modification locale bloque `git pull`. Un
+  module qui décide d'un lancement ou d'une alerte lit `rules["_controle"]` des règles appliquées
+  (`controle.appliquer`), jamais `load_rules()` seul ; une nouvelle écriture d'alerte passe par `controle.decision`
+  et `controle.marquer_zone` (ou `save_alerts`, `filtrer_sync`) et porte `controle_empreinte`.
+* Un `Envois` vide (liste) est faux en Python : tester `envoi is not None`, jamais `envoi or défaut`.
 * Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
   vérifier avant une démonstration publique.
 * **Traces (étape D2)** : l'instrumentation de requests remplace l'en tête `traceparent` posé à la main par le

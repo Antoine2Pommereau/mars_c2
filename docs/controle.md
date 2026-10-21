@@ -147,3 +147,32 @@ choisi parmi ceux du fichier (`zones_vigilance.profils`). Une zone se retire ave
   de la zone : profil, motif, période, surface, alertes qui portent la zone (gravité relevée signalée), demandes
   d'observation et passages qui la couvrent (7 jours avant, 3 jours après). La sélection est gardée dans l'adresse
   (`sel=vigilance:<id>`).
+
+## Phase F : mode démonstration (migration 37, aucune règle changée)
+
+**Rejeu tel qu'il était** (bascule propre au navigateur) : en mode plage ou rejeu, l'instant de l'adresse de la page
+sert aussi de date de lecture, à la minute. Les alertes ne sont montrées que si elles étaient déjà levées
+(`detected_at`), avec leur statut d'alors (dernière décision d'opérateur antérieure ; `a_l_instant` de
+`/api/alerts`) ; les demandes d'observation, si elles étaient déjà créées, une demande close plus tard y apparaissant
+encore active (planifiée si un passage lui était retenu) et sans résultat (`a_l_instant` de `/api/observations`). Le
+trafic est déjà lu à l'instant. Rien n'est écrit : le rejeu ne fait que lire (test : la table des alertes est
+identique avant et après). Le direct n'est jamais touché.
+
+**Scénarios** (`scenarios_demo`) : la vue courante (adresse de la page : mode, période, instant, région, objet
+sélectionné, couches) s'enregistre sous un nom, par un opérateur connecté ; un clic la rouvre. Exemple : le 19/10
+autour du passage de l'analyse 97.
+
+**Masquage pour une démonstration publique** : une graine aléatoire dans un cookie de session (effacé à la fermeture
+du navigateur). L'API réécrit alors toutes ses réponses JSON et le flux en direct : noms, MMSI (pays gardé, le
+pavillon reste juste), OMI (clé de contrôle valide) et indicatifs remplacés par des pseudonymes stables pendant la
+session ; liens vers les sources retirés ; photos et traces GPX refusées. Aucune donnée réelle n'atteint le
+navigateur, ni à l'écran ni dans les réponses visibles dans ses outils de développement. Bandeau discret
+« démonstration » sur la carte. Les infrastructures, régions et zones gardent leur nom (données publiques).
+
+Limites connues :
+* un nom réel qui n'apparaît dans aucun champ structuré de la session (seulement dans un texte libre) resterait
+  lisible ; les textes des alertes nomment toujours le navire dont elles portent aussi l'objet, le cas n'a pas été vu ;
+* la recherche accepte un nom réel saisi au clavier et répond par le pseudonyme : le lien entre les deux est visible
+  de qui tape la recherche ;
+* le rejeu ne reconstitue pas une gravité relevée plus tard par tip and cue (la vérification satellite est montrée),
+  ni l'heure de calcul des détections satellites (montrées à l'heure de leur prise de vue).

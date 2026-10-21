@@ -24,8 +24,15 @@ export const L = {
   controle: {
     titre: "Contrôle", regles: (v: string) => `règles ${v}`,
     sections: { connexion: "Opérateur", capteurs: "Capteurs", depenses: "Dépenses", demande: "Demande d'observation",
-      systeme: "Système", regles: "Règles", notifications: "Notifications", zones: "Zones de vigilance",
+      systeme: "Système", regles: "Règles", notifications: "Notifications", zones: "Zones de vigilance", demo: "Démonstration",
       journal: "Journal" } as Record<string, string>,
+    demo: {
+      bandeau: "démonstration", bandeauRejeu: "rejeu tel qu'il était",
+      masquage: "Masquer noms, MMSI, OMI et photos", masquageNote: "pseudonymes stables jusqu'à la fermeture du navigateur",
+      rejeu: "Rejeu tel qu'il était", rejeuNote: "alertes et demandes à leur état de l'instant (plage et rejeu)",
+      scenarios: "Scénarios", aucun: "Aucun scénario", enregistrer: "Enregistrer la vue", nom: "Nom du scénario",
+      retirer: "Retirer",
+    },
     zones: {
       aucune: "Aucune zone active", nouvelle: "Nouvelle zone", nom: "Nom", profil: "Profil", fin: "Fin (facultative)",
       dessiner: "Dessiner sur la carte", sommets: (n: number) => `${n} sommet(s), un clic par sommet`,
@@ -71,6 +78,7 @@ export const L = {
       connexion_refusee: "connexion refusée", deconnexion: "déconnexion", malgre_pause: "malgré la pause",
       mode_regle: "mode de règle", notifications: "notifications", notification_test: "notification de test",
       zone_creee: "zone créée", zone_retiree: "zone retirée", suivis_prioritaires: "priorité des suivis",
+      demonstration: "démonstration", scenario: "scénario", scenario_retire: "scénario retiré",
     } as Record<string, string>,
   },
   // Panneau « Observations » (tip and cue, lot T1)

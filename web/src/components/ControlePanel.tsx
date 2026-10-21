@@ -506,6 +506,55 @@ function Zones({ actif, trace, onTrace, infra, onPickZone }: PanneauProps & { ac
   );
 }
 
+const M = C.demo;
+
+/** Démonstration (phase F) : masquage des navires (cookie de session, l'API réécrit ses réponses), rejeu tel qu'il
+ *  était (instant de l'adresse, lecture seule), scénarios enregistrés rouverts d'un clic */
+function Demonstration({ actif, masquage, rejeuFidele, onRejeuFidele }:
+  { actif: boolean; masquage: boolean; rejeuFidele: boolean; onRejeuFidele: (v: boolean) => void }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["controle", "scenarios"], queryFn: api.controle.scenarios });
+  const [nom, setNom] = useState("");
+  const masquer = useMutation({ mutationFn: (v: boolean) => api.controle.masquage(v),
+    onSuccess: () => window.location.reload() });           // tout est relu, flux compris, sous le nouveau masque
+  const enregistrer = useMutation({ mutationFn: () => api.controle.enregistrerScenario(nom, window.location.search),
+    onSuccess: () => { setNom(""); qc.invalidateQueries({ queryKey: ["controle"] }); } });
+  const retirer = useMutation({ mutationFn: (id: number) => api.controle.retirerScenario(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["controle"] }) });
+  return (
+    <div className="space-y-2 text-[12px]">
+      <div>
+        <Bascule on={masquage} actif={!masquer.isPending} label={M.masquage} onChange={(v) => masquer.mutate(v)} />
+        <p className="pl-5 text-[11px] text-faint">{M.masquageNote}</p>
+      </div>
+      <div>
+        <Bascule on={rejeuFidele} actif label={M.rejeu} onChange={onRejeuFidele} />
+        <p className="pl-5 text-[11px] text-faint">{M.rejeuNote}</p>
+      </div>
+      <div className="border-t border-hair/60 pt-2">
+        <p className="mb-1 text-muted">{M.scenarios}</p>
+        {!q.data?.length && <p className="text-faint">{M.aucun}</p>}
+        <ul className="space-y-0.5">
+          {(q.data ?? []).map((s) => (
+            <li key={s.id} className="flex items-center gap-2">
+              <button className="min-w-0 flex-1 truncate text-left text-ink hover:text-signal"
+                title={s.debut ? `${jourHeure(s.debut)} · ${s.region ?? ""}` : undefined}
+                onClick={() => window.location.assign(`${window.location.pathname}?${s.adresse}`)}>{s.nom}</button>
+              <button className="text-[11px] text-faint hover:text-gap disabled:opacity-40" disabled={!actif}
+                onClick={() => retirer.mutate(s.id)}>{M.retirer}</button>
+            </li>
+          ))}
+        </ul>
+        <form className="mt-1.5 flex gap-1.5" onSubmit={(e) => { e.preventDefault(); enregistrer.mutate(); }}>
+          <input className={champ} placeholder={M.nom} value={nom} onChange={(e) => setNom(e.target.value)} aria-label={M.nom} />
+          <button type="submit" className={bouton} disabled={!actif || nom.trim().length < 2 || enregistrer.isPending}>{M.enregistrer}</button>
+        </form>
+        {(enregistrer.error || masquer.error) && <p className="text-[11.5px] text-gap">{(enregistrer.error ?? masquer.error)?.message}</p>}
+      </div>
+    </div>
+  );
+}
+
 function Journal({ lignes }: { lignes: Props[] }) {
   if (!lignes.length) return <p className="text-[12px] text-muted">{C.journalVide}</p>;
   return (
@@ -526,6 +575,9 @@ interface PanneauProps {
   onTrace: (t: number[][] | null) => void;
   infra: { id: number; nom: string | null } | null;   // infrastructure sélectionnée (tampon)
   onPickZone: (z: Props) => void;
+  masquage: boolean;
+  rejeuFidele: boolean;
+  onRejeuFidele: (v: boolean) => void;
 }
 
 /** Panneau de contrôle (lot P) : lecture pour tous, écriture après connexion d'un opérateur. */
@@ -592,6 +644,9 @@ export default function ControlePanel(pp: PanneauProps) {
         )}
         <Section id="zones" titre={C.sections.zones}>
           <Zones actif={actif} {...pp} />
+        </Section>
+        <Section id="demo" titre={C.sections.demo}>
+          <Demonstration actif={actif} masquage={pp.masquage} rejeuFidele={pp.rejeuFidele} onRejeuFidele={pp.onRejeuFidele} />
         </Section>
         <Section id="notifications" titre={C.sections.notifications}>
           <Notifications actif={actif} />
