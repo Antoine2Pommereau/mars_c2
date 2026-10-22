@@ -937,6 +937,21 @@ Images qui changent : backend (route en lecture `/api/decisions/journal`) et web
 Vérifier par le tunnel : `curl -s "localhost:8000/api/decisions/journal?limite=3"` renvoie les dernières décisions des
 opérateurs ; `http://localhost:8080/?espace=coulisses&rubrique=capteurs` est redirigé vers Sources et capteurs.
 
+## Cercle appris de la vérification satellite (22/10/2026)
+
+Règles 2026.10.44 (table `tip_and_cue.prediction.cercle_appris`, par `git pull`) ; image des scripts (le conteneur
+taches planifie les demandes). Aucune migration. La commande `trajectoire-mesures` calcule maintenant la table sur toute
+l'archive (section `cercle_appris` du rapport) : ses valeurs remplaceront la table provisoire. Vérifier après un cycle
+de la vérification satellite (5 minutes) :
+
+```bash
+docker compose exec -T db psql -U mars -d mars -c "SELECT id, etat, round(rayon_m) AS rayon_m, fenetres IS NOT NULL AS fenetres,
+  left(motif, 90) AS motif FROM demandes_observation WHERE mis_a_jour_le > now() - interval '1 hour' ORDER BY id DESC LIMIT 10"
+```
+
+Ce qu'on doit lire : des rayons de 20 000 m au plus pour les demandes planifiées en estime, et plus de motif
+« incertitude de … km : N fenêtres, au delà de 4 ».
+
 ## Lot T, mesures de trajectoire (22/10/2026)
 
 Image qui change : scripts (commande `trajectoire-mesures`, modules `mars/trajectoire*.py`). Aucune migration, aucune

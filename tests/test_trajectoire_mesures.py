@@ -57,7 +57,9 @@ def test_measures_inventory_trips_and_references_read_only(tmp_path):
     r2.poser("ais/statiques/zone=bretagne/date=2026-10-06/statiques_bretagne_x.parquet",
              pd.DataFrame({"mmsi": [227000001], "ts": ["2026-10-06 00:00:01 +0000 UTC"], "ship_type": [70], "destination": ["BREST"]}))
     base = FausseBase()
-    out = TM.mesurer(base, r2, jours[0], jours[-1], ["bretagne"], 1, tmp_path / "travail", log=lambda _m: None)
+    from mars.config import load_rules
+    out = TM.mesurer(base, r2, jours[0], jours[-1], ["bretagne"], 1, tmp_path / "travail", log=lambda _m: None,
+                     regles=load_rules())
     inv = out["inventaire"]["zones"]["bretagne"]
     assert inv["journees_manquantes"] == ["2026-10-08"]
     z = out["zones"]["bretagne"]
@@ -66,6 +68,9 @@ def test_measures_inventory_trips_and_references_read_only(tmp_path):
     assert z["fin"].get("silence", 0) >= 1, "la journée manquante coupe le trajet"
     assert z["references"] and out["references"]["cargo_petrolier"][0]["fenetres"] > 0
     assert z["projection"]["jours_pour_le_volume_de_l_article"] > 0
+    c = out["cercle_appris"]
+    assert len(c["table"]["rayons_m"]) == 4 and len(c["table"]["rayons_m"][0]) == 6 and c["fenetres_test"] > 0
+    assert {"actuel", "appris", "appris_plafonne"} <= set(c["gain"][0])
     assert all(s.lstrip().upper().startswith("SELECT") for s in base.requetes), "lecture seule"
     assert not list((tmp_path / "travail").iterdir()), "chaque objet lu est effacé du dossier de travail"
     assert z["positions_reduites"] == 3 * 24 * 6, "une position par tranche de 10 minutes"

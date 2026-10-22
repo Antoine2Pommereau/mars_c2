@@ -711,6 +711,14 @@ sur 340 navires lus en GET : cargos et pétroliers, routes fréquentes à 1,1, 3
 3 h ; cercle actuel de la vérification satellite à 52 % de couverture à 3 h ; 13 des 20 demandes de vérification
 satellite sans passage parce que le passage tombait 13 à 31 h après la dernière position.
 
+**Cercle appris (22/10/2026)** (règles 2026.10.44, `docs/trajectoire.md` section 11) : le cercle de la vérification
+satellite n'est plus 2 km plus 30 % du parcours (gardé en repli) mais le rayon qui a contenu 80 % des positions
+réelles autour de l'estime, par tranche de vitesse et par horizon (`tip_and_cue.rayon_appris`), plafonné au rayon que
+couvrent les 4 fenêtres permises (20 km, `fenetres_demande`). Pré mesure du 17 au 22/10 : navire trouvé 78, 74, 63, 40,
+29 et 22 % du temps à 1 à 6 h, contre 63, 44, 19, 9, 4 et 2 %. Table provisoire, à remplacer par la mesure complète.
+Données externes retenues (DMA, GeoTrackNet Bretagne, École navale) : usage personnel et non commercial, aucune
+redistribution, ni des données ni d'un jeu dérivé ni des poids (section 10).
+
 ## 10. Tests
 
 `python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :

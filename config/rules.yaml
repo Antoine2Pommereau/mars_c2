@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.43"
+version: "2026.10.44"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -360,6 +360,25 @@ tip_and_cue:
   fenetres_max_par_demande: 4   # au delà (incertitude trop grande au passage), demande « sans_passage »
   # Centre à moins de sentinel.point_cote_min_km (2 km) de la côte : « sans_passage », invisible au radar
   prediction:                   # estime à partir du dernier cap et de la dernière vitesse AIS
+    # Cercle appris (2026.10.44, docs/trajectoire.md) : rayon qui a contenu 80 % des positions réelles autour de
+    # l'estime, par tranche de vitesse déclarée (bornes basses) et par horizon, interpolé entre les horizons ; il
+    # remplace 2 km plus 30 % du parcours (gardés plus bas, en repli si la table manque). Plafonné au rayon que
+    # couvrent les fenêtres permises (20 km pour 4) : au delà, la demande garde ses 4 fenêtres au lieu d'être
+    # abandonnée. Valeurs provisoires du 22/10/2026 (échantillon de 340 navires lus sur le serveur, hors pêche,
+    # 2 875 fenêtres d'apprentissage avant le 17/10) ; à remplacer par la mesure complète (taches.py
+    # trajectoire-mesures, section cercle_appris). Gain mesuré du 17 au 22/10 (868 fenêtres) : navire trouvé dans
+    # les fenêtres 78, 74, 63, 40, 29 et 22 % du temps à 1 à 6 h, contre 63, 44, 19, 9, 4 et 2 % avec l'ancien cercle.
+    cercle_appris:
+      contenance: 0.8
+      plafonner: true
+      vitesses_kn: [1, 5, 10, 15]
+      horizons_h: [1, 2, 3, 4, 5, 6]
+      rayon_min_m: 1000
+      rayons_m:
+        - [7900, 15900, 23600, 31100, 38600, 46000]       # 1 à 5 nœuds
+        - [5300, 15600, 27800, 40500, 54300, 65300]       # 5 à 10 nœuds
+        - [4200, 12400, 23600, 37100, 52700, 66600]       # 10 à 15 nœuds
+        - [9600, 26900, 50600, 76300, 99700, 127600]      # 15 nœuds et plus
     rayon_depart_m: 2000        # incertitude de départ
     part_vitesse_par_h: 0.3     # le rayon croît de 30 % de la distance parcourue à la vitesse déclarée
     rayon_max_m: 30000

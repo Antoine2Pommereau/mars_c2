@@ -1194,7 +1194,7 @@ def _trajectoire_mesures(conn, a):
     au = a.au or (datetime.now(timezone.utc).date() - timedelta(days=1))
     zones = [z for z in (a.args or list(ZONES)) if z in ZONES]
     travail = LIVE / ".trajectoire"
-    out = TM.mesurer(conn, r2(), du, au, zones, a.test_jours, travail, log=log)
+    out = TM.mesurer(conn, r2(), du, au, zones, a.test_jours, travail, log=log, regles=load_rules())
     sortie = travail / f"trajectoire_mesures_{du}_{au}.json"
     sortie.write_text(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     log(f"Mesures écrites dans {sortie} ({sortie.stat().st_size} octets), {out['duree_s']} s, "

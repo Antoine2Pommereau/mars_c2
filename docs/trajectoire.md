@@ -223,7 +223,7 @@ Sentinel (8 € par mois) ou dans un budget à part, à décider.
    le seul jeton du serveur ; le Mac ou le travailleur GPU le lit par une adresse présignée signée par le serveur.
 3. Coût R2 : négligeable (0,5 Go par an dans les 10 Go gratuits, aucune sortie facturée).
 4. Les données externes (DMA, GeoTrackNet) sont téléchargées et préparées sur le Mac (trois mois de DMA 2025 : environ
-   45 Go à télécharger, quelques Go une fois réduits).
+   54 Go à télécharger, mesuré le 22/10/2026, quelques Go une fois réduits).
 
 **Inférence**, selon les usages (modèle exporté en ONNX : pas de torch dans l'image des scripts, environ 250 Mo de
 mémoire pour 58 millions de paramètres) :
@@ -259,7 +259,7 @@ mémoire pour 58 millions de paramètres) :
 3. **Types de navires** : l'article se limite aux cargos et pétroliers ; inclut on la pêche et les autres types (navires
    des listes de toute nature), au prix d'erreurs plus grandes ?
 4. **Où entraîner** : GPU du Mac pour les essais, L4 pour les entraînements complets ? Budget à part du budget Sentinel ?
-5. **Données externes** : d'accord pour télécharger trois mois de DMA (environ 45 Go sur le Mac) et utiliser le jeu
+5. **Données externes** : d'accord pour télécharger trois mois de DMA (environ 54 Go sur le Mac, mesuré le 22/10/2026) et utiliser le jeu
    GeoTrackNet Bretagne ? Écarte t on le jeu de l'École navale (clause non commerciale) ?
 6. **Seau des modèles** : son jeton peut il écrire (dépôt des Parquet d'entraînement depuis le serveur) ?
 7. **Mesure complète** : la lancer maintenant sur le serveur (blocs ci dessous) pour remplacer la pré mesure ?
@@ -277,3 +277,71 @@ Mémoire mesurée sur une archive synthétique à l'échelle de la Manche (16 jo
 navires) : 431 Mo au plus, 34 s. Le pic passait de 1 220 Mo à 431 Mo en corrigeant trois points : préparation par
 groupes de navires, une position par tranche de 10 minutes, allocateur du système au lieu de celui d'Arrow. À lancer
 dans un conteneur à part (`docker compose run --rm`), jamais dans celui de la boucle des tâches.
+
+## 9. Décisions d'Antoine (22/10/2026)
+
+1. **TrAISformer vise 1 à 3 h**, pour le score d'anomalie (b) et l'anticipation (c). La vérification satellite
+   (12 à 30 h) n'utilise pas de modèle profond : routes fréquentes en plusieurs hypothèses (2 ou 3 destinations
+   probables), une fenêtre par hypothèse, 4 fenêtres au plus par demande ; gain à mesurer sur les 20 demandes du
+   serveur.
+2. **Cercle appris tout de suite** (section 11), versionné dans les règles, gain mesuré sur la période tenue à l'écart.
+3. **Cargos et pétroliers** seulement pour commencer (TrAISformer).
+4. **Entraînement** : GPU du Mac pour les essais, L4 pour les entraînements complets ; budget d'entraînement à part de
+   5 € par mois, visible dans la rubrique Budget, soumis à un interrupteur « Entraînement » dans Sources et capteurs
+   (à construire avec l'étape TrAISformer).
+5. **Données externes** : DMA, GeoTrackNet Bretagne et École navale retenus, pour un usage personnel et non commercial
+   assumé (section 10).
+6. **Seau `mars-c2-modeles`** : son jeton lit et écrit (limité à ce seau) ; Parquet d'entraînement sous le préfixe
+   `entrainement/`, à part des poids.
+7. **Ordre de la phase 2** : cercle appris, routes fréquentes en plusieurs hypothèses, puis TrAISformer sur la Manche
+   quand le volume sera atteint.
+
+## 10. Données externes : conditions, attribution, non redistribution
+
+**Règle** : ni ces données ni un jeu qui en dérive (trajets préparés, Parquet d'entraînement, extraits) ne sont
+redistribués. Ils ne vont ni dans le dépôt Git, ni dans une image publiée, ni dans un seau public ; ils restent sur le
+Mac et dans le seau privé `mars-c2-modeles`. Les poids entraînés sur ces données suivent la même règle. Usage
+personnel et non commercial, assumé par Antoine (décision du 22/10/2026).
+
+| Jeu | Source | Période retenue | Licence ou conditions trouvées | Attribution à citer | Usage |
+|---|---|---|---|---|---|
+| **DMA** | Danish Maritime Authority (Søfartsstyrelsen), seau public `aisdata.ais.dk` | trois mois, du 01/10/2025 au 31/12/2025 (même saison que notre archive) : **53,6 Go** à télécharger (92 fichiers quotidiens, vérifié le 22/10/2026 ; et non 45 Go comme estimé en phase 1) | **aucune licence écrite** sur le seau ni dans son fichier d'information ; la page de l'autorité présente les données historiques comme gratuites et téléchargeables, l'accès aux données reposant sur la loi danoise sur la réutilisation des informations du secteur public (loi n° 596 du 24/06/2005) | « Données AIS historiques : Danish Maritime Authority (Søfartsstyrelsen), aisdata.ais.dk » | pré entraînement |
+| **GeoTrackNet, Bretagne** | dépôt `CIA-Oceanix/GeoTrackNet`, fichier `ct_2017010203_10_20.zip` | 01/01/2017 au 31/03/2017 (cargos et pétroliers, récepteur d'Ouessant) | code sous licence MIT ou CeCILL C ; **aucune licence écrite pour les données**, fournies par CLS et Erwan Guegueniat (jeu complet sur demande à CLS) | « Données AIS de Bretagne : CLS (Collecte Localisation Satellites) et E. Guegueniat, via D. Nguyen et al., GeoTrackNet (IEEE T ITS, arXiv 1912.00682) » | affinage et évaluation, zone Bretagne |
+| **École navale** | Zenodo, enregistrement 1167595 (« AIS Data.zip ») | 01/10/2015 au 31/03/2016 (Brest, tous types) | **CC BY NC SA 4.0** : attribution, pas d'usage commercial, partage dans les mêmes conditions | « C. Ray, R. Dréo, E. Camossi, A. L. Jousselme, Heterogeneous Integrated Dataset for Maritime Intelligence, Surveillance, and Reconnaissance, Zenodo, 2018, doi:10.5281/zenodo.1167595 » | affinage et évaluation, zone Bretagne ; seconde période indépendante (2015 et 2016) pour mesurer la robustesse dans le temps |
+
+L'article de TrAISformer est cité ainsi : « D. Nguyen, R. Fablet, TrAISformer, a generative transformer for AIS
+trajectory prediction, arXiv 2109.03958 » ; son code est sous licence CeCILL C.
+
+## 11. Cercle appris (phase 2, étape 1)
+
+**Méthode** (`mars/trajectoire.py`, `table_cercle` et `gain_cercle`). Pour chaque fenêtre, l'estime part du dernier
+point avec la vitesse et la route déclarées. On mesure son erreur à 1 à 6 h (l'estime est bornée à 6 h). Le rayon est
+celui qui contient 80 % des positions réelles des fenêtres d'apprentissage. Il est calculé par tranche de vitesse
+déclarée (1 à 5, 5 à 10, 10 à 15, 15 nœuds et plus) et par horizon, et interpolé entre les horizons
+(`tip_and_cue.rayon_appris`). Sous 1 nœud, le cercle « arrêt » ne change pas. La pêche est exclue, comme dans la
+vérification satellite.
+
+**Contrainte des fenêtres** : un cercle de plus de 20 km de rayon demande plus de 4 fenêtres satellites, et la demande
+était alors abandonnée (« sans passage »). Le cercle à 80 % dépasse 20 km dès 3 h. Tel quel, il aurait fait tomber à
+zéro le taux de navires trouvés au delà de 2 h. D'où le **plafond** (`plafonner: true`) : un cercle trop grand est
+ramené au rayon que couvrent les 4 fenêtres. La demande garde ses fenêtres, avec une contenance plus faible (le rayon
+appris reste noté). Le coût ne change pas : une analyse revient à 0,19 € de 1 à 4 fenêtres (une session processeur).
+
+**Gain**, pré mesure (échantillon de 340 navires, hors pêche, 1 nœud et plus ; apprentissage avant le 17/10, 2 875
+fenêtres ; mesure du 17 au 22/10, 868 fenêtres). « Trouvé » : le navire est dans le cercle et la demande tient dans
+les 4 fenêtres.
+
+| Horizon | Trouvé, ancien cercle | Trouvé, appris sans plafond | Trouvé, appris plafonné | Rayon moyen, ancien | Rayon moyen, plafonné |
+|---|---|---|---|---|---|
+| 1 h | 63 % | 78 % | 78 % | 6,2 km | 6,5 km |
+| 2 h | 44 % | 68 % | 74 % | 10,4 km | 15,4 km |
+| 3 h | 19 % | 0 % | 63 % | 14,5 km | 20 km |
+| 4 h | 9 % | 0 % | 40 % | 17,7 km | 20 km |
+| 5 h | 4 % | 0 % | 29 % | 19,9 km | 20 km |
+| 6 h | 2 % | 0 % | 22 % | 21,4 km | 20 km |
+
+L'ancien cercle échouait de deux façons : trop petit pour contenir le navire (contenance de 37 % à 3 h), ou trop grand
+pour les fenêtres chez les navires rapides (30 % des demandes infaisables à 3 h).
+
+La table des règles 2026.10.44 est **provisoire** (échantillon). La commande `trajectoire-mesures` calcule désormais
+la même table sur toute l'archive (section `cercle_appris` du rapport JSON) : elle remplacera ces valeurs.

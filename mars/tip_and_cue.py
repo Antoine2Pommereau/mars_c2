@@ -61,6 +61,45 @@ def destination(lon: float, lat: float, cap_deg: float, dist_m: float) -> tuple[
     return (math.degrees(l2) + 540) % 360 - 180, math.degrees(p2)
 
 
+def rayon_appris(c: dict, sog: float, h: float) -> float:
+    """Cercle appris (règles 2026.10.44, docs/trajectoire.md) : rayon qui a contenu `contenance` des positions réelles
+    sur la période d'apprentissage, par tranche de vitesse déclarée (bornes basses `vitesses_kn`) et par horizon
+    (`horizons_h`), interpolé linéairement entre les horizons mesurés, de `rayon_min_m` à 0 h ; au delà du dernier
+    horizon, le dernier rayon (l'estime est de toute façon bornée par estime_max_h)."""
+    vit = c["vitesses_kn"]
+    i = max([k for k, v in enumerate(vit) if sog >= v] or [0])
+    hs, rs = [0.0, *map(float, c["horizons_h"])], [float(c["rayon_min_m"]), *map(float, c["rayons_m"][i])]
+    h = abs(h)
+    if h >= hs[-1]:
+        return rs[-1]
+    j = next(k for k in range(1, len(hs)) if h <= hs[k])
+    return rs[j - 1] + (rs[j] - rs[j - 1]) * (h - hs[j - 1]) / (hs[j] - hs[j - 1])
+
+
+def rayon_couvrable(s: dict, fenetres_max: int) -> float:
+    """Plus grand rayon que fenetres_max fenêtres satellites couvrent (centres_fenetres) : au delà, la demande serait
+    « sans passage ». Avec 4 fenêtres de 24 km (cœur de 10 km), 20 km."""
+    bas, haut = 0.0, 200_000.0
+    for _ in range(40):
+        m = (bas + haut) / 2
+        bas, haut = (m, haut) if len(centres_fenetres(0.0, 48.0, m, s)) <= fenetres_max else (bas, m)
+    return bas
+
+
+def fenetres_demande(pr: dict, s: dict, tc: dict) -> list[list[float]]:
+    """Fenêtres satellites d'une prédiction. Cercle appris plafonné (règles 2026.10.44) : un cercle d'estime trop grand
+    pour les fenêtres permises est ramené au rayon qu'elles couvrent (20 km avec 4 fenêtres) plutôt que d'abandonner le
+    passage ; le rayon appris reste noté (`rayon_appris_m`). Mesuré sur la période tenue à l'écart : le navire est
+    trouvé bien plus souvent ainsi (docs/trajectoire.md)."""
+    centres = centres_fenetres(pr["lon"], pr["lat"], pr["rayon_m"], s)
+    c = tc["prediction"].get("cercle_appris") or {}
+    if len(centres) > tc["fenetres_max_par_demande"] and c.get("plafonner") and pr.get("mode") == "estime":
+        r = rayon_couvrable(s, tc["fenetres_max_par_demande"])
+        pr["rayon_appris_m"], pr["rayon_m"] = pr["rayon_m"], r
+        centres = centres_fenetres(pr["lon"], pr["lat"], r, s)
+    return centres
+
+
 def predire(lon: float, lat: float, t_pos: datetime, sog: float | None, cog: float | None, t: datetime, p: dict,
             navire: bool = True, a_l_arret: bool = False) -> dict:
     """Position prédite à l'instant t et cercle d'incertitude. Navire en route : estime (dernier cap, dernière vitesse),
@@ -73,7 +112,10 @@ def predire(lon: float, lat: float, t_pos: datetime, sog: float | None, cog: flo
     dt_h = (t - t_pos).total_seconds() / 3600
     parcours = sog * 1852.0 * abs(dt_h)
     plon, plat = destination(lon, lat, cog if dt_h >= 0 else (cog + 180) % 360, parcours)
-    rayon = min(p["rayon_depart_m"] + p["part_vitesse_par_h"] * parcours, p["rayon_max_m"])
+    if p.get("cercle_appris"):
+        rayon = rayon_appris(p["cercle_appris"], sog, dt_h)
+    else:                                       # cercle d'avant la règle 2026.10.44 : 2 km plus 30 % du parcours
+        rayon = min(p["rayon_depart_m"] + p["part_vitesse_par_h"] * parcours, p["rayon_max_m"])
     return {"lon": plon, "lat": plat, "rayon_m": float(rayon), "mode": "estime"}
 
 
@@ -431,7 +473,7 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
             motif = (f"position prédite à {c:.0f} m de la côte au passage du {t:%d/%m %H:%M} : à quai ou trop près de "
                      "la côte, invisible au radar")
             continue
-        centres = centres_fenetres(pr["lon"], pr["lat"], pr["rayon_m"], s)
+        centres = fenetres_demande(pr, s, tc)
         if len(centres) > tc["fenetres_max_par_demande"]:
             motif = (f"incertitude de {pr['rayon_m'] / 1000:.0f} km au passage du {t:%d/%m %H:%M} : {len(centres)} "
                      f"fenêtres, au delà de {tc['fenetres_max_par_demande']}")
@@ -790,7 +832,7 @@ def rejeu(tips: list[dict], passages: list[dict], rules: dict, cote, suivi=None)
             if c is not None:
                 motif = "cote"
                 continue
-            centres = centres_fenetres(pr["lon"], pr["lat"], pr["rayon_m"], s)
+            centres = fenetres_demande(pr, s, tc)
             if len(centres) > tc["fenetres_max_par_demande"]:
                 motif = "incertitude"
                 continue

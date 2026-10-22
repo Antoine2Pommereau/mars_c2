@@ -40,13 +40,44 @@ def test_versioned_settings_of_the_activation():
 # Calculs purs
 
 def test_dead_reckoning_and_growing_circle():
-    pr = tc.predire(*LARGE, NOW, 10.0, 90.0, NOW + timedelta(hours=3), P)
+    """Ancien cercle (2 km plus 30 % du parcours, borné), gardé en repli quand la table du cercle appris manque."""
+    ancien = {k: v for k, v in P.items() if k != "cercle_appris"}
+    pr = tc.predire(*LARGE, NOW, 10.0, 90.0, NOW + timedelta(hours=3), ancien)
     assert pr["mode"] == "estime"
     assert tc.distance_m(*LARGE, pr["lon"], pr["lat"]) == pytest.approx(3 * 10 * 1852, rel=1e-3)
     assert pr["lon"] > LARGE[0] and pr["lat"] == pytest.approx(LARGE[1], abs=0.01)          # plein est
     assert pr["rayon_m"] == pytest.approx(P["rayon_depart_m"] + P["part_vitesse_par_h"] * 3 * 10 * 1852)
-    loin = tc.predire(*LARGE, NOW, 15.0, 0.0, NOW + timedelta(hours=30), P)
+    loin = tc.predire(*LARGE, NOW, 15.0, 0.0, NOW + timedelta(hours=30), ancien)
     assert loin["rayon_m"] == P["rayon_max_m"]                                             # borné
+
+
+def test_learned_circle_by_speed_band_and_horizon():
+    """Cercle appris (règles 2026.10.44) : rayon de la tranche de vitesse, interpolé entre les horizons mesurés."""
+    c = {"vitesses_kn": [1, 5, 10, 15], "horizons_h": [1, 2, 3], "rayon_min_m": 1000,
+         "rayons_m": [[3000, 6000, 9000], [4000, 8000, 12000], [5000, 10000, 15000], [6000, 12000, 18000]]}
+    assert tc.rayon_appris(c, 12.0, 3) == 15000
+    assert tc.rayon_appris(c, 12.0, 2.5) == pytest.approx(12500)
+    assert tc.rayon_appris(c, 12.0, 0.5) == pytest.approx(3000), "de 1 km à 0 h vers le rayon de la première heure"
+    assert tc.rayon_appris(c, 20.0, 10) == 18000, "au delà du dernier horizon : le dernier rayon"
+    assert tc.rayon_appris(c, 0.5, 1) == 3000, "sous la première borne : première tranche"
+    pr = tc.predire(*LARGE, NOW, 10.0, 90.0, NOW + timedelta(hours=3), P)
+    assert pr["rayon_m"] == pytest.approx(tc.rayon_appris(P["cercle_appris"], 10.0, 3.0))
+
+
+def test_learned_circle_is_capped_to_the_allowed_windows():
+    """Un cercle appris trop grand pour 4 fenêtres est ramené au rayon qu'elles couvrent, au lieu d'abandonner."""
+    tcr = RULES["tip_and_cue"]
+    assert tc.rayon_couvrable(S, tcr["fenetres_max_par_demande"]) == pytest.approx(20000, abs=10)
+    pr = tc.predire(*LARGE, NOW, 15.0, 90.0, NOW + timedelta(hours=3), P)
+    assert pr["rayon_m"] > 40000
+    centres = tc.fenetres_demande(pr, S, tcr)
+    assert len(centres) <= tcr["fenetres_max_par_demande"]
+    assert pr["rayon_m"] == pytest.approx(20000, abs=10) and pr["rayon_appris_m"] > 40000
+    arret = {"lon": LARGE[0], "lat": LARGE[1], "rayon_m": 60000.0, "mode": "arret"}
+    assert len(tc.fenetres_demande(arret, S, tcr)) > 4 and arret["rayon_m"] == 60000.0, "seule l'estime est plafonnée"
+    sans = {**tcr, "prediction": {**P, "cercle_appris": {**P["cercle_appris"], "plafonner": False}}}
+    pr2 = tc.predire(*LARGE, NOW, 15.0, 90.0, NOW + timedelta(hours=3), P)
+    assert len(tc.fenetres_demande(pr2, S, sans)) > 4
 
 
 def test_stopped_or_anchored_vessel_and_point_without_vessel():
@@ -206,7 +237,7 @@ def test_recent_acquired_pass_is_used_at_once_and_vessel_tips_are_grouped(conn):
     assert {r[0] for r in conn.execute("SELECT alerte_id FROM demandes_origines WHERE demande_id = %s", (did,))} == {a1, a2}
     d = _demande(conn, did)
     assert d["etat"] == "planifiee" and d["pass_id"] == pid and d["retro"] is True and d["priorite"] == 4
-    assert d["prediction"] == "estime" and d["rayon"] == pytest.approx(P["rayon_depart_m"] + P["part_vitesse_par_h"] * 2 * 8 * 1852)
+    assert d["prediction"] == "estime" and d["rayon"] == pytest.approx(tc.rayon_appris(P["cercle_appris"], 8.0, 2.0), rel=0.02)
 
 
 def test_point_too_close_to_the_coast_has_no_useful_pass(conn):
