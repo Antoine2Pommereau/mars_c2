@@ -140,7 +140,7 @@ def heures_creuses(compte: Counter, du: date, au: date) -> dict:
 
 
 def mesurer(conn, r2, du: date, au: date, zones: list[str], test_jours: int, workdir: Path, log=print,
-            p: dict = T.PARAMS, regles: dict | None = None) -> dict:
+            p: dict = T.PARAMS, regles: dict | None = None, cercle_seul: bool = False) -> dict:
     import pyarrow as pa
     # L'allocateur par défaut d'Arrow (mimalloc) garde la mémoire libérée d'une journée à l'autre : 447 Mo après
     # 16 journées de la Manche synthétique contre 257 Mo avec l'allocateur du système (mesuré le 22/10/2026)
@@ -199,6 +199,7 @@ def mesurer(conn, r2, du: date, au: date, zones: list[str], test_jours: int, wor
                 st.update({k: v for k, v in st_g.items() if not isinstance(v, bool)})
             st = {**dict(st), "filtre_cotier": cote is not None}
             n_pos, n_nav = len(df), int(df.mmsi.nunique())
+            verite = T.Verite(df[["mmsi", "t", "lat", "lon"]])          # où le navire réapparaît, même après un silence
             del df
             for tr in trs:
                 tr.meta = {"categorie": T.categorie(types.get(tr.mmsi)), "zone_trajet": z}
@@ -209,17 +210,20 @@ def mesurer(conn, r2, du: date, au: date, zones: list[str], test_jours: int, wor
                                 for t in trs])
             train = [t for t in trs if t.t[-1] < coupe]
             test = [t for t in trs if t.t[0] >= coupe]
-            routes = T.Routes(p).apprendre(train)
-            ev = T.evaluer(test, routes, p)
+            routes = T.Routes(p) if cercle_seul else T.Routes(p).apprendre(train)
+            ev = pd.DataFrame() if cercle_seul else T.evaluer(test, routes, p)
             if not ev.empty:
                 evals.append(ev)
-            # Cercle appris : estime seule, de 1 à 6 h, hors pêche (écartée de la vérification satellite), 1 nœud et plus
-            with traces.span("trajectoire.cercle", **{"trajectoire.zone": z}):
+            # Contenance de l'estime de 1 à 30 h (règles 2026.10.45) : hors pêche (écartée de la vérification
+            # satellite), 1 nœud et plus ; vérité : position où le navire réapparaît dans la zone
+            with traces.span("trajectoire.cercle", **{"trajectoire.zone": z}) as sc:
                 hors_peche = lambda xs: [t for t in xs if t.meta["categorie"] != "peche"]  # noqa: E731
                 for xs, acc in ((hors_peche(train), cercle_a), (hors_peche(test), cercle_t)):
-                    e = T.evaluer(xs, None, T.PARAMS_CERCLE, ("estime",))
+                    e = T.evaluer_longs(xs, verite)
                     if not e.empty:
-                        acc.append(e[e.sog_kn >= 1][[c for c in e.columns if c.startswith(("estime_fde", "sog_kn", "zone", "categorie"))]])
+                        acc.append(e.drop(columns=[c for c in ("zone_trajet",) if c in e]))
+                sc.set_attribute("trajectoire.cercle_fenetres", int(sum(len(x) for x in cercle_a + cercle_t)))
+            del verite
             jours_mesures = (au - du).days + 1
             ct = tab[tab.categorie.isin(["cargo", "petrolier"])] if not tab.empty else tab
             par_jour_ct = len(ct) / jours_mesures if len(ct) else 0.0
@@ -255,13 +259,15 @@ def mesurer(conn, r2, du: date, au: date, zones: list[str], test_jours: int, wor
         out["references"] = {"ensemble": T.resumer(ev, p=p), "par_zone": T.resumer(ev, "zone", p),
                              "par_categorie": T.resumer(ev, "categorie", p), "par_vitesse": T.resumer(ev, "vitesse", p),
                              "cargo_petrolier": T.resumer(ev[ev.categorie.isin(["cargo", "petrolier"])], p=p)}
-        out["cercle_appris"] = rayons(ev, p)
+        out["rayons_80_90"] = rayons(ev, p)
     if cercle_a and cercle_t and regles:
         a, t_ = pd.concat(cercle_a, ignore_index=True), pd.concat(cercle_t, ignore_index=True)
-        table = T.table_cercle(a)
+        table = T.table_quantiles(a)
         tc = regles["tip_and_cue"]
+        seuil = float((tc["prediction"].get("cercle_appris") or {}).get("contenance_min", 0.4))
         out["cercle_appris"] = {"table": table, "fenetres_apprentissage": int(len(a)), "fenetres_test": int(len(t_)),
-                                "gain": T.gain_cercle(t_, table, regles["sentinel"], tc["fenetres_max_par_demande"], p)}
+                                "seuil": seuil,
+                                "gain": T.gain_garde(t_, table, regles["sentinel"], tc["fenetres_max_par_demande"], seuil)}
     out["duree_s"] = round(time.time() - t_debut, 1)
     out["memoire_max_mo"] = _memoire_mo()
     return out

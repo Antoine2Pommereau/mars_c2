@@ -415,6 +415,10 @@ export const L = {
     },
     // Tip and cue (lot T1) : demande d'observation satellite
     observation: {
+      contenance: "Contenance estimée",
+      contenanceValeur: (c: number) => `${Math.round(100 * c)} % des navires réels dans les fenêtres (d'après l'archive)`,
+      contenanceCourte: (c: number) => `${Math.round(100 * c)} %`,
+      contenanceAide: "Contenance estimée : part des navires réels attendue dans les fenêtres du passage",
       demander: "Demander une observation", envoi: "Demande en cours", enregistree: "Demande enregistrée",
       regroupee: "Ajoutée à la demande en cours", aucune: "Aucune demande", annuler: "Annuler",
       etats: { en_attente: "en attente d'un passage", planifiee: "planifiée", analysee: "analysée",

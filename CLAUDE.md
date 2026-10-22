@@ -716,6 +716,11 @@ satellite n'est plus 2 km plus 30 % du parcours (gardé en repli) mais le rayon 
 réelles autour de l'estime, par tranche de vitesse et par horizon (`tip_and_cue.rayon_appris`), plafonné au rayon que
 couvrent les 4 fenêtres permises (20 km, `fenetres_demande`). Pré mesure du 17 au 22/10 : navire trouvé 78, 74, 63, 40,
 29 et 22 % du temps à 1 à 6 h, contre 63, 44, 19, 9, 4 et 2 %. Table provisoire, à remplacer par la mesure complète.
+**Garde de probabilité (22/10/2026)** (règles 2026.10.45, migration 38, `docs/trajectoire.md` section 12) : table des
+quantiles de l'erreur de l'estime de 1 à 30 h (vérité : la position où le navire réapparaît), rayon au quantile 80 %
+plafonné aux fenêtres, contenance estimée écrite dans la demande, la trace et l'interface ; un passage n'est retenu
+qu'à 40 % de contenance au moins (le plus proche au dessus du seuil) ; estime bornée à 30 h. Avec l'estime seule,
+plus aucun passage retenu au delà d'environ 4 h (pré mesure).
 Données externes retenues (DMA, GeoTrackNet Bretagne, École navale) : usage personnel et non commercial, aucune
 redistribution, ni des données ni d'un jeu dérivé ni des poids (section 10).
 
@@ -739,6 +744,10 @@ l'interface ; `npm test` (node --test, `web/tests/` : trafic, preuve, clavier, �
 * **Mémoire d'Arrow** : l'allocateur par défaut (mimalloc) garde la mémoire libérée de journée en journée (447 Mo après
   16 journées de lecture contre 257 Mo avec l'allocateur du système) ; pour une lecture longue dans le conteneur des
   tâches (768 Mo), `pa.set_memory_pool(pa.system_memory_pool())` et `read_table(use_threads=False)`.
+* **Mesures longues** : un dictionnaire Python par fenêtre (vingt valeurs) coûte environ 0,6 Ko ; pour des centaines
+  de milliers de fenêtres, construire des colonnes numpy par trajet (`evaluer_longs`). La vraie archive coûte environ
+  1,65 fois l'archive synthétique en mémoire : lancer une mesure lourde avec `TACHES_MEM_LIMIT=1200m docker compose
+  run --rm --no-deps taches …`, jamais dans le conteneur en service.
 * **Dossiers** : une décision ou un devis lit le dossier à l'instant affiché (`instant`, `end`), plafonné à
   maintenant ; à l'instant réel seul, un dossier d'une plage passée est hors de la fenêtre de 72 h (404).
 * La carte MapLibre ne se redimensionne qu'avec la fenêtre : quand un panneau change de largeur, `map.resize()` est

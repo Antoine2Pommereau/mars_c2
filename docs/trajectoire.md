@@ -345,3 +345,53 @@ pour les fenêtres chez les navires rapides (30 % des demandes infaisables à 3 
 
 La table des règles 2026.10.44 est **provisoire** (échantillon). La commande `trajectoire-mesures` calcule désormais
 la même table sur toute l'archive (section `cercle_appris` du rapport JSON) : elle remplacera ces valeurs.
+
+## 12. Mesure complète, contenance jusqu'à 30 h et garde de probabilité (22/10/2026)
+
+**Mesure complète** (serveur, 06 au 21/10, version 73d0d91 ; 315 s, 661 Mo au plus) : Manche 5 779 trajets et 9 276
+fenêtres de référence, Gascogne 1 125 et 745, Bretagne 902 et 171, Méditerranée 899 et 455. Cercle à 80 % de 1 à 6 h,
+appris sur 15 487 fenêtres et vérifié sur 4 890 (hors pêche) : navire trouvé 79, 78, 76, 61, 44 et 31 % du temps à 1
+à 6 h, contre 83, 69, 30, 11, 5 et 2,5 % avec l'ancien cercle (qui fait un peu mieux à 1 h, avec un rayon presque
+double : 7,3 km contre 3,8 km).
+
+**Rejeu du serveur (14 jours) avant et après le cercle appris de 1 à 6 h** : passages des coupures AIS de 3 à 8,
+des rendez vous de 3 à 5, plus aucun abandon pour incertitude ; mais délai médian du tip au passage de 2,5 à 10 h,
+coût de 2,45 à 4,42 € par mois. À 6 h, le cercle plafonné ne contient plus qu'environ 30 % des navires : beaucoup de
+ces passages gagnés ne trouveront rien. D'où la garde.
+
+**Contenance au delà de 6 h** (`mars/trajectoire.py`, `Verite`, `evaluer_longs`, `table_quantiles`). Les trajets
+continus sont trop courts (médiane 7,5 h) pour mesurer l'estime à 30 h. La vérité est donc la position où le navire
+réapparaît à l'horizon, même après un silence ou un arrêt, ce qui est exactement la situation de la vérification
+satellite. On mesure les quantiles de l'erreur aux niveaux 10 à 95 %, par tranche de vitesse et par horizon de 1 à
+30 h. Le rayon appris est le quantile à 80 %, la contenance d'un rayon quelconque se lit sur la même table
+(`tip_and_cue.contenance_estimee`). Sur l'échantillon, le navire n'est revu dans nos zones que dans 53 à 56 % des cas
+au delà de 15 h (sinon il est sorti ou toujours muet) : la contenance porte sur les navires revus.
+
+**Garde** (règles 2026.10.45, `contenance_min: 0.4`) : un passage n'est retenu que si la contenance estimée de ses
+fenêtres atteint 40 %. Les passages étant examinés dans l'ordre du temps, c'est le plus proche au dessus du seuil. La
+contenance est écrite dans la demande (colonne `contenance`, migration 38), sa trace (`tip.contenance`), la liste des
+vérifications et la fiche. L'estime n'est plus bornée à 6 h mais à 30 h : c'est la garde qui décide. Le rejeu compte
+les passages écartés pour contenance et la contenance moyenne des passages retenus.
+
+**Étalonnage et effet de la garde**, pré mesure (échantillon, hors pêche ; quantiles appris avant le 17/10 sur 7 193
+fenêtres, vérifiés du 17 au 22/10 sur 2 403) :
+
+| Horizon | Rayon moyen (plafonné) | Contenance estimée | Contenance réelle | Retenus par la garde | Contenance réelle des retenus |
+|---|---|---|---|---|---|
+| 1 h | 7,6 km | 80 % | 80 % | 100 % | 80 % |
+| 2 h | 18,8 km | 78 % | 78 % | 100 % | 78 % |
+| 3 h | 20 km | 61 % | 60 % | 100 % | 60 % |
+| 4 h | 20 km | 42 % | 37 % | 47 % | 38 % |
+| 5 h | 20 km | 29 % | 23 % | 0 % | |
+| 6 h | 20 km | 21 % | 16 % | 0 % | |
+| 12 h | 20 km | 5 % | 2,5 % | 0 % | |
+| 24 h | 20 km | 2 % | 0,5 % | 0 % | |
+
+L'estimation est juste jusqu'à 3 h et un peu optimiste au delà (de 5 points à 4 h). **Avec l'estime seule, aucun
+passage au delà d'environ 4 h n'atteint 40 %** : pour les passages à 12 à 30 h (13 des 20 demandes du serveur), seules
+les routes fréquentes en plusieurs hypothèses (étape 2) peuvent aider.
+
+La table des règles 2026.10.45 est **provisoire** (échantillon) : `trajectoire-mesures --cercle-seul` la calcule sur
+toute l'archive. Mémoire : 438 Mo sur l'archive synthétique de la Manche après passage de l'évaluation en colonnes
+numpy (501 Mo avec un dictionnaire par fenêtre) ; la vraie archive coûtant environ 1,65 fois la synthétique, la
+mesure se lance avec une limite de conteneur relevée pour ce seul lancement (`TACHES_MEM_LIMIT=1200m`).

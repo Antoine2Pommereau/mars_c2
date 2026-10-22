@@ -937,6 +937,13 @@ Images qui changent : backend (route en lecture `/api/decisions/journal`) et web
 Vérifier par le tunnel : `curl -s "localhost:8000/api/decisions/journal?limite=3"` renvoie les dernières décisions des
 opérateurs ; `http://localhost:8080/?espace=coulisses&rubrique=capteurs` est redirigé vers Sources et capteurs.
 
+## Garde de probabilité de la vérification satellite (22/10/2026)
+
+Migration 38 (colonne `contenance` de `demandes_observation`), règles 2026.10.45 (table des quantiles, seuil de 40 %,
+estime bornée à 30 h). Images : scripts (planification), backend (colonne renvoyée), web (liste et fiche). Les demandes
+planifiées portent leur contenance ; une demande dont aucun passage n'atteint le seuil passe « sans passage » avec le
+motif « contenance estimée de N % au passage du …, sous le seuil de 40 % ».
+
 ## Cercle appris de la vérification satellite (22/10/2026)
 
 Règles 2026.10.44 (table `tip_and_cue.prediction.cercle_appris`, par `git pull`) ; image des scripts (le conteneur

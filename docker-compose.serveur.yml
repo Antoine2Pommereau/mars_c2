@@ -69,7 +69,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    mem_limit: 768m                  # compactage d'une journée par zone : quelques centaines de Mo au plus
+    mem_limit: ${TACHES_MEM_LIMIT:-768m}   # compactage d'une journée par zone : quelques centaines de Mo au plus ; une mesure lancée à part (docker compose run) peut demander plus, sans toucher au conteneur en service
     restart: unless-stopped
     logging: *journaux
 

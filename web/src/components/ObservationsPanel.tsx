@@ -61,6 +61,9 @@ export default function ObservationsPanel({ demandes, selectedId, onPick, titre 
                   return <span title={L.fiche.observation.capteurs[optique ? "optique" : "radar"]}><C size={10} className="text-faint" /></span>;
                 })()}
                 {jourHeure(d.heure_passage)}
+                {/* Contenance estimée : part des navires réels attendue dans les fenêtres (garde de probabilité) */}
+                {d.contenance != null && <span className="text-faint" title={L.fiche.observation.contenanceAide}>
+                  {L.fiche.observation.contenanceCourte(d.contenance)}</span>}
               </span>
             )}
           </span>

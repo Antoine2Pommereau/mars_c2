@@ -768,11 +768,15 @@ def _tip_rejeu(conn, a):
     r = tip_and_cue.rejeu_base(conn, rules, fin - timedelta(days=jours), fin)
     traces.attributs(**{"tip.rejeu_jours": jours, "tip.rejeu_sessions": r["sessions"], "tip.rejeu_fenetres": r["fenetres"]})
     print(f"Rejeu du tip and cue sur {r['jours']} jours ({r['passages_examines']} passages Sentinel 1 examinés) :")
-    print(f"  {'tip':<12} {'tips':>5} {'regroupés':>10} {'passage':>8} {'côte':>5} {'incertitude':>12} {'délai':>6} "
-          f"{'transit':>8} {'sans 36 h':>10}")
+    print(f"  {'tip':<12} {'tips':>5} {'regroupés':>10} {'passage':>8} {'côte':>5} {'incertitude':>12} {'contenance':>11} "
+          f"{'délai':>6} {'transit':>8} {'sans 36 h':>10}")
     for tip, d in sorted(r["par_tip"].items()):
         print(f"  {tip:<12} {d['tips']:>5} {d['regroupees']:>10} {d['passage']:>8} {d['cote']:>5} {d['incertitude']:>12} "
-              f"{d['delai']:>6} {d['transit']:>8} {d['sans_passage_36h']:>10}")
+              f"{d['contenance']:>11} {d['delai']:>6} {d['transit']:>8} {d['sans_passage_36h']:>10}")
+    if r.get("contenance_moyenne") is not None:
+        print(f"  contenance estimée des passages retenus en estime : moyenne {100 * r['contenance_moyenne']:.0f} % "
+              f"sur {r['contenance_n']} passage(s)")
+    traces.attributs(**{"tip.rejeu_contenance_moyenne": r.get("contenance_moyenne") or 0.0})
     delais = sorted(x["delai_h"] for x in r["lignes"] if x["issue"] == "passage")
     if delais:
         print(f"  délai du tip au passage : médiane {delais[len(delais) // 2]} h, de {delais[0]} à {delais[-1]} h")
@@ -1194,7 +1198,8 @@ def _trajectoire_mesures(conn, a):
     au = a.au or (datetime.now(timezone.utc).date() - timedelta(days=1))
     zones = [z for z in (a.args or list(ZONES)) if z in ZONES]
     travail = LIVE / ".trajectoire"
-    out = TM.mesurer(conn, r2(), du, au, zones, a.test_jours, travail, log=log, regles=load_rules())
+    out = TM.mesurer(conn, r2(), du, au, zones, a.test_jours, travail, log=log, regles=load_rules(),
+                     cercle_seul=a.cercle_seul)
     sortie = travail / f"trajectoire_mesures_{du}_{au}.json"
     sortie.write_text(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     log(f"Mesures écrites dans {sortie} ({sortie.stat().st_size} octets), {out['duree_s']} s, "
@@ -1211,6 +1216,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--jour", type=date.fromisoformat, help="coupures-injection : journée (par défaut, la veille)")
     ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")
     ap.add_argument("--test-jours", type=int, default=5, help="trajectoire-mesures : derniers jours tenus à l'écart")
+    ap.add_argument("--cercle-seul", action="store_true",
+                    help="trajectoire-mesures : inventaire et cercle appris seulement (ni routes ni références)")
     ap.add_argument("--malgre-pause", action="store_true",
                     help="viirs, sentinel-analyser, sentinel2-analyser : lancer malgré la pause (consigné)")
     ap.add_argument("--motif", help="satellites-pause, --malgre-pause : motif consigné dans journal_controle")

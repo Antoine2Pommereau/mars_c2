@@ -91,3 +91,21 @@ def test_a_lasting_jump_cuts_the_track_instead_of_bridging_it():
     trs, st = T.trajets(pd.concat([a, b], ignore_index=True), P)
     assert st["coupure_saut"] == 1 and st["saut_impossible"] == 0
     assert len(trs) == 2 and all(abs(t.duree_h - 6) < 0.2 for t in trs)
+
+
+def test_truth_after_a_silence_and_long_horizon_quantiles():
+    """Vérité de la vérification satellite : la position où le navire réapparaît, même après un silence ; quantiles
+    croissants avec le niveau et l'horizon."""
+    a = route(9, 0, 6)
+    b = route(9, 9 * 3600, 6, lat=float(a.lat.iloc[-1]), lon=float(a.lon.iloc[-1]) + 0.6)   # 3 h de silence
+    df = pd.concat([a, b], ignore_index=True)
+    v = T.Verite(df)
+    assert v.position(9, 4 * 3600) is not None and v.position(9, 7.5 * 3600) is None, "muet : pas de vérité"
+    trs, _ = T.trajets(df, P)
+    ev = T.evaluer_longs(trs, v, horizons=(1, 4, 6))
+    assert ev["err_1h"].max() < 0.1, "ligne droite : estime exacte à 1 h"
+    assert ev["err_4h"].notna().any() and ev["err_4h"].isna().any(), "à 4 h, vu après le silence ou muet"
+    tab = T.table_quantiles(ev, vitesses=(1.0,), horizons=(1, 4, 6), min_n=1)
+    for ligne in tab["quantiles_m"][0]:
+        assert ligne == sorted(ligne)
+    assert all(b >= a for a, b in zip(tab["quantiles_m"][0][0], tab["quantiles_m"][0][1]))

@@ -51,17 +51,37 @@ def test_dead_reckoning_and_growing_circle():
     assert loin["rayon_m"] == P["rayon_max_m"]                                             # borné
 
 
-def test_learned_circle_by_speed_band_and_horizon():
-    """Cercle appris (règles 2026.10.44) : rayon de la tranche de vitesse, interpolé entre les horizons mesurés."""
-    c = {"vitesses_kn": [1, 5, 10, 15], "horizons_h": [1, 2, 3], "rayon_min_m": 1000,
-         "rayons_m": [[3000, 6000, 9000], [4000, 8000, 12000], [5000, 10000, 15000], [6000, 12000, 18000]]}
-    assert tc.rayon_appris(c, 12.0, 3) == 15000
-    assert tc.rayon_appris(c, 12.0, 2.5) == pytest.approx(12500)
-    assert tc.rayon_appris(c, 12.0, 0.5) == pytest.approx(3000), "de 1 km à 0 h vers le rayon de la première heure"
-    assert tc.rayon_appris(c, 20.0, 10) == 18000, "au delà du dernier horizon : le dernier rayon"
-    assert tc.rayon_appris(c, 0.5, 1) == 3000, "sous la première borne : première tranche"
+C_ESSAI = {"contenance": 0.8, "contenance_min": 0.4, "plafonner": True, "vitesses_kn": [1, 10], "horizons_h": [1, 2], "niveaux": [0.1, 0.5, 0.8, 0.95],
+           "rayon_min_m": 1000, "quantiles_m": [[[500, 2000, 5000, 9000], [1000, 4000, 10000, 18000]],
+                                                [[800, 3000, 8000, 12000], [2000, 6000, 16000, 30000]]]}
+
+
+def test_learned_circle_and_estimated_containment_from_error_quantiles():
+    """Règles 2026.10.45 : rayon au niveau 80 % et contenance de n'importe quel rayon, tirés des mêmes quantiles."""
+    assert tc.rayon_appris(C_ESSAI, 12.0, 2) == 16000
+    assert tc.rayon_appris(C_ESSAI, 3.0, 1.5) == pytest.approx(7500), "interpolé entre 1 h et 2 h"
+    assert tc.rayon_appris(C_ESSAI, 12.0, 40) == 16000, "au delà du dernier horizon : le dernier"
+    assert tc.contenance_estimee(C_ESSAI, 12.0, 2, 16000) == pytest.approx(0.8)
+    assert tc.contenance_estimee(C_ESSAI, 12.0, 2, 6000) == pytest.approx(0.5)
+    assert tc.contenance_estimee(C_ESSAI, 12.0, 2, 1000) == pytest.approx(0.05), "sous le premier quantile : proportionnelle"
+    assert tc.contenance_estimee(C_ESSAI, 12.0, 2, 99000) == pytest.approx(0.95), "au delà : le dernier niveau, par prudence"
     pr = tc.predire(*LARGE, NOW, 10.0, 90.0, NOW + timedelta(hours=3), P)
     assert pr["rayon_m"] == pytest.approx(tc.rayon_appris(P["cercle_appris"], 10.0, 3.0))
+    assert pr["contenance"] == pytest.approx(0.8, abs=0.01)
+
+
+def test_containment_guard_threshold():
+    tcr = {**RULES["tip_and_cue"], "prediction": {**P, "cercle_appris": C_ESSAI}}
+    assert tc.sous_contenance({"contenance": 0.39}, tcr) and not tc.sous_contenance({"contenance": 0.4}, tcr)
+    assert not tc.sous_contenance({"mode": "arret"}, tcr), "sans contenance (arrêt, point) : pas de garde"
+    pr = tc.predire(*LARGE, NOW, 12.0, 90.0, NOW + timedelta(hours=2), {**P, "cercle_appris": C_ESSAI})
+    tc.fenetres_demande(pr, S, tcr)
+    assert pr["rayon_m"] == pytest.approx(16000) and pr["contenance"] == pytest.approx(0.8, abs=0.01), "16 km : pas de plafond"
+    loin = tc.predire(*LARGE, NOW, 12.0, 90.0, NOW + timedelta(hours=40), {**P, "cercle_appris": {**C_ESSAI,
+                      "quantiles_m": [[[500, 2000, 5000, 9000], [9000, 30000, 60000, 90000]]] * 2}})
+    tc.fenetres_demande(loin, S, {**tcr, "prediction": {**P, "cercle_appris": {**C_ESSAI,
+                        "quantiles_m": [[[500, 2000, 5000, 9000], [9000, 30000, 60000, 90000]]] * 2}}})
+    assert loin["rayon_m"] == pytest.approx(20000, abs=10) and loin["contenance"] < 0.4, "plafonné : contenance du cercle couvert"
 
 
 def test_learned_circle_is_capped_to_the_allowed_windows():
@@ -90,12 +110,13 @@ def test_stopped_or_anchored_vessel_and_point_without_vessel():
 
 
 def test_mute_vessel_estimate_is_bounded_and_slow_mute_vessel_stays_put():
-    """Navire muet (dernière position il y a 3 h) : en route, estime valable 6 h et dans nos zones seulement ; lent
-    (moins de 3 nœuds), position fixe et petit cercle ; navire qui émet encore : estime sans borne."""
+    """Navire muet (dernière position il y a 3 h) : en route, estime bornée (30 h depuis la règle 2026.10.45, la garde
+    de contenance décide en deçà) et dans nos zones seulement ; lent (moins de 3 nœuds), position fixe et petit
+    cercle ; navire qui émet encore : estime sans borne."""
     t0 = NOW - timedelta(hours=3)
-    assert P["muet_min"] == 30 and P["lent_kn"] == 3.0 and P["estime_max_h"] == 6
-    loin = tc.predire_bornee((*LARGE, t0, 12.0, 0.0), NOW + timedelta(hours=4), NOW, P)
-    assert "au delà des 6 h de l'estime" in loin["hors_portee"]                           # 7 h après la position
+    assert P["muet_min"] == 30 and P["lent_kn"] == 3.0 and P["estime_max_h"] == 30
+    loin = tc.predire_bornee((*LARGE, t0, 1.2, 0.0), NOW + timedelta(hours=40), NOW, {**P, "lent_kn": 1.0})
+    assert "au delà des 30 h de l'estime" in loin["hors_portee"]                         # 43 h après la position
     dehors = tc.predire_bornee((*LARGE, t0, 12.0, 270.0), NOW + timedelta(hours=2), NOW, P)
     assert "hors de nos zones collectées" in dehors["hors_portee"]                       # 110 km à l'ouest
     assert not tc.dans_zones(dehors["lon"], dehors["lat"]) and tc.dans_zones(*LARGE)
@@ -273,17 +294,24 @@ def test_waiting_request_expires_after_36_hours(conn):
 
 @pytest.mark.parametrize("cog, heures, attendu", [
     (270.0, 2, "hors de nos zones collectées"),             # route vers l'ouest : sort de la zone Bretagne
-    (90.0, 5, "au delà des 6 h de l'estime"),                # passage 8 h après la dernière position
+    # Passage 8 h après la dernière position, au large dans la zone Gascogne : estime encore valable (30 h), mais
+    # contenance estimée sous le seuil (règles 2026.10.45)
+    (150.0, 5, "sous le seuil de 40 %"),
 ])
 def test_mute_fast_vessel_in_transit_has_no_pass_and_says_why(conn, cog, heures, attendu):
-    _passage(conn, "TIP_TRANSIT", NOW + timedelta(hours=heures))
+    large = {"type": "Polygon", "coordinates": [[[-6.6, 45.8], [-3.9, 45.8], [-3.9, 48.6], [-6.6, 48.6], [-6.6, 45.8]]]}
+    _passage(conn, "TIP_TRANSIT", NOW + timedelta(hours=heures), emprise=large if "seuil" in attendu else EMPRISE)
     vid = _navire(conn, 636999711, *LARGE, sog=12.0, cog=cog, t=NOW - timedelta(hours=3))
     r = tc.creer(conn, RULES, NOW, cle="coupure:essai", tip="coupure_ais", lon=LARGE[0], lat=LARGE[1],
                  position_le=NOW - timedelta(hours=3), vessel_id=vid, sog=12.0, cog=cog, motif="coupure observée")
     out = tc.planifier(conn, RULES, NOW)
     d = _demande(conn, r["demande"])
-    assert out["sans_passage"] == 1 and d["etat"] == "sans_passage"
-    assert d["motif"].startswith("navire en transit, hors de portée au prochain passage") and attendu in d["motif"]
+    assert out["sans_passage"] == 1 and d["etat"] == "sans_passage", (out, d["etat"], d["motif"])
+    assert attendu in d["motif"], d["motif"]
+    if "zones" in attendu:
+        assert d["motif"].startswith("navire en transit, hors de portée au prochain passage")
+    else:
+        assert d["motif"].startswith("contenance estimée de ")
 
 
 def test_mute_slow_vessel_keeps_its_position_and_is_planned(conn):
@@ -602,3 +630,17 @@ def test_observations_route_order_region_and_active_count(conn):
         conn.execute("DELETE FROM positions WHERE vessel_id = %s", (vid,))
         conn.execute("DELETE FROM vessels WHERE id = %s", (vid,))
         conn.commit()
+
+
+def test_replay_keeps_the_nearest_pass_above_the_containment_threshold():
+    """Rejeu (règles 2026.10.45) : passage proche retenu avec sa contenance ; un passage lointain seul est écarté et
+    compté « contenance »."""
+    large = {"type": "Polygon", "coordinates": [[[-6.6, 45.8], [-3.9, 45.8], [-3.9, 48.6], [-6.6, 48.6], [-6.6, 45.8]]]}
+    tip = {"tip": "coupure_ais", "lon": LARGE[0], "lat": LARGE[1], "t": NOW, "connu": NOW, "vessel_id": 7,
+           "sog": 12.0, "cog": 150.0}
+    proche = tc.rejeu([tip], [{"id": 1, "t": NOW + timedelta(hours=1), "emprise": large},
+                              {"id": 2, "t": NOW + timedelta(hours=2), "emprise": large}], RULES, lambda *_a: None)
+    ligne = proche["lignes"][0]
+    assert ligne["issue"] == "passage" and ligne["passage"] == 1 and ligne["contenance"] >= 0.4
+    loin = tc.rejeu([tip], [{"id": 3, "t": NOW + timedelta(hours=8), "emprise": large}], RULES, lambda *_a: None)
+    assert loin["lignes"][0]["issue"] == "contenance" and loin["par_tip"]["coupure_ais"]["contenance"] == 1

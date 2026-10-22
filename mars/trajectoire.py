@@ -391,56 +391,132 @@ def resumer(ev: pd.DataFrame, par: str | None = None, p: dict = PARAMS) -> list[
     return out
 
 
-# Cercle appris (phase 2, étape 1) : table des rayons et gain sur la période tenue à l'écart
+# Cercle appris (phase 2) : contenance de l'estime par tranche de vitesse déclarée et par horizon
 
-PARAMS_CERCLE = {**PARAMS, "historique_h": 1 / 3, "horizons_h": (1, 2, 3, 4, 5, 6)}   # l'estime n'a besoin que du dernier point
 VITESSES_KN = (1.0, 5.0, 10.0, 15.0)          # bornes basses des tranches de vitesse déclarée
 
 
-def table_cercle(ev: pd.DataFrame, contenance: float = 0.8, vitesses=VITESSES_KN,
-                 horizons=PARAMS_CERCLE["horizons_h"], rayon_min_m: float = 1000.0, min_fenetres: int = 30) -> dict:
-    """Rayon qui contient `contenance` des positions réelles autour de l'estime, par tranche de vitesse déclarée et par
-    horizon (fenêtres d'apprentissage). Une tranche trop peu fournie prend les rayons de la tranche voisine mesurée ;
-    les rayons croissent avec l'horizon (on corrige un quantile qui baisserait par hasard)."""
+# Contenance au delà de 6 h (règles 2026.10.45) : la vérité est la position où le navire réapparaît à l'horizon,
+# même après un silence ou un arrêt (c'est la situation de la vérification satellite), pas un trajet continu
+
+HORIZONS_LONGS = (1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 21, 24, 27, 30)
+NIVEAUX = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
+
+
+class Verite:
+    """Positions observées par navire, pour retrouver où il était réellement à un instant (à `tolerance_s` près).
+    Compact : instants en entiers 32 bits (secondes, jusqu'en 2038), positions en flottants 32 bits."""
+
+    def __init__(self, df: pd.DataFrame, tolerance_s: int = 900):
+        m, t = df.mmsi.values, df.t.values.astype("int64")
+        ordre = np.lexsort((t, m))
+        m, t = m[ordre], t[ordre]
+        la, lo = df.lat.values[ordre].astype("float32"), df.lon.values[ordre].astype("float32")
+        coupes = np.flatnonzero(np.diff(m)) + 1
+        self.tol, self.par = tolerance_s, {}
+        for a, b in zip(np.r_[0, coupes], np.r_[coupes, len(m)]):
+            if b > a:
+                self.par[int(m[a])] = (t[a:b].astype("int32"), la[a:b], lo[a:b])
+
+    def positions(self, mmsi: int, instants: np.ndarray):
+        """(lat, lon, trouvé) pour chaque instant : position observée la plus proche à la tolérance près."""
+        n = len(instants)
+        x = self.par.get(int(mmsi))
+        if x is None or not len(x[0]):
+            return np.full(n, np.nan), np.full(n, np.nan), np.zeros(n, bool)
+        ts, la, lo = x
+        k = np.clip(np.searchsorted(ts, instants), 1, len(ts) - 1) if len(ts) > 1 else np.zeros(n, int)
+        if len(ts) > 1:
+            k = np.where(np.abs(ts[k - 1] - instants) <= np.abs(ts[k] - instants), k - 1, k)
+        ok = np.abs(ts[k].astype("int64") - instants) <= self.tol
+        return la[k].astype("float64"), lo[k].astype("float64"), ok
+
+    def position(self, mmsi: int, t: float):
+        la, lo, ok = self.positions(mmsi, np.array([int(t)]))
+        return (float(la[0]), float(lo[0])) if ok[0] else None
+
+
+def evaluer_longs(trs: list[Trajet], verite: Verite, horizons=HORIZONS_LONGS, pas_h: float = 1.0) -> pd.DataFrame:
+    """Depuis chaque heure de trajet (1 nœud et plus) : estime sur la vitesse et la route déclarées, erreur (km) à
+    chaque horizon où le navire est observé (NaN sinon : sorti de nos zones ou toujours muet). En colonnes numpy,
+    trajet par trajet : la mémoire reste petite même pour des centaines de milliers de fenêtres."""
+    pas = max(int(pas_h * 3600 / PARAMS["pas_s"]), 1)
+    morceaux = []
+    for tr in trs:
+        idx = np.arange(0, len(tr.t), pas)
+        sog, cog = tr.sog[idx].astype("float64"), tr.cog[idx].astype("float64")
+        ok = ~np.isnan(sog) & (sog >= 1) & ~np.isnan(cog)
+        idx, sog, cog = idx[ok], sog[ok], cog[ok]
+        if not len(idx):
+            continue
+        t0 = tr.t[idx].astype("int64")
+        cols = {"mmsi": np.full(len(idx), tr.mmsi, "int32"), "t": t0, "sog_kn": sog.astype("float32")}
+        for h in horizons:
+            la, lo, vu = verite.positions(tr.mmsi, t0 + int(h * 3600))
+            pla, plo = avancer(tr.lat[idx].astype("float64"), tr.lon[idx].astype("float64"), cog, sog * NOEUD * h * 3600)
+            cols[f"err_{h}h"] = np.where(vu, haversine_m(la, lo, pla, plo) / 1000, np.nan).astype("float32")
+        bloc = pd.DataFrame(cols)
+        for k, v in tr.meta.items():
+            bloc[k] = v
+        morceaux.append(bloc)
+    if not morceaux:
+        return pd.DataFrame()
+    ev = pd.concat(morceaux, ignore_index=True)
+    for k in ("categorie", "zone", "zone_trajet"):
+        if k in ev:
+            ev[k] = ev[k].astype("category")
+    return ev
+
+
+def table_quantiles(ev: pd.DataFrame, vitesses=VITESSES_KN, horizons=HORIZONS_LONGS, niveaux=NIVEAUX,
+                    rayon_min_m: float = 1000.0, min_n: int = 30, contenance: float = 0.8) -> dict:
+    """Quantiles de l'erreur (m) par tranche de vitesse, horizon et niveau, croissants avec l'horizon et le niveau ;
+    une case trop peu fournie prend la tranche de vitesse voisine au même horizon, sinon l'horizon précédent."""
     bornes = [*vitesses, 1e9]
-    rayons, effectifs = [], []
+    Q, effectifs = [], []
     for k in range(len(vitesses)):
         g = ev[(ev.sog_kn >= bornes[k]) & (ev.sog_kn < bornes[k + 1])]
-        effectifs.append(int(len(g)))
-        if len(g) < min_fenetres:
-            rayons.append(None)
-            continue
-        r = [float(g[f"estime_fde_{h}h"].quantile(contenance)) * 1000 for h in horizons]
-        rayons.append([round(max(r[:j + 1]), -2) for j in range(len(r))])
-    for k in range(len(rayons)):
-        if rayons[k] is None:
-            voisin = next((rayons[j] for j in sorted(range(len(rayons)), key=lambda j: abs(j - k)) if rayons[j]), None)
-            rayons[k] = list(voisin) if voisin else [rayon_min_m] * len(horizons)
+        lignes, eff = [], []
+        for h in horizons:
+            e = g[f"err_{h}h"].dropna() if f"err_{h}h" in g else pd.Series(dtype=float)
+            eff.append(int(len(e)))
+            lignes.append([float(e.quantile(n)) * 1000 for n in niveaux] if len(e) >= min_n else None)
+        Q.append(lignes)
+        effectifs.append(eff)
+    for k in range(len(vitesses)):
+        for j in range(len(horizons)):
+            if Q[k][j] is None:
+                voisin = next((Q[kk][j] for kk in sorted(range(len(vitesses)), key=lambda x: abs(x - k)) if Q[kk][j]), None)
+                Q[k][j] = list(voisin) if voisin else (list(Q[k][j - 1]) if j else [rayon_min_m] * len(niveaux))
+    for k in range(len(vitesses)):                       # croissants avec le niveau, puis avec l'horizon
+        for j in range(len(horizons)):
+            Q[k][j] = list(np.maximum.accumulate(Q[k][j]))
+            if j:
+                Q[k][j] = [max(a, b) for a, b in zip(Q[k][j], Q[k][j - 1])]
+            Q[k][j] = [round(x, -2) for x in Q[k][j]]
     return {"contenance": contenance, "vitesses_kn": list(vitesses), "horizons_h": list(horizons),
-            "rayon_min_m": rayon_min_m, "rayons_m": rayons, "fenetres_par_tranche": effectifs}
+            "niveaux": list(niveaux), "rayon_min_m": rayon_min_m, "quantiles_m": Q, "effectifs": effectifs,
+            "part_observee": {h: round(float(ev[f"err_{h}h"].notna().mean()), 3) for h in horizons if f"err_{h}h" in ev}}
 
 
-def gain_cercle(ev: pd.DataFrame, table: dict, s: dict, fenetres_max: int, p: dict = PARAMS) -> list[dict]:
-    """Par horizon, sur des fenêtres tenues à l'écart : contenance, rayon moyen, part des demandes faisables
-    (fenêtres satellites sous le maximum) et part « trouvée » (dans le cercle et faisable) ; cercle actuel, appris,
-    et appris plafonné au rayon que couvrent les fenêtres permises."""
-    from mars.tip_and_cue import centres_fenetres, rayon_appris, rayon_couvrable
+def gain_garde(ev: pd.DataFrame, table: dict, s: dict, fenetres_max: int, seuil: float) -> list[dict]:
+    """Par horizon, sur des fenêtres tenues à l'écart où le navire est observé : rayon appris plafonné aux fenêtres,
+    contenance estimée par la table contre contenance réelle (étalonnage), et effet de la garde (part retenue,
+    contenance réelle des retenues)."""
+    from mars.tip_and_cue import contenance_estimee, rayon_appris, rayon_couvrable
     plafond = rayon_couvrable(s, fenetres_max)
     out = []
     for h in table["horizons_h"]:
-        c = f"estime_fde_{h}h"
-        if c not in ev:
+        c = f"err_{h}h"
+        g = ev[ev[c].notna()] if c in ev else ev.iloc[0:0]
+        if g.empty:
             continue
-        err = ev[c].values * 1000
-        lignes = {"horizon_h": h, "fenetres": int(len(ev))}
-        appris = lambda sog: rayon_appris(table, 0.0 if np.isnan(sog) else sog, h)  # noqa: E731
-        for nom, rayon in (("actuel", lambda sog: rayon_actuel(sog, h, p)), ("appris", appris),
-                           ("appris_plafonne", lambda sog: min(appris(sog), plafond))):
-            r = np.array([rayon(float(x)) for x in ev.sog_kn.values])
-            nf = np.array([len(centres_fenetres(0.0, 48.0, float(x), s)) for x in r])
-            dedans, faisable = err <= r, nf <= fenetres_max
-            lignes[nom] = {"contenance": round(float(dedans.mean()), 3), "rayon_moyen_km": round(float(r.mean()) / 1000, 1),
-                           "faisable": round(float(faisable.mean()), 3), "trouve": round(float((dedans & faisable).mean()), 3),
-                           "fenetres_moyennes": round(float(nf[faisable].mean()), 2) if faisable.any() else None}
-        out.append(lignes)
+        r = np.array([min(rayon_appris(table, x, h), plafond) for x in g.sog_kn.values])
+        est = np.array([contenance_estimee(table, x, h, rr) for x, rr in zip(g.sog_kn.values, r)])
+        dedans = g[c].values * 1000 <= r
+        garde = est >= seuil
+        out.append({"horizon_h": h, "fenetres": int(len(g)), "rayon_moyen_km": round(float(r.mean()) / 1000, 1),
+                    "contenance_estimee": round(float(est.mean()), 3), "contenance_reelle": round(float(dedans.mean()), 3),
+                    "retenues": round(float(garde.mean()), 3),
+                    "contenance_reelle_des_retenues": round(float(dedans[garde].mean()), 3) if garde.any() else None})
     return out

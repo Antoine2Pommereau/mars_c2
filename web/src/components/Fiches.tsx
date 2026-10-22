@@ -613,6 +613,7 @@ export function DemandesObservation({ alerteId, vesselId, verification, onPickDe
             </div>
             {d.heure_passage && <Row label={O.passageLabel}>{O.passage(d.satellite ?? "", utc(d.heure_passage), !!d.passage_retro)}</Row>}
             {d.rayon_m != null && <Row label={O.incertitude}>{O.cercle(num(d.rayon_m / 1000, 1), O.modes[d.prediction] ?? "")}</Row>}
+            {d.contenance != null && <Row label={O.contenance}>{O.contenanceValeur(d.contenance)}</Row>}
             {d.resultat && <Row label={O.resultat}><span style={{ color: fort ? "#e85bc7" : undefined }}>{O.resultats[d.resultat] ?? d.resultat}</span></Row>}
             {d.distance_m != null && <div className="pt-1 text-muted">{O.distance(Math.round(d.distance_m))}</div>}
             {verification?.demande === d.id && verification?.gravite_ajustee &&

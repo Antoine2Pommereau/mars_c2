@@ -15,7 +15,7 @@ from regions import dans_region, region_ewkt
 router = APIRouter()
 
 COLS = """d.id, d.cree_le, d.tip, d.priorite, d.vessel_id, v.name AS navire, v.mmsi, d.position_le, d.etat,
-          d.expire_le, d.pass_id, p.satellite, d.heure_passage, d.passage_retro, d.rayon_m, d.prediction,
+          d.expire_le, d.pass_id, p.satellite, d.heure_passage, d.passage_retro, d.rayon_m, d.prediction, d.contenance,
           jsonb_array_length(coalesce(d.fenetres, '[]'::jsonb)) AS fenetres, d.analysis_id, d.resultat,
           d.resultat_details, d.detection_id, d.distance_m, d.motif, d.auteur, d.trace_id, d.fini_le,
           ST_X(d.position::geometry) AS lon, ST_Y(d.position::geometry) AS lat,
@@ -71,7 +71,7 @@ async def observations(request: Request, start: datetime | None = None, end: dat
         ewkt = await region_ewkt(c, region)
         rows = await c.fetch(
             f"""SELECT d.id, d.tip, d.etat, d.vessel_id, v.name AS navire, v.flag, v.mmsi, d.heure_passage, d.resultat,
-                       d.rayon_m, d.cree_le, d.fini_le, d.motif, p.satellite, {RANG} AS rang,
+                       d.rayon_m, d.contenance, d.cree_le, d.fini_le, d.motif, p.satellite, {RANG} AS rang,
                        ST_X({geo}) AS lon, ST_Y({geo}) AS lat, o.alerte_id, a.type AS alerte_type
                 FROM demandes_observation d
                 LEFT JOIN vessels v ON v.id = d.vessel_id LEFT JOIN sar_passes p ON p.id = d.pass_id

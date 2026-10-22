@@ -61,19 +61,54 @@ def destination(lon: float, lat: float, cap_deg: float, dist_m: float) -> tuple[
     return (math.degrees(l2) + 540) % 360 - 180, math.degrees(p2)
 
 
-def rayon_appris(c: dict, sog: float, h: float) -> float:
-    """Cercle appris (règles 2026.10.44, docs/trajectoire.md) : rayon qui a contenu `contenance` des positions réelles
-    sur la période d'apprentissage, par tranche de vitesse déclarée (bornes basses `vitesses_kn`) et par horizon
-    (`horizons_h`), interpolé linéairement entre les horizons mesurés, de `rayon_min_m` à 0 h ; au delà du dernier
-    horizon, le dernier rayon (l'estime est de toute façon bornée par estime_max_h)."""
+def quantiles_erreur(c: dict, sog: float, h: float) -> list[float]:
+    """Quantiles de l'erreur de l'estime (m) aux niveaux `niveaux` (règles 2026.10.45, docs/trajectoire.md), pour la
+    tranche de vitesse déclarée (bornes basses `vitesses_kn`) et l'horizon h : interpolés entre les horizons mesurés,
+    de `rayon_min_m` à 0 h ; au delà du dernier horizon, le dernier."""
     vit = c["vitesses_kn"]
-    i = max([k for k, v in enumerate(vit) if sog >= v] or [0])
-    hs, rs = [0.0, *map(float, c["horizons_h"])], [float(c["rayon_min_m"]), *map(float, c["rayons_m"][i])]
-    h = abs(h)
+    i = max([k for k, v in enumerate(vit) if (sog or 0) >= v] or [0])
+    hs, Q = [float(x) for x in c["horizons_h"]], c["quantiles_m"][i]
+    h, r0 = abs(h), float(c["rayon_min_m"])
     if h >= hs[-1]:
-        return rs[-1]
+        return [float(q) for q in Q[-1]]
+    if h <= hs[0]:
+        return [r0 + (float(q) - r0) * h / hs[0] for q in Q[0]]
     j = next(k for k in range(1, len(hs)) if h <= hs[k])
-    return rs[j - 1] + (rs[j] - rs[j - 1]) * (h - hs[j - 1]) / (hs[j] - hs[j - 1])
+    f = (h - hs[j - 1]) / (hs[j] - hs[j - 1])
+    return [float(a) + (float(b) - float(a)) * f for a, b in zip(Q[j - 1], Q[j])]
+
+
+def rayon_appris(c: dict, sog: float, h: float) -> float:
+    """Cercle appris : rayon qui contient la part `contenance` (80 %) des positions réelles, interpolé entre niveaux."""
+    return _interp(c["contenance"], [float(x) for x in c["niveaux"]], quantiles_erreur(c, sog, h))
+
+
+def contenance_estimee(c: dict, sog: float, h: float, rayon_m: float) -> float:
+    """Part des navires réels attendue dans un cercle de `rayon_m` autour de l'estime (fonction de répartition de
+    l'erreur, interpolée entre les quantiles mesurés ; sous le premier, proportionnelle ; au delà du dernier niveau
+    mesuré, ce niveau, par prudence)."""
+    niv, q = [float(x) for x in c["niveaux"]], quantiles_erreur(c, sog, h)
+    if rayon_m <= q[0]:
+        return niv[0] * max(rayon_m, 0.0) / q[0] if q[0] > 0 else niv[0]
+    if rayon_m >= q[-1]:
+        return niv[-1]
+    return _interp(rayon_m, q, niv)
+
+
+def _interp(x: float, xs: list[float], ys: list[float]) -> float:
+    if x <= xs[0]:
+        return ys[0]
+    for k in range(1, len(xs)):
+        if x <= xs[k]:
+            return ys[k - 1] + (ys[k] - ys[k - 1]) * (x - xs[k - 1]) / ((xs[k] - xs[k - 1]) or 1.0)
+    return ys[-1]
+
+
+def sous_contenance(pr: dict, tc: dict) -> bool:
+    """Garde de probabilité (règles 2026.10.45) : passage écarté si la contenance estimée de ses fenêtres est sous
+    `contenance_min` (le suivant, plus lointain, ne ferait pas mieux : on garde le plus proche au dessus du seuil)."""
+    seuil = (tc["prediction"].get("cercle_appris") or {}).get("contenance_min")
+    return seuil is not None and pr.get("contenance") is not None and pr["contenance"] < float(seuil)
 
 
 def rayon_couvrable(s: dict, fenetres_max: int) -> float:
@@ -96,6 +131,8 @@ def fenetres_demande(pr: dict, s: dict, tc: dict) -> list[list[float]]:
     if len(centres) > tc["fenetres_max_par_demande"] and c.get("plafonner") and pr.get("mode") == "estime":
         r = rayon_couvrable(s, tc["fenetres_max_par_demande"])
         pr["rayon_appris_m"], pr["rayon_m"] = pr["rayon_m"], r
+        if pr.get("horizon_h") is not None:                  # contenance du cercle réellement couvert
+            pr["contenance"] = round(contenance_estimee(c, pr["sog_kn"], pr["horizon_h"], r), 3)
         centres = centres_fenetres(pr["lon"], pr["lat"], r, s)
     return centres
 
@@ -113,9 +150,11 @@ def predire(lon: float, lat: float, t_pos: datetime, sog: float | None, cog: flo
     parcours = sog * 1852.0 * abs(dt_h)
     plon, plat = destination(lon, lat, cog if dt_h >= 0 else (cog + 180) % 360, parcours)
     if p.get("cercle_appris"):
-        rayon = rayon_appris(p["cercle_appris"], sog, dt_h)
-    else:                                       # cercle d'avant la règle 2026.10.44 : 2 km plus 30 % du parcours
-        rayon = min(p["rayon_depart_m"] + p["part_vitesse_par_h"] * parcours, p["rayon_max_m"])
+        c = p["cercle_appris"]
+        rayon = rayon_appris(c, sog, dt_h)
+        return {"lon": plon, "lat": plat, "rayon_m": float(rayon), "mode": "estime", "sog_kn": sog, "horizon_h": dt_h,
+                "contenance": round(contenance_estimee(c, sog, dt_h, rayon), 3)}
+    rayon = min(p["rayon_depart_m"] + p["part_vitesse_par_h"] * parcours, p["rayon_max_m"])   # repli d'avant 2026.10.44
     return {"lon": plon, "lat": plat, "rayon_m": float(rayon), "mode": "estime"}
 
 
@@ -478,6 +517,10 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
             motif = (f"incertitude de {pr['rayon_m'] / 1000:.0f} km au passage du {t:%d/%m %H:%M} : {len(centres)} "
                      f"fenêtres, au delà de {tc['fenetres_max_par_demande']}")
             continue
+        if sous_contenance(pr, tc):
+            motif = (f"contenance estimée de {100 * pr['contenance']:.0f} % au passage du {t:%d/%m %H:%M}, sous le seuil "
+                     f"de {100 * float(tc['prediction']['cercle_appris']['contenance_min']):.0f} %")
+            continue
         retro = statut == "acquis" and t <= now
         if retro:
             source = "sentinel2" if mission == "S2" else "sentinel1"
@@ -596,14 +639,15 @@ def planifier(conn, rules: dict, now: datetime, cote=None) -> dict:
             conn.execute(
                 """UPDATE demandes_observation SET etat = 'planifiee', pass_id = %s, heure_passage = %s,
                           passage_retro = %s, position_predite = ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
-                          rayon_m = %s, prediction = %s, fenetres = %s, analysis_id = %s, motif = %s,
+                          rayon_m = %s, prediction = %s, fenetres = %s, analysis_id = %s, motif = %s, contenance = %s,
                           mis_a_jour_le = now() WHERE id = %s""",
                 (pid, t, c["retro"], pr["lon"], pr["lat"], pr["rayon_m"], pr["mode"], json.dumps(c["centres"]),
                  c.get("analyse"), f"passage {sat} du {t:%d/%m/%Y %H:%M} UTC" + (" (déjà acquis)" if c["retro"] else ""),
-                 d["id"]))
+                 pr.get("contenance"), d["id"]))
             sp.set_attributes({"tip.etat": "planifiee", "tip.passage": pid, "tip.heure_passage": t.isoformat(),
                                "tip.retro": c["retro"], "tip.rayon_m": round(pr["rayon_m"]),
-                               "tip.prediction": pr["mode"], "tip.fenetres": len(c["centres"])})
+                               "tip.prediction": pr["mode"], "tip.fenetres": len(c["centres"]),
+                               **({"tip.contenance": pr["contenance"]} if pr.get("contenance") is not None else {})})
             out["planifiees"] += 1
             if c.get("analyse") and c.get("analyse_status") == "done":
                 out["analyses_existantes"] += 1                 # passage déjà analysé qui couvre le cercle
@@ -836,19 +880,22 @@ def rejeu(tips: list[dict], passages: list[dict], rules: dict, cote, suivi=None)
             if len(centres) > tc["fenetres_max_par_demande"]:
                 motif = "incertitude"
                 continue
+            if sous_contenance(pr, tc):
+                motif = "contenance"
+                continue
             issue = "passage"
             sessions.setdefault(ps["id"], 0)
             sessions[ps["id"]] += len(centres)
             lignes.append({**tp, "issue": issue, "passage": ps["id"], "delai_h": round((ps["t"] - connu).total_seconds()
                                                                                        / 3600, 1),
-                           "fenetres": len(centres), "rayon_m": round(pr["rayon_m"])})
+                           "fenetres": len(centres), "rayon_m": round(pr["rayon_m"]), "contenance": pr.get("contenance")})
             break
         if issue != "passage":
             lignes.append({**tp, "issue": motif or issue})
     par_tip: dict = {}
     for ligne in lignes:
         d = par_tip.setdefault(ligne["tip"], {"tips": 0, "regroupees": 0, "passage": 0, "cote": 0, "incertitude": 0,
-                                              "delai": 0, "transit": 0, "sans_passage_36h": 0})
+                                              "contenance": 0, "delai": 0, "transit": 0, "sans_passage_36h": 0})
         d["tips"] += 1
         cle = {"regroupee": "regroupees"}.get(ligne["issue"], ligne["issue"])
         d[cle if cle in d else "sans_passage_36h"] += 1
@@ -926,6 +973,8 @@ def rejeu_base(conn, rules: dict, debut: datetime, fin: datetime) -> dict:
     jours = max((fin - debut).total_seconds() / 86400, 1e-6)
     cout = sum(estimation(rules, s, n, 0, "cpu" if n <= s["fenetres_max_cpu"] else "gpu")
                for n in r["fenetres_par_session"].values())
+    cont = [x["contenance"] for x in r["lignes"] if x["issue"] == "passage" and x.get("contenance") is not None]
     return {**{k: v for k, v in r.items() if k != "lignes"}, "jours": round(jours, 1), "passages_examines": len(passages),
+            "contenance_moyenne": round(sum(cont) / len(cont), 3) if cont else None, "contenance_n": len(cont),
             "cout_eur": round(cout, 2), "cout_mois_eur": round(cout * 30 / jours, 2),
             "sessions_par_jour": round(r["sessions"] / jours, 2), "lignes": r["lignes"]}
