@@ -703,6 +703,14 @@ Marseille) : 0 à examiner au lieu de 1. Une alerte écrite avant cette version 
 mesuré », sans relever le niveau. La Veille cadre la carte sur les dossiers à examiner à son ouverture
 (`lib/cadre.ts`).
 
+**Lot T, prévision de trajectoire, phase 1 (22/10/2026)** (`docs/trajectoire.md`, aucune construction de modèle
+avant validation) : préparation et références (`mars/trajectoire.py` : découpage au silence de 2 h, à l'arrêt, au
+changement de destination et au saut durable, pas de 10 minutes, côte à un mille ; estime, estime mesurée, routes
+fréquentes), mesure de l'archive R2 par `taches.py trajectoire-mesures` (lecture seule, conteneur à part). Pré mesure
+sur 340 navires lus en GET : cargos et pétroliers, routes fréquentes à 1,1, 3,8 et 10,4 km d'erreur médiane à 1, 2 et
+3 h ; cercle actuel de la vérification satellite à 52 % de couverture à 3 h ; 13 des 20 demandes de vérification
+satellite sans passage parce que le passage tombait 13 à 31 h après la dernière position.
+
 ## 10. Tests
 
 `python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :
@@ -717,6 +725,12 @@ l'interface ; `npm test` (node --test, `web/tests/` : trafic, preuve, clavier, �
 
 ## 11. Pièges connus
 
+* **Horodatages de l'archive** : selon le nombre de décimales, pandas lit les instants en microsecondes ou en
+  nanosecondes ; une conversion en secondes par division fixe se trompe d'un facteur 1 000. Lire les 19 premiers
+  caractères avec Arrow (`trajectoire_mesures.secondes`).
+* **Mémoire d'Arrow** : l'allocateur par défaut (mimalloc) garde la mémoire libérée de journée en journée (447 Mo après
+  16 journées de lecture contre 257 Mo avec l'allocateur du système) ; pour une lecture longue dans le conteneur des
+  tâches (768 Mo), `pa.set_memory_pool(pa.system_memory_pool())` et `read_table(use_threads=False)`.
 * **Dossiers** : une décision ou un devis lit le dossier à l'instant affiché (`instant`, `end`), plafonné à
   maintenant ; à l'instant réel seul, un dossier d'une plage passée est hors de la fenêtre de 72 h (404).
 * La carte MapLibre ne se redimensionne qu'avec la fenêtre : quand un panneau change de largeur, `map.resize()` est

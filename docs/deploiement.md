@@ -937,6 +937,21 @@ Images qui changent : backend (route en lecture `/api/decisions/journal`) et web
 Vérifier par le tunnel : `curl -s "localhost:8000/api/decisions/journal?limite=3"` renvoie les dernières décisions des
 opérateurs ; `http://localhost:8080/?espace=coulisses&rubrique=capteurs` est redirigé vers Sources et capteurs.
 
+## Lot T, mesures de trajectoire (22/10/2026)
+
+Image qui change : scripts (commande `trajectoire-mesures`, modules `mars/trajectoire*.py`). Aucune migration, aucune
+règle. La mesure lit l'archive R2 et la base sans rien écrire (rapport JSON dans `data/ais_live/.trajectoire`) ; elle
+tourne dans un conteneur à part, pour ne jamais priver la boucle des tâches de ses 768 Mo :
+
+```bash
+cd /opt/mars_c2 || { echo "PAS SUR LE SERVEUR : arrêt"; exit 1; }
+docker compose run --rm --no-deps taches python scripts/taches.py trajectoire-mesures
+ls -la data/ais_live/.trajectoire/
+```
+
+Ce qu'on doit lire : une ligne par zone (positions réduites, trajets, fenêtres, mémoire), puis « Mesures écrites dans
+… », mémoire maximale sous 600 Mo. En cas de manque de mémoire, une zone à la fois : `trajectoire-mesures manche`.
+
 ## Vérifier
 
 ```bash

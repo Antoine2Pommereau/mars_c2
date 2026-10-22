@@ -1183,6 +1183,24 @@ def _restaurer_positions(conn, a):
     ing.refresh_watch(force=True)
 
 
+@commande("trajectoire-mesures")       # lot T, phase 1 : lecture seule de R2 et de la base (docs/trajectoire.md)
+def _trajectoire_mesures(conn, a):
+    """Inventaire de l'archive, trajets, continuité et références de prévision (estime, routes fréquentes) ; zones en
+    arguments (toutes par défaut), du 06/10/2026 à la veille par défaut ; rapport JSON dans data/ais_live/.trajectoire.
+    À lancer dans un conteneur à part (docker compose run --rm), jamais dans celui de la boucle : mémoire de 768 Mo."""
+    from mars import trajectoire_mesures as TM
+    from mars.ais.live import ZONES
+    du = a.du or date(2026, 10, 6)
+    au = a.au or (datetime.now(timezone.utc).date() - timedelta(days=1))
+    zones = [z for z in (a.args or list(ZONES)) if z in ZONES]
+    travail = LIVE / ".trajectoire"
+    out = TM.mesurer(conn, r2(), du, au, zones, a.test_jours, travail, log=log)
+    sortie = travail / f"trajectoire_mesures_{du}_{au}.json"
+    sortie.write_text(json.dumps(out, ensure_ascii=False, indent=1, default=str))
+    log(f"Mesures écrites dans {sortie} ({sortie.stat().st_size} octets), {out['duree_s']} s, "
+        f"mémoire maximale {out['memoire_max_mo']} Mo")
+
+
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Tâches planifiées de MARS C2")
     ap.add_argument("commande", nargs="?", default="boucle", choices=list(COMMANDES))
@@ -1192,6 +1210,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--jours", type=int, default=14, help="mesures : nombre de jours examinés")
     ap.add_argument("--jour", type=date.fromisoformat, help="coupures-injection : journée (par défaut, la veille)")
     ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")
+    ap.add_argument("--test-jours", type=int, default=5, help="trajectoire-mesures : derniers jours tenus à l'écart")
     ap.add_argument("--malgre-pause", action="store_true",
                     help="viirs, sentinel-analyser, sentinel2-analyser : lancer malgré la pause (consigné)")
     ap.add_argument("--motif", help="satellites-pause, --malgre-pause : motif consigné dans journal_controle")

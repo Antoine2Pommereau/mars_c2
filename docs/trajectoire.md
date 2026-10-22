@@ -1,0 +1,279 @@
+# Lot T : prévision de trajectoire, phase 1 (22/10/2026)
+
+Données, faisabilité et référence avant tout modèle. Aucune construction de modèle avant la validation d'Antoine.
+Code de mesure : `mars/trajectoire.py` (préparation et références, pur), `mars/trajectoire_mesures.py` (archive R2),
+commande `taches.py trajectoire-mesures` (lecture seule, tracée), tests `tests/test_trajectoire*.py`.
+
+## En bref
+
+* **Le besoin réel de la vérification satellite est à 12 à 30 h, pas à 1 à 3 h.** Sur les 20 demandes du serveur
+  depuis le 06/10, 13 se sont terminées « sans passage » parce que le prochain passage tombait 13 à 31 h après la
+  dernière position, au delà des 6 h de l'estime. Un modèle évalué à 1, 2 et 3 h ne règle pas ce cas.
+* **La référence à battre** (cargos et pétroliers, période tenue à l'écart, échantillon du serveur) : erreur finale
+  médiane de 1,1 km à 1 h, 3,8 km à 2 h, 10,4 km à 3 h pour le suivi des routes fréquentes, un peu mieux que l'estime
+  actuelle (1,3, 5,2, 13,0 km). En moyenne : 1,8, 5,0 et 9,1 milles, contre 0,48, 0,94 et 1,64 mille pour TrAISformer
+  dans l'article (meilleur de 16 tirages, détroits danois) et 1,28, 2,88 et 5,02 pour sa version à un seul tirage.
+* **Le cercle actuel de la vérification satellite est trop petit** : à 3 h, il ne contient que 52 % des positions
+  réelles des cargos et pétroliers, et 49 % de celles de tous les navires entre 5 et 10 nœuds. Pour en contenir 80 %,
+  il faudrait 24 à 35 km de rayon selon la vitesse.
+* **Volume** : seule la Manche atteint un volume comparable à l'article à court terme (de mi novembre à mi décembre
+  2026, environ 150 à 300 trajets de cargos et pétroliers par jour). La Gascogne demande de 8 à 16 mois, la Bretagne et
+  la Méditerranée plusieurs années : elles dépendront du pré entraînement externe.
+* **Données externes prêtes** : le jeu publié de GeoTrackNet couvre exactement notre zone Bretagne (récepteur
+  d'Ouessant, 2017, 7 827 trajets d'entraînement) ; l'archive DMA est ouverte et à jour (jusqu'au 19/10/2026).
+* **Calcul** : un entraînement de l'ordre de l'article coûte environ 0,4 € sur un L4 (13 minutes), ou 4 h sur le GPU
+  du MacBook Air ; l'inférence tient sur le processeur du serveur en ONNX pour les usages a et b.
+
+## 1. TrAISformer : article et code
+
+Nguyen et Fablet, « TrAISformer, a generative transformer for AIS trajectory prediction » (arXiv 2109.03958), code
+`CIA-Oceanix/TrAISformer`, licence **CECILL C** (compatible avec un usage dans MARS C2, modifications du code publiées si
+le logiciel est distribué).
+
+| Élément | Article et code |
+|---|---|
+| Données | DMA, cargos et pétroliers, 01/01/2019 au 31/03/2019, zone de 55,5 à 58,0 N et 10,3 à 13,0 E, 712 millions de messages bruts |
+| Découpage | entraînement jusqu'au 10/03, validation du 11 au 20/03, test du 21 au 31/03 |
+| Prétraitement | vitesse de 30 nœuds ou plus écartée ; navires amarrés ou au mouillage écartés ; positions à moins d'un mille de la côte écartées ; coupure après 2 h de silence ; trajets d'au moins 20 messages et 4 h ; saut de plus de 40 nœuds écarté ; échantillonnage à 10 minutes ; trajets coupés à 20 h |
+| Jeu publié (`data/ct_dma`) | 10 605 trajets d'entraînement (2 517 navires, 769 184 points), 1 481 de validation, 1 593 de test (11 jours) ; trajets de 4 à 24 h, médiane 12 h ; format `[lat, lon, sog, cog, instant, mmsi]` normalisé dans la zone |
+| Modèle | transformer de 8 couches et 8 têtes, plongement de 768 (environ 58 millions de paramètres), position en grille de 0,01 degré, vitesse au nœud, route par 5 degrés ; perte d'entropie croisée multi résolution |
+| Entraînement | 50 époques, GTX 1080 Ti ; 3 h d'historique, horizon jusqu'à 15 h ; 60 min pour 10 jours de test |
+| Mesure | erreur de distance moyenne, **meilleur de 16 tirages** |
+| Résultats (milles) | TrAISformer 0,48, 0,94, 1,64 à 1, 2, 3 h ; GeoTrackNet 0,72, 1,59, 2,67 ; TrAISformer à un seul tirage 1,28, 2,88, 5,02 ; sous 10 milles jusqu'à 9,7 h |
+
+**Réserve** : le « meilleur de 16 » choisit après coup le tirage le plus proche de la vérité. Pour viser un passage
+satellite, il faut une seule prévision et une zone d'incertitude, ou plusieurs modes chacun avec sa probabilité : la
+mesure utile pour nous est celle du tirage unique et de la couverture d'un cercle (ou de plusieurs fenêtres).
+
+Notre préparation (`mars/trajectoire.py`) reprend ces règles, plus deux coupures : changement de destination, et
+saut durable (deux navires sous un même MMSI).
+
+## 2. Notre archive
+
+**Format** (mars/archive.py) : sur R2, un Parquet zstd par type (positions, statiques), zone et jour, trié par navire
+puis par instant (`ais/positions/zone=…/date=…/…parquet`), inscrit dans la table `archives` (lignes, octets, MD5).
+Champs des positions : mmsi, instant (texte AISStream, décimales de longueur variable), lat, lon, sog, cog, cap,
+statut de navigation, classe B, zone, source. Statiques : nom, OMI, indicatif, type AIS, longueur, destination.
+Environ 26 Mo par jour pour les quatre zones (27,4 octets par position).
+
+**Continuité, d'après la frise du serveur** (lecture en GET) : toutes les journées du 06 au 21/10 ont des données
+dans les quatre zones ; une seule coupure générale du flux de plus de 30 minutes, le 14/10 de 10:18 à 12:59 (2 h 41).
+L'incident du 18/10 n'apparaît pas dans les statistiques du flux : la commande de mesure dira si des objets manquent
+sur R2. En Bretagne, le nombre de navires par heure baisse à partir du 16/10 (de 130 à 145 à environ 100).
+
+| Navires par heure (moyenne journalière, du 06 au 21/10) | Bretagne | Manche | Gascogne | Méditerranée |
+|---|---|---|---|---|
+| plage | 97 à 148 | 598 à 864 | 132 à 224 | 316 à 458 |
+
+### Pré mesure sur un échantillon (lecture seule, en GET)
+
+La mesure complète lit l'archive R2, ce que seul le serveur peut faire (jeton filtré sur son IP). En attendant, une
+pré mesure a été faite sur le Mac à partir de positions lues par l'API du serveur (tunnel, GET seulement) :
+* **flotte** : instantanés toutes les 6 h du 06 au 21/10, 10 820 navires vus, 2 847 en route au moins trois fois ;
+* **échantillon** : jusqu'à 15 navires par zone et par catégorie, les plus souvent en route (340 navires, 517 364
+  positions de la base, déjà allégées à une par minute en route) ;
+* **côte** : table `land` de la base de test (même source GSHHG que le serveur) ;
+* **limites** : échantillon biaisé vers les navires actifs ; le GPX ne porte pas la vitesse déclarée, remplacée par
+  la vitesse mesurée entre deux positions ; pas de coupure au changement de destination.
+
+| Trajets exploitables (4 h au moins, hors côte) | Total | Médiane de durée | 90e centile |
+|---|---|---|---|
+| échantillon, 16 jours | 1 483 | 7,5 h | 17,8 h |
+
+| Fin des trajets | Silence de 2 h | Approche de la côte | Arrêt | Fin des données |
+|---|---|---|---|---|
+| part | 37 % | 30 % | 27 % | 6 % |
+
+**Continuité** : 89 % des silences qui coupent un trajet surviennent à plus de 10 km de la côte. Ce sont des trous
+de réception d'AISStream au large plus que des navires qui se taisent : le trajet utilisable s'arrête là où notre
+couverture s'arrête. Sur 13 147 segments, 9 233 font moins de 4 h une fois rééchantillonnés.
+
+| Flotte en route (06 au 21/10) | Bretagne | Manche | Gascogne | Méditerranée |
+|---|---|---|---|---|
+| cargos | 63 | 715 | 119 | 74 |
+| pétroliers | 26 | 326 | 45 | 10 |
+| passagers | 23 | 131 | 17 | 64 |
+| pêche | 68 | 245 | 100 | 34 |
+| autres | 210 | 395 | 84 | 98 |
+
+### Projection : quand atteindre le volume de l'article
+
+Volume de référence : les 10 605 trajets d'entraînement de cargos et pétroliers du jeu publié (69 jours dans une zone
+de 2,5 par 2,7 degrés, environ 154 par jour). Taux mesuré sur l'échantillon (trajets de cargos et pétroliers par
+navire et par jour), appliqué à la flotte en route ; fourchette haute telle quelle, basse divisée par deux (biais de
+l'échantillon vers les navires actifs). Point de départ : 06/10/2026.
+
+| Zone | Trajets par jour (bas à haut) | Volume de l'article atteint |
+|---|---|---|
+| Manche | 155 à 310 | 09/11/2026 au 13/12/2026 |
+| Gascogne | 22 à 43 | 06/2027 à 02/2028 |
+| Méditerranée | 8 à 16 | 08/2028 à 07/2030 |
+| Bretagne | 6 à 11 | 05/2029 à 11/2031 |
+
+La Bretagne (rail d'Ouessant) est peu reçue par AISStream : son volume viendra du jeu GeoTrackNet (même zone) et de
+l'affinage à partir d'un modèle pré entraîné. La mesure complète remplacera ces chiffres par ceux de l'archive.
+
+## 3. Données d'entraînement externes
+
+| Jeu | Disponibilité (22/10/2026) | Licence | Format, volume, période | Réutilisable par TrAISformer |
+|---|---|---|---|---|
+| **DMA** (Danish Maritime Authority) | seau S3 public `aisdata.ais.dk` : mois de 2006 à 2024, puis un fichier par jour du 27/02/2025 au 19/10/2026 | données publiques réutilisables (loi danoise sur la réutilisation des informations du secteur public) ; pas de licence écrite sur le seau : à vérifier | CSV zippés de 26 colonnes (horodatage, MMSI, position, vitesse, route, cap, type, dimensions, destination) ; 2019 : 16 à 18 Go par mois ; 2025 : environ 0,5 Go par jour | oui, par le script de préparation de GeoTrackNet (`csv2pkl.py`) ou le nôtre ; le jeu traité de l'article est déjà dans le dépôt (49 Mo) |
+| **GeoTrackNet, Bretagne** (CLS, récepteur d'Ouessant) | dans le dépôt `CIA-Oceanix/GeoTrackNet` (`ct_2017010203_10_20.zip`, 41 Mo) | code MIT ou CECILL C ; données fournies par CLS, conditions de réutilisation à confirmer (jeu complet 2011 à 2019 sur demande à CLS) | cargos et pétroliers, 01/01 au 31/03/2017, zone de 47,5 à 49,5 N et 7 à 4 W (notre zone Bretagne), pas de 5 minutes ; 7 827 trajets d'entraînement, 1 193 de validation, 1 271 de test | oui, format voisin (positions normalisées dans la zone) ; rééchantillonnage à 10 minutes à faire |
+| **École navale** (Ray et al., Zenodo 1167595) | en ligne, « AIS Data.zip » de 201 Mo | **CC BY NC SA 4.0** : usage non commercial | Brest, d'octobre 2015 à mars 2016, un récepteur côtier, environ 19 millions de positions, tous types | après préparation (nos règles) ; la clause non commerciale l'exclut d'un usage pour un client |
+
+**Écart de domaine** : la DMA et le récepteur d'Ouessant sont des réseaux côtiers denses (positions toutes les
+quelques secondes, peu de trous) ; AISStream est un agrégat de récepteurs bénévoles, avec de longs trous au large
+(89 % des silences). Le trafic danois (détroits, ferries, voies du Kattegat) diffère de la Manche (dispositif de
+séparation du trafic, flux est ouest massif) et de la Méditerranée. Les types : l'article se limite aux cargos et
+pétroliers ; nos usages concernent aussi la pêche et les autres types (navires des listes de toute nature).
+
+**Stratégie proposée** : pré entraînement sur la DMA (plusieurs mois, cargos et pétroliers puis tous types) et sur
+GeoTrackNet Bretagne ; affinage par zone sur notre archive avec des trous simulés à l'entraînement (positions
+retirées comme le fait AISStream) ; évaluation uniquement sur nos données françaises, sur une période tenue à l'écart.
+
+## 4. Référence avant tout modèle
+
+Trois prédicteurs simples, sur des fenêtres de 3 h d'historique et 3 h à prévoir (une par heure de trajet), routes
+apprises avant le 17/10, évaluation du 17 au 22/10 (394 trajets de test, 1 762 fenêtres, 135 navires) :
+* **estime** : dernière vitesse et dernière route (celles de la vérification satellite actuelle) ;
+* **estime mesurée** : vitesse et route mesurées entre les deux dernières positions ;
+* **routes fréquentes** : grille de 0,02 degré, huit secteurs de cap d'arrivée ; dans une cellule fréquentée, cap de
+  sortie moyen du trafic d'entraînement (les virages des routes sont appris), vitesse constante.
+
+**Cargos et pétroliers** (437 fenêtres, 52 navires), erreur finale en km : médiane / moyenne / 90e centile
+
+| Prédicteur | 1 h | 2 h | 3 h | Moyenne en milles (1, 2, 3 h) |
+|---|---|---|---|---|
+| Estime | 1,3 / 3,6 / 10,7 | 5,2 / 10,4 / 27,3 | 13,0 / 18,7 / 43,3 | 1,95 ; 5,60 ; 10,11 |
+| Estime mesurée | 1,1 / 3,4 / 10,1 | 5,1 / 10,0 / 25,1 | 12,7 / 18,2 / 41,9 | 1,84 ; 5,39 ; 9,82 |
+| Routes fréquentes | 1,1 / 3,3 / 9,0 | 3,8 / 9,3 / 24,3 | 10,4 / 16,9 / 41,6 | 1,77 ; 5,03 ; 9,12 |
+| TrAISformer, article (meilleur de 16) | | | | 0,48 ; 0,94 ; 1,64 |
+| TrAISformer, article (un tirage) | | | | 1,28 ; 2,88 ; 5,02 |
+
+Erreur moyenne sur le trajet (ADE), routes fréquentes : 1,6, 4,1 et 7,3 km à 1, 2 et 3 h.
+
+```mermaid
+xychart-beta
+  title "Cargos et pétroliers : erreur finale moyenne (milles)"
+  x-axis ["1 h", "2 h", "3 h"]
+  y-axis "milles" 0 --> 11
+  line [1.95, 5.60, 10.11]
+  line [1.77, 5.03, 9.12]
+  line [1.28, 2.88, 5.02]
+  line [0.48, 0.94, 1.64]
+```
+Lignes, de haut en bas : estime, routes fréquentes, TrAISformer à un tirage (article), TrAISformer meilleur de 16
+(article). Les chiffres de l'article viennent des détroits danois, couverts sans trou : à confirmer sur nos données.
+
+**Médiane de l'erreur finale à 1, 2, 3 h (km), estime puis routes fréquentes**
+
+| Groupe | Fenêtres | Estime | Routes fréquentes |
+|---|---|---|---|
+| Bretagne | 58 | 3,9 ; 11,5 ; 16,9 | 2,8 ; 9,8 ; 16,6 |
+| Manche | 1 212 | 5,0 ; 11,6 ; 18,0 | 4,3 ; 9,9 ; 15,5 |
+| Gascogne | 275 | 2,3 ; 9,1 ; 15,8 | 2,2 ; 8,4 ; 14,5 |
+| Méditerranée | 217 | 1,6 ; 5,1 ; 13,4 | 1,3 ; 4,6 ; 10,8 |
+| Cargos | 278 | 1,2 ; 4,4 ; 11,2 | 1,0 ; 3,8 ; 10,4 |
+| Pétroliers | 159 | 1,6 ; 7,1 ; 14,9 | 1,4 ; 3,9 ; 10,4 |
+| Passagers | 93 | 1,2 ; 3,2 ; 6,6 | 1,0 ; 2,9 ; 4,9 |
+| Pêche | 806 | 5,5 ; 12,5 ; 19,1 | 5,1 ; 11,1 ; 16,9 |
+| 5 à 10 nœuds | 261 | 1,8 ; 7,1 ; 14,6 | 1,6 ; 6,6 ; 14,9 |
+| 10 à 15 nœuds | 209 | 1,3 ; 4,7 ; 13,0 | 1,3 ; 3,3 ; 8,8 |
+| 15 à 25 nœuds | 89 | 1,8 ; 6,3 ; 13,9 | 1,1 ; 3,4 ; 6,0 |
+
+Les routes fréquentes gagnent surtout sur les navires rapides (15 à 25 nœuds : 6,0 km au lieu de 13,9 à 3 h) et sur
+les pétroliers à 2 h ; elles ne font rien pour la pêche (trajets sans route). La Manche est la plus difficile, à cause
+de la pêche et des traversées courtes.
+
+**Cercle actuel de la vérification satellite** (2 km plus 30 % de la distance parcourue, borné à 30 km) : part des
+positions réelles qu'il contient, et rayon qui en aurait contenu 80 %.
+
+| Vitesse | Horizon | Rayon actuel moyen | Couverture actuelle | Rayon pour 80 %, estime | Rayon pour 80 %, routes |
+|---|---|---|---|---|---|
+| 5 à 10 nœuds | 1 h | 6,2 km | 74 % | 8,9 km | 8,3 km |
+| 5 à 10 nœuds | 3 h | 14,6 km | 49 % | 37,9 km | 35,3 km |
+| 10 à 15 nœuds | 1 h | 8,8 km | 87 % | 5,4 km | 4,2 km |
+| 10 à 15 nœuds | 3 h | 22,3 km | 68 % | 34,7 km | 31,5 km |
+| 15 à 25 nœuds | 1 h | 11,2 km | 94 % | 6,1 km | 2,9 km |
+| 15 à 25 nœuds | 3 h | 28,9 km | 72 % | 32,6 km | 23,7 km |
+
+Le cercle actuel est trop large à 1 h pour les navires rapides et trop petit à 3 h pour tous : un cercle appris par
+horizon et par vitesse (quantiles mesurés) ferait déjà mieux, avant tout modèle.
+
+## 5. Plan de calcul et coût
+
+**Entraînement.** Un entraînement de l'ordre de l'article : environ 58 millions de paramètres, 38 millions de positions
+vues (50 époques de 770 000), soit 1,3 × 10^16 opérations.
+
+| Où | Durée estimée | Coût | Remarques |
+|---|---|---|---|
+| L4 éphémère (Scaleway, `fr-par-2`) | 13 min de calcul, plus environ 15 min de démarrage | 0,4 € par entraînement (0,79 € de l'heure, à la minute) | rupture de stock constatée le 16/10 : attente et reprise déjà codées pour Sentinel 1 ; L40S en secours (1,47 €/h) |
+| GPU du MacBook Air (MPS) | 4 h environ | aucun | sans ventilateur : ralentissement thermique probable ; convient aux essais sur un mois de données |
+| Processeur du Mac | 12 h environ | aucun | à éviter |
+| Serveur | non | | 4 Go, conteneur de 768 Mo : ni entraînement ni extraction lourde |
+
+Une campagne d'essais (une dizaine d'entraînements, pré entraînement DMA compris) reste sous 10 €, hors du budget
+Sentinel (8 € par mois) ou dans un budget à part, à décider.
+
+**Chemin des données.**
+1. Sur le serveur, une commande d'extraction (phase 2) produit les trajets rééchantillonnés à 10 minutes en Parquet
+   compact (instant, lat, lon, vitesse, route, mmsi, type), par zone et par semaine, avec la même préparation que la
+   mesure. Environ 8 octets par point en zstd : de l'ordre de 1,5 Mo par jour pour les quatre zones, 0,5 Go par an.
+2. Le Parquet est déposé dans le seau des modèles (`mars-c2-modeles`), jamais dans le seau principal accessible par
+   le seul jeton du serveur ; le Mac ou le travailleur GPU le lit par une adresse présignée signée par le serveur.
+3. Coût R2 : négligeable (0,5 Go par an dans les 10 Go gratuits, aucune sortie facturée).
+4. Les données externes (DMA, GeoTrackNet) sont téléchargées et préparées sur le Mac (trois mois de DMA 2025 : environ
+   45 Go à télécharger, quelques Go une fois réduits).
+
+**Inférence**, selon les usages (modèle exporté en ONNX : pas de torch dans l'image des scripts, environ 250 Mo de
+mémoire pour 58 millions de paramètres) :
+
+| Usage | Fréquence | Volume | Où |
+|---|---|---|---|
+| a. Vérification satellite | à chaque demande (quelques par jour) | 1 navire, 16 tirages | serveur, processeur (quelques secondes) |
+| b. Score d'anomalie | à chaque cycle des dossiers | les navires des dossiers (dizaines) | serveur, processeur |
+| c. Anticipation | toutes les 10 à 15 minutes | navires des listes et navires lents près des câbles (une centaine), pas toute la flotte | serveur si le modèle tient en quelques secondes par navire ; sinon modèle réduit, ou travailleur |
+
+## 6. Risques
+
+1. **Horizon de l'usage a** : les passages tombent 13 à 31 h après la dernière position. À ces horizons, l'article
+   dépasse 10 milles d'erreur après 9,7 h ; il faudra des prévisions à plusieurs modes, chacun une fenêtre satellite
+   (quatre fenêtres par demande sont déjà permises), et accepter un taux de réussite modeste.
+2. **Trous de réception** : 89 % des silences sont au large ; le modèle reçoit des historiques troués et s'entraîne
+   sur des trajets courts (médiane 7,5 h). Entraînement avec trous simulés nécessaire.
+3. **Volume** : hors Manche, nos données ne suffiront pas avant 2027 ou plus ; tout repose sur le pré entraînement.
+4. **Mesure optimiste de l'article** (meilleur de 16) : il faut comparer à un tirage unique et à une couverture.
+5. **Licences** : clause non commerciale de l'École navale ; conditions de CLS pour GeoTrackNet ; absence de licence
+   écrite sur le seau de la DMA.
+6. **Serveur** : mémoire juste (768 Mo pour le conteneur des tâches) ; l'inférence doit passer par ONNX ; la mesure
+   complète doit tourner dans un conteneur à part.
+7. **Stock des L4** chez Scaleway.
+8. **Saisons** : notre archive commence le 06/10/2026 ; l'hiver, la pêche et les routes changent.
+
+## 7. Questions pour Antoine
+
+1. **Usage a** : vise t on l'horizon réel des passages (12 à 30 h) avec des prévisions à plusieurs modes, ou garde t on
+   1 à 3 h (usages b et c) en traitant l'usage a par un cercle appris en attendant ?
+2. **Cercle appris dès maintenant** : remplacer le cercle actuel (2 km plus 30 %) par des quantiles mesurés par horizon
+   et par vitesse, sans modèle ? Gain immédiat sur la couverture, petit changement de règles.
+3. **Types de navires** : l'article se limite aux cargos et pétroliers ; inclut on la pêche et les autres types (navires
+   des listes de toute nature), au prix d'erreurs plus grandes ?
+4. **Où entraîner** : GPU du Mac pour les essais, L4 pour les entraînements complets ? Budget à part du budget Sentinel ?
+5. **Données externes** : d'accord pour télécharger trois mois de DMA (environ 45 Go sur le Mac) et utiliser le jeu
+   GeoTrackNet Bretagne ? Écarte t on le jeu de l'École navale (clause non commerciale) ?
+6. **Seau des modèles** : son jeton peut il écrire (dépôt des Parquet d'entraînement depuis le serveur) ?
+7. **Mesure complète** : la lancer maintenant sur le serveur (blocs ci dessous) pour remplacer la pré mesure ?
+
+## 8. Mesure complète sur l'archive (serveur)
+
+`taches.py trajectoire-mesures [zones…] [--du AAAA-MM-JJ] [--au AAAA-MM-JJ] [--test-jours 5]` : lecture seule (R2 et
+SELECT), objets lus un à un dans `data/ais_live/.trajectoire` puis effacés, rapport JSON dans ce même dossier. Elle
+mesure :
+* l'inventaire (octets et lignes par zone et par jour, journées manquantes) et les heures sans position ;
+* les trajets par zone, par semaine et par type, et les motifs de coupure ;
+* la continuité, la projection de volume, les références et les rayons pour 80 % et 90 %.
+
+Mémoire mesurée sur une archive synthétique à l'échelle de la Manche (16 jours, 500 000 positions par jour, 1 500
+navires) : 431 Mo au plus, 34 s. Le pic passait de 1 220 Mo à 431 Mo en corrigeant trois points : préparation par
+groupes de navires, une position par tranche de 10 minutes, allocateur du système au lieu de celui d'Arrow. À lancer
+dans un conteneur à part (`docker compose run --rm`), jamais dans celui de la boucle des tâches.
