@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, LogOut, Minus, Plus } from "lucide-react";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
-import { api, type PrefsNotification, type BlocRegle, type EtatControle, type Interrupteur, type SystemeControle } from "../lib/api";
+import { COULEUR_NIVEAU } from "../registres/etat";
+import { api, type PrefsNotification, type BlocRegle, type Echeance, type EtatControle, type Interrupteur, type SystemeControle } from "../lib/api";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
@@ -223,6 +224,35 @@ function Lien({ href, titre }: { href: string | null; titre: string }) {
     <a href={href} target="_blank" rel="noreferrer" title={titre} aria-label={titre} className="text-faint hover:text-signal">
       <ExternalLink size={11} className="inline" />
     </a>
+  );
+}
+
+/** Échéance d'un secret en clair : date et délai, « expirée », « non déclarée » ou « date illisible » ; couleur
+ *  seulement à 14 jours (orange) puis 3 jours et au delà (rouge). */
+export function quandEcheance(x: Echeance): { texte: string; couleur: string | null } {
+  if (x.illisible) return { texte: Y.illisible(x.variable), couleur: COULEUR_NIVEAU.orange };
+  if (!x.expire_le || x.jours == null) return { texte: Y.nonDeclaree(x.variable), couleur: null };
+  const date = x.expire_le.slice(0, 10).split("-").reverse().join("/");
+  if (x.jours < 0) return { texte: `${Y.expiree} (${date})`, couleur: COULEUR_NIVEAU.rouge };
+  return { texte: `${date}, ${Y.dans(x.jours)}`,
+    couleur: x.jours <= 3 ? COULEUR_NIVEAU.rouge : x.jours <= 14 ? COULEUR_NIVEAU.orange : null };
+}
+
+function Echeances({ e }: { e: Echeance[] }) {
+  if (!e.length) return <p className="text-[12px] text-muted">{Y.aucuneEcheance}</p>;
+  return (
+    <ul className="space-y-0.5 text-[11.5px]">
+      {e.map((x) => {
+        const q = quandEcheance(x);
+        return (
+          <li key={x.cle} className="flex justify-between gap-2 text-muted">
+            <span className="text-ink">{x.libelle}</span>
+            <span className={`tabular-nums ${q.couleur ? "" : x.expire_le ? "text-muted" : "text-faint"}`}
+              style={q.couleur ? { color: q.couleur } : undefined}>{q.texte}</span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -768,6 +798,7 @@ export function RubriqueSysteme({ status, now }: { status: unknown; now: number 
         <ListeIndicateurs status={status} now={now} ids={["ingestion", "disque", "archivage", "version"]} />
       </Partie>
       <Partie id="services" titre={C.sections.services} ouverte>{q.data ? <Systeme s={q.data} /> : null}</Partie>
+      <Partie id="echeances" titre={C.sections.echeances} ouverte>{q.data ? <Echeances e={q.data.echeances ?? []} /> : null}</Partie>
     </>
   );
 }

@@ -48,7 +48,7 @@ Usage :
     python scripts/taches.py sentinel2-poids [--nettoyer] # poids Sentinel 2 dans le seau des modèles (une fois)
     python scripts/taches.py sentinel2-diagnostic     # seau des modèles, variables des conteneurs, poids (lecture seule)
     python scripts/taches.py sentinel2-heures [J]     # heure propre des tuiles Sentinel 2 du calendrier
-    python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? lecture seule, aucune création, aucun coût
+    python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? aucune instance, aucun coût ; crée au besoin le groupe de sécurité des travailleurs
     python scripts/taches.py sentinel-candidats [H]    # passages des H (36) dernières heures avec un navire des listes
     python scripts/taches.py sentinel-lever-incompatible TYPE ZONE   # lève le marquage d'un GPU inutilisable
     python scripts/taches.py coupures-injection [--jour 2026-10-09] [--essais 20]
@@ -72,7 +72,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import psycopg
 
-from mars import archive, controle, supervision, traces
+from mars import archive, controle, echeances, supervision, traces
 from mars.config import ROOT, database_url, load_env, load_rules
 
 LIVE = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
@@ -182,7 +182,24 @@ def tasks(conn):
         "passages": (lambda: update_passes(conn), 1, HOUR),
         "viirs": (lambda: launch_viirs(conn), 1, VIIRS_HOUR),
         "preuves": (lambda: purge_proofs(conn), 1, HOUR),
+        "echeances": (lambda: echeances.relever(conn, load_rules()), 1, HOUR),   # lot Z1 : secrets qui expirent
+        "essai_restauration": (lambda: essai_restauration(conn), 30, HOUR),        # lot Z2 : une fois par mois
     }
+
+
+def essai_restauration(conn, cible: str | None = None) -> dict:
+    """Dernière sauvegarde restaurée dans une base jetable et comparée à la base en service (mars/restauration.py).
+    Échec : notification ntfy, une par jour au plus (la tâche est retentée chaque heure)."""
+    from mars import restauration
+    try:
+        return restauration.essai(conn, r2(), database_url(), cible)
+    except Exception as e:
+        deja = conn.execute("SELECT count(*) FROM task_runs WHERE task = 'essai_restauration' AND status = 'echec' "
+                            "AND started_at > now() - interval '1 day'").fetchone()[0]
+        if not deja:
+            controle.notifier("pannes", "elevee", "MARS C2 : essai de restauration en échec",
+                              f"La dernière sauvegarde ne se restaure pas correctement : {str(e)[:300]}", conn=conn)
+        raise
 
 
 def regles(conn) -> dict:
@@ -221,17 +238,18 @@ def launch_viirs(conn, manuel: bool = False, malgre_pause: bool = False, motif: 
     pause = garde_pause(conn, rules, "viirs", manuel, malgre_pause, motif)
     if pause:
         return pause
-    scw, token = travailleurs.Scaleway.from_env(), os.environ.get("EARTHDATA_TOKEN")
-    if scw is None or not token:
-        raise travailleurs.RefusLancement("clés absentes du .env : SCW_SECRET_KEY, SCW_PROJECT_ID, EARTHDATA_TOKEN")
+    scw = travailleurs.Scaleway.from_env()
+    if scw is None:
+        raise travailleurs.RefusLancement("clés absentes du .env : SCW_SECRET_KEY, SCW_PROJECT_ID")
     busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'viirs' AND detruit_le IS NULL").fetchone()
     if busy:                     # travailleur actif : ses nuits sont couvertes, rien à lancer (le verrou en base le garantit)
         return {"en_cours": busy[0]}
     p = viirs.plan(conn, requests.Session(), rules, datetime.now(timezone.utc))
     if not p["granules"]:
         return {"nuits": p["nuits"], "granules": 0}
+    # Le jeton Earthdata n'est plus dans le cloud-init (lot Z1) : l'API le remet au travailleur avec sa tâche
     r = travailleurs.launch(conn, scw, rules, "viirs", {"granules": p["granules"], "regions": viirs.regions_boxes()},
-                            {"EARTHDATA_TOKEN": token}, log=log)
+                            {}, log=log)
     if "occupe" in r:            # un autre processus vient de lancer (verrou) : pas un échec
         return {"en_cours": r["occupe"]}
     if "refus" in r:
@@ -879,7 +897,7 @@ def _sentinel_flux(conn, a):
                   "leur fiche, ou relancer l'analyse du passage")
 
 
-@commande("sentinel-diagnostic")                     # lecture seule : Copernicus, puis Scaleway
+@commande("sentinel-diagnostic")                     # Copernicus, puis Scaleway ; seule écriture : groupe de sécurité
 def _sentinel_diagnostic(conn, _a):
     import requests
     from mars import diagnostic, travailleurs
@@ -1005,20 +1023,19 @@ def _operateur_hacher(_conn, a):
     traces.ligne_brute(f"MARS_OPERATEURS={nom}:{controle.hacher(mdp)}")      # copiée dans le .env : sans suffixe
 
 
-@commande("controle-diagnostic", base=False)       # lecture seule : lignes MARS_OPERATEURS (taches et backend)
+@commande("controle-diagnostic", base=False)       # lecture seule : MARS_OPERATEURS, lue par l'API seulement
 def _controle_diagnostic(_conn, _a):
-    """MARS_OPERATEURS lue dans ce conteneur et dans l'API (GET /api/controle/session : noms et raisons seulement) ;
-    code de sortie 1 si une ligne est abîmée ou absente."""
+    """MARS_OPERATEURS n'arrive qu'au conteneur backend (lot Z1, un environnement par service) : elle est lue par l'API
+    (GET /api/controle/session : noms et raisons seulement, jamais d'empreinte) ; code de sortie 1 si une ligne est
+    abîmée ou absente. Une ligne encore présente dans taches est signalée (elle ne devrait plus y être)."""
     import requests
     from mars import diagnostic
     lignes = []
-    ok, abimes = controle.operateurs(), controle.operateurs_abimes()
-    for n in ok:
-        lignes.append((diagnostic.PRET, f"Opérateur {n} (taches)", "empreinte de 64 caractères, bien formée"))
-    for n, r in abimes.items():
-        lignes.append((diagnostic.MANQUE, f"Opérateur {n} (taches)", controle.message_abime(n, r)))
-    if not ok and not abimes:
-        lignes.append((diagnostic.MANQUE, "MARS_OPERATEURS (taches)", "absente du .env : panneau en lecture seule"))
+    if controle.operateurs() or controle.operateurs_abimes():
+        lignes.append((diagnostic.A_VERIFIER, "MARS_OPERATEURS (taches)",
+                       "présente dans ce conteneur : elle ne devrait aller qu'à backend (docker-compose.yml)"))
+    else:
+        lignes.append((diagnostic.INFO, "MARS_OPERATEURS (taches)", "absente, comme prévu : lue par l'API seulement"))
     try:
         api = os.environ.get("MARS_API", "http://backend:8000/api")
         s = requests.get(f"{api}/controle/session", timeout=10).json()
@@ -1156,6 +1173,32 @@ def _mesurer_tableaux(conn, _a):
 @commande("disque")
 def _disque(conn, _a):
     print(archive.check_disk(conn, DISK_PATHS, DISK_PCT, log=log))
+
+
+@commande("echeances")                              # lot Z1 : échéances des secrets, relevées et notifiées
+def _echeances(conn, _a):
+    print(json.dumps(run(conn, "echeances", lambda: echeances.relever(conn, load_rules())), ensure_ascii=False,
+                     indent=2, default=str))
+
+
+@commande("essai-restauration")                      # lot Z2 : dernière sauvegarde restaurée et comparée
+def _essai_restauration(conn, _a):
+    """Base temporaire sur le PostgreSQL en service, ou conteneur jetable si ESSAI_CIBLE (adresse de connexion) est
+    donnée par scripts/essai_restauration.sh ; résultat consigné dans task_runs (essai_restauration)."""
+    r = run(conn, "essai_restauration", lambda: essai_restauration(conn, os.environ.get("ESSAI_CIBLE") or None))
+    print(json.dumps(r, ensure_ascii=False, indent=2, default=str))
+    sys.exit(0 if r is not None else 1)
+
+
+@commande("deploiement")                             # lot Z2 : consigné par scripts/deployer.sh
+def _deploiement(conn, _a):
+    """Déploiement d'une version (DEPLOIEMENT : version, verdict, écarts, durée, migrations appliquées, en JSON),
+    consigné dans task_runs, tracé ; écrit par scripts/deployer.sh sur le serveur, jamais lancé à la main."""
+    d = json.loads(os.environ.get("DEPLOIEMENT") or "{}")
+    if not d.get("version"):
+        raise SystemExit("DEPLOIEMENT absente : commande réservée à scripts/deployer.sh")
+    traces.attributs(**{"deploiement.version": d["version"], "deploiement.verdict": d.get("verdict", "?")})
+    print(json.dumps(run(conn, "deploiement", lambda: d), ensure_ascii=False, default=str))
 
 
 @commande("sauvegardes", base=False)

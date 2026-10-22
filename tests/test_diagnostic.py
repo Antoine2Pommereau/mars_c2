@@ -85,9 +85,16 @@ class ScalewayApi:
         }
         self.routes.update(over)
 
-    def request(self, method, url, **_kw):
-        assert method == "GET", f"diagnostic en écriture : {method} {url}"
+    def request(self, method, url, **kw):
         path, _, query = url.replace("https://api.scaleway.com", "").partition("?")
+        if method == "POST" and path.endswith("/security_groups"):
+            # Seule écriture permise (lot Z1) : le groupe de sécurité des travailleurs, entrée refusée, sortie libre
+            b = kw["json"]
+            assert b["name"] == "mars-travailleurs" and b["inbound_default_policy"] == "drop"
+            assert b["outbound_default_policy"] == "accept" and b["stateful"]
+            self.calls.append(f"creation {path}")
+            return Resp(201, {"security_group": {"id": "sg-" + path.split("/")[4], **b}})
+        assert method == "GET", f"diagnostic en écriture : {method} {url}"
         self.calls.append(path)
         if path.endswith("/products/servers/availability") and "pages" in self.__dict__:
             page = int(dict(q.split("=") for q in query.split("&")).get("page", 1))
@@ -193,7 +200,8 @@ def test_key_expiry_when_reported_in_env(monkeypatch):
     for value, status, text in (("2026-10-10", D.MANQUE, "clés expirées le 10/10/2026"),
                                 ("2026-10-20", D.A_VERIFIER, "encore 8 jour(s)"),
                                 ("2027-01-31", D.PRET, "valables jusqu'au 31/01/2027"),
-                                ("31/01/2027", D.A_VERIFIER, "format AAAA-MM-JJ attendu")):
+                                ("31/01/2027", D.PRET, "valables jusqu'au 31/01/2027"),     # lot Z1 : deux formats
+                                ("fin janvier", D.A_VERIFIER, "format JJ/MM/AAAA ou AAAA-MM-JJ attendu")):
         monkeypatch.setenv("CDSE_TRAVAILLEUR_EXPIRENT_LE", value)
         lines, _ = _run(ScalewayApi())
         rub = "Expiration des clés dédiées aux travailleurs"
@@ -226,3 +234,18 @@ def test_block_volumes_are_read_through_block_storage(monkeypatch):
                          "/block/v1alpha1/zones/fr-par-2/volumes/v1": (200, {"id": "v1", "size": 0})})
     lines, _ = _run(api)
     assert lines["Lecture d'un volume bloc"][0] == D.A_VERIFIER
+
+
+def test_security_groups_created_once_per_worker_zone(monkeypatch):
+    """Lot Z1 : le diagnostic crée le groupe de sécurité des travailleurs dans chaque zone où il manque, puis le vérifie."""
+    _env(monkeypatch)
+    api = ScalewayApi()
+    lines, _ = _run(api)
+    assert lines["Groupe de sécurité en fr-par-1"][0] == D.PRET and "créé" in lines["Groupe de sécurité en fr-par-1"][1]
+    assert lines["Groupe de sécurité en fr-par-2"][0] == D.PRET
+    assert sorted(c for c in api.calls if c.startswith("creation")) == [
+        "creation /instance/v1/zones/fr-par-1/security_groups", "creation /instance/v1/zones/fr-par-2/security_groups"]
+    ouvert = {"id": "sg9", "name": "mars-travailleurs", "project": "p", "inbound_default_policy": "accept"}
+    api = ScalewayApi(**{"/instance/v1/zones/fr-par-1/security_groups": (200, {"security_groups": [ouvert]})})
+    lines, _ = _run(api)
+    assert lines["Groupe de sécurité en fr-par-1"][0] == D.MANQUE and "politique d'entrée" in lines["Groupe de sécurité en fr-par-1"][1]

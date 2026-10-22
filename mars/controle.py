@@ -581,6 +581,9 @@ def verifier_mot_de_passe(mot_de_passe: str, empreinte: str) -> bool:
         return False
 
 
+# Empreinte jamais valable, vérifiée quand le nom est inconnu : même coût de calcul qu'un vrai opérateur
+EMPREINTE_FACTICE = f"pbkdf2_sha256:{ITERATIONS}:{'00' * 16}:{'00' * 32}"
+
 EMPREINTE = re.compile(r"pbkdf2_sha256:[0-9]{4,7}:[0-9a-f]{32}:[0-9a-f]{64}")
 
 

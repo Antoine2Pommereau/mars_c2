@@ -41,6 +41,7 @@ export const REGLAGES: Reglage[] = [
   { rubrique: "activite", partie: "demande", libelle: "Demander une observation", mots: "latitude longitude rayon point manuelle" },
   { rubrique: "budget", partie: null, libelle: "Dépenses du mois", mots: "budget euros cout travailleurs gpu mensuel" },
   { rubrique: "systeme", partie: null, libelle: "Services et versions", mots: "collecte ingestion disque memoire archivage grafana echecs" },
+  { rubrique: "systeme", partie: "echeances", libelle: "Échéances des secrets", mots: "expiration cles jeton copernicus earthdata github scaleway" },
   { rubrique: "journal", partie: null, libelle: "Journal des actions", mots: "historique decisions operateurs panneau qui a fait" },
 ];
 

@@ -1,6 +1,7 @@
-"""Diagnostic Sentinel 1 avant tout essai réel (`taches.py sentinel-diagnostic`), en lecture seule.
+"""Diagnostic Sentinel 1 avant tout essai réel (`taches.py sentinel-diagnostic`), en lecture seule, sauf une écriture :
+le groupe de sécurité des travailleurs, créé dans chaque zone où il manque (lot Z1).
 
-Aucune création, aucun coût : uniquement des lectures (GET) sur les API Scaleway et une lecture de 16 octets d'une image
+Aucune instance, aucun coût : sinon des lectures (GET) sur les API Scaleway et une lecture de 16 octets d'une image
 Copernicus. Chaque vérification rend une ligne : PRÊT, MANQUE (à corriger avant d'essayer) ou À VÉRIFIER (illisible
 avec la clé du serveur : à contrôler dans la console Scaleway). L'ordre suit celui du lancement : Copernicus d'abord,
 Scaleway ensuite.
@@ -70,10 +71,10 @@ def _expiry(pair: dict, now: datetime, required: bool = False) -> tuple[str, str
         return (A_VERIFIER if required else INFO, rubrique,
                 f"non renseignée : {var}=AAAA-MM-JJ dans le .env, date choisie sur "
                 "https://eodata-s3keysmanager.dataspace.copernicus.eu")
-    try:
-        day = datetime.strptime(value.strip(), "%Y-%m-%d").date()
-    except ValueError:
-        return (A_VERIFIER, rubrique, f"{var} illisible ({value!r}) : format AAAA-MM-JJ attendu")
+    from mars.echeances import lire_date
+    day, _illisible = lire_date(value)                 # même lecture que la tâche echeances (lot Z1)
+    if day is None:
+        return (A_VERIFIER, rubrique, f"{var} illisible ({value!r}) : format JJ/MM/AAAA ou AAAA-MM-JJ attendu")
     left = (day - now.date()).days
     shown = day.strftime("%d/%m/%Y")
     if left < 0:
@@ -122,6 +123,7 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
 
     out += _quota(scw, ctype, zone)
     out += _rights(scw, zone)
+    out += groupes_securite(scw, rules)
 
     pn = os.environ.get("SCW_PRIVATE_NETWORK_ID")
     if pn:
@@ -131,6 +133,31 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
                         f"« {body.get('name')} », région {body.get('region')} : régional, donc rattachable depuis {zone}"))
         else:
             out.append((MANQUE, f"Réseau privé en {zone}", f"HTTP {code} : {str(body)[:200]}"))
+    return out
+
+
+def zones_travailleurs(rules: dict) -> list[str]:
+    """Zones où un travailleur peut être créé : zone par défaut, celle de chaque type, de ses secours et replis."""
+    p = rules["travailleurs"]
+    zones = {p["zone"]}
+    for t in p["types"].values():
+        zones.add(t.get("zone", p["zone"]))
+        zones |= {x.get("zone", t.get("zone", p["zone"])) for x in (t.get("secours") or []) + (t.get("repli_cpu") or [])}
+    return sorted(zones)
+
+
+def groupes_securite(scw, rules: dict) -> list[tuple[str, str, str]]:
+    """Groupe de sécurité des travailleurs (lot Z1) dans chaque zone : vérifié, ou créé s'il manque (entrée refusée,
+    sortie libre). Seule écriture du diagnostic, idempotente ; un groupe modifié (entrée acceptée) est signalé."""
+    from mars.travailleurs import GROUPE_SECURITE, ScalewayError
+    out = []
+    for zone in zones_travailleurs(rules):
+        try:
+            g = scw.groupe_securite(zone)
+            out.append((PRET, f"Groupe de sécurité en {zone}", f"{GROUPE_SECURITE} ({g['id']}) "
+                        + ("créé : entrée refusée, sortie libre" if g["cree"] else "vérifié : entrée refusée, sortie libre")))
+        except ScalewayError as e:
+            out.append((MANQUE, f"Groupe de sécurité en {zone}", str(e)[:300]))
     return out
 
 

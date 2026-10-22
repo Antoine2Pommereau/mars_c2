@@ -317,13 +317,29 @@ class ProvisionApi(FakeApi):
     """Faux Scaleway qui suit l'état d'une instance créée : catalogue et fiche de l'image, volume de démarrage copié de
     l'image (ou vide si `boot_image` vaut None), carte privée « syncing » puis « available », démarrage."""
 
-    def __init__(self, nic_states=("syncing", "syncing", "available"), catalogue=CATALOGUE, boot_image=UBUNTU):
+    def __init__(self, nic_states=("syncing", "syncing", "available"), catalogue=CATALOGUE, boot_image=UBUNTU,
+                 groupe=None, regles=(), groupe_instance=None):
         super().__init__()
         self.nic_states, self.state, self.order = list(nic_states), "stopped", []
         self.catalogue, self.boot_image, self.created = catalogue, boot_image, None
+        self.groupe = groupe if groupe is not None else {"id": "sg1", "name": "mars-travailleurs", "project": PROJET,
+                                                         "inbound_default_policy": "drop", "stateful": True}
+        self.regles, self.groupe_instance = list(regles), groupe_instance
 
     def request(self, method, url, **kw):
         path = url.replace("https://api.scaleway.com", "")
+        if method == "GET" and "/security_groups?" in path:
+            assert f"project={PROJET}" in path and "name=mars-travailleurs" in path
+            self.order.append("groupe")
+            return FakeResponse(200, {"security_groups": [self.groupe] if self.groupe else []})
+        if method == "GET" and path.endswith("/rules?page_size=100"):
+            return FakeResponse(200, {"rules": self.regles})
+        if method == "POST" and path.endswith("/security_groups"):
+            b = kw["json"]
+            assert b["inbound_default_policy"] == "drop" and b["outbound_default_policy"] == "accept" and b["stateful"]
+            self.order.append("groupe cree")
+            self.groupe = {"id": "sg-neuf", **b}
+            return FakeResponse(201, {"security_group": self.groupe})
         if "/marketplace/" in path:
             assert "image_label=ubuntu_noble" in path and "zone=fr-par-1" in path and "type=instance_local" in path
             return FakeResponse(200, {"local_images": self.catalogue})
@@ -338,6 +354,7 @@ class ProvisionApi(FakeApi):
             assert "dynamic_ip_required" in body and body["name"] == "mars-travailleur-3"
             assert body["image"] == UBUNTU and body["boot_type"] == "local"
             assert body["volumes"] == {"0": {"size": 20_000_000_000, "volume_type": "l_ssd"}}   # ni nom, ni volume vide
+            assert body["security_group"] == self.groupe["id"]
             return FakeResponse(201, {"server": {"id": "neuf", "state": "stopped", "name": body["name"]}})
         if method == "POST" and path.endswith("/private_nics"):
             assert self.state == "stopped", "réseau privé rattaché après le démarrage"
@@ -361,7 +378,9 @@ class ProvisionApi(FakeApi):
         if method == "GET" and path.endswith("/servers/neuf"):
             self.order.append(f"etat {self.state}")
             image = {"id": self.boot_image, "name": "Ubuntu 24.04"} if self.boot_image else None
+            sg = {"id": self.groupe_instance or (self.groupe or {}).get("id")}
             return FakeResponse(200, {"server": {"id": "neuf", "state": self.state, "image": image, "boot_type": "local",
+                                                 "security_group": sg,
                                                  "volumes": {"0": {"id": "v0", "volume_type": "l_ssd", "size": 20_000_000_000}}}})
         raise AssertionError(f"appel inattendu {method} {path}")
 
@@ -376,9 +395,42 @@ def test_provision_order_create_attach_verify_cloud_init_start():
     created = []
     r = provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda mac: f"#cloud-config {mac}",
                   sleep=lambda _s: None, on_created=created.append)
-    assert api.order == [f"fiche {UBUNTU}", "creation", "etat stopped", "rattachement", "verification", "verification",
-                         "cloud-init", "demarrage", "etat running"]
+    assert api.order == [f"fiche {UBUNTU}", "groupe", "creation", "etat stopped", "rattachement",
+                         "verification", "verification", "cloud-init", "demarrage", "etat running"]
     assert created == ["neuf"] and r["mac"] == "02:00:00:AA:BB:CC" and "02:00:00:AA:BB:CC" in api.cloud
+
+
+def test_security_group_created_when_missing_then_reused():
+    from mars.travailleurs import provision
+    api = ProvisionApi(groupe=False)
+    scw = Scaleway("cle", PROJET, session=api, protected=set())
+    provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda mac: "x", sleep=lambda _s: None)
+    assert api.order[1:3] == ["groupe", "groupe cree"] and api.created["security_group"] == "sg-neuf"
+    assert scw.groupe_securite("fr-par-1") == {"id": "sg-neuf", "cree": False}
+
+
+@pytest.mark.parametrize("groupe, regles, motif", [
+    ({"inbound_default_policy": "accept"}, [], "politique d'entrée"),
+    ({}, [{"direction": "inbound", "action": "accept", "dest_port_from": 22}], "règle"),
+    ({"stateful": False}, [], "sans état"),
+])
+def test_tampered_security_group_blocks_any_creation(groupe, regles, motif):
+    from mars.travailleurs import ScalewayError, provision
+    api = ProvisionApi(groupe={"id": "sg1", "name": "mars-travailleurs", "project": PROJET,
+                               "inbound_default_policy": "drop", "stateful": True, **groupe}, regles=regles)
+    scw = Scaleway("cle", PROJET, session=api, protected=set())
+    with pytest.raises(ScalewayError, match=motif):
+        provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda _m: "x", sleep=lambda _s: None)
+    assert "creation" not in api.order
+
+
+def test_instance_in_another_security_group_is_refused_before_start():
+    from mars.travailleurs import ScalewayError, provision
+    api = ProvisionApi(groupe_instance="sg-defaut-du-projet")
+    scw = Scaleway("cle", PROJET, session=api, protected=set())
+    with pytest.raises(ScalewayError, match="groupe de sécurité"):
+        provision(scw, "fr-par-1", "mars-travailleur-3", T_VIIRS, [TAG, "run-3"], "pn", lambda _m: "x", sleep=lambda _s: None)
+    assert "rattachement" not in api.order and "demarrage" not in api.order
 
 
 def test_provision_stops_before_start_when_private_network_fails():

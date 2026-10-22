@@ -127,3 +127,37 @@ def test_the_guard_would_have_caught_the_missing_sentinel_module(tmp_path):
     seen, _ = _reach([ROOT / "backend" / "app.py"], [ROOT / "backend", ROOT])
     rels = {f.relative_to(ROOT).as_posix() for f in seen}
     assert "backend/sentinel.py" in rels and "backend/sentinel.py" not in _copied(tmp_path / "Dockerfile")
+
+
+# Lot Z1 : dépendances figées. Chaque image installe son requirements.lock (versions exactes et empreintes, produit par
+# uv depuis requirements.txt, commande dans docs/exploitation.md) ; le verrou doit couvrir chaque paquet déclaré.
+
+def _verrou(path: Path) -> dict[str, str]:
+    out = {}
+    for line in path.read_text().splitlines():
+        m = re.match(r"^([A-Za-z0-9_.\-]+)==([^\s\\]+)", line)
+        if m:
+            out[m.group(1).lower().replace("_", "-")] = m.group(2)
+    return out
+
+
+def test_images_install_their_hashed_lock_files():
+    for d in ("backend", "scripts"):
+        df = (ROOT / d / "Dockerfile").read_text()
+        assert f"COPY {d}/requirements.lock ." in df and "--require-hashes -r requirements.lock" in df, d
+        assert "-r requirements.txt" not in df, f"{d} : installation hors du verrou"
+        verrou = _verrou(ROOT / d / "requirements.lock")
+        texte = (ROOT / d / "requirements.lock").read_text()
+        for line in (ROOT / d / "requirements.txt").read_text().splitlines():
+            name = re.split(r"[<>=;\[\s]", line.strip(), maxsplit=1)[0].lower().replace("_", "-")
+            if name and not name.startswith("#"):
+                assert name in verrou, f"{d} : {name} absent de requirements.lock (régénérer le verrou)"
+                pin = re.search(r"==([^\s;]+)", line)
+                assert not pin or verrou[name] == pin.group(1), f"{d} : {name} figé à {verrou[name]}, {pin.group(1)} demandé"
+        assert texte.count("--hash=sha256:") >= len(verrou), f"{d} : verrou sans empreintes"
+
+
+def test_web_image_uses_npm_ci_and_fixed_starlette():
+    assert "RUN npm ci" in (ROOT / "web" / "Dockerfile").read_text()
+    s = _verrou(ROOT / "backend" / "requirements.lock")["starlette"]
+    assert tuple(int(x) for x in s.split(".")[:2]) >= (1, 9), "Starlette sans les correctifs de l'en tête Host (bilan, section 5)"

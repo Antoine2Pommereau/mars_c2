@@ -533,11 +533,17 @@ class GpuLaunchApi:
         self.calls.append((method, path))
         srv = {"id": "gpu", "name": "mars-travailleur-19", "project": "p", "state": self.state, "boot_type": "local",
                "commercial_type": "L4-1-24G", "image": {"id": "gpuos", "name": "Ubuntu Noble GPU OS 13"},
+               "security_group": {"id": "sg2"},
                "volumes": {"0": {"id": "blk", "volume_type": "sbs_volume", "size": 0, "state": "available",
                                  "zone": "fr-par-2"}}}
         if "/marketplace/" in path:
             return _Resp(200, {"local_images": [{"id": "gpuos", "arch": "x86_64", "type": "instance_sbs",
                                                  "compatible_commercial_types": ["L4-1-24G"]}]})
+        if path == "/instance/v1/zones/fr-par-2/security_groups":           # lot Z1 : groupe des travailleurs
+            return _Resp(200, {"security_groups": [{"id": "sg2", "name": "mars-travailleurs", "project": "p",
+                                                    "inbound_default_policy": "drop", "stateful": True}]})
+        if path == "/instance/v1/zones/fr-par-2/security_groups/sg2/rules":
+            return _Resp(200, {"rules": [{"direction": "inbound", "action": "accept", "editable": False}]})
         if path == "/instance/v1/zones/fr-par-2/images/gpuos":
             return _Resp(200, {"image": {"id": "gpuos", "name": "Ubuntu Noble GPU OS 13", "arch": "x86_64",
                                          "root_volume": {"id": "snap", "volume_type": "sbs_snapshot", "size": 0}}})

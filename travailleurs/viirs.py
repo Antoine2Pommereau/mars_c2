@@ -14,7 +14,10 @@ avec les résultats, le serveur la range sur R2. Puis envoi au serveur, par son 
 détections, de l'emprise de chaque granule et des mesures (durées, mémoire, volume téléchargé). Une granule en échec
 n'arrête pas les autres. Le serveur détruit l'instance dès réception (ou à l'échéance de sa durée de vie).
 
-Variables : MARS_TACHE (fichier JSON de la tâche), EARTHDATA_TOKEN. Essai local sur des fichiers déjà présents :
+Tâche et jeton Earthdata remis par le réseau privé, une seule fois, au travailleur qui présente le jeton de son
+exécution (backend/travailleurs.py, lot Z1) : le jeton n'est ni dans le cloud-init, ni dans l'environnement du conteneur,
+ni dans un journal ; il reste en mémoire de ce script. Variables : MARS_TACHE (fichier JSON du lancement : adresse de
+retour et jeton d'exécution), EARTHDATA_TOKEN pour l'essai local seulement. Essai local sur des fichiers déjà présents :
     python3 viirs.py --local tache.json   (granules avec « dnb_path » et « geo_path », résultat sur la sortie standard)
 """
 import base64
@@ -199,13 +202,40 @@ def detect(vvd, dnb_path: str, geo_path: str, tmp: str, boxes: list) -> dict:
             "detections": dets}
 
 
-def run(task: dict, local: bool = False, tr: "otel_mini.Traceur | None" = None) -> dict:
+class Arret(Exception):
+    """Tâche refusée ou injoignable : le travailleur s'arrête avec ce motif."""
+
+
+def fetch_task(task: dict, traceparent: str | None = None) -> tuple[dict, str]:
+    """Tâche remise par le réseau privé, une seule fois : paramètres (granules, régions) et jeton Earthdata, rendu à
+    part pour ne jamais rejoindre la tâche ni un journal. Un refus (403, 409, 503) arrête le travailleur avec son motif."""
+    headers = {"Authorization": "Bearer " + task["jeton"], "Content-Type": "application/json"}
+    if traceparent:
+        headers["traceparent"] = traceparent
+    for k in range(3):
+        try:
+            r = requests.post(task["retour"] + "/etat", json={"etat": "tache"}, headers=headers, timeout=60)
+        except requests.RequestException as e:
+            print("tâche non reçue (" + type(e).__name__ + "), nouvel essai", flush=True)
+            time.sleep(10 * (k + 1))
+            continue
+        if r.status_code != 200:
+            raise Arret("tâche refusée par le serveur (HTTP " + str(r.status_code) + ") : " + r.text[:300])
+        body = r.json()
+        jeton = ((body.pop("identifiants", None) or {}).get("earthdata") or "")
+        if not jeton:
+            raise Arret("tâche reçue sans jeton Earthdata")
+        return {**body, "retour": task["retour"], "jeton": task["jeton"]}, jeton
+    raise Arret("tâche non reçue du serveur après trois essais (réseau privé)")
+
+
+def run(task: dict, local: bool = False, tr: "otel_mini.Traceur | None" = None, token: str | None = None) -> dict:
     t0 = time.time()
     tr = tr or otel_mini.Traceur(None, None, None)
     with tr.span("viirs.chargement_modele"):
         from pipeline import VIIRSVesselDetection      # code d'allenai (/src)
         vvd = VIIRSVesselDetection()
-    token = os.environ.get("EARTHDATA_TOKEN", "")
+    token = token if token is not None else os.environ.get("EARTHDATA_TOKEN", "")      # essai local seulement
     out, octets, stop = [], 0, None
     for k, g in enumerate(task["granules"]):
         r = {"dnb": g["dnb"], "satellite": g.get("satellite")}
@@ -280,11 +310,23 @@ def main():
         return
     task = json.load(open(os.environ.get("MARS_TACHE", "/mars/tache.json")))
     tr = otel_mini.depuis_tache(task, **{"travailleur.tache": "viirs"})
-    with tr.span("travailleur.viirs", **{"viirs.granules": len(task.get("granules", []))}) as racine:
+    with tr.span("travailleur.viirs") as racine:
+        token = None
+        if task.get("tache_par_le_reseau"):
+            with tr.span("travailleur.reception_tache"):
+                try:
+                    task, token = fetch_task(task, tr.traceparent())
+                except Arret as e:
+                    racine.erreur(str(e))
+                    send(task, "/resultats", {"granules": [], "erreur": str(e)[:1000], "mesures": {"rss_max_mo": rss_mo()}},
+                         tr.traceparent())
+                    tr.envoyer()
+                    return
+        racine.set(**{"viirs.granules": len(task.get("granules", []))})
         with tr.span("travailleur.signal_demarre"):
             send(task, "/etat", {"etat": "demarre"}, tr.traceparent())
         try:
-            result = run(task, tr=tr)
+            result = run(task, tr=tr, token=token)
         except Exception as e:
             result = {"granules": [], "erreur": f"{type(e).__name__}: {e}"[:1000], "mesures": {"rss_max_mo": rss_mo()}}
         if result.get("erreur"):

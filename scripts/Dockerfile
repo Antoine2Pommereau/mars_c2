@@ -13,8 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && apt-get update && apt-get install -y --no-install-recommends postgresql-client-16 \
  && apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY scripts/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Lot Z1 : versions figées avec leurs empreintes (scripts/requirements.lock, produit par uv depuis requirements.txt ;
+# docs/exploitation.md) : une même empreinte de commit installe toujours les mêmes paquets
+COPY scripts/requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 # Après les dépendances : changer de commit ne refait pas l'installation
 # Empreinte du commit (docker build --build-arg MARS_VERSION=…) : resource service.version des traces, signes de vie,
 # indicateur « Version » de la barre d'état et tableau Grafana

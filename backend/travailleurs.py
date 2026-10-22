@@ -16,6 +16,8 @@ from fastapi.responses import PlainTextResponse, Response
 
 from preuves import ais_near, proof_of
 from regions import dans_region, region_ewkt
+from mars import traces
+from mars.config import load_rules
 from mars.r2_signature import MODELES, modeles_manquantes, r2_modeles_get_url
 from sentinel import sentinel_metrics
 
@@ -52,6 +54,9 @@ log = logging.getLogger("mars.travailleurs")
 # une paire qui lui est dédiée ; la paire du serveur (CDSE_ACCESS_KEY) ne quitte jamais le serveur
 IDENTIFIANTS = {"sentinel": ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY"),
                 "sentinel2": ("CDSE_TRAVAILLEUR_ACCESS_KEY", "CDSE_TRAVAILLEUR_SECRET_KEY")}
+# Jeton NASA Earthdata des travailleurs VIIRS (lot Z1) : remis de la même façon, une seule fois, jamais dans le
+# cloud-init (lisible par l'API Scaleway et par tout processus de l'instance)
+JETONS = {"viirs": "EARTHDATA_TOKEN"}
 # Poids du modèle Sentinel 2 (lot S2), dans le seau des modèles : adresses présignées de 3 heures par son jeton dédié
 # (jamais le jeton principal, filtré sur l'IP du serveur), ajoutées à la remise seulement (jamais en base ni dans le
 # cloud-init) ; adresses de 5 minutes pour le contrôle d'accès du démarrage (état « acces »)
@@ -125,12 +130,13 @@ async def worker_variables():
     """Présence (oui ou non, jamais la valeur) des variables dont l'API a besoin pour équiper un travailleur, lue
     dans le conteneur backend lui même : taches.py sentinel2-diagnostic dit MANQUE si l'une n'y arrive pas. Pas de
     relais par le port 8090 (nginx n'y laisse passer que etat, resultats, journal et traces)."""
-    noms = (*MODELES, *sorted({n for pair in IDENTIFIANTS.values() for n in pair}))
+    noms = (*MODELES, *sorted({n for pair in IDENTIFIANTS.values() for n in pair}), *sorted(set(JETONS.values())))
     return {n: bool((os.environ.get(n) or "").strip()) for n in noms}
 
 
 async def _deliver_task(c, wid: int) -> dict:
-    """Tâche du travailleur (paramètres en base, sans secret) et, pour son type, la paire de clés lue dans le .env.
+    """Tâche du travailleur (paramètres en base, sans secret) et, pour son type, la paire de clés Copernicus ou le jeton
+    Earthdata lus dans l'environnement de l'API.
     La remise est notée dans `mesures` (tache_remise_le) dans la même requête que sa vérification : une seconde demande
     reçoit 409, même concurrente. Les clés ne sont ni écrites en base ni journalisées."""
     tache = await c.fetchval("SELECT tache FROM travailleurs WHERE id = $1", wid)
@@ -140,6 +146,11 @@ async def _deliver_task(c, wid: int) -> dict:
         if not key or not secret:                       # rien n'est marqué remis : la demande peut être refaite
             raise HTTPException(503, f"clés absentes du .env du serveur ({names[0]}, {names[1]})")
         creds = {"endpoint": S3_COPERNICUS, "region": "default", "access_key": key, "secret_key": secret}
+    jeton = None
+    if tache in JETONS:
+        jeton = (os.environ.get(JETONS[tache]) or "").strip()
+        if not jeton:
+            raise HTTPException(503, f"jeton absent de l'environnement de l'API ({JETONS[tache]})")
     params = await c.fetchval("SELECT parametres FROM travailleurs WHERE id = $1", wid) or {}
     _adresses_r2(params, ACCES_EXPIRE_S)                          # vérifié avant de marquer la tâche remise
     row = await c.fetchrow(
@@ -147,12 +158,15 @@ async def _deliver_task(c, wid: int) -> dict:
         "WHERE id = $1 AND NOT (coalesce(mesures, '{}'::jsonb) ? 'tache_remise_le') RETURNING parametres", wid)
     if row is None:
         raise HTTPException(409, "Tâche déjà remise")
-    log.warning("travailleur %s : tâche remise par le réseau privé%s", wid, " avec sa paire de clés" if creds else "")
+    log.warning("travailleur %s : tâche remise par le réseau privé%s", wid,
+                " avec sa paire de clés" if creds else " avec son jeton" if jeton else "")
+    traces.attributs(**{"travailleur.remise": "tache", "travailleur.secret_remis": bool(creds or jeton)})
     params = dict(row["parametres"] or {})
     if params.get("poids"):
         urls = _adresses_r2(params, POIDS_EXPIRE_S)
         params["poids"] = [{**p, "url": u["url"]} for p, u in zip(params["poids"], urls)]
-    return {**params, **({"identifiants": {"s3": creds}} if creds else {})}
+    ident = {**({"s3": creds} if creds else {}), **({"earthdata": jeton} if jeton else {})}
+    return {**params, **({"identifiants": ident} if ident else {})}
 
 
 # États d'un travailleur dont les spans sont encore acceptés : ses derniers spans partent juste après ses résultats
@@ -184,9 +198,28 @@ async def worker_log(request: Request, wid: int, authorization: str | None = Hea
 
 @router.post("/api/travailleurs/{wid}/resultats")
 async def worker_results(request: Request, wid: int, authorization: str | None = Header(None)):
-    body = await request.json()
+    """Résultats d'un travailleur, validés contre sa tâche avant d'être gardés (mars/validation.py) : un refus est
+    journalisé (travailleur en échec avec son motif, journaux de l'API, trace) et répond 422 ; la surveillance de taches
+    détruit l'instance à la minute suivante, comme après un échec signalé."""
+    from mars import validation
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
     async with request.app.state.pool.acquire() as c:
         await _check(c, wid, authorization)
+        row = await c.fetchrow("SELECT tache, parametres FROM travailleurs WHERE id = $1", wid)
+        try:
+            with traces.span("travailleurs.validation", **{"travailleur.id": wid, "travailleur.tache": row["tache"]}):
+                validation.valider(row["tache"], row["parametres"], body, load_rules())
+        except validation.Refus as e:
+            motif = f"résultats refusés : {e}"[:1000]
+            traces.erreur(motif)
+            log.warning("travailleur %s : %s", wid, motif)
+            await c.execute(
+                "UPDATE travailleurs SET etat = 'echec', erreur = $2, fini_le = now(), mesures = coalesce(mesures, "
+                "'{}'::jsonb) || jsonb_build_object('resultats_refuses', $2::text) WHERE id = $1", wid, motif)
+            raise HTTPException(422, motif)
         await c.execute(
             "UPDATE travailleurs SET etat = 'resultats', resultats_le = now(), resultat = $2, "
             "mesures = mesures || $3 WHERE id = $1", wid, body, body.get("mesures") or {})

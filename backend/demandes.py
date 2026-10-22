@@ -5,7 +5,9 @@ planifiée au cycle suivant (5 minutes au plus)."""
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from controle import exiger_operateur
 from pydantic import BaseModel
 
 from mars import traces
@@ -112,12 +114,11 @@ class NouvelleDemande(BaseModel):
     vessel_id: int | None = None
     alerte_id: int | None = None
     lon: float | None = None
-    lat: float | None = None
-    author: str = "Opérateur"
+    lat: float | None = None     # auteur : l'opérateur connecté
 
 
 @router.post("/api/demandes")
-async def demander(request: Request, n: NouvelleDemande):
+async def demander(request: Request, n: NouvelleDemande, auteur: str = Depends(exiger_operateur)):
     """Demande manuelle d'un opérateur : navire (dernière position), alerte (son navire, sinon son point) ou point de
     la carte. Rattachée à la demande active du même navire s'il y en a une. Refusée tant que le tip and cue est coupé
     (config/rules.yaml, tip_and_cue.actif)."""
@@ -125,7 +126,6 @@ async def demander(request: Request, n: NouvelleDemande):
     tc = rules.get("tip_and_cue") or {}
     if not tc.get("actif") or not (tc.get("tips", {}).get("operateur") or {}).get("actif"):
         raise HTTPException(409, "Tip and cue coupé (config/rules.yaml, tip_and_cue.actif)")
-    auteur = (n.author or "").strip() or "Opérateur"
     async with request.app.state.pool.acquire() as c, c.transaction():
         if await c.fetchval("SELECT source_en_pause('tip_and_cue')"):
             raise HTTPException(409, "Tip and cue en pause (panneau de contrôle)")
@@ -171,7 +171,7 @@ async def demander(request: Request, n: NouvelleDemande):
 
 
 @router.post("/api/demandes/{did}/annuler")
-async def annuler(request: Request, did: int):
+async def annuler(request: Request, did: int, _op: str = Depends(exiger_operateur)):
     async with request.app.state.pool.acquire() as c:
         etat = await c.fetchval(
             "UPDATE demandes_observation SET etat = 'annulee', fini_le = now(), mis_a_jour_le = now() "

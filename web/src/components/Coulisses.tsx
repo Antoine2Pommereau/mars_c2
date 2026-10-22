@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import { L } from "../lib/libelles";
 import { COULEUR_NIVEAU, mesurer } from "../registres/etat";
 import { chercherReglages, GROUPES, type Reglage, type Rubrique } from "../registres/reglages";
-import { Visee } from "./Reglages";
+import { quandEcheance, Visee } from "./Reglages";
 
 const C = L.coulisses;
 const A = C.attention;
@@ -16,6 +16,7 @@ function useAttention(status: unknown, now: number): Partial<Record<Rubrique, { 
   const ctl = useQuery({ queryKey: ["controle", "etat"], queryFn: api.controle.etat, refetchInterval: 30_000 });
   const session = useQuery({ queryKey: ["controle", "session"], queryFn: api.controle.session });
   const notif = useQuery({ queryKey: ["controle", "notifications"], queryFn: api.controle.notifications, staleTime: 60_000 });
+  const sysq = useQuery({ queryKey: ["controle", "systeme"], queryFn: api.controle.systeme, refetchInterval: 60_000 });
   const ms = mesurer(status, now);
   const out: Partial<Record<Rubrique, { couleur: string; motif: string }>> = {};
   const pire = (ids: string[]) => {
@@ -24,7 +25,11 @@ function useAttention(status: unknown, now: number): Partial<Record<Rubrique, { 
     return x && { couleur: COULEUR_NIVEAU[x.m.niveau], motif: A.ligne(x.ind.libelle, x.m.resume) };
   };
   const sys = pire(["ingestion", "disque", "archivage", "version"]);
+  // Échéance d'un secret à 14 jours ou moins (lot Z1) : rouge à 3 jours, orange avant
+  const ech = (sysq.data?.echeances ?? []).map((x) => ({ x, q: quandEcheance(x) })).filter(({ q }) => q.couleur)
+    .sort((a, b) => (a.q.couleur === COULEUR_NIVEAU.rouge ? -1 : 0) - (b.q.couleur === COULEUR_NIVEAU.rouge ? -1 : 0))[0];
   if (sys) out.systeme = sys;
+  else if (ech) out.systeme = { couleur: ech.q.couleur!, motif: A.echeance(ech.x.libelle, ech.q.texte) };
   const src = pire(["flux", "listes"]);
   const pauses = (ctl.data?.interrupteurs ?? []).filter((i) => i.en_pause).map((i) => L.controle.sources[i.source] ?? i.nom);
   if (src) out.sources = src;

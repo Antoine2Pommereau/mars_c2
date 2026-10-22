@@ -129,6 +129,9 @@ def api(monkeypatch):
                  (ids["coupure"], ids["echo"]))
     from fastapi.testclient import TestClient as TC
     with TC(app.app) as c:
+        sys.path.insert(0, os.path.dirname(__file__))
+        from aide_session import connecter
+        connecter(c, monkeypatch)                     # lot Z1 : toute décision exige une session d'opérateur
         yield c, conn, vid, ids
     _nettoyer(conn)
     conn.close()
@@ -208,12 +211,12 @@ def test_api_decision_at_the_dossier_instant(api, monkeypatch):
     monkeypatch.setattr(api_dossiers, "datetime", Fige)
     conn.execute("UPDATE alerts SET status = 'classee' WHERE id = %s", (ids["liste"],))
     r = c.post(f"/api/dossiers/navire:{vid}/decision", json={"action": "classer", "motif": "faux_positif",
-                                                             "author": "Antoine"}).json()
+                                                             "author": "Usurpé"}).json()   # ignoré : la session signe
     assert sorted(r["alertes"]) == sorted([ids["coupure"], ids["echo"]]), "seules les alertes ouvertes"
     lignes = conn.execute("SELECT alert_id, action, motif, author, note FROM alert_actions WHERE alert_id = ANY(%s) "
                           "ORDER BY alert_id", (list(ids.values()),)).fetchall()
-    assert [(a, b, m, au) for a, b, m, au, _n in lignes] == [(ids["coupure"], "classer", "faux_positif", "Antoine"),
-                                                            (ids["echo"], "classer", "faux_positif", "Antoine")]
+    assert [(a, b, m, au) for a, b, m, au, _n in lignes] == [(ids["coupure"], "classer", "faux_positif", "antoine"),
+                                                            (ids["echo"], "classer", "faux_positif", "antoine")]
     assert lignes[0][4] == f"Décision prise sur le dossier navire:{vid}"
     assert conn.execute("SELECT count(*) FROM alerts WHERE rule_key LIKE 'essai_d:%'").fetchone()[0] == 4, "rien supprimé"
     assert [d["cle"] for d in c.get("/api/dossiers", params={"end": T.isoformat()}).json()["dossiers"]] == \

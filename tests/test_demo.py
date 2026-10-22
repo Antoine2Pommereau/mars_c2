@@ -132,7 +132,7 @@ def test_scenarios_saved_by_an_operator(api, monkeypatch):
     s = c.get("/api/controle/scenarios").json()
     assert s[0]["id"] == sid and s[0]["region"] == "bretagne" and s[0]["selection"] == "alerte:12"
     assert s[0]["adresse"] == adresse[1:]
-    assert c.post(f"/api/controle/scenarios/{sid}/retirer").status_code == 200
+    assert c.post(f"/api/controle/scenarios/{sid}/retirer", json={}).status_code == 200
     assert c.get("/api/controle/scenarios").json() == []
     conn.execute("DELETE FROM scenarios_demo")
     conn.execute("DELETE FROM sessions_operateur")

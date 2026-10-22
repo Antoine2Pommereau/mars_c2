@@ -14,7 +14,7 @@ from typing import Literal
 import asyncpg
 import httpx
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,7 @@ from preuves import router as preuves_router
 from travailleurs import router as travailleurs_router, viirs_status
 from sentinel import router as sentinel_router, sentinel_status
 from demandes import demandes_status, router as demandes_router
-from controle import router as controle_router
+from controle import exiger_operateur, router as controle_router
 from dossiers import router as dossiers_router
 import demo
 from mars import traces
@@ -168,7 +168,7 @@ async def get_clock():
 
 
 @app.post("/api/clock")
-async def set_clock(cmd: ClockCommand):
+async def set_clock(cmd: ClockCommand, _op: str = Depends(exiger_operateur)):
     rebase = "sim_anchor = sim_now(), real_anchor = clock_timestamp()"
     async with app.state.pool.acquire() as c:
         live = await c.fetchval("SELECT live FROM sim_clock WHERE id = 1")
@@ -699,7 +699,7 @@ async def _run_analysis(analysis_id: int, bbox: list[float], t0: datetime, produ
 
 
 @app.post("/api/analyses", status_code=202)
-async def create_analysis(req: AnalysisRequest):
+async def create_analysis(req: AnalysisRequest, _op: str = Depends(exiger_operateur)):
     b = req.bbox
     if not (b[0] < b[2] and b[1] < b[3]):
         raise HTTPException(422, "Emprise invalide")
@@ -755,7 +755,7 @@ class RuleRun(BaseModel):
 
 
 @app.post("/api/masks/stationary")
-async def rebuild_stationary_zones(jours: int | None = None):
+async def rebuild_stationary_zones(jours: int | None = None, _op: str = Depends(exiger_operateur)):
     """Zones de mouillage sur toutes les journées chargées, ou sur les `jours` dernières."""
     async with app.state.pool.acquire() as c:
         span = await c.fetchrow("SELECT min(day) AS d0, max(day) AS d1 FROM ais_days")
@@ -809,7 +809,7 @@ async def infrastructure(region: str | None = None, tolerance: float = 0.0):
 
 
 @app.post("/api/masks/reception")
-async def rebuild_reception_cells(jours: int | None = None):
+async def rebuild_reception_cells(jours: int | None = None, _op: str = Depends(exiger_operateur)):
     """Zone de réception fiable sur toutes les positions, ou sur celles des `jours` derniers jours."""
     since = None if not jours else (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=jours)).to_pydatetime()
     async with app.state.pool.acquire() as c:
@@ -834,7 +834,7 @@ async def _rule_days(c, day: str | None):
 
 
 @app.post("/api/rules/ais_gap/run")
-async def ais_gap_run(req: RuleRun):
+async def ais_gap_run(req: RuleRun, _op: str = Depends(exiger_operateur)):
     rules = load_rules()
     async with app.state.pool.acquire() as c:
         if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM reception_cells)"):
@@ -847,7 +847,7 @@ async def ais_gap_run(req: RuleRun):
 
 
 @app.post("/api/rules/ais_gap/selftest")
-async def ais_gap_selftest(req: RuleRun):
+async def ais_gap_selftest(req: RuleRun, _op: str = Depends(exiger_operateur)):
     """Test par injection (mars/rules.py, ais_gap_injection) : coupures de trois heures simulées sur des navires réels,
     dans des transactions annulées ; la base n'est pas modifiée."""
     rules = load_rules()
@@ -858,7 +858,7 @@ async def ais_gap_selftest(req: RuleRun):
 
 
 @app.post("/api/rules/rendezvous/run")
-async def rendezvous_run(req: RuleRun):
+async def rendezvous_run(req: RuleRun, _op: str = Depends(exiger_operateur)):
     rules = load_rules()
     async with app.state.pool.acquire() as c:
         if req.day:
@@ -894,7 +894,7 @@ class AlertAction(BaseModel):
     action: str
     note: str | None = None
     motif: str | None = None     # obligatoire pour classer : faux_positif, activite_legitime, doublon
-    author: str = "Opérateur"    # un seul opérateur pour l'instant ; le champ prépare plusieurs opérateurs
+                                 # auteur : l'opérateur connecté (un champ author envoyé est ignoré)
 
 
 STATUS_OF = {"acquitter": "acquittee", "confirmer": "confirmee", "classer": "classee", "rouvrir": "nouvelle",
@@ -903,7 +903,7 @@ MOTIFS = ("faux_positif", "activite_legitime", "doublon")
 
 
 @app.post("/api/alerts/{alert_id}/actions")
-async def alert_action(alert_id: int, a: AlertAction):
+async def alert_action(alert_id: int, a: AlertAction, author: str = Depends(exiger_operateur)):
     """Décision d'un opérateur sur une alerte : nouveau statut, et trace dans le journal."""
     if a.action not in STATUS_OF:
         raise HTTPException(422, "Action inconnue")
@@ -912,7 +912,6 @@ async def alert_action(alert_id: int, a: AlertAction):
         raise HTTPException(422, f"Motif de classement obligatoire : {', '.join(MOTIFS)}")
     if a.action == "commenter" and not note:
         raise HTTPException(422, "Commentaire vide")
-    author = (a.author or "").strip() or "Opérateur"
     async with app.state.pool.acquire() as c, c.transaction():
         if STATUS_OF[a.action] is None:          # commentaire : le statut ne change pas
             status = await c.fetchval("SELECT status FROM alerts WHERE id = $1", alert_id)

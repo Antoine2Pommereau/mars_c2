@@ -1,3 +1,29 @@
+# Variables par service (lot Z1) : aucun conteneur ne reçoit le .env en entier. Chaque service reçoit seulement les
+# variables qu'il lit, interpolées depuis le .env (${VAR:-} : vide si absente, sans avertissement). La clé Scaleway et
+# la paire Copernicus du serveur ne vont qu'à taches (docker-compose.serveur.yml), MARS_OPERATEURS qu'à backend.
+# tests/test_environnement.py confronte ces listes aux variables lues par le code de chaque service. Le .env reste
+# un seul fichier (/opt/mars_c2/.env), qui sert aussi à l'interpolation.
+x-base: &base
+  DATABASE_URL: postgresql://mars:${POSTGRES_PASSWORD:-mars}@db:5432/mars
+# Seau principal R2 (archives, sauvegardes, preuves images)
+x-r2: &r2
+  R2_ENDPOINT: ${R2_ENDPOINT:-}
+  R2_BUCKET: ${R2_BUCKET:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+# Seau des poids des modèles (adresses présignées remises aux travailleurs)
+x-r2-modeles: &r2modeles
+  R2_MODELES_BUCKET: ${R2_MODELES_BUCKET:-}
+  R2_MODELES_ACCESS_KEY_ID: ${R2_MODELES_ACCESS_KEY_ID:-}
+  R2_MODELES_SECRET_ACCESS_KEY: ${R2_MODELES_SECRET_ACCESS_KEY:-}
+# Paire Copernicus dédiée aux travailleurs : remise par l'API sur le réseau privé, contrôlée par taches
+x-cdse-travailleur: &cdsetravailleur
+  CDSE_TRAVAILLEUR_ACCESS_KEY: ${CDSE_TRAVAILLEUR_ACCESS_KEY:-}
+  CDSE_TRAVAILLEUR_SECRET_KEY: ${CDSE_TRAVAILLEUR_SECRET_KEY:-}
+x-ntfy: &ntfy
+  NTFY_SUJET: ${NTFY_SUJET:-}
+  NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+
 services:
   db:
     image: postgis/postgis:16-3.4
@@ -6,12 +32,14 @@ services:
     environment:
       POSTGRES_DB: mars
       POSTGRES_USER: mars
-      POSTGRES_PASSWORD: mars
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mars}   # ne change pas le mot de passe d'une base déjà créée (docs/exploitation.md)
+    # Lot Z2 : statistiques des requêtes (extension créée par la migration 41) ; changer cette ligne redémarre la base
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=top"]
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"      # Mac : jamais sur le réseau local (le serveur n'en publie aucun)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mars -d mars"]
       interval: 5s
@@ -26,11 +54,16 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    env_file: .env          # Sentinel Hub ; clés des travailleurs et seau des modèles (R2_MODELES_*), remis par l'API
     environment:
-      DATABASE_URL: postgresql://mars:mars@db:5432/mars
+      <<: [*base, *r2, *r2modeles, *cdsetravailleur, *ntfy]
       # Service d'inférence lancé sur le Mac (GPU Apple) ; avec le profil "conteneur" : http://inference:8001
       INFERENCE_URL: ${INFERENCE_URL:-http://host.docker.internal:8001}
+      SH_CLIENT_ID: ${SH_CLIENT_ID:-}                 # Sentinel Hub : passages de la chaîne radar du Mac
+      SH_CLIENT_SECRET: ${SH_CLIENT_SECRET:-}
+      EARTHDATA_TOKEN: ${EARTHDATA_TOKEN:-}           # remis une fois aux travailleurs VIIRS, par le réseau privé
+      MARS_OPERATEURS: ${MARS_OPERATEURS:-}           # empreintes des mots de passe des opérateurs : ici seulement
+      MARS_GRAFANA_URL: ${MARS_GRAFANA_URL:-}
+      PHOTOS: ${PHOTOS:-vesselfinder}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -39,7 +72,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"      # Mac : API sur la machine seulement
 
   # Interface tactique (React), construite puis servie par nginx ; en développement : cd web && npm run dev
   web:
@@ -48,7 +81,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
 
   # AIS en direct : collecte AISStream vers l'archive Parquet (data/ais_live), puis ingestion en base.
   # Le Parquet reste l'archive complète ; la base reçoit des trajectoires allégées (config/rules.yaml, ingestion).
@@ -58,9 +91,10 @@ services:
       context: .
       dockerfile: scripts/Dockerfile
     command: ["python", "scripts/ais_live.py", "collect"]
-    env_file: [.env, config/supervision.env]        # AISSTREAM_API_KEY ; seuils de la supervision
+    env_file: config/supervision.env                  # seuils de la supervision (fichier versionné, sans secret)
     environment:
-      DATABASE_URL: postgresql://mars:mars@db:5432/mars   # redémarrages automatiques consignés dans task_runs
+      <<: *base                                       # redémarrages automatiques consignés dans task_runs
+      AISSTREAM_API_KEY: ${AISSTREAM_API_KEY:-}
     volumes:
       - ./data/ais_live:/app/data/ais_live
     # Incident du 18/10/2026 (collecte figée, conteneur « Up ») : le contrôle de santé arrête une collecte sans fichier
@@ -84,7 +118,7 @@ services:
     command: ["python", "scripts/ais_ingest.py"]
     env_file: config/supervision.env
     environment:
-      DATABASE_URL: postgresql://mars:mars@db:5432/mars
+      <<: *base
     volumes:
       - ./data/ais_live:/app/data/ais_live:ro
       - ./data/listes:/app/data/listes:ro
@@ -110,13 +144,15 @@ services:
     build:
       context: .
       dockerfile: inference/Dockerfile
-    env_file: .env
+    environment:
+      SH_CLIENT_ID: ${SH_CLIENT_ID:-}
+      SH_CLIENT_SECRET: ${SH_CLIENT_SECRET:-}
     volumes:
       - ./config:/app/config:ro
       - ./models:/app/models:ro
       - ./data:/app/data
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
 
 volumes:
   db_data:

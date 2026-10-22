@@ -179,3 +179,79 @@ def test_sentinel_cloud_init_carries_neither_task_nor_keys(conn, monkeypatch):
         assert secret not in text and all(secret not in base64.b64decode(v).decode("utf-8", "replace") for v in files.values())
     # La tâche (sans clé) est en base, pour la remise
     assert conn.execute("SELECT parametres FROM travailleurs WHERE id = %s", (wid,)).fetchone()[0] == params
+
+
+# Lot Z1 : jeton Earthdata des travailleurs VIIRS, remis comme la paire Copernicus (plus jamais dans le cloud-init)
+
+def _viirs():
+    sys.path.insert(0, str(ROOT / "travailleurs"))
+    spec = importlib.util.spec_from_file_location("travailleur_viirs_cles", ROOT / "travailleurs" / "viirs.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_viirs_worker_fetches_task_and_token_apart(monkeypatch):
+    w = _viirs()
+    calls = []
+
+    class R:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"granules": [{"dnb": "g1"}], "regions": [], "identifiants": {"earthdata": "JETON-NASA"}}
+
+    def post(url, json=None, headers=None, timeout=None):
+        calls.append((url, json, headers))
+        return R()
+    monkeypatch.setattr(w.requests, "post", post)
+    task, jeton = w.fetch_task({"retour": "http://172.16.8.2:8090/api/travailleurs/9", "jeton": "j9",
+                                "tache_par_le_reseau": True})
+    assert calls[0][0] == "http://172.16.8.2:8090/api/travailleurs/9/etat" and calls[0][1] == {"etat": "tache"}
+    assert calls[0][2]["Authorization"] == "Bearer j9"
+    assert jeton == "JETON-NASA" and "JETON-NASA" not in json.dumps(task) and task["granules"] == [{"dnb": "g1"}]
+
+    class Refus(R):
+        status_code = 409
+        text = '{"detail": "Tâche déjà remise"}'
+    monkeypatch.setattr(w.requests, "post", lambda *a, **k: Refus())
+    with pytest.raises(w.Arret, match="HTTP 409"):
+        w.fetch_task({"retour": "http://x/api/travailleurs/9", "jeton": "j", "tache_par_le_reseau": True})
+
+
+def test_viirs_task_route_delivers_the_token_once(conn, monkeypatch):
+    wid = conn.execute(
+        "INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, etat) VALUES "
+        "('viirs', 'DEV1-M', 'fr-par-1', %s, %s, 'cree') RETURNING id",
+        (hashlib.sha256(b"jeton-v").hexdigest(), json.dumps({"granules": [{"dnb": "g1"}], "regions": []}))).fetchone()[0]
+    url = f"/api/travailleurs/{wid}/etat"
+    monkeypatch.delenv("EARTHDATA_TOKEN", raising=False)
+    with _client() as client:
+        r = client.post(url, json={"etat": "tache"}, headers={"Authorization": "Bearer jeton-v"})
+        assert r.status_code == 503 and "EARTHDATA_TOKEN" in r.json()["detail"]
+        monkeypatch.setenv("EARTHDATA_TOKEN", "JETON-NASA")
+        r = client.post(url, json={"etat": "tache"}, headers={"Authorization": "Bearer jeton-v"})
+        assert r.status_code == 200 and r.json()["identifiants"] == {"earthdata": "JETON-NASA"}
+        assert r.json()["granules"] == [{"dnb": "g1"}]
+        assert client.post(url, json={"etat": "tache"}, headers={"Authorization": "Bearer jeton-v"}).status_code == 409
+    row = conn.execute("SELECT row_to_json(t)::text FROM travailleurs t WHERE id = %s", (wid,)).fetchone()[0]
+    assert "JETON-NASA" not in row
+
+
+def test_viirs_cloud_init_carries_neither_task_nor_token(conn, monkeypatch):
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_travailleurs_base import FakeScw
+    from mars import travailleurs as T
+    monkeypatch.setenv("EARTHDATA_TOKEN", "JETON-NASA")         # même présent dans l'environnement de taches
+    scw = FakeScw()
+    params = {"granules": [{"dnb": "VNP02DNB_NRT.A2026295.0130", "dnb_url": "https://nrt3.modaps/x"}], "regions": []}
+    out = T.launch(conn, scw, load_rules(), "viirs", params, {}, sleep=lambda _s: None)
+    assert "travailleur" in out, out
+    text = next(iter(scw.servers.values()))["cloud"]
+    files = dict(re.findall(r"path: (\S+)\n    encoding: b64\n    permissions: '\d+'\n    content: (\S*)", text))
+    task = json.loads(base64.b64decode(files["/mars/tache.json"]))
+    assert set(task) == {"retour", "jeton", "script", "tache_par_le_reseau"}
+    assert base64.b64decode(files["/mars/env"]) == b""
+    for secret in ("JETON-NASA", "VNP02DNB_NRT", "nrt3.modaps"):
+        assert all(secret not in base64.b64decode(v).decode("utf-8", "replace") for v in files.values())

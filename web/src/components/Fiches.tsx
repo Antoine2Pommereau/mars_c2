@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Eye, EyeOff, Play, Ship } from "lucide-react";
 import { useState } from "react";
 import { api, gpxUrl, photoUrl, type VesselCard } from "../lib/api";
-import { auteurMemorise, memoriserAuteur } from "../lib/auteur";
 import { dayLabel, jourHeure, num, utc } from "../lib/format";
 import { L } from "../lib/libelles";
 import { appel } from "../lib/traces";
@@ -170,7 +169,7 @@ export function Notes({ vesselId }: { vesselId: number }) {
   const [texte, setTexte] = useState("");
   const q = useQuery({ queryKey: ["notes", vesselId], queryFn: () => api.notes(vesselId) });
   const add = useMutation({
-    mutationFn: () => { const a = auteurMemorise(); memoriserAuteur(a); return api.addNote(vesselId, texte, a); },
+    mutationFn: () => api.addNote(vesselId, texte),
     onSuccess: () => { setTexte(""); qc.invalidateQueries({ queryKey: ["notes", vesselId] }); },
   });
   const N = F.notes;
@@ -572,7 +571,7 @@ export function BoutonObservation({ cible }: { cible: Cible }) {
   const qc = useQueryClient();
   const O = F.observation;
   const m = useMutation({
-    mutationFn: () => api.demander({ ...cible, author: auteurMemorise() }),
+    mutationFn: () => api.demander(cible),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["demandes"] }),
   });
   return (

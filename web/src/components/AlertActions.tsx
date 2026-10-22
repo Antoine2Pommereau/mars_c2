@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../lib/api";
-import { auteurMemorise, memoriserAuteur } from "../lib/auteur";
 import { utc } from "../lib/format";
 import { L } from "../lib/libelles";
 
@@ -9,18 +8,16 @@ const D = L.decisions;
 const MOTIFS = Object.keys(D.motifs);
 
 /** Décisions de l'opérateur sur une alerte : acquitter, confirmer, classer (motif obligatoire), rouvrir, commenter.
- *  Chaque décision est horodatée et signée (champ auteur, un seul opérateur pour l'instant). */
+ *  Chaque décision est horodatée et signée par l'opérateur connecté (la connexion est demandée au besoin). */
 export default function AlertActions({ id, status, onStatus }: { id: number; status: string; onStatus: (s: string) => void }) {
   const qc = useQueryClient();
   const [note, setNote] = useState("");
   const [comment, setComment] = useState("");
-  const [author, setAuthor] = useState(auteurMemorise);
   const [classing, setClassing] = useState(false);
   const history = useQuery({ queryKey: ["alertActions", id], queryFn: () => api.alertActions(id) });
   const act = useMutation({
-    mutationFn: (b: { action: string; motif?: string; note?: string }) => api.act(id, { ...b, author }),
+    mutationFn: (b: { action: string; motif?: string; note?: string }) => api.act(id, b),
     onSuccess: (r, b) => {
-      memoriserAuteur(author);
       if (b.action === "commenter") setComment(""); else setNote("");
       setClassing(false);
       onStatus(r.status);
@@ -64,8 +61,6 @@ export default function AlertActions({ id, status, onStatus }: { id: number; sta
       <div className="mt-3 flex gap-2">
         <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder={D.commentaire}
           className="min-w-0 flex-1 rounded-md border border-hair bg-abyss px-2.5 py-1.5 text-[12.5px] text-ink placeholder:text-faint focus:border-signal focus:outline-none" />
-        <input value={author} onChange={(e) => setAuthor(e.target.value)} aria-label={D.auteur} title={D.auteur}
-          className="w-24 rounded-md border border-hair bg-abyss px-2 py-1.5 text-[12px] text-muted focus:border-signal focus:outline-none" />
         <button disabled={act.isPending || !comment.trim()} onClick={() => act.mutate({ action: "commenter", note: comment })}
           className="rounded-md border border-hair px-2.5 text-[12.5px] text-ink hover:border-muted disabled:opacity-40">{D.commenter}</button>
       </div>

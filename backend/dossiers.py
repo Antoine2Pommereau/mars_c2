@@ -8,12 +8,13 @@ moteur des alertes ne change pas. Chaque route ouvre son span (dossiers.liste, d
 dossiers.verification)."""
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from mars import dossiers as D
 from mars import traces
 from mars.config import load_rules
+from controle import exiger_operateur
 from regions import dans_region, region_ewkt
 
 router = APIRouter()
@@ -258,7 +259,6 @@ class Decision(BaseModel):
     action: str                                       # vu, confirmer, classer, rouvrir
     motif: str | None = None
     note: str | None = Field(default=None, max_length=1000)
-    author: str | None = Field(default=None, max_length=80)
     instant: datetime | None = None                   # instant affiché (plage) ; jamais au delà de maintenant
 
 
@@ -268,17 +268,15 @@ MOTIFS = ("faux_positif", "activite_legitime", "doublon")
 
 
 @router.post("/api/dossiers/{cle}/decision")
-async def decision(request: Request, cle: str, x: Decision):
+async def decision(request: Request, cle: str, x: Decision, auteur: str = Depends(exiger_operateur)):
     """Décision sur un dossier : appliquée à chacune de ses alertes ouvertes (Rouvrir : à ses alertes classées), et
     journalisée alerte par alerte dans alert_actions avec la mention du dossier ; rien n'est supprimé. Auteur :
-    l'opérateur connecté, sinon le champ auteur, comme la route des alertes."""
-    from controle import operateur_connecte
+    l'opérateur connecté (session exigée), jamais le corps de la requête."""
     if x.action not in ACTIONS:
         raise HTTPException(422, f"Action inconnue : {x.action} ({', '.join(ACTIONS)})")
     if x.action == "classer" and x.motif not in MOTIFS:
         raise HTTPException(422, f"Motif de classement obligatoire : {', '.join(MOTIFS)}")
     rules = load_rules()
-    auteur = await operateur_connecte(request) or (x.author or "").strip() or "Opérateur"
     # Fenêtre du dossier à l'instant affiché (un dossier d'une plage passée reste décidable), statuts actuels
     instant = datetime.now(timezone.utc)
     if x.instant is not None:

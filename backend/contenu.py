@@ -13,7 +13,9 @@ from datetime import datetime, timedelta, timezone
 from xml.sax.saxutils import escape
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from controle import exiger_operateur
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -179,8 +181,7 @@ async def track_gpx(request: Request, vessel_id: int, start: datetime, end: date
 
 
 class Note(BaseModel):
-    note: str
-    author: str = "Opérateur"
+    note: str                    # auteur : l'opérateur connecté (un champ author envoyé est ignoré)
 
 
 @router.get("/api/vessels/{vessel_id}/notes")
@@ -191,14 +192,14 @@ async def notes(request: Request, vessel_id: int):
 
 
 @router.post("/api/vessels/{vessel_id}/notes")
-async def add_note(request: Request, vessel_id: int, n: Note):
+async def add_note(request: Request, vessel_id: int, n: Note, op: str = Depends(exiger_operateur)):
     note = n.note.strip()
     if not note:
         raise HTTPException(422, "Note vide")
     async with pool(request).acquire() as c:
         try:
             r = await c.fetchrow("INSERT INTO vessel_notes (vessel_id, note, author) VALUES ($1, $2, $3) "
-                                 "RETURNING id, note, author, at", vessel_id, note, (n.author or "").strip() or "Opérateur")
+                                 "RETURNING id, note, author, at", vessel_id, note, op)
         except Exception:
             raise HTTPException(404, "Navire inconnu")
     return _row(r)
@@ -266,8 +267,7 @@ async def photo(request: Request, vessel_id: int):
 # Navires suivis
 
 class Suivi(BaseModel):
-    vessel_id: int
-    author: str = "Opérateur"
+    vessel_id: int               # auteur : l'opérateur connecté
 
 
 @router.get("/api/suivis")
@@ -293,17 +293,17 @@ async def followed(request: Request, region: str | None = None):
 
 
 @router.post("/api/suivis")
-async def follow(request: Request, s: Suivi):
+async def follow(request: Request, s: Suivi, op: str = Depends(exiger_operateur)):
     async with pool(request).acquire() as c:
         if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM vessels WHERE id = $1)", s.vessel_id):
             raise HTTPException(404, "Navire inconnu")
         await c.execute("INSERT INTO followed_vessels (vessel_id, author) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                        s.vessel_id, (s.author or "").strip() or "Opérateur")
+                        s.vessel_id, op)
     return {"vessel_id": s.vessel_id, "suivi": True}
 
 
 @router.delete("/api/suivis/{vessel_id}")
-async def unfollow(request: Request, vessel_id: int):
+async def unfollow(request: Request, vessel_id: int, _op: str = Depends(exiger_operateur)):
     async with pool(request).acquire() as c:
         await c.execute("DELETE FROM followed_vessels WHERE vessel_id = $1", vessel_id)
     return {"vessel_id": vessel_id, "suivi": False}

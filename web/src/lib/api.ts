@@ -1,3 +1,4 @@
+import { demanderConnexion } from "./session";
 import { appel } from "./traces";
 import type { FC, Feature, Props } from "./types";
 
@@ -7,21 +8,16 @@ async function get<T>(path: string): Promise<T> {
   return r.json();
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const r = await appel(`/api${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+/** Écriture (POST ou DELETE), toujours en JSON (l'API refuse une écriture sans Content-Type: application/json) et
+ *  avec la session de l'opérateur (cookie) ; l'auteur est celui de la session, jamais un champ envoyé. Refus faute de
+ *  session (401) : la connexion est demandée, puis l'écriture reprend une fois. Le motif d'un refus (detail) devient
+ *  le message de l'erreur. */
+async function ecrire<T>(path: string, body: unknown, method: "POST" | "DELETE" = "POST"): Promise<T> {
+  const envoyer = () => appel(`/api${path}`, {
+    method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}),
   });
-  if (!r.ok) throw new Error(`${path} : ${r.status} ${await r.text()}`);
-  return r.json();
-}
-
-/** Écriture du panneau de contrôle : le motif d'un refus de l'API (detail) devient le message de l'erreur */
-async function ecrire<T>(path: string, body: unknown): Promise<T> {
-  const r = await appel(`/api${path}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  });
+  let r = await envoyer();
+  if (r.status === 401 && !path.startsWith("/controle/connexion") && await demanderConnexion()) r = await envoyer();
   if (!r.ok) {
     let motif = `${r.status}`;
     try {
@@ -32,6 +28,7 @@ async function ecrire<T>(path: string, body: unknown): Promise<T> {
   }
   return r.json();
 }
+const post = ecrire;
 
 export interface Interrupteur {
   source: string; nom: string; en_pause: boolean; depuis: string | null; jusqu_a: string | null; motif: string | null;
@@ -51,6 +48,11 @@ export interface EtatControle {
   rayon_demande_m: { min: number; max: number; defaut: number } | null;
 }
 
+/** Échéance d'un secret (lot Z1) : la date seule, relevée chaque jour par taches */
+export interface Echeance {
+  cle: string; libelle: string; variable: string; expire_le: string | null; illisible: boolean; jours: number | null;
+}
+
 export interface SystemeControle {
   grafana: string;
   services: { service: string; dernier_le: string | null; age_s: number | null; version: string | null;
@@ -58,6 +60,7 @@ export interface SystemeControle {
   retard_positions_s: number | null;
   disque: { mesure_le: string; libre_pct: number; libre_octets: number; total_octets: number; base_octets: number | null } | null;
   echecs: { id: number; tache: string; le: string; erreur: string | null; trace_id: string | null; lien_trace: string | null }[];
+  echeances?: Echeance[];
   lien_regles: string | null;
 }
 
@@ -139,7 +142,7 @@ export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
 
 export const api = {
   alertActions: (id: number) => get<AlertActionRow[]>(`/alerts/${id}/actions`),
-  act: (id: number, body: { action: string; note?: string; motif?: string; author?: string }) =>
+  act: (id: number, body: { action: string; note?: string; motif?: string }) =>
     post<{ id: number; status: string }>(`/alerts/${id}/actions`, body),
   /** Alertes d'une plage ; l'ancienne API ignore la plage et renvoie tout (filtré ensuite par l'interface) */
   alertsRange: (start: string, end: string, region: string | null, aLInstant?: string | null) =>
@@ -154,14 +157,10 @@ export const api = {
   comportement: (id: number, start: string, end: string) =>
     get<Comportement>(`/vessels/${id}/comportement?start=${enc(start)}&end=${enc(end)}`),
   notes: (id: number) => get<{ id: number; note: string; author: string; at: string }[]>(`/vessels/${id}/notes`),
-  addNote: (id: number, note: string, author: string) => post<Props>(`/vessels/${id}/notes`, { note, author }),
+  addNote: (id: number, note: string) => post<Props>(`/vessels/${id}/notes`, { note }),
   suivis: (region: string | null = null) => get<Props[]>(`/suivis${rg(region, "?")}`),
-  suivre: (id: number, author: string) => post<Props>("/suivis", { vessel_id: id, author }),
-  nePlusSuivre: async (id: number) => {
-    const r = await appel(`/api/suivis/${id}`, { method: "DELETE" });
-    if (!r.ok) throw new Error(`/suivis/${id} : ${r.status}`);
-    return r.json();
-  },
+  suivre: (id: number) => post<Props>("/suivis", { vessel_id: id }),
+  nePlusSuivre: (id: number) => ecrire<Props>(`/suivis/${id}`, {}, "DELETE"),
   infraCard: (id: number, start: string, end: string) => get<Props>(`/infrastructure/${id}?start=${enc(start)}&end=${enc(end)}`),
   zoneCard: (key: string) => get<Props>(`/zones/${key}`),
   passes: (bbox: number[]) => get<Pass[]>(`/passes?bbox=${bbox.join(",")}`),
@@ -195,7 +194,7 @@ export const api = {
   /** Tip and cue (lot T1) : demandes d'observation d'une alerte ou d'un navire, demande manuelle, annulation */
   demandes: (q: { alerte_id?: number; vessel_id?: number }) =>
     get<Props[]>(`/demandes?${q.alerte_id != null ? `alerte_id=${q.alerte_id}` : `vessel_id=${q.vessel_id}`}`),
-  demander: (body: { vessel_id?: number; alerte_id?: number; lon?: number; lat?: number; author?: string }) =>
+  demander: (body: { vessel_id?: number; alerte_id?: number; lon?: number; lat?: number }) =>
     post<{ id: number; regroupee: boolean; etat: string }>("/demandes", body),
   annulerDemande: (id: number) => post<Props>(`/demandes/${id}/annuler`, {}),
   /** Panneau « Observations » : demandes de la plage et de la région, compteur des actives */
@@ -206,7 +205,7 @@ export const api = {
     get<ListeDossiers>(`/dossiers?end=${enc(instant)}${rg(region)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
   dossier: (cle: string, instant: string, aLInstant?: string | null) =>
     get<Props>(`/dossiers/${enc(cle)}?end=${enc(instant)}${aLInstant ? `&a_l_instant=${enc(aLInstant)}` : ""}`),
-  decisionDossier: (cle: string, body: { action: string; motif?: string; note?: string; author?: string; instant?: string }) =>
+  decisionDossier: (cle: string, body: { action: string; motif?: string; note?: string; instant?: string }) =>
     ecrire<{ alertes: number[]; statut: string }>(`/dossiers/${enc(cle)}/decision`, body),
   decisionsJournal: (limite = 30) => get<{ id: number; at: string; author: string; action: string; motif: string | null;
     note: string | null; alert_id: number; type: string }[]>(`/decisions/journal?limite=${limite}`),

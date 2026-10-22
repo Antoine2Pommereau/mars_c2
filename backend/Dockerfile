@@ -3,8 +3,10 @@ FROM python:3.12-slim
 # Relie le paquet du registre au dépôt (nettoyage par GitHub Actions, .github/workflows/nettoyage_registre.yml)
 LABEL org.opencontainers.image.source="https://github.com/Antoine2Pommereau/mars_c2"
 WORKDIR /app
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Lot Z1 : versions figées avec leurs empreintes (backend/requirements.lock, produit par uv depuis requirements.txt ;
+# docs/exploitation.md) : une même empreinte de commit installe toujours les mêmes paquets
+COPY backend/requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 # Après les dépendances : changer de commit ne refait pas l'installation
 # Empreinte du commit (docker build --build-arg MARS_VERSION=…) : resource service.version des traces, signes de vie,
 # indicateur « Version » de la barre d'état et tableau Grafana

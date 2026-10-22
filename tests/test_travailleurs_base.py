@@ -31,12 +31,15 @@ class FakeScw(T.Scaleway):
     def resolve_image(self, *_args):
         return {"id": "img", "name": "Ubuntu 24.04", "arch": "x86_64", "root_type": "l_ssd", "root_size": 10_000_000_000}
 
-    def create(self, _zone, name, _ct, _image, _disque, tags):
+    def groupe_securite(self, _zone, creer=True):
+        return {"id": "sg-travailleurs", "cree": False}
+
+    def create(self, _zone, name, _ct, _image, _disque, tags, security_group=None):
         time.sleep(self.delay)
         self.n += 1
         sid = f"srv-{name}"
         self.servers[sid] = {"id": sid, "name": name, "tags": tags, "project": "p", "state": "stopped",
-                             "image": {"id": "img"}, "boot_type": "local",
+                             "image": {"id": "img"}, "boot_type": "local", "security_group": {"id": security_group},
                              "volumes": {"0": {"volume_type": "l_ssd", "size": 20_000_000_000}}}
         return dict(self.servers[sid])
 

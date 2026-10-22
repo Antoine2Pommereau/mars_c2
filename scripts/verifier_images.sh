@@ -36,7 +36,9 @@
 #                 (EnvError de rasterio sur les clés AWS en options GDAL, que la cible s2, sans clé, ne voyait pas).
 #   controle    : connexion d'un opérateur puis une écriture du panneau à travers le vrai nginx de l'image web, avec un
 #                 en tête Origin de navigateur ; cookie sans Secure en http ; une autre origine refusée (lot A, environ
-#                 une minute ; « Origine refusée » sur le serveur le 21/10/2026).
+#                 une minute ; « Origine refusée » sur le serveur le 21/10/2026). Lot Z1 : écriture sans session (401)
+#                 ou sans JSON (415) refusée, en têtes de sécurité, hôte inconnu fermé, tentatives de connexion
+#                 comptées en base (toujours bloquées après un redémarrage de l'API).
 #   sante       : collecte figée simulée dans l'image des scripts (processus vivant, aucun fichier écrit), lancée comme
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
@@ -293,8 +295,33 @@ verifier_controle() {
     [ "$code" = "$attendu" ] || { cat "$corps"; echo; docker logs --tail 15 "$API"; rm -f "$jar" "$corps" "$corps.entetes"
       echec "controle : /api/$route répond $code au lieu de $attendu"; }
   done
+  # Lot Z1 : toute écriture exige une session et du JSON ; en têtes de sécurité ; hôte inconnu fermé ; tentatives de
+  # connexion comptées par adresse, en base (elles survivent au redémarrage de l'API)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: http://$hote" -H 'Content-Type: application/json' \
+    -d '{"action": "classer", "motif": "doublon"}' "http://$hote/api/alerts/1/actions")
+  [ "$code" = 401 ] || { rm -f "$jar" "$corps" "$corps.entetes"; echec "controle : décision sans session acceptée (HTTP $code)"; }
+  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" -H "Origin: http://$hote" -H 'Content-Type: text/plain' \
+    -d '{"note": "intersite"}' "http://$hote/api/vessels/1/notes")
+  [ "$code" = 415 ] || { rm -f "$jar" "$corps" "$corps.entetes"; echec "controle : écriture sans JSON acceptée (HTTP $code)"; }
+  curl -s -D "$corps.entetes" -o /dev/null "http://$hote/"
+  for e in "content-security-policy: default-src 'self'" "x-frame-options: DENY" "x-content-type-options: nosniff" \
+           "referrer-policy: no-referrer"; do
+    grep -qi "^$e" "$corps.entetes" || { cat "$corps.entetes"; rm -f "$jar" "$corps" "$corps.entetes"; echec "controle : en tête absent ($e)"; }
+  done
+  if curl -s -m 5 -o /dev/null -H "Host: rebond.example" "http://$hote/"; then
+    rm -f "$jar" "$corps" "$corps.entetes"; echec "controle : un hôte inconnu reçoit une réponse (rebond DNS)"
+  fi
+  for _ in 1 2 3 4 5; do
+    curl -s -o /dev/null -H "Origin: http://$hote" -H 'Content-Type: application/json' \
+      -d '{"operateur": "essai", "mot_de_passe": "faux"}' "http://$hote/api/controle/connexion"
+  done
+  docker restart "$API" >/dev/null
+  for _ in $(seq 1 60); do curl -sf -m 3 "http://$hote/api/health" >/dev/null 2>&1 && break; sleep 2; done
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: http://$hote" -H 'Content-Type: application/json' \
+    -d "{\"operateur\": \"essai\", \"mot_de_passe\": \"$mdp\"}" "http://$hote/api/controle/connexion")
+  [ "$code" = 429 ] || { rm -f "$jar" "$corps" "$corps.entetes"; echec "controle : 5 échecs puis redémarrage, connexion non bloquée (HTTP $code)"; }
   rm -f "$jar" "$corps" "$corps.entetes"
-  ok "controle : connexion et écriture du panneau à travers nginx, cookie sans Secure en http, autre origine refusée ($motif) ; dossiers et mesures des décisions servis"
+  ok "controle : connexion et écriture du panneau à travers nginx, cookie sans Secure en http, autre origine refusée ($motif) ; dossiers et mesures des décisions servis ; écriture sans session (401) ou sans JSON (415) refusée, en têtes de sécurité, hôte inconnu fermé, tentatives comptées en base"
 }
 
 verifier_traces() {

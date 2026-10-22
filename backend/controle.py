@@ -1,4 +1,11 @@
-"""Panneau de contrôle (lot P) : connexion des opérateurs et routes du panneau.
+"""Panneau de contrôle (lot P) : connexion des opérateurs et routes du panneau ; protection de toutes les écritures
+de l'API (lot Z1).
+
+Toute route d'écriture de l'API (POST, PUT, PATCH, DELETE) dépend de `exiger_operateur`, sauf la liste blanche
+`ECRITURES_LIBRES` (connexion, déconnexion, masquage de démonstration, retour des travailleurs par jeton) ;
+tests/test_securite_api.py parcourt toutes les routes et échoue sur une route d'écriture qui n'est ni protégée ni dans
+la liste. Une écriture exige aussi l'en tête Content-Type: application/json (une requête intersite « simple » n'en
+porte pas), refuse le mode démonstration (lecture seule) et prend son auteur dans la session, jamais dans le corps.
 
 Les routes d'écriture exigent une session d'opérateur : mot de passe haché dans le .env (MARS_OPERATEURS, voir
 mars/controle.py), cookie HttpOnly et SameSite strict, 12 h, Secure dès que l'interface est servie en https ; l'origine
@@ -8,7 +15,6 @@ de l'opérateur. Les routes de lecture ne changent pas (aucune connexion requise
 import asyncio
 import json
 import os
-import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -20,7 +26,23 @@ from mars.config import load_rules
 router = APIRouter()
 COOKIE = "mars_operateur"
 ECHECS_MAX, ECHECS_FENETRE_S = 5, 600          # 5 échecs en 10 minutes par adresse : connexion bloquée 10 minutes
-_echecs: dict[str, list[float]] = {}
+                                               # (table tentatives_connexion : survit au redémarrage de l'API)
+ECRITURE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Écritures sans session, et pourquoi : chemin exact (gabarit FastAPI) et méthode. Liste courte, relue par le test.
+ECRITURES_LIBRES = {
+    ("POST", "/api/controle/connexion"): "ouvre la session",
+    ("POST", "/api/controle/deconnexion"): "ferme la session",
+    ("POST", "/api/controle/demo"): "masquage propre au navigateur (cookie), lecture seule, journalisé",
+    ("POST", "/api/travailleurs/{wid}/etat"): "jeton du travailleur, réseau privé (port 8090)",
+    ("POST", "/api/travailleurs/{wid}/journal"): "jeton du travailleur, réseau privé (port 8090)",
+    ("POST", "/api/travailleurs/{wid}/resultats"): "jeton du travailleur, réseau privé (port 8090)",
+}
+
+
+def adresse_cliente(request: Request) -> str:
+    """Adresse du navigateur : X-Real-IP posé par nginx (web/nginx.conf, qui écrase toute valeur reçue), sinon celle
+    de la connexion (accès direct au port 8000, local à l'hôte)."""
+    return (request.headers.get("x-real-ip") or "").strip()[:64] or (request.client.host if request.client else "?")
 
 
 def _json(v):
@@ -94,8 +116,26 @@ async def _meme_origine(request: Request):
     raise HTTPException(403, motif)
 
 
+def exiger_json(request: Request):
+    """Une écriture porte Content-Type: application/json : un formulaire ou un fetch « simple » d'un autre site (sans
+    en tête, ou text/plain) est refusé avant toute lecture du corps, et un vrai envoi intersite en JSON exige une
+    requête préalable que l'API n'autorise pas (aucun CORS)."""
+    ct = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if ct != "application/json":
+        traces.attributs(**{"controle.refus": "content_type"})
+        raise HTTPException(415, "Écriture refusée : en tête Content-Type: application/json attendu")
+
+
 async def exiger_operateur(request: Request) -> str:
+    """Dépendance de toute route d'écriture : même origine, JSON, hors démonstration, session d'opérateur valide.
+    Renvoie le nom de l'opérateur, seul auteur possible de l'écriture."""
+    import demo
     await _meme_origine(request)
+    if request.method in ECRITURE:
+        exiger_json(request)
+    if demo.graine_valide(request.cookies.get(demo.COOKIE)) is not None:
+        traces.attributs(**{"controle.refus": "demonstration"})
+        raise HTTPException(403, "Mode démonstration : lecture seule")
     op = await operateur_connecte(request)
     if op is None:
         raise HTTPException(401, "Connexion opérateur requise")
@@ -123,10 +163,13 @@ async def session(request: Request):
 @router.post("/api/controle/connexion")
 async def connexion(request: Request, response: Response, x: Connexion):
     await _meme_origine(request)
-    ip = request.client.host if request.client else "?"
-    t = time.time()
-    _echecs[ip] = [e for e in _echecs.get(ip, []) if t - e < ECHECS_FENETRE_S]
-    if len(_echecs[ip]) >= ECHECS_MAX:
+    exiger_json(request)
+    ip = adresse_cliente(request)
+    async with request.app.state.pool.acquire() as c:
+        echecs = await c.fetchval("SELECT count(*) FROM tentatives_connexion WHERE ip = $1 AND le > now() - $2::interval",
+                                  ip, timedelta(seconds=ECHECS_FENETRE_S))
+    traces.attributs(**{"controle.echecs_recents": echecs})
+    if echecs >= ECHECS_MAX:
         raise HTTPException(429, "Trop d'essais : réessayer dans 10 minutes")
     ops = controle.operateurs()
     nom = x.operateur.strip()
@@ -135,20 +178,23 @@ async def connexion(request: Request, response: Response, x: Connexion):
         raise HTTPException(503, controle.message_abime(nom, abime))
     if not ops:
         raise HTTPException(503, "Aucun opérateur configuré (MARS_OPERATEURS dans le .env)")
+    # Nom inconnu : le calcul a lieu quand même, sur une empreinte factice (le temps de réponse ne trahit pas les noms)
     empreinte = ops.get(nom)
-    ok = empreinte is not None and await asyncio.to_thread(controle.verifier_mot_de_passe, x.mot_de_passe, empreinte)
+    ok = await asyncio.to_thread(controle.verifier_mot_de_passe, x.mot_de_passe, empreinte or controle.EMPREINTE_FACTICE)
+    ok = ok and empreinte is not None
     async with request.app.state.pool.acquire() as c:
         if not ok:
-            _echecs[ip].append(t)
-            await journaliser(c, nom[:40], "connexion_refusee", "operateur")
+            await c.execute("INSERT INTO tentatives_connexion (ip, operateur) VALUES ($1, $2)", ip, nom[:40])
+            await c.execute("DELETE FROM tentatives_connexion WHERE le < now() - interval '7 days'")
+            await journaliser(c, nom[:40], "connexion_refusee", "operateur", None, {"adresse": ip})
             raise HTTPException(401, "Opérateur ou mot de passe incorrect")
         jeton, emp = controle.jeton_session()
         heures = float((load_rules().get("controle") or {}).get("session_h", 12))
         await c.execute("INSERT INTO sessions_operateur (empreinte, operateur, expire_le) VALUES ($1, $2, $3)",
                         emp, nom, datetime.now(timezone.utc) + timedelta(hours=heures))
         await c.execute("DELETE FROM sessions_operateur WHERE expire_le < now() - interval '7 days'")
-        await journaliser(c, nom, "connexion", "operateur")
-    _echecs.pop(ip, None)
+        await c.execute("DELETE FROM tentatives_connexion WHERE ip = $1", ip)
+        await journaliser(c, nom, "connexion", "operateur", None, {"adresse": ip})
     response.set_cookie(COOKIE, jeton, max_age=int(heures * 3600), httponly=True, samesite="strict",
                         secure=_https(request), path="/api")
     return {"operateur": nom}
@@ -157,6 +203,7 @@ async def connexion(request: Request, response: Response, x: Connexion):
 @router.post("/api/controle/deconnexion")
 async def deconnexion(request: Request, response: Response):
     await _meme_origine(request)
+    exiger_json(request)
     e = _empreinte(request)
     if e:
         async with request.app.state.pool.acquire() as c:
@@ -234,6 +281,13 @@ async def systeme(request: Request):
                FROM task_runs WHERE status = 'echec' AND NOT (details ? 'refus') ORDER BY started_at DESC LIMIT 10""")
         derniere_trace = await c.fetchval("SELECT trace_id FROM task_runs WHERE task = 'regles' AND trace_id IS NOT NULL "
                                           "ORDER BY started_at DESC LIMIT 1")
+        # Échéances des secrets (lot Z1), relevées chaque jour par taches : dates seulement, jours restants calculés ici
+        try:
+            echeances = await c.fetch(
+                "SELECT cle, libelle, variable, expire_le, illisible, (expire_le - current_date) AS jours, mis_a_jour_le "
+                "FROM echeances ORDER BY expire_le NULLS LAST, cle")
+        except Exception:                              # base sans la migration 40
+            echeances = []
     lignes = [dict(r) for r in services]
     api_mem = supervision.memoire_conteneur() or {}
     if not any(x["service"] == "api" for x in lignes):
@@ -244,7 +298,7 @@ async def systeme(request: Request):
     return {"grafana": controle.grafana_url(), "services": lignes, "retard_positions_s": retard,
             "disque": dict(disque) if disque else None,
             "echecs": [{**dict(r), "lien_trace": controle.lien_trace(r["trace_id"])} for r in echecs],
-            "lien_regles": controle.lien_trace(derniere_trace)}
+            "lien_regles": controle.lien_trace(derniere_trace), "echeances": [dict(r) for r in echeances]}
 
 
 # Règles d'alerte (phase C) : modes, seuils en lecture seule, épisodes et alertes des 7 derniers jours
@@ -584,6 +638,7 @@ async def demo_basculer(request: Request, response: Response, x: Demo):
     (effacé à la fermeture). Sans connexion requise : il ne fait que cacher ; journalisé avec l'opérateur s'il y en a un."""
     import demo
     await _meme_origine(request)
+    exiger_json(request)
     if x.masquage:
         response.set_cookie(demo.COOKIE, demo.nouvelle_graine(), httponly=True, samesite="strict",
                             secure=_https(request), path="/api")

@@ -29,7 +29,6 @@ import type { Dossier } from "./lib/api";
 import type { Vue } from "./components/MapView";
 import { api, type Pass } from "./lib/api";
 import { FILTRES_DEFAUT, dansPlage, filtrer, naviresEnAlerte, statutDe, trier, type Filtres } from "./lib/fil";
-import { auteurMemorise } from "./lib/auteur";
 import { cercle, nearInfra } from "./lib/geo";
 import { L } from "./lib/libelles";
 import { avecPlage, iso, resolve, type Temps } from "./lib/temps";
@@ -201,7 +200,7 @@ export default function App() {
     enabled: panel === "alertes" && onglet === "suivis" && region != null, refetchInterval: 60_000 });
   const suivis = useMemo(() => new Set<number>((suivisQ.data ?? []).map((v) => Number(v.vessel_id))), [suivisQ.data]);
   const suivre = useMutation({
-    mutationFn: ({ id, on }: { id: number; on: boolean }) => (on ? api.suivre(id, auteurMemorise()) : api.nePlusSuivre(id)),
+    mutationFn: ({ id, on }: { id: number; on: boolean }) => (on ? api.suivre(id) : api.nePlusSuivre(id)),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["suivis"] }),
   });
 

@@ -40,6 +40,11 @@ from mars.config import ROOT
 
 API = "https://api.scaleway.com"
 TAG = "mars-c2-travailleur"
+# Groupe de sécurité des travailleurs (lot Z1), un par zone (les groupes de Scaleway sont zonaux) : tout refusé en
+# entrée sur l'adresse publique, sortie libre (images, données, réseau privé pour le retour), à état (les réponses aux
+# connexions sortantes passent). Créé au besoin par Scaleway.groupe_securite (taches.py sentinel-diagnostic, ou au
+# premier lancement), vérifié à chaque création d'instance.
+GROUPE_SECURITE = "mars-travailleurs"
 NAME = re.compile(r"^mars-travailleur-(\d+)$")
 METADATA = "http://169.254.42.42/conf?format=json"     # métadonnées de l'instance courante (Scaleway, sans jeton)
 GONE = object()
@@ -214,7 +219,29 @@ class Scaleway:
             return 0
         return 0 if d is GONE or not d else int(d.get("size") or 0)
 
-    def create(self, zone: str, name: str, commercial_type: str, image: dict, disque_go: int, tags: list) -> dict:
+    def groupe_securite(self, zone: str, creer: bool = True) -> dict:
+        """Groupe de sécurité des travailleurs dans la zone : {"id", "cree"} ; créé s'il manque (si `creer`). Refus
+        (ScalewayError) si un groupe du même nom accepte une entrée : quelqu'un l'aurait modifié."""
+        d = self._req("GET", f"/instance/v1/zones/{zone}/security_groups?project={self.project}&name={GROUPE_SECURITE}")
+        groupes = [g for g in ((d or {}).get("security_groups", []) if d is not GONE else [])
+                   if g.get("name") == GROUPE_SECURITE and g.get("project") == self.project]
+        if groupes:
+            g = groupes[0]
+            r = self._req("GET", f"/instance/v1/zones/{zone}/security_groups/{g['id']}/rules?page_size=100")
+            motif = probleme_groupe(g, (r or {}).get("rules", []) if r is not GONE else [])
+            if motif:
+                raise ScalewayError(f"groupe de sécurité {GROUPE_SECURITE} en {zone} : {motif}")
+            return {"id": g["id"], "cree": False}
+        if not creer:
+            raise ScalewayError(f"groupe de sécurité {GROUPE_SECURITE} absent en {zone}")
+        g = self._req("POST", f"/instance/v1/zones/{zone}/security_groups", json={
+            "name": GROUPE_SECURITE, "project": self.project, "stateful": True, "enable_default_security": True,
+            "inbound_default_policy": "drop", "outbound_default_policy": "accept", "tags": [TAG],
+            "description": "Travailleurs éphémères de MARS C2 : entrée refusée, sortie libre"})["security_group"]
+        return {"id": g["id"], "cree": True}
+
+    def create(self, zone: str, name: str, commercial_type: str, image: dict, disque_go: int, tags: list,
+               security_group: str | None = None) -> dict:
         """Crée l'instance éteinte à partir de l'image : le volume racine (index 0) n'est décrit que par sa taille et son
         type, ceux de l'image (comme le fait la ligne de commande Scaleway) ; il est ainsi copié de l'image, agrandi à
         `disque_go` au besoin. Refuse toute création sans image résolue."""
@@ -224,6 +251,8 @@ class Scaleway:
         body = {"name": name, "project": self.project, "commercial_type": commercial_type, "image": image["id"],
                 "dynamic_ip_required": True, "tags": tags, "boot_type": "local",
                 "volumes": {"0": {"size": size, "volume_type": image["root_type"]}}}
+        if security_group:
+            body["security_group"] = security_group
         return self._req("POST", f"/instance/v1/zones/{zone}/servers", json=body)["server"]
 
     def set_cloud_init(self, zone: str, server_id: str, text: str):
@@ -532,6 +561,19 @@ def boot_problem(server: dict | None, image: dict, block_size=None) -> str | Non
     return None
 
 
+def probleme_groupe(g: dict, regles: list) -> str | None:
+    """Motif si le groupe ne refuse pas toute entrée (politique, règle d'entrée acceptée) ou n'est pas à état."""
+    if g.get("inbound_default_policy") != "drop":
+        return f"politique d'entrée « {g.get('inbound_default_policy')} » au lieu de « drop »"
+    if g.get("stateful") is False:
+        return "groupe sans état : les réponses aux connexions sortantes seraient refusées"
+    ouvertes = [r for r in regles if r.get("direction") == "inbound" and r.get("action") == "accept"
+                and r.get("editable", True)]
+    if ouvertes:
+        return f"{len(ouvertes)} règle(s) d'entrée acceptée(s)"
+    return None
+
+
 def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, private_network_id: str,
               user_data, sleep=time.sleep, on_created=None, on_block_volumes=None) -> dict:
     """Crée un travailleur dans l'ordre sûr, chaque étape vérifiée : instance éteinte, réseau privé rattaché et prêt,
@@ -541,8 +583,11 @@ def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, privat
     with traces.span("scaleway.image", **{"scaleway.zone": zone}):
         image = scw.resolve_image(zone, t["image_label"], t["commercial_type"], t.get("arch", "x86_64"),
                                   t.get("volume", "l_ssd"))
+    with traces.span("scaleway.groupe_securite", **{"scaleway.zone": zone}) as sp:
+        groupe = scw.groupe_securite(zone)
+        sp.set_attribute("scaleway.groupe_cree", groupe["cree"])
     with traces.span("scaleway.creation", **{"scaleway.type": t["commercial_type"]}):
-        s = scw.create(zone, name, t["commercial_type"], image, t["disque_go"], tags)
+        s = scw.create(zone, name, t["commercial_type"], image, t["disque_go"], tags, security_group=groupe["id"])
     if on_created:
         on_created(s["id"])
     block = [v["id"] for v in (s.get("volumes") or {}).values()
@@ -554,9 +599,13 @@ def provision(scw: "Scaleway", zone: str, name: str, t: dict, tags: list, privat
     # Relecture : l'instance doit démarrer sur le disque local copié de l'image attendue (sinon « UEFI Interactive
     # Shell » à la console : aucun système amorçable, constaté au premier essai réel)
     with traces.span("scaleway.verification_demarrage"):
-        motif = boot_problem(scw.server(zone, s["id"]), image, lambda vid: scw.block_volume_size(zone, vid))
+        relue = scw.server(zone, s["id"])
+        motif = boot_problem(relue, image, lambda vid: scw.block_volume_size(zone, vid))
     if motif:
         raise ScalewayError(f"volume de démarrage incorrect : {motif}")
+    sg = ((relue or {}).get("security_group") or {}).get("id")
+    if sg != groupe["id"]:
+        raise ScalewayError(f"instance rattachée au groupe de sécurité {sg}, attendu {groupe['id']} ({GROUPE_SECURITE})")
     with traces.span("scaleway.reseau_prive"):
         nic = scw.attach_private_network(zone, s["id"], private_network_id, sleep=sleep)
     with traces.span("scaleway.cloud_init"):

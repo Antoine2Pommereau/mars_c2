@@ -88,7 +88,7 @@ def _remise_a_zero(c):
     c.execute("DELETE FROM notifications_etat")
     c.execute("UPDATE interrupteurs_satellites SET en_pause = false, depuis = NULL, jusqu_a = NULL, motif = NULL, "
               "auteur = NULL, veille_notifiee_le = NULL")
-    for sql in ("DELETE FROM journal_controle", "DELETE FROM reglages_controle", "DELETE FROM sessions_operateur",
+    for sql in ("DELETE FROM tentatives_connexion", "DELETE FROM journal_controle", "DELETE FROM reglages_controle", "DELETE FROM sessions_operateur",
                 "DELETE FROM task_runs WHERE task IN ('viirs', 'sentinel', 'sentinel2')",
                 "DELETE FROM demandes_origines", "DELETE FROM demandes_observation"):
         c.execute(sql)
@@ -211,7 +211,6 @@ def client(conn, monkeypatch):
     monkeypatch.setenv("MARS_OPERATEURS", f"antoine:{controle.hacher('bon mot de passe', iterations=1000)}")
     monkeypatch.setattr(controle, "envoyer", lambda *a, **_k: ENVOYES.append(a) or 200)
     ENVOYES.clear()
-    api._echecs.clear()
 
     async def codecs(c):                       # comme l'API (backend/app.py, _init) : JSON décodé
         import json as js
@@ -265,7 +264,7 @@ def test_login_actions_and_journal(client, conn):
     e = client.get("/api/controle/etat").json()
     assert e["plafonds"]["sentinel1"] == {"valeur": 1, "defaut": 2, "min": 0, "max": 4, "regle_par_le_panneau": True}
     assert [i for i in e["interrupteurs"] if i["source"] == "sentinel1"][0]["en_pause"]
-    client.post("/api/controle/deconnexion")
+    client.post("/api/controle/deconnexion", json={})
     assert client.post("/api/controle/plafonds/sentinel1", json={"valeur": 2, "motif": "essai"}).status_code == 401
     actions = [(x["auteur"], x["action"], x["cible"]) for x in reversed(client.get("/api/controle/journal").json())]
     assert actions == [("antoine", "connexion_refusee", "operateur"), ("antoine", "connexion", "operateur"),
@@ -514,9 +513,9 @@ def test_notification_routes(client, conn, monkeypatch):
     assert conn.execute("SELECT heures_calmes(%s)", (datetime(2026, 10, 21, 20, 30, tzinfo=timezone.utc),)
                         ).fetchone()[0], "Grafana lit les préférences du panneau (22:30 à Paris)"
     monkeypatch.delenv("NTFY_SUJET", raising=False)
-    assert client.post("/api/controle/notifications/test").status_code == 503
+    assert client.post("/api/controle/notifications/test", json={}).status_code == 503
     monkeypatch.setenv("NTFY_SUJET", "sujet_d_essai")
-    assert client.post("/api/controle/notifications/test").json() == {"envoyee": True, "http": 200}
+    assert client.post("/api/controle/notifications/test", json={}).json() == {"envoyee": True, "http": 200}
     assert ENVOYES[-1][1] == "MARS C2 : notification de test"
     actions = [x["action"] for x in client.get("/api/controle/journal").json()]
     assert "notifications" in actions and "notification_test" in actions

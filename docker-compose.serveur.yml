@@ -1,4 +1,4 @@
-# Surcouche pour le serveur Scaleway (DEV1-S) : redémarrage automatique, journaux bornés, aucun port ouvert sur
+# Surcouche pour le serveur Scaleway (DEV1-M) : redémarrage automatique, journaux bornés, aucun port ouvert sur
 # Internet (base fermée, API et interface sur 127.0.0.1, consultées par un tunnel SSH). Activée par le fichier .env
 # du serveur : COMPOSE_FILE=docker-compose.yml:docker-compose.serveur.yml et COMPOSE_PROFILES=direct.
 # Le collecteur OpenTelemetry (otel) et Tempo n'existent que sur le serveur (étape D2) ; sur le Mac, sans collecteur,
@@ -12,6 +12,29 @@ x-journaux: &journaux
 # Traces OpenTelemetry (étape D2) : chaque service envoie ses spans au collecteur, par le réseau Docker
 x-traces: &traces
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel:4318
+# Ancres des variables par service : les mêmes que docker-compose.yml (YAML ne partage pas les ancres entre fichiers ;
+# tests/test_environnement.py vérifie qu'elles restent identiques)
+x-base: &base
+  DATABASE_URL: postgresql://mars:${POSTGRES_PASSWORD:-mars}@db:5432/mars
+# Seau principal R2 (archives, sauvegardes, preuves images)
+x-r2: &r2
+  R2_ENDPOINT: ${R2_ENDPOINT:-}
+  R2_BUCKET: ${R2_BUCKET:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+# Seau des poids des modèles (adresses présignées remises aux travailleurs)
+x-r2-modeles: &r2modeles
+  R2_MODELES_BUCKET: ${R2_MODELES_BUCKET:-}
+  R2_MODELES_ACCESS_KEY_ID: ${R2_MODELES_ACCESS_KEY_ID:-}
+  R2_MODELES_SECRET_ACCESS_KEY: ${R2_MODELES_SECRET_ACCESS_KEY:-}
+# Paire Copernicus dédiée aux travailleurs : remise par l'API sur le réseau privé, contrôlée par taches
+x-cdse-travailleur: &cdsetravailleur
+  CDSE_TRAVAILLEUR_ACCESS_KEY: ${CDSE_TRAVAILLEUR_ACCESS_KEY:-}
+  CDSE_TRAVAILLEUR_SECRET_KEY: ${CDSE_TRAVAILLEUR_SECRET_KEY:-}
+x-ntfy: &ntfy
+  NTFY_SUJET: ${NTFY_SUJET:-}
+  NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+
 
 services:
   db:
@@ -40,21 +63,36 @@ services:
     environment: *traces
     logging: *journaux
 
-  # Tâches planifiées (scripts/taches.py) : pas de cron sur l'hôte, redémarre avec la plateforme.
-  # Identifiants R2 dans .env : R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET ; seau des modèles :
-  # R2_MODELES_BUCKET, R2_MODELES_ACCESS_KEY_ID, R2_MODELES_SECRET_ACCESS_KEY. Tout le .env arrive dans taches et dans
-  # backend (env_file: .env de docker-compose.yml), qui présigne les adresses des poids : sentinel2-diagnostic contrôle
-  # les deux conteneurs.
+  # Tâches planifiées (scripts/taches.py) : pas de cron sur l'hôte, redémarre avec la plateforme. Seul service qui
+  # reçoit la clé Scaleway (créer, surveiller, détruire les travailleurs) et la paire Copernicus du serveur ; les
+  # dates d'échéance des secrets (*_EXPIRENT_LE) pour la tâche quotidienne « echeances ». Ancres x-* : docker-compose.yml.
   taches:
     image: ghcr.io/antoine2pommereau/mars_c2-scripts:${MARS_TAG:-latest}
     build:
       context: .
       dockerfile: scripts/Dockerfile
     command: ["python", "scripts/taches.py"]
-    env_file: [.env, config/supervision.env]
+    env_file: config/supervision.env
     environment:
-      DATABASE_URL: postgresql://mars:mars@db:5432/mars
-      MARS_API: http://backend:8000/api   # scripts/build_masks.py lancé ponctuellement dans ce conteneur
+      <<: [*base, *r2, *r2modeles, *cdsetravailleur, *ntfy]
+      SCW_SECRET_KEY: ${SCW_SECRET_KEY:-}
+      SCW_ACCESS_KEY: ${SCW_ACCESS_KEY:-}            # facultative : lecture de la politique de la clé (sentinel-diagnostic)
+      SCW_PROJECT_ID: ${SCW_PROJECT_ID:-}
+      SCW_PRIVATE_NETWORK_ID: ${SCW_PRIVATE_NETWORK_ID:-}
+      SCW_SERVEUR_PRINCIPAL: ${SCW_SERVEUR_PRINCIPAL:-}
+      MARS_IP_PRIVEE: ${MARS_IP_PRIVEE:-}
+      CDSE_ACCESS_KEY: ${CDSE_ACCESS_KEY:-}
+      CDSE_SECRET_KEY: ${CDSE_SECRET_KEY:-}
+      GRAFANA_PG_MOT_DE_PASSE: ${GRAFANA_PG_MOT_DE_PASSE:-}
+      MARS_GRAFANA_URL: ${MARS_GRAFANA_URL:-}
+      # Échéances (JJ/MM/AAAA ou AAAA-MM-JJ) : relevées chaque jour, notifiées 14 puis 3 jours avant (docs/exploitation.md)
+      CDSE_CLES_EXPIRENT_LE: ${CDSE_CLES_EXPIRENT_LE:-}
+      CDSE_TRAVAILLEUR_EXPIRENT_LE: ${CDSE_TRAVAILLEUR_EXPIRENT_LE:-}
+      EARTHDATA_EXPIRENT_LE: ${EARTHDATA_EXPIRENT_LE:-}
+      GITHUB_LECTURE_EXPIRENT_LE: ${GITHUB_LECTURE_EXPIRENT_LE:-}
+      GITHUB_ECRITURE_EXPIRENT_LE: ${GITHUB_ECRITURE_EXPIRENT_LE:-}
+      SCW_CLE_EXPIRENT_LE: ${SCW_CLE_EXPIRENT_LE:-}
+      MARS_API: http://backend:8000/api   # taches.py controle-diagnostic : session lue par l'API
       TACHES_HEURE: "02:30"          # UTC
       VIIRS_HEURE: "06:30"           # UTC, après la publication des données de la nuit (dernier passage vers 3 h 30)
       CONSERVATION_JOURS: "30"

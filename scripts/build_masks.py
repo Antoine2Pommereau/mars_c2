@@ -11,7 +11,7 @@ Exemples :
     docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
 """
 import argparse
-import os
+import asyncio
 import shutil
 import struct
 import sys
@@ -30,6 +30,7 @@ from shapely.geometry import Polygon, shape as to_shape
 
 from mars.ais.live import zones_extent
 from mars.config import ROOT, load_env
+from mars import traces
 from mars.db import connect
 
 # Miroirs essayés dans l'ordre : l'adresse « latest » de la NOAA a changé, les versions archivées restent stables
@@ -153,6 +154,7 @@ def load_shapes(cur, path, source: str, region) -> int:
 
 
 def main():
+    traces.init("mars-taches")                # lancée dans le conteneur taches : spans masques.* dans sa trace
     ap = argparse.ArgumentParser(description="Masques géographiques de MARS C2")
     lon0, lat0, lon1, lat1 = zones_extent()
     ap.add_argument("--region", nargs=4, type=float,
@@ -160,8 +162,6 @@ def main():
                     metavar=("LON_MIN", "LAT_MIN", "LON_MAX", "LAT_MAX"))
     ap.add_argument("--source", choices=["gshhg", "naturalearth"], default="gshhg")
     ap.add_argument("--skip-land", action="store_true", help="Ne recalculer que les masques déduits de l'AIS")
-    # API en direct, sans le relais nginx (délais) ; dans le conteneur taches : http://backend:8000/api
-    ap.add_argument("--api", default=os.environ.get("MARS_API", "http://localhost:8000/api"))
     ap.add_argument("--sans-cache", action="store_true",
                     help="Téléchargements dans un dossier temporaire effacé à la fin (serveur à disque juste)")
     ap.add_argument("--jours", type=int, help="Masques déduits de l'AIS sur les N derniers jours seulement")
@@ -192,12 +192,36 @@ def main():
         tmp.cleanup()                 # archive et fichiers extraits effacés avant le calcul des masques
     print(f"Trait de côte en {time.time() - t0:.0f} s")
 
-    params = {"jours": args.jours} if args.jours else {}
+    # Masques calculés ici, sur la base (les routes d'écriture de l'API exigent une session d'opérateur, lot Z1)
     for kind, label in [("stationary", "Zones de stationnement"), ("reception", "Zone de réception fiable")]:
         t = time.time()
-        r = requests.post(f"{args.api}/masks/{kind}", params=params, timeout=1800)
-        r.raise_for_status()
-        print(f"{label} en {time.time() - t:.0f} s :", r.json())
+        with traces.span(f"masques.{kind}", **{"masques.jours": args.jours or 0}):
+            res = asyncio.run(masque(kind, args.jours))
+        print(f"{label} en {time.time() - t:.0f} s :", res)
+
+
+async def masque(kind: str, jours: int | None):
+    """Zones de stationnement sur les journées chargées (les `jours` dernières), ou zone de réception fiable sur les
+    positions des `jours` derniers jours : même calcul que les anciennes routes POST /api/masks/*."""
+    import asyncpg
+    from datetime import datetime, timedelta, timezone
+    from mars.config import database_url, load_rules
+    from mars.rules import build_reception_cells, build_stationary_zones
+    c = await asyncpg.connect(database_url())
+    try:
+        rules = load_rules()
+        if kind == "reception":
+            since = datetime.now(timezone.utc) - timedelta(days=jours) if jours else None
+            return await build_reception_cells(c, rules, since)
+        span = await c.fetchrow("SELECT min(day) AS d0, max(day) AS d1 FROM ais_days")
+        if span["d0"] is None:
+            raise SystemExit("Aucune journée AIS chargée")
+        d0, d1 = span["d0"], span["d1"]
+        if jours:
+            d0 = max(d0, d1 - timedelta(days=jours - 1))
+        return {"zones": await build_stationary_zones(c, d0, d1, rules), "du": d0.isoformat(), "au": d1.isoformat()}
+    finally:
+        await c.close()
 
 
 if __name__ == "__main__":

@@ -511,7 +511,7 @@ def test_manual_request_through_the_api_is_planned_by_the_next_cycle(conn, monke
         monkeypatch.setattr(api, "load_rules", lambda: rules)
         Req.app.state.pool = await asyncpg.create_pool(URL, min_size=1, max_size=2)
         try:
-            return await api.demander(Req, api.NouvelleDemande(vessel_id=vid, author="Antoine"))
+            return await api.demander(Req, api.NouvelleDemande(vessel_id=vid), auteur="Antoine")
         finally:
             await Req.app.state.pool.close()
     try:

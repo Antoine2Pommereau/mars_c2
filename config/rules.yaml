@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.46"
+version: "2026.10.47"
 
 model:
   file: models/xview3_membre4_v2s.jit
@@ -505,6 +505,17 @@ travailleurs:
   # Garde de dépense : un type facturé à l'heure entamée et plus cher que 0,50 € de l'heure n'est jamais lancé sans
   # avoir été éprouvé (aucun travailleur abouti sur ce type) ; il faut alors SENTINEL_CALCUL_ESSAI explicite
   prix_max_essai_eur: 0.50
+  # Lot Z1 (22/10/2026) : résultats d'un travailleur acceptés seulement s'ils correspondent à sa tâche (mars/validation.py) :
+  # granules ou scènes de la tâche, heures à moins de ecart_heure_h de celles de la tâche, positions dans nos zones
+  # (mars/ais/live.py) à marge_deg près, détections plafonnées, vignettes bornées. Un refus passe le travailleur en échec.
+  validation:
+    marge_deg: 0.5
+    ecart_heure_h: 3
+    detections_max_viirs: 500          # par granule ; nuit la plus chargée mesurée : quelques dizaines
+    detections_max_sentinel: 1000      # par scène
+    detections_max_sentinel2: 1000     # par tuile
+    fenetres_max: 200                  # par scène
+    vignette_max_octets: 400000        # PNG en base64 ; 4,7 Ko (VIIRS) et 19 Ko (radar) mesurés
   incompatibilite_jours: 7  # lot C4 : type au GPU inutilisable (nvidia-smi, NVML) jamais essayé pendant 7 jours
   types:
     viirs:
@@ -515,6 +526,8 @@ travailleurs:
       prix_heure: 0.0202             # euros hors taxes, API Scaleway du 07/10/2026
       image: ghcr.io/allenai/vessel-detection-viirs@sha256:eb5ae0e165add2997d57e786d4efd8f1d969bb27ccd02d0c60ce3ac38bb91198
       script: travailleurs/viirs.py
+      # Lot Z1 (22/10/2026) : tâche et jeton Earthdata remis par le réseau privé, une seule fois (plus dans le cloud-init)
+      tache_par_le_reseau: true
     sentinel:                        # lot C : détection des navires sur Sentinel 1, GPU NVIDIA L4 (24 Go)
       commercial_type: L4-1-24G      # 8 vCPU, 48 Go ; zones fr-par-1, fr-par-2, pl-waw-2 (catalogue du 11/10/2026)
       zone: fr-par-2                 # GPU surtout disponibles ici ; réseau privé régional, commun à fr-par-1 et 2
@@ -680,3 +693,9 @@ dossiers:
   # infrastructure ou en séjour prolongé surtout à l'arrêt hors port (watchlist.sejour_prolonge_h)
   base: {critique: 3, elevee: 2, moyenne: 1, faible: 1}
 
+
+# Lot Z1 (22/10/2026) : échéances des secrets (mars/echeances.py), relevées chaque jour par taches. Dates déclarées dans
+# le .env (*_EXPIRENT_LE : CDSE_CLES, CDSE_TRAVAILLEUR, EARTHDATA, GITHUB_LECTURE, GITHUB_ECRITURE, SCW_CLE), jamais les
+# secrets. Notification à chaque palier (jours avant l'échéance), puis à l'expiration ; une seule fois par palier et par date.
+echeances:
+  paliers_jours: [14, 3]

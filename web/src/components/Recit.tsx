@@ -1,7 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api, type Dossier } from "../lib/api";
-import { auteurMemorise } from "../lib/auteur";
 import { toucheLibre } from "../lib/clavier";
 import { hm, jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
@@ -76,15 +75,15 @@ export default function Recit({ dossier: d, recit, instant, suivi, onSuivre, onP
   const [message, setMessage] = useState<string | null>(null);
   const rafraichir = () => { for (const k of ["dossiers", "dossier", "alertsRange", "vessel", "alertActions"]) qc.invalidateQueries({ queryKey: [k] }); };
   const decider = useMutation({
-    mutationFn: (b: { action: string; motif?: string }) => api.decisionDossier(d.cle, { ...b, author: auteurMemorise(), instant }),
+    mutationFn: (b: { action: string; motif?: string }) => api.decisionDossier(d.cle, { ...b, instant }),
     onSuccess: (r, b) => { setClasser(false); setMessage(R.fait(R.verbes[b.action], r.alertes.length)); rafraichir(); },
     onError: (e: Error) => setMessage(e.message),
   });
   const devisM = useMutation({ mutationFn: () => api.verificationDossier(d.cle, instant), onSuccess: setDevis,
     onError: (e: Error) => setMessage(e.message) });
   const demander = useMutation({
-    mutationFn: () => api.demander(d.vessel_id != null ? { vessel_id: d.vessel_id, author: auteurMemorise() }
-      : { alerte_id: d.alertes[0], author: auteurMemorise() }),
+    mutationFn: () => api.demander(d.vessel_id != null ? { vessel_id: d.vessel_id }
+      : { alerte_id: d.alertes[0] }),
     onSuccess: (r) => { setDevis(null); setMessage(r.regroupee ? R.verifier.regroupee(r.id) : R.verifier.demandee(r.id)); rafraichir(); },
     onError: (e: Error) => setMessage(e.message),
   });
