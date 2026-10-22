@@ -140,7 +140,8 @@ def heures_creuses(compte: Counter, du: date, au: date) -> dict:
 
 
 def mesurer(conn, r2, du: date, au: date, zones: list[str], test_jours: int, workdir: Path, log=print,
-            p: dict = T.PARAMS, regles: dict | None = None, cercle_seul: bool = False) -> dict:
+            p: dict = T.PARAMS, regles: dict | None = None, cercle_seul: bool = False,
+            hypotheses: bool = False) -> dict:
     import pyarrow as pa
     # L'allocateur par défaut d'Arrow (mimalloc) garde la mémoire libérée d'une journée à l'autre : 447 Mo après
     # 16 journées de la Manche synthétique contre 257 Mo avec l'allocateur du système (mesuré le 22/10/2026)
@@ -154,6 +155,8 @@ def mesurer(conn, r2, du: date, au: date, zones: list[str], test_jours: int, wor
            "zones": {}}
     coupe = datetime.combine(au - timedelta(days=test_jours - 1), datetime.min.time(), timezone.utc).timestamp()
     evals, tous, cercle_a, cercle_t = [], [], [], []
+    dep_a, dep_t = [], []                           # étape 2 : départs et déplacements réels, par zone
+    cercle_seul = cercle_seul or hypotheses
     from mars.ais.live import ZONES
     for z in zones:
         with traces.span("trajectoire.zone", **{"trajectoire.zone": z}) as sp:
@@ -218,7 +221,12 @@ def mesurer(conn, r2, du: date, au: date, zones: list[str], test_jours: int, wor
             # satellite), 1 nœud et plus ; vérité : position où le navire réapparaît dans la zone
             with traces.span("trajectoire.cercle", **{"trajectoire.zone": z}) as sc:
                 hors_peche = lambda xs: [t for t in xs if t.meta["categorie"] != "peche"]  # noqa: E731
-                for xs, acc in ((hors_peche(train), cercle_a), (hors_peche(test), cercle_t)):
+                for xs, acc, dep in ((hors_peche(train), cercle_a, dep_a), (hors_peche(test), cercle_t, dep_t)):
+                    if hypotheses:
+                        dd = T.deplacements(xs, verite)
+                        if dd:
+                            dep.append(dd)
+                        continue
                     e = T.evaluer_longs(xs, verite)
                     if not e.empty:
                         acc.append(e.drop(columns=[c for c in ("zone_trajet",) if c in e]))
@@ -268,6 +276,25 @@ def mesurer(conn, r2, du: date, au: date, zones: list[str], test_jours: int, wor
         out["cercle_appris"] = {"table": table, "fenetres_apprentissage": int(len(a)), "fenetres_test": int(len(t_)),
                                 "seuil": seuil,
                                 "gain": T.gain_garde(t_, table, regles["sentinel"], tc["fenetres_max_par_demande"], seuil)}
+    if dep_a and dep_t and regles:
+        with traces.span("trajectoire.hypotheses") as sh:
+            fusion = lambda xs: {k: np.concatenate([x[k] for x in xs]) for k in xs[0]}  # noqa: E731
+            a, t_ = fusion(dep_a), fusion(dep_t)
+            tc = regles["tip_and_cue"]
+            table = tc["prediction"]["cercle_appris"]
+            seuil = float(table.get("contenance_min", 0.4))
+            out["hypotheses"] = {"departs_apprentissage": int(len(a["t"])), "departs_test": int(len(t_["t"])),
+                                 "seuil": seuil, "sans_meme_navire": True, "garde": "borne basse de Wilson à 90 %"}
+            for min_ex in (20, 50):
+                an = T.Analogues(min_exemples=min_ex).apprendre(a)
+                for nom, cats, excl in (("cargo_petrolier", ("cargo", "petrolier"), None),
+                                        ("autres", None, ("cargo", "petrolier")), ("ensemble", None, None)):
+                    out["hypotheses"][f"{nom}_min{min_ex}"] = T.evaluer_hypotheses(
+                        an, t_, table, regles["sentinel"], tc["fenetres_max_par_demande"], seuil,
+                        categories=cats, exclure=excl, max_departs=2000)
+                    log(f"hypothèses {nom}, {min_ex} exemples au moins : évaluées")
+            sh.set_attributes({"trajectoire.departs_apprentissage": int(len(a["t"])),
+                               "trajectoire.departs_test": int(len(t_["t"]))})
     out["duree_s"] = round(time.time() - t_debut, 1)
     out["memoire_max_mo"] = _memoire_mo()
     return out

@@ -937,6 +937,12 @@ Images qui changent : backend (route en lecture `/api/decisions/journal`) et web
 Vérifier par le tunnel : `curl -s "localhost:8000/api/decisions/journal?limite=3"` renvoie les dernières décisions des
 opérateurs ; `http://localhost:8080/?espace=coulisses&rubrique=capteurs` est redirigé vers Sources et capteurs.
 
+## Table de l'archive et mesure de l'étape 2 (22/10/2026)
+
+Règles 2026.10.46 (table du cercle appris tirée de l'archive), arrivées par `git pull`, relues par la vérification
+satellite au cycle suivant. Image des scripts : option `--hypotheses` de `trajectoire-mesures`, rapports nommés par
+type et par lancement (`trajectoire_<type>_<du>_<au>_<instant>.json`). Aucune migration.
+
 ## Garde de probabilité de la vérification satellite (22/10/2026)
 
 Migration 38 (colonne `contenance` de `demandes_observation`), règles 2026.10.45 (table des quantiles, seuil de 40 %,

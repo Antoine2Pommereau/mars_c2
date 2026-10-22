@@ -1187,6 +1187,11 @@ def _restaurer_positions(conn, a):
     ing.refresh_watch(force=True)
 
 
+def nom_sortie(genre: str, du: date, au: date, quand: datetime) -> str:
+    """Nom du rapport de trajectoire-mesures : type de mesure, période, instant du lancement (UTC)."""
+    return f"trajectoire_{genre}_{du}_{au}_{quand:%Y%m%dT%H%M%SZ}.json"
+
+
 @commande("trajectoire-mesures")       # lot T, phase 1 : lecture seule de R2 et de la base (docs/trajectoire.md)
 def _trajectoire_mesures(conn, a):
     """Inventaire de l'archive, trajets, continuité et références de prévision (estime, routes fréquentes) ; zones en
@@ -1199,8 +1204,10 @@ def _trajectoire_mesures(conn, a):
     zones = [z for z in (a.args or list(ZONES)) if z in ZONES]
     travail = LIVE / ".trajectoire"
     out = TM.mesurer(conn, r2(), du, au, zones, a.test_jours, travail, log=log, regles=load_rules(),
-                     cercle_seul=a.cercle_seul)
-    sortie = travail / f"trajectoire_mesures_{du}_{au}.json"
+                     cercle_seul=a.cercle_seul, hypotheses=a.hypotheses)
+    # Un fichier par type de mesure et par lancement : une mesure n'en écrase jamais une autre (22/10/2026)
+    genre = "hypotheses" if a.hypotheses else "cercle" if a.cercle_seul else "complete"
+    sortie = travail / nom_sortie(genre, du, au, datetime.now(timezone.utc))
     sortie.write_text(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     log(f"Mesures écrites dans {sortie} ({sortie.stat().st_size} octets), {out['duree_s']} s, "
         f"mémoire maximale {out['memoire_max_mo']} Mo")
@@ -1216,6 +1223,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--jour", type=date.fromisoformat, help="coupures-injection : journée (par défaut, la veille)")
     ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")
     ap.add_argument("--test-jours", type=int, default=5, help="trajectoire-mesures : derniers jours tenus à l'écart")
+    ap.add_argument("--hypotheses", action="store_true",
+                    help="trajectoire-mesures : routes fréquentes en plusieurs hypothèses (étape 2), de 1 à 30 h")
     ap.add_argument("--cercle-seul", action="store_true",
                     help="trajectoire-mesures : inventaire et cercle appris seulement (ni routes ni références)")
     ap.add_argument("--malgre-pause", action="store_true",

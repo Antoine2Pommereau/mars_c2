@@ -109,3 +109,24 @@ def test_truth_after_a_silence_and_long_horizon_quantiles():
     for ligne in tab["quantiles_m"][0]:
         assert ligne == sorted(ligne)
     assert all(b >= a for a, b in zip(tab["quantiles_m"][0][0], tab["quantiles_m"][0][1]))
+
+
+def test_analogues_find_two_destinations_and_stay_honest():
+    """Étape 2 : deux routes depuis un même départ (moitié vers l'est, moitié vers le sud) ; deux fenêtres, l'une sur
+    chaque destination ; sans exemple du navire lui même ; borne basse de Wilson prudente."""
+    rng = np.random.default_rng(3)
+    n = 60
+    dep = {"mmsi": np.arange(n), "t": np.zeros(n), "lat": np.full(n, 48.1), "lon": np.full(n, -5.9),
+           "sog": np.full(n, 12.0), "cog": np.full(n, 120.0), "categorie": np.array(["cargo"] * n, dtype=object)}
+    est = np.where(np.arange(n) % 2 == 0, 1.0, 0.0)
+    dep["de_12"] = (est * 200 + rng.normal(0, 2, n)).astype("float32")
+    dep["dn_12"] = ((1 - est) * -200 + rng.normal(0, 2, n)).astype("float32")
+    a = T.Analogues(min_exemples=20).apprendre(dep)
+    hy = a.hypotheses(48.12, -5.88, 125.0, 12.5, 12)
+    assert len(hy["centres_km"]) == 2 and hy["contenance"] == 1.0 and hy["cellule_deg"] == 0.25
+    assert sorted(round(c[0] / 100) for c in hy["centres_km"]) == [0, 2]
+    assert 0.9 < hy["contenance_basse"] < 1.0
+    seul = a.hypotheses(48.12, -5.88, 125.0, 12.5, 12, sauf_mmsi=0)
+    assert seul["exemples"] == n - 1
+    assert a.hypotheses(43.0, 6.0, 125.0, 12.5, 12)["contenance"] is None, "ailleurs : aucun exemple"
+    assert round(T.wilson_basse(12, 20), 2) == 0.46 and T.wilson_basse(0, 0) == 0.0

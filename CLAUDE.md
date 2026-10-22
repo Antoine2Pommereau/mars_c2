@@ -720,7 +720,11 @@ couvrent les 4 fenêtres permises (20 km, `fenetres_demande`). Pré mesure du 17
 quantiles de l'erreur de l'estime de 1 à 30 h (vérité : la position où le navire réapparaît), rayon au quantile 80 %
 plafonné aux fenêtres, contenance estimée écrite dans la demande, la trace et l'interface ; un passage n'est retenu
 qu'à 40 % de contenance au moins (le plus proche au dessus du seuil) ; estime bornée à 30 h. Avec l'estime seule,
-plus aucun passage retenu au delà d'environ 4 h (pré mesure).
+plus aucun passage retenu au delà d'environ 4 h. Table de l'archive en 2026.10.46 (étalonnage juste jusqu'à 8 h).
+Étape 2 mesurée hors production (`docs/trajectoire.md` section 13) : routes fréquentes en plusieurs hypothèses
+(analogues, sans le même navire, garde sur la borne basse de Wilson) ; pré mesure : utiles de 12 à 30 h pour les
+navires aux routes régulières, pas encore pour les cargos et pétroliers (`trajectoire-mesures --hypotheses` sur
+l'archive pour trancher).
 Données externes retenues (DMA, GeoTrackNet Bretagne, École navale) : usage personnel et non commercial, aucune
 redistribution, ni des données ni d'un jeu dérivé ni des poids (section 10).
 

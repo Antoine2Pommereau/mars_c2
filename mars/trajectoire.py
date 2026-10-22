@@ -15,6 +15,7 @@ positions lues dans l'archive R2, la pré mesure du Mac des positions lues par l
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -519,4 +520,175 @@ def gain_garde(ev: pd.DataFrame, table: dict, s: dict, fenetres_max: int, seuil:
                     "contenance_estimee": round(float(est.mean()), 3), "contenance_reelle": round(float(dedans.mean()), 3),
                     "retenues": round(float(garde.mean()), 3),
                     "contenance_reelle_des_retenues": round(float(dedans[garde].mean()), 3) if garde.any() else None})
+    return out
+
+
+# Étape 2 : routes fréquentes en plusieurs hypothèses (analogues), pour les passages lointains
+
+DEMI_FENETRE_KM = 10.0         # cœur d'une fenêtre satellite (centres_fenetres) : carré de 20 km de côté
+CELLULES_DEG = (0.25, 0.5, 1.0)    # cellule de départ, puis replis si trop peu d'exemples
+VITESSES_ANALOGUES = (1.0, 5.0, 9.0, 13.0, 17.0)
+
+
+def deplacements(trs: list[Trajet], verite: Verite, horizons=HORIZONS_LONGS, pas_h: float = 1.0) -> dict:
+    """Départs (une fois par heure de trajet, 1 nœud et plus) et déplacement réel (km vers l'est et le nord) à chaque
+    horizon où le navire est revu ; NaN sinon. Colonnes numpy."""
+    pas = max(int(pas_h * 3600 / PARAMS["pas_s"]), 1)
+    acc: dict = defaultdict(list)
+    for tr in trs:
+        idx = np.arange(0, len(tr.t), pas)
+        sog, cog = tr.sog[idx].astype("float64"), tr.cog[idx].astype("float64")
+        ok = ~np.isnan(sog) & (sog >= 1) & ~np.isnan(cog)
+        idx, sog, cog = idx[ok], sog[ok], cog[ok]
+        if not len(idx):
+            continue
+        lat, lon, t0 = tr.lat[idx].astype("float64"), tr.lon[idx].astype("float64"), tr.t[idx].astype("int64")
+        for k, v in (("mmsi", np.full(len(idx), tr.mmsi)), ("t", t0), ("lat", lat), ("lon", lon), ("sog", sog), ("cog", cog),
+                     ("categorie", np.full(len(idx), tr.meta.get("categorie", "inconnu"), dtype=object))):
+            acc[k].append(v)
+        for h in horizons:
+            la, lo, vu = verite.positions(tr.mmsi, t0 + int(h * 3600))
+            de = np.radians(lo - lon) * np.cos(np.radians(lat)) * R_TERRE / 1000
+            dn = np.radians(la - lat) * R_TERRE / 1000
+            acc[f"de_{h}"].append(np.where(vu, de, np.nan).astype("float32"))
+            acc[f"dn_{h}"].append(np.where(vu, dn, np.nan).astype("float32"))
+    return {k: np.concatenate(v) for k, v in acc.items()} if acc else {}
+
+
+def _cle(lat, lon, cog, sog, taille):
+    tranche = np.searchsorted(VITESSES_ANALOGUES, sog, side="right") - 1
+    secteur = (np.asarray(cog) % 360 // 45).astype(int)
+    return (np.floor(np.asarray(lat) / taille).astype(int), np.floor(np.asarray(lon) / taille).astype(int), secteur, tranche)
+
+
+def wilson_basse(succes: int, n: int, z: float = 1.2816) -> float:
+    """Borne basse de Wilson (90 % unilatéral) d'une proportion : avec peu d'exemples, la contenance estimée est
+    prudente (12 sur 20 donne 0,46, 60 sur 100 donne 0,54)."""
+    if n <= 0:
+        return 0.0
+    p = succes / n
+    centre = p + z * z / (2 * n)
+    marge = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return max(0.0, (centre - marge) / (1 + z * z / n))
+
+
+class Analogues:
+    """Où sont allés, h heures plus tard, les navires d'apprentissage partis de la même cellule, au même secteur de
+    cap et dans la même tranche de vitesse ; repli sur des cellules plus grandes quand les exemples manquent."""
+
+    def __init__(self, min_exemples: int = 20):
+        self.min, self.index, self.dep = min_exemples, {}, {}
+
+    def apprendre(self, dep: dict) -> "Analogues":
+        self.dep = dep
+        if not dep:
+            return self
+        for taille in CELLULES_DEG:
+            ci, cj, s, v = _cle(dep["lat"], dep["lon"], dep["cog"], dep["sog"], taille)
+            groupes: dict = defaultdict(list)
+            for k, cle in enumerate(zip(ci, cj, s, v)):
+                groupes[cle].append(k)
+            self.index[taille] = {c: np.array(ix) for c, ix in groupes.items()}
+        return self
+
+    def exemples(self, lat, lon, cog, sog, h, sauf_mmsi=None) -> tuple[np.ndarray, float | None]:
+        """Déplacements (km, n × 2) des analogues revus à l'horizon h, à la plus petite cellule assez fournie ;
+        `sauf_mmsi` : sans les exemples de ce navire (mesure honnête : un traversier connaîtrait sa propre ligne)."""
+        for taille in CELLULES_DEG:
+            ci, cj, s, v = _cle([lat], [lon], [cog], [sog], taille)
+            ix = self.index.get(taille, {}).get((int(ci[0]), int(cj[0]), int(s[0]), int(v[0])))
+            if ix is None:
+                continue
+            if sauf_mmsi is not None:
+                ix = ix[self.dep["mmsi"][ix] != sauf_mmsi]
+            d = np.column_stack([self.dep[f"de_{h}"][ix], self.dep[f"dn_{h}"][ix]])
+            d = d[~np.isnan(d).any(axis=1)]
+            if len(d) >= self.min:
+                return d, taille
+        return np.empty((0, 2)), None
+
+    def hypotheses(self, lat, lon, cog, sog, h, fenetres_max: int = 4, part_min: float = 0.1, sauf_mmsi=None) -> dict:
+        """Jusqu'à fenetres_max fenêtres, chacune sur la destination la plus fréquente restante (glouton) ; une
+        hypothèse sous part_min des exemples ne vaut pas une fenêtre. Contenance estimée : part des exemples couverts."""
+        d, taille = self.exemples(lat, lon, cog, sog, h, sauf_mmsi)
+        if not len(d):
+            return {"centres_km": [], "parts": [], "contenance": None, "contenance_basse": None, "exemples": 0,
+                    "cellule_deg": None}
+        rng = np.random.default_rng(0)
+        if len(d) > 1000:                       # calcul borné : 1 000 exemples tirés au hasard (graine fixe)
+            d = d[rng.choice(len(d), 1000, replace=False)]
+        reste = np.ones(len(d), bool)
+        centres, parts = [], []
+        cand = d if len(d) <= 200 else d[rng.choice(len(d), 200, replace=False)]
+        for _ in range(fenetres_max):
+            if not reste.any():
+                break
+            dd = d[reste]
+            dedans = (np.abs(dd[:, None, 0] - cand[None, :, 0]) <= DEMI_FENETRE_KM) & \
+                     (np.abs(dd[:, None, 1] - cand[None, :, 1]) <= DEMI_FENETRE_KM)
+            meilleur = int(dedans.sum(axis=0).argmax())
+            part = dedans[:, meilleur].sum() / len(d)
+            if part < part_min:
+                break
+            c = cand[meilleur]
+            couverts = (np.abs(d[:, 0] - c[0]) <= DEMI_FENETRE_KM) & (np.abs(d[:, 1] - c[1]) <= DEMI_FENETRE_KM) & reste
+            reste &= ~couverts
+            centres.append([float(c[0]), float(c[1])])
+            parts.append(round(float(part), 3))
+        couverts = int((~reste).sum())
+        return {"centres_km": centres, "parts": parts, "contenance": round(couverts / len(d), 3),
+                "contenance_basse": round(wilson_basse(couverts, len(d)), 3), "exemples": int(len(d)), "cellule_deg": taille}
+
+
+def evaluer_hypotheses(analogues: Analogues, test: dict, table: dict, s: dict, fenetres_max: int, seuil: float,
+                       horizons=HORIZONS_LONGS, sauf_meme_navire: bool = True, categories=None,
+                       max_departs: int | None = None, exclure=None) -> list[dict]:
+    """Par horizon, sur les départs tenus à l'écart où le navire est revu : hypothèses (une fenêtre chacune) contre
+    cercle plafonné de l'estime ; contenance estimée et réelle, part retenue par la garde, réussite des retenues."""
+    from mars.tip_and_cue import contenance_estimee, rayon_appris, rayon_couvrable
+    plafond = rayon_couvrable(s, fenetres_max)
+    out = []
+    for h in horizons:
+        vu = ~np.isnan(test[f"de_{h}"])
+        if categories is not None:
+            vu &= np.isin(test["categorie"], list(categories))
+        if exclure is not None:
+            vu &= ~np.isin(test["categorie"], list(exclure))
+        if not vu.any():
+            continue
+        idx = np.flatnonzero(vu)
+        if max_departs and len(idx) > max_departs:     # calcul borné : départs tirés au hasard (graine fixe)
+            idx = np.sort(np.random.default_rng(1).choice(idx, max_departs, replace=False))
+        est_h, reel_h, nf = [], [], []
+        est_c, reel_c = [], []
+        for k in idx:
+            lat, lon, sog, cog = test["lat"][k], test["lon"][k], test["sog"][k], test["cog"][k]
+            vrai = np.array([test[f"de_{h}"][k], test[f"dn_{h}"][k]], dtype=float)
+            hy = analogues.hypotheses(lat, lon, cog, sog, h, fenetres_max,
+                                      sauf_mmsi=test["mmsi"][k] if sauf_meme_navire else None)
+            ok_h = any(abs(vrai[0] - c[0]) <= DEMI_FENETRE_KM and abs(vrai[1] - c[1]) <= DEMI_FENETRE_KM
+                       for c in hy["centres_km"])
+            est_h.append(hy["contenance_basse"] if hy["contenance_basse"] is not None else 0.0)   # garde prudente
+            reel_h.append(ok_h)
+            nf.append(len(hy["centres_km"]))
+            # Estime : cercle appris plafonné autour de la position à vitesse et route constantes
+            r = min(rayon_appris(table, sog, h), plafond)
+            pla, plo = avancer(lat, lon, cog, sog * NOEUD * h * 3600)
+            pe = np.radians(plo - lon) * np.cos(np.radians(lat)) * R_TERRE / 1000
+            pn = np.radians(pla - lat) * R_TERRE / 1000
+            est_c.append(contenance_estimee(table, sog, h, r))
+            reel_c.append(float(np.hypot(vrai[0] - pe, vrai[1] - pn)) * 1000 <= r)
+        est_h, reel_h, est_c, reel_c = map(np.array, (est_h, reel_h, est_c, reel_c))
+        gh, gc = est_h >= seuil, est_c >= seuil
+        out.append({"horizon_h": h, "departs": int(len(idx)),
+                    "hypotheses": {"contenance_estimee": round(float(est_h.mean()), 3),
+                                   "contenance_reelle": round(float(reel_h.mean()), 3),
+                                   "fenetres_moyennes": round(float(np.mean(nf)), 2),
+                                   "sans_exemple": round(float(np.mean(np.array(nf) == 0)), 3),
+                                   "retenus": round(float(gh.mean()), 3),
+                                   "reussite_des_retenus": round(float(reel_h[gh].mean()), 3) if gh.any() else None},
+                    "estime": {"contenance_estimee": round(float(est_c.mean()), 3),
+                               "contenance_reelle": round(float(reel_c.mean()), 3),
+                               "retenus": round(float(gc.mean()), 3),
+                               "reussite_des_retenus": round(float(reel_c[gc].mean()), 3) if gc.any() else None}})
     return out

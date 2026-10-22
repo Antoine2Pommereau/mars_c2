@@ -395,3 +395,59 @@ La table des règles 2026.10.45 est **provisoire** (échantillon) : `trajectoire
 toute l'archive. Mémoire : 438 Mo sur l'archive synthétique de la Manche après passage de l'évaluation en colonnes
 numpy (501 Mo avec un dictionnaire par fenêtre) ; la vraie archive coûtant environ 1,65 fois la synthétique, la
 mesure se lance avec une limite de conteneur relevée pour ce seul lancement (`TACHES_MEM_LIMIT=1200m`).
+
+## 13. Table de l'archive, rejeu et étape 2 : routes fréquentes en plusieurs hypothèses (22/10/2026)
+
+**Table de l'archive** (règles 2026.10.46) : `trajectoire-mesures --cercle-seul` sur le serveur (146 s, 654 Mo au plus ;
+42 407 fenêtres d'apprentissage, 14 837 tenues à l'écart, hors pêche). Étalonnage sur les fenêtres tenues à l'écart :
+
+| Horizon | 1 h | 2 h | 3 h | 4 h | 5 h | 6 h | 8 h | 10 h | 12 h | 24 h |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Contenance estimée | 80 % | 80 % | 72 % | 54 % | 37 % | 25 % | 13 % | 8 % | 6 % | 2 % |
+| Contenance réelle | 79 % | 78 % | 70 % | 51 % | 36 % | 26 % | 12 % | 5 % | 2 % | 0 % |
+| Retenus par la garde | 100 % | 100 % | 100 % | 89 % | 28 % | 0 % | 0 % | 0 % | 0 % | 0 % |
+| Navire revu dans nos zones | 87 % | 80 % | 73 % | 66 % | 59 % | 52 % | 42 % | 35 % | 30 % | 21 % |
+
+Étalonnage juste jusqu'à 8 h ; au delà, estimée de 2 à 6 % pour une réelle sous 2 %, sans effet sous le seuil. La garde
+coupe vers 4 h 30 à 12 nœuds (contenance de 20 km : 72 % à 3 h, 53 % à 4 h, 34 % à 5 h).
+
+**Rejeu du serveur, 14 jours, garde et table provisoire** : coupures AIS 3 passages (5 écartés pour contenance),
+rendez vous 3 (2 écartés), identité et VIIRS inchangés ; contenance estimée moyenne des passages retenus 80 % sur 5 ;
+délai médian 2,5 h ; 6 sessions, 11 fenêtres, environ 2,45 € par mois. Le rejeu avec la table de l'archive est à
+relancer (section 8 de docs/deploiement.md).
+
+**Étape 2, méthode** (`mars/trajectoire.py`, `deplacements`, `Analogues`, `evaluer_hypotheses`). Pour un navire
+(position, cap, vitesse), on regarde où sont allés, h heures plus tard, les navires d'apprentissage partis de la même
+cellule (0,25 degré, repli sur 0,5 puis 1 degré si moins de 20 exemples), au même secteur de cap (45 degrés) et dans la
+même tranche de vitesse (4 nœuds). La vérité est la même que pour le cercle : la position où le navire est revu.
+Jusqu'à 4 fenêtres sont placées, chacune sur la destination la plus fréquente restante (une hypothèse sous 10 % des
+exemples ne vaut pas une fenêtre). La contenance estimée est la part des exemples couverts ; la garde utilise sa borne
+basse de Wilson à 90 %, prudente quand les exemples sont peu nombreux. **Les exemples du navire lui même sont
+exclus** : sans cela, un traversier « connaît » sa propre ligne et le résultat est flatteur (à 24 h, réussite des
+retenus 50 % avec ses propres exemples, 45 % sans).
+
+**Pré mesure de l'étape 2** (échantillon de 340 navires, apprentissage avant le 17/10, départs du 17 au 22/10 où le
+navire est revu, sans le même navire). « Retenus » : départs dont un passage aurait passé la garde de 40 % ;
+« réussite » : navire réellement dans une des fenêtres.
+
+| Horizon | Cargos et pétroliers : retenus | réussite des retenus | Autres types : retenus | réussite des retenus | Estime (tous) : retenus |
+|---|---|---|---|---|---|
+| 3 h | 29 % | 68 % | 31 % | 78 % | 100 % |
+| 6 h | 19 % | 51 % | 25 % | 73 % | 0 % |
+| 12 h | 7 % | 29 % | 23 % | 68 % | 0 % |
+| 18 h | 4 % | 21 % | 21 % | 55 % | 0 % |
+| 24 h | 3 % | 0 % | 18 % | 48 % | 0 % |
+| 30 h | 3 % | 0 % | 22 % | 51 % | 0 % |
+
+**Lecture.** Au delà de 6 h, seules les hypothèses retiennent encore des passages. Pour les autres types (navires de
+service, remorqueurs, lignes régulières), elles réussissent à 48 à 68 % de 12 à 30 h sur environ un départ sur cinq.
+Pour les cargos et pétroliers, les vraies cibles des coupures AIS, l'échantillon est trop maigre : 90 à 95 % des départs
+au delà de 12 h n'ont aucun exemple, et les rares retenus réussissent mal (29 % à 12 h). La contenance estimée y est
+optimiste (retenus à 40 % au moins, réussite de 29 %) malgré la borne basse. **Conclusion provisoire : l'étape 2 ne
+rend utiles des passages à 12 à 30 h que pour les navires aux routes régulières ; pour les cargos et pétroliers, il
+faut la mesure sur l'archive** (`trajectoire-mesures --hypotheses` : environ 57 000 départs, résultats par catégorie,
+avec 20 et 50 exemples au moins). Rien n'est encore branché dans la vérification satellite : la décision viendra de
+cette mesure.
+
+**Rapports de mesure** : un fichier par type de mesure et par lancement,
+`trajectoire_<complete|cercle|hypotheses>_<du>_<au>_<instant UTC>.json` ; une mesure n'en écrase plus une autre.

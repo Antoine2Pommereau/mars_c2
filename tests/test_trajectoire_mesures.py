@@ -90,3 +90,37 @@ def test_timestamps_with_any_number_of_decimals():
                      "2026-10-06 12:00:01 +0000 UTC", "n'importe quoi"])
     attendu = int(datetime(2026, 10, 6, 12, 0, 1, tzinfo=timezone.utc).timestamp())
     assert list(s) == [attendu, attendu, attendu, -1]
+
+
+def test_each_measure_type_and_run_has_its_own_report_name():
+    """Une mesure n'en écrase jamais une autre : type, période et instant du lancement dans le nom (22/10/2026)."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+    racine = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(racine / "scripts"))
+    spec = importlib.util.spec_from_file_location("taches_nom", racine / "scripts" / "taches.py")
+    taches = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(taches)
+    du, au = date(2026, 10, 6), date(2026, 10, 21)
+    q = datetime(2026, 10, 22, 14, 3, 7, tzinfo=timezone.utc)
+    noms = {taches.nom_sortie(g, du, au, q) for g in ("complete", "cercle", "hypotheses")}
+    assert len(noms) == 3 and "trajectoire_cercle_2026-10-06_2026-10-21_20261022T140307Z.json" in noms
+    assert taches.nom_sortie("cercle", du, au, q) != taches.nom_sortie("cercle", du, au, q + timedelta(seconds=1))
+
+
+def test_hypotheses_measure_reports_by_category_without_the_same_vessel(tmp_path):
+    from mars.config import load_rules
+    r2 = FauxR2(tmp_path)
+    jours = [date(2026, 10, 6) + timedelta(days=k) for k in range(4)]
+    for j in jours:
+        if j == date(2026, 10, 8):
+            continue                                       # journée manquante : trajets d'apprentissage puis de test
+        for m in (227000001, 227000002, 227000003):
+            r2.poser(f"ais/positions/zone=bretagne/date={j}/positions_{m}_{j}.parquet", positions_jour(j, m))
+    out = TM.mesurer(FausseBase(), r2, jours[0], jours[-1], ["bretagne"], 1, tmp_path / "travail",
+                     log=lambda _m: None, regles=load_rules(), hypotheses=True)
+    h = out["hypotheses"]
+    assert h["sans_meme_navire"] and h["departs_apprentissage"] > 0 and h["departs_test"] > 0
+    assert {"cargo_petrolier_min20", "autres_min20", "ensemble_min50"} <= set(h)
+    assert "references" not in out["zones"]["bretagne"] or not out["zones"]["bretagne"]["references"]
