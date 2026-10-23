@@ -1,3 +1,5 @@
+> Archivé le 24/10/2026 (lot Z3) : historique, ne décrit plus l'état actuel.
+
 # Audit du code, 06/10/2026
 
 Audit du dépôt après le pivot du rejeu de journées danoises vers la surveillance en direct de la France

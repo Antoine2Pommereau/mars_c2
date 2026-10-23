@@ -1,3 +1,5 @@
+> Archivé le 24/10/2026 (lot Z3) : historique, ne décrit plus l'état actuel.
+
 # MARS C2 : vision de l'interface opérationnelle
 
 Oct 6, 2026

@@ -1,11 +1,25 @@
 # Panneau de contrôle (lot P, 21/10/2026)
 
+> **État au 24/10/2026**
+> * Le panneau n'est plus une icône du rail : depuis le lot U (21/10/2026), ses sections sont des **rubriques des
+>   Coulisses** (`docs/ux_refonte.md`, section 13) : Compte, Notifications, Affichage et démonstration (mon espace) ;
+>   Règles d'alerte, Zones de vigilance (surveillance) ; Sources et capteurs, Activité satellite, Budget (capteurs) ;
+>   Système, Journal (plateforme, lecture seule). Les fonctions décrites ci dessous sont inchangées.
+> * Interrupteurs : **Sentinel 1, Sentinel 2 et tip and cue en pause depuis le 21/10/2026** ; VIIRS, mis en pause le
+>   même jour (motif « too expensive », alors qu'une nuit coûte 0,02 €), repris au déploiement de 29bcfff. Cet état
+>   n'existe qu'en base (`interrupteurs_satellites`) : `taches.py satellites-pause` sans argument le donne.
+> * Accès : depuis les lots Z1 et Z2, **toutes** les routes d'écriture de l'API exigent une session d'opérateur, pas
+>   seulement celles du panneau ; l'auteur est tiré de la session.
+> * Budget Sentinel : 8 € par mois, partagé entre Sentinel 1, Sentinel 2 et tip and cue ; VIIRS hors budget.
+
 Piloter sans terminal les capteurs, les dépenses, les règles, les notifications, les zones de vigilance et un mode
 démonstration, avec un état du système en lecture seule. Raison première : maîtriser les coûts (Sentinel 1 et 2 sont
 payés à l'heure entamée), puis préparer des démonstrations.
 
-Le panneau s'ouvre depuis l'icône « Contrôle » du rail (curseurs) ; chaque section se replie, et l'état replié est
-gardé dans le navigateur.
+À la livraison du lot P, le panneau s'ouvrait depuis l'icône « Contrôle » du rail (curseurs), en sections repliables.
+Depuis le lot U (21/10/2026), chaque section est une rubrique des Coulisses : Capteurs et Plafond de scènes dans
+Sources et capteurs, Dépenses dans Budget, Demande d'observation dans Activité satellite, Système, Règles (Règles
+d'alerte), Notifications, Zones de vigilance, Démonstration (Affichage et démonstration) et Journal, chacune à son nom.
 
 ## Principes
 
@@ -16,8 +30,9 @@ gardé dans le navigateur.
 * **Les seuils ne s'éditent jamais dans l'interface** : ils restent dans le fichier versionné. Le panneau les affiche
   avec leur version, et ne choisit qu'entre des valeurs et profils définis dans le fichier (section `controle`).
 * **Traçabilité** : chaque action est journalisée dans `journal_controle` (qui, quand, quoi, valeur avant et après,
-  motif, trace), visible dans le panneau (section Journal) et dans Grafana (tableau Satellites).
-* **Accès** : les routes d'écriture exigent une connexion d'opérateur ; les routes de lecture ne changent pas.
+  motif, trace), visible dans les Coulisses (rubrique Journal) et dans Grafana (tableau Satellites).
+* **Accès** : les routes d'écriture exigent une connexion d'opérateur (depuis le lot Z1, toutes celles de l'API) ; les
+  routes de lecture ne changent pas.
 * **Aucun bouton qui redémarre un service ou touche à Docker** (les conteneurs n'ont pas le socket Docker).
 
 ## Connexion des opérateurs
@@ -67,7 +82,7 @@ panneau), règle « Nuit VIIRS absente » muette quand VIIRS est en pause (fonct
 
 ## Phase B : état du système (lecture seule, aucune migration)
 
-Section « Système » (`GET /api/controle/systeme`, rafraîchie chaque minute) :
+Section « Système », aujourd'hui rubrique Système des Coulisses (`GET /api/controle/systeme`, rafraîchie chaque minute) :
 
 * services et version déployée (empreinte du commit, `signes_de_vie`), âge du dernier signe de vie (en rouge au delà
   de 10 minutes) ;
@@ -80,7 +95,7 @@ Section « Système » (`GET /api/controle/systeme`, rafraîchie chaque minute) 
 
 ## Phase C : règles d'alerte (migration 34, règles 2026.10.37)
 
-Section « Règles » : pour chaque règle (coupure AIS, rendez vous, changement d'identité et ses deux sous types,
+Section « Règles », aujourd'hui rubrique Règles d'alerte des Coulisses : pour chaque règle (coupure AIS, rendez vous, changement d'identité et ses deux sous types,
 navire des listes, détections VIIRS, Sentinel 1 et Sentinel 2 avec leurs trois types d'alerte), un mode :
 
 | Mode | Effet |
@@ -126,7 +141,7 @@ Préférences en base (`reglages_controle`, clé `notif:preferences`) par dessus
 
 ## Phase E : zones de vigilance (migration 36, règles 2026.10.39)
 
-Section « Zones de vigilance » : une zone se crée par un **polygone dessiné sur la carte** (« Dessiner sur la carte »,
+Section « Zones de vigilance », aujourd'hui rubrique du même nom dans les Coulisses : une zone se crée par un **polygone dessiné sur la carte** (« Dessiner sur la carte »,
 un clic par sommet, rien d'autre ne se sélectionne pendant le tracé) ou par un **tampon autour de l'infrastructure
 sélectionnée** (500 m à 20 km, 2 milles par défaut), avec un nom, un motif, une date de fin facultative et un profil
 choisi parmi ceux du fichier (`zones_vigilance.profils`). Une zone se retire avec un motif, jamais ne se supprime.

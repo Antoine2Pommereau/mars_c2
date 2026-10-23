@@ -1,1042 +1,297 @@
 # MARS C2 : contexte du projet pour Claude Code
 
-> **Règle permanente (étape D2).** Toute addition à MARS C2 est instrumentée avec OpenTelemetry : chaque tâche, route,
-> appel externe et étape métier produit des spans, avec les attributs utiles et sans donnée sensible. Une
-> fonctionnalité non tracée n'est pas terminée. Les outils de supervision eux mêmes (Grafana, Tempo, le collecteur)
-> ne sont jamais tracés.
->
-> Liste de contrôle, avant de déclarer une addition terminée (détail : `docs/opentelemetry.md`) :
-> 1. **Tâche** : passe par `run()` de `scripts/taches.py` (span « tache <nom> », trace_id dans `task_runs`) ; une
->    **commande** se déclare par `@commande` (registre `COMMANDES`, span « commande <nom> »).
-> 2. **Étape métier** : `with traces.span("domaine.etape", **attributs)` (`mars/traces.py`) ; compteurs et durées en
->    attributs, identifiants internes seulement (jamais nom de navire, position, clé, jeton, mot de passe, adresse
->    signée, sujet ntfy).
-> 3. **Appel externe** : requests et httpx sont tracés d'office ; sinon (boto3, urllib, websockets) un span avec
->    `peer.service`. Nom lisible « MÉTHODE opération » (« GET CMR granules », « PUT R2 archive ») : hôte nouveau dans
->    `EXTERNES` et `OPERATIONS` de `mars/traces.py`. Appels nombreux : en parallèle bornée (`traces.en_parallele`).
-> 4. **Route de l'API** : tracée d'office (FastAPI, asyncpg) ; route lourde : un span métier en plus ; route appelée
->    chaque seconde : à exclure (`API_NON_TRACEES`).
-> 5. **Travailleur** : son script importe `otel_mini` et rattache ses spans à `TRACEPARENT` ; toute écriture d'alerte
->    se fait dans une trace (`traces.en_base`, le déclencheur de la migration 27 écrit `details.trace_id`).
-> 6. Jamais de traces pour Grafana, Tempo ou le collecteur (le collecteur les écarte de toute façon : `filter/outils`).
-> 7. `tests/test_traces.py` vert (il échoue si une commande de `taches.py` ou un type de travailleur n'est pas tracé,
->    si un appel externe est mal nommé, ou si Grafana envoie des spans), puis `scripts/verifier_images.sh traces`.
-
-Ce fichier est la mémoire du projet. Lis le en entier avant toute tâche, et tiens le à jour à chaque jalon. Le
-document de référence de la direction est la Claude Doc « MARS C2, mise à jour du projet » :
-https://claude.ai/code/artifact/00f50730-d117-4ad4-94ac-0cb9b967f002 (sinon, demander à Antoine de la déposer dans
-`docs/`). L'interface cible des étapes 2 à 4 est décrite dans `docs/vision_interface.md` (lot 1, la charpente, et
-lot 2, le contenu, faits). L'historique de la première version (rejeu de journées danoises) et ses enseignements de calibration
-sont dans `docs/historique_danemark.md` ; l'état du code est audité dans `docs/audit_code.md`.
+Fichier de travail, lu en entier avant toute tâche et tenu à jour à chaque jalon ; l'historique va dans
+`docs/journal.md`, pas ici. Direction : Claude Doc « MARS C2, mise à jour du projet »
+(https://claude.ai/code/artifact/00f50730-d117-4ad4-94ac-0cb9b967f002). Index de la documentation : `docs/README.md` ;
+détail technique (démarrage, API, interface) :
+`docs/reference.md` ; pièges en détail : `docs/pieges.md`, résolus : `docs/pieges_archives.md` ; ancienne version complète :
+`docs/archives/CLAUDE_avant_Z3.md`.
 
 ## 1. Le projet
 
-**Objectif.** Un outil opérationnel, en direct, qui protège les infrastructures maritimes françaises (câbles,
-interconnexions, pipelines, parcs éoliens) et suit les navires de la flotte fantôme dans les eaux françaises, en
-confrontant l'AIS déclaratif à des capteurs satellitaires indépendants. Client imaginé : une autorité française de
-l'action de l'État en mer. Projet personnel d'Antoine, vitrine pour un poste de **Forward Deployed Engineer**.
+**Objectif.** Outil opérationnel, en direct, qui protège les infrastructures maritimes françaises (câbles,
+interconnexions, pipelines, parcs éoliens) et suit la flotte fantôme dans les eaux françaises, en confrontant l'AIS
+déclaratif au comportement des navires et à des capteurs satellitaires indépendants. Client imaginé : une autorité
+française de l'action de l'État en mer. Projet personnel d'Antoine, vitrine pour un poste de Forward Deployed Engineer.
 
-**Zones collectées** (`mars/ais/live.py`) :
+**Pistes.** 1. Infrastructures sous marines : ancre traînante, arrêt ou flânerie dans un corridor, coupure AIS, rendez
+vous, écho sans AIS. 2. Flotte fantôme : navire des listes reconnu par son **OMI**, changements de nom ou de pavillon,
+transbordement, incohérence radar et AIS. Brouillage GNSS écarté.
 
-| Zone | Emprise (lat_min, lon_min, lat_max, lon_max) |
-|---|---|
-| `bretagne` (rail d'Ouessant, approches de Brest) | 47.3, -6.8, 49.6, -3.0 |
-| `manche` | 48.4, -5.0, 51.2, 2.6 |
-| `gascogne` | 43.3, -6.0, 47.4, -1.0 |
-| `mediterranee` (golfe du Lion, Marseille, Toulon, Côte d'Azur, Corse) | 41.2, 3.0, 43.7, 9.8 |
+**Sources.** AIS en direct par AISStream (plan B non construit : récepteur personnel, AISHub) ; Sentinel 1 et 2
+(Copernicus) ; VIIRS (NASA LANCE) ; EMODnet (infrastructures) ; catalogue GUR (`Vessels1.db`) et OpenSanctions ; GSHHG
+(trait de côte). Archives (DMA, GeoTrackNet Bretagne, École navale) : **entraînement seulement**, usage personnel et
+non commercial, aucune redistribution (`docs/trajectoire.md`).
 
-**Pistes.** 1. Infrastructures sous marines (ancre traînante, arrêt ou flânerie dans un corridor, coupure AIS,
-rendez vous, écho sans AIS). 2. Flotte fantôme (navire des listes identifié par son **OMI**, changements de nom ou de
-pavillon, transbordement, incohérence radar et AIS). Brouillage GNSS écarté.
+**Modèles.** AI2 `vessel-detection-sentinels` (Sentinel 1), rslearn `sentinel2-vessel-detection` (Sentinel 2),
+`vessel-detection-viirs` ; cercle appris et routes en plusieurs hypothèses (lot T) ; TrAISformer à venir ; CircleNet
+(xView3, chaîne du Mac) en comparaison, retrait prévu au lot Z4.
 
-**Sources.** AIS en direct par AISStream (plan B : récepteur personnel, AISHub) ; Sentinel 1 et 2 ; VIIRS ;
-EMODnet (infrastructures) ; catalogue GUR (`Vessels1.db`) et OpenSanctions. Les archives (École navale, Ouessant,
-GeoTrackNet, routes de Brest, DMA) servent **uniquement à entraîner** les modèles de comportement.
+**Zones collectées** (`mars/ais/live.py`, lat_min, lon_min, lat_max, lon_max) : `bretagne` (rail d'Ouessant) 47.3,
+-6.8, 49.6, -3.0 ; `manche` 48.4, -5.0, 51.2, 2.6 ; `gascogne` 43.3, -6.0, 47.4, -1.0 ; `mediterranee` (golfe du Lion,
+Côte d'Azur, Corse) 41.2, 3.0, 43.7, 9.8.
 
-**Modèles.** `allenai/vessel-detection-sentinels` et `vessel-detection-viirs` ; GeoTrackNet en pilote ;
-TrAISformer ensuite ; **CircleNet** (xView3) gardé en repli et en comparaison.
-
-**Plan.** 1. Socle en direct (**fait**, voir section 9) ; 2. règles en continu (**faites**, alertes WATCHLIST et
-IDENTITY_CHANGE comprises), recherche, fiche navire, frise par période ; 3. satellites (lot A, calendrier des
-passages Sentinel 1 et 2, **fait** ; lot B, VIIRS chaque nuit par travailleurs éphémères, **fait** ; lot C, analyse
-Sentinel 1 déclenchée sur les corridors par un travailleur GPU, **C1 à C4 faits (C3 : rupture de stock, types de
-secours, fenêtres utiles, repli sur processeur ; C4 : GPU inutilisable, échec signalé, essai forcé sur processeur) ;
-aucune analyse aboutie sur un vrai GPU à ce jour ; Sentinel arrêté
-(`scenes_max_par_jour: 0`) jusqu'à l'essai réel du lot C3** (`docs/sentinel.md`), Sentinel 2 à venir ; cartes de chaleur) ; 4. anticipation (TrAISformer). Pilote GeoTrackNet en parallèle. Étape D, supervision (Grafana sur PostgreSQL, alertes sur le téléphone par ntfy, contrôles de santé avec redémarrage automatique) : **faite** (`docs/supervision.md`).
-
-**Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves et à la version des règles) ; mesurer
-plutôt qu'affirmer (une règle silencieuse est prouvée par un test par injection) ; respecter la physique du
+**Principes directeurs** : traçabilité (chaque alerte remonte à ses preuves, à la version des règles et à sa trace) ;
+mesurer plutôt qu'affirmer (une règle silencieuse se prouve par un test par injection) ; respecter la physique du
 capteur ; tranche verticale d'abord ; calibrer au cas par cas ; déclasser plutôt qu'exclure (un statut AIS est un
 indice, jamais une excuse).
 
 ## 2. Travailler avec Antoine
 
-* **Répondre en français.**
-* **Aucun tiret dans les textes rédigés pour Antoine**, sous aucune forme (trait d'union, tiret court, tiret long) :
-  prose, documentation, commentaires destinés à être lus, messages de commit, libellés et textes de l'interface.
-  Reformuler : « rendez vous », « Sentinel 1 », « MARS C2 », « bord à bord ». Dates au format 17/06/2024. Le code,
-  les commandes, les identifiants, les noms de fichiers et les URL ne sont pas concernés.
-* MacBook Air (Apple Silicon), Python 3.12 dans `.venv`, Docker Desktop, Node par Homebrew. Dépôt dans
-  `~/Documents/Projet Perso/MarsC2/mars_c2` (dossier parent `MarsC2`, dépôt `mars_c2`).
-* Expliquer les choix et leur raison, signaler honnêtement erreurs et limites, chiffrer, terminer par la prochaine
-  étape proposée. Après une modification, donner les commandes de vérification et ce qu'on doit y lire.
-* Design validé (section 7) : poste de commandement épuré et sombre, très peu de texte. Antoine trouve vite une
-  interface « trop chargée ».
-* GitHub : https://github.com/Antoine2Pommereau/mars_c2. Jalons enregistrés par un commit explicite sans tiret ;
-  travail en branche, fusion dans `main` sur demande.
+* **Répondre et rédiger les rapports en français.**
+* **Aucun tiret dans les textes rédigés**, sous aucune forme (trait d'union, tiret court, tiret long) : prose,
+  documentation, commentaires lus, messages de commit, libellés de l'interface. Reformuler : « rendez vous »,
+  « Sentinel 1 », « MARS C2 », « bord à bord ». Code, commandes, identifiants, noms de fichiers et URL exemptés.
+  Dates au format 17/06/2024.
+* Expliquer les choix et leur raison, chiffrer, dire les limites et les erreurs, finir par la prochaine étape et les
+  commandes de vérification avec ce qu'on doit y lire.
+* Design validé : poste de commandement épuré et sombre, très peu de texte ; Antoine trouve vite une interface
+  « trop chargée ».
+* Mac : MacBook Air (Apple Silicon), Python 3.12 dans `.venv`, Docker Desktop, Node par Homebrew ; dépôt dans
+  `~/Documents/Projet Perso/MarsC2/mars_c2`. GitHub : https://github.com/Antoine2Pommereau/mars_c2.
+* Travail en branche ; commit explicite sans tiret, terminé par la ligne Co-Authored-By demandée ; fusion dans `main`
+  en avance rapide **seulement sur demande**, puis pousser `main` et la branche.
+* Avant tout commit : aucun fichier de données (`data/`, `*.parquet`, `Vessels1.db`, `maritime.csv`, `.env`, `.gstack`,
+  `node_modules`, PNG, dumps, `.ckpt`, `.tif`, mesures `.json`, `.pkl`, `.zip`, `.pdf`), sauf demande explicite.
+* Ne jamais afficher ni valider un secret ; ne jamais écrire dans `docs/` ni ici l'adresse IP publique du serveur, un
+  identifiant de compte, d'organisation ou de projet Scaleway, ni le sujet ntfy.
 
-## 3. Démarrer
+## 3. Règles permanentes de développement
 
-**Serveur** (Scaleway DEV1-M, `/opt/mars_c2`) : tout est décrit dans `docs/deploiement.md` (installation, R2,
-vérification, restauration). Les images sont **construites sur le Mac en linux/amd64**, publiées sur le registre
-GitHub (`ghcr.io/antoine2pommereau/mars_c2-backend`, `mars_c2-web`, `mars_c2-scripts`, paquets privés, étiquettes
-`latest` et empreinte du commit), téléchargées par le serveur (jeton en lecture seule) et démarrées par
-`docker compose up -d --no-build`. Le serveur ne construit rien (ni la place ni la mémoire) ; les gros transferts par
-SSH échouent depuis le Mac. Le `.env` du serveur active la surcouche `docker-compose.serveur.yml` et le profil `direct`.
+* **OpenTelemetry** : toute addition est tracée, sans donnée sensible ; une fonctionnalité non tracée n'est pas finie.
+  1. Tâche : par `run()` de `scripts/taches.py` (span « tache <nom> », trace_id dans `task_runs`) ; commande : par
+     `@commande` (registre `COMMANDES`, span « commande <nom> »).
+  2. Étape métier : `with traces.span("domaine.etape", **attributs)` ; identifiants internes seulement (jamais nom
+     de navire, position, clé, jeton, mot de passe, adresse signée, sujet ntfy).
+  3. Appel externe : requests et httpx tracés d'office ; sinon un span avec `peer.service`, nommé « MÉTHODE
+     opération », hôte déclaré dans `EXTERNES` et `OPERATIONS` de `mars/traces.py` ; appels nombreux par
+     `traces.en_parallele`.
+  4. Route : tracée d'office ; route lourde : un span métier ; route appelée chaque seconde : `API_NON_TRACEES`.
+  5. Travailleur : son script importe `otel_mini` et rattache ses spans à `TRACEPARENT` ; toute écriture d'alerte
+     dans une trace (`traces.en_base`).
+  6. **Jamais de traces pour Grafana, Tempo ou le collecteur** (le collecteur les écarte, `filter/outils`).
+  7. `tests/test_traces.py` vert, puis `scripts/verifier_images.sh traces`.
+  Détail : `docs/opentelemetry.md`. La sortie d'une commande manuelle de taches est lisible (sans suffixe trace_id) ;
+  les journaux des services gardent le suffixe ; une ligne à copier dans un fichier passe par `traces.ligne_brute`.
+* **Version des règles** : monter `version` de `config/rules.yaml` à chaque changement ; chaque alerte l'enregistre.
+* **L'état du panneau de contrôle prime sur le fichier** (pauses, plafonds, modes des règles, zones) : il est en base
+  (`interrupteurs_satellites`, `reglages_controle`). Ne jamais modifier `config/rules.yaml` sur le serveur pour
+  suspendre quoi que ce soit ; une décision de lancement ou d'alerte lit `rules["_controle"]` des règles appliquées
+  (`controle.appliquer`), jamais `load_rules()` seul ; une écriture d'alerte passe par `controle.decision`,
+  `controle.marquer_zone` ou `save_alerts` et porte `controle_empreinte`.
+* **Règle en continu** : jamais effacer puis recréer ses alertes (décisions des opérateurs perdues) : `save_alerts`.
+* **Écritures de l'API** : toute route POST, PUT, PATCH ou DELETE prend `Depends(exiger_operateur)` (session, JSON,
+  même origine, hors démonstration), auteur tiré de la session ; liste blanche `ECRITURES_LIBRES`
+  (`tests/test_securite_api.py`). Côté interface, toute écriture passe par `ecrire` de `web/src/lib/api.ts`.
+* **Variables par service** : aucun conteneur ne reçoit le `.env` entier ; une variable lue par le code est donnée au
+  service dans Compose ou déclarée dans `FACULTATIVES` de `tests/test_environnement.py` avec sa raison.
+* **Migrations** : idempotentes ; à partir de 39, la dernière instruction inscrit le nom du fichier dans
+  `schema_migrations` (`tests/test_migrations.py`).
+* **Libellés** : tous dans `web/src/lib/libelles.ts`, aucun texte visible en dur.
+* **Travailleurs** : toute destruction passe par `Scaleway.destroy` (garde : jamais une autre instance) ; aucun chemin
+  destructeur qui l'évite.
+* **Publication et déploiement** : seulement par `bash scripts/publier.sh` (Mac) et `bash scripts/deployer.sh
+  <empreinte> --migrations` (serveur) ; jamais de bloc collé qui contourne leurs gardes (arbre propre et à jour,
+  empreinte de chaque image, `verifier_images.sh`, image à l'empreinte, sauvegarde avant migration, tableau des
+  versions). Tout bloc serveur est entre parenthèses avec la garde :
+  `( cd /opt/mars_c2 || { echo "PAS SUR LE SERVEUR : arrêt"; exit 1; } ; … )`, empreinte lue par
+  `git rev-parse --short HEAD`. Serveur : jamais d'action sur les alertes depuis un essai, l'API par le tunnel en GET.
 
-**Mac** (développement, radar) :
+## 4. État actuel (24/10/2026)
 
-```bash
-./start.sh                                     # base, API, interface (Docker), inférence et Vite en arrière plan
-docker compose up -d db backend web            # ou à la main
-uvicorn inference.app:app --port 8001          # inférence sur le GPU Apple, terminal dédié
-cd web && npm run dev                          # interface de développement
-```
+`main` à 29bcfff (lots Z1 et Z2), règles 2026.10.47, migrations 01 à 42. État des sources : en base (panneau), pas
+dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibration : `docs/calibration.md`.
 
-| Adresse | Rôle |
-|---|---|
-| http://localhost:8080 | Interface construite (nginx) ; sur le serveur, par tunnel SSH |
-| http://localhost:5173 | Interface de développement (Vite) |
-| http://localhost:8000/api | API FastAPI |
-| http://localhost:8001/v1 | Service d'inférence (Mac seulement) |
-| http://localhost:3000 | Grafana (serveur seulement, par tunnel : `ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 root@IP`) |
-| localhost:5432 | PostgreSQL (`mars` / `mars`), fermé sur le serveur |
+| Capteur ou fonction | État | Dernier essai réel | Coût unitaire mesuré |
+|---|---|---|---|
+| Collecte AIS, ingestion | en service | continu ; environ 680 messages par minute (06/10) | inclus au serveur |
+| Archive R2, purge, sauvegarde | en service | chaque nuit ; restauration essayée le 24/10 | R2 gratuit (moins de 10 Go) |
+| Règles WATCHLIST, IDENTITY_CHANGE, RENDEZVOUS | en service | cycle de 5 min, 18,8 s (22/10) | inclus |
+| Règle AIS_GAP | observation (fichier) | 84 épisodes observés en 7 jours (22/10), aucune alerte | inclus |
+| VIIRS (travailleur DEV1-M) | en pause depuis le 21/10 ; reprise au déploiement de 29bcfff | 21/10, 12 granules | environ 0,02 € la nuit |
+| Sentinel 1 sur processeur (GP1-S, POP2 en secours) | en pause depuis le 21/10 | 19/10, analyse 97, 1,7 % de la scène lue | 0,19 € l'analyse |
+| Sentinel 1 sur GPU (L4, L40S) | jamais éprouvé (rupture de stock, Pascal incompatible) | aucun | L4 0,7875 € l'heure à la minute |
+| Sentinel 2 (GP1-S, rslearn) | en pause depuis le 21/10 | 20/10 : 3 échecs, correctif livré non rejoué | 0,19 € la session |
+| Tip and cue, vérification satellite | en pause depuis le 21/10 | 20 demandes réelles, aucune observation | selon le capteur |
+| Alertes radar (DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH) | jamais éprouvées | aucune alerte réelle | inclus |
+| Trajectoire, étape 2 (analogues) | hors production | mesures sur l'archive à faire | inclus |
+| Supervision (Grafana, ntfy, Tempo) | en service | continu | inclus |
+| Échéances des secrets | en service après déploiement de 29bcfff | clés Copernicus des travailleurs : 14/11/2026 | inclus |
+| Interface (Veille, Enquête, Coulisses, démonstration) | en service | lot U du 21/10 | inclus |
 
-Après une modification : `backend/`, `docker compose up -d --build backend` (attendre quelques secondes) ;
-`inference/` ou `mars/sar/`, redémarrer l'inférence ; `web/`, rien en développement, `--build web` pour le port 8080 ;
-`config/rules.yaml`, rien (relu à chaque exécution). Une collecte par clé AISStream : le profil `direct` ne tourne
-que sur le serveur.
+Coût mesuré (facture Scaleway du 1er au 23/10) : environ 19 € par mois hors taxes en régime permanent (serveur DEV1-M
+0,0202 € l'heure, réseau et stockage environ 4 € par mois). Prochaines étapes : déployer 29bcfff, mesure des coupures
+AIS le 29/10 (`docs/calibration.md`), lot Z4 (code mort), Z6 (satellites en réel), Z7 (calibration), trajectoire
+étape 2 et TrAISformer.
 
-## 4. Architecture
+## 5. Architecture
 
 | Composant | Où | Rôle |
 |---|---|---|
-| `db` | Docker, PostgreSQL 16, PostGIS 3.4 | Positions, navires et identités, listes, alertes et preuves, radar, masques, archives, tâches |
-| `backend` | Docker, FastAPI, asyncpg | Horloge (direct ou rejeu), flux SSE, navires, radar, règles, décisions, état du direct |
-| `web` | Docker (nginx) ; Vite en développement | Interface React |
-| `collector` | Docker, profil `direct` | AISStream vers le Parquet `data/ais_live` (un fichier par minute, zone et type) ; contrôle de santé (`scripts/sante.py`) : figée 5 min sans fichier, arrêtée puis relancée (`init`, `restart`) |
-| `ingest` | Docker, profil `direct` | Parquet vers la base, allègement, identités, journées, `vessel_watch` ; ne s'arrête plus sur une erreur (DiskFull journalisé), boucle figée relancée |
-| `grafana` | Docker, serveur seulement | Grafana 12.4.2 sur PostgreSQL (rôle `grafana_lecture`), 127.0.0.1:3000, 256 Mo ; tableaux, règles et canal ntfy en code (`grafana/provisioning`) |
-| `otel` | Docker, serveur seulement | Collecteur OpenTelemetry contrib 0.163.1 (`otel/collecteur.yaml`) : 127.0.0.1:4318 et réseau Docker, filtre des données sensibles, tail sampling, file d'attente sur disque, 200 Mo |
-| `tempo` | Docker, serveur seulement | Grafana Tempo 3.1.0, binaire unique, stockage local, traces gardées 72 h, 320 Mo ; lu par Grafana (source « Tempo ») |
-| `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine), calendrier des passages satellites ; 06:30 : nuits VIIRS confiées à un travailleur éphémère ; chaque minute : surveillance des travailleurs ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
-| Travailleurs | Instances Scaleway éphémères (API Scaleway, `mars/travailleurs.py`) | Analyse satellite hors du serveur : créées à la demande, script et tâche par cloud-init, résultat renvoyé par le réseau privé (nginx, port 8090, jeton), détruites par le serveur ; DEV1-M pour VIIRS (fr-par-1), L4-1-24G pour Sentinel 1 (fr-par-2, volume bloc) |
-| Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
+| `db` | PostgreSQL 16, PostGIS 3.4, `pg_stat_statements` | positions (30 jours), navires et identités, listes, alertes et preuves, satellites, tâches, panneau |
+| `backend` | FastAPI, asyncpg | API, flux SSE, dossiers, panneau de contrôle, retour des travailleurs (port 8090, jeton) |
+| `web` | nginx, React | interface ; noms acceptés : localhost, 127.0.0.1, web ; en têtes de sécurité |
+| `collector` | profil `direct` | AISStream vers Parquet `data/ais_live` (un fichier par minute, zone et type) ; santé par `scripts/sante.py` |
+| `ingest` | profil `direct` | Parquet vers la base toutes les 15 s, allègement (un point par minute en route, toutes les dix minutes à l'arrêt) |
+| `taches` | serveur | règles toutes les 5 min ; chaque nuit : archive R2, purge, sauvegarde, listes, passages, échéances ; VIIRS à 06:30 ; Sentinel toutes les 30 min ; tip and cue ; surveillance des travailleurs chaque minute ; disque ; essai de restauration chaque mois |
+| `grafana`, `otel`, `tempo` | serveur, 127.0.0.1 | tableaux et alertes ntfy (Grafana sur PostgreSQL, rôle `grafana_lecture`), collecteur OpenTelemetry, traces gardées 72 h |
+| Travailleurs | instances Scaleway éphémères | VIIRS sur DEV1-M (fr-par-1) ; Sentinel 1 sur GP1-S puis POP2 (fr-par-2), GPU au delà de 4 fenêtres ; Sentinel 2 sur GP1-S ; tâche et secrets remis une fois par le réseau privé ; groupe de sécurité `mars-travailleurs` ; résultats validés (`mars/validation.py`) |
+| Inférence | Mac (GPU Apple) | chaîne radar du Mac (CircleNet, Sentinel Hub), comparaison, retrait au lot Z4 |
 
-**Chaîne du direct** : AISStream, Parquet local, ingestion toutes les 15 s (un point par minute en route, un toutes
-les dix minutes à l'arrêt), base, flux SSE une fois par seconde. Chaque nuit, les journées terminées partent sur
-Cloudflare R2 (archive brute complète, servant aussi à l'entraînement) et sont effacées du serveur une fois
-confirmées.
+Serveur Scaleway DEV1-M (4 Go de mémoire, 20 Go de disque), `/opt/mars_c2`, aucun port public hormis SSH ; interface
+et Grafana par tunnel SSH. Chaîne du direct : AISStream, Parquet, ingestion, base, flux SSE. Chaîne satellite :
+sélection (navire des listes sur corridor, alerte VIIRS, tip and cue), travailleur, résultats validés, fusion AIS
+(`mars/fusion/`), évaluation commune (`mars/evaluation.py`), alertes. Architecture des travailleurs :
+`docs/travailleurs.md` ; Sentinel 1 et 2 : `docs/sentinel.md`, `docs/sentinel2.md` ; tip and cue et trajectoire :
+`docs/tip_and_cue.md`, `docs/trajectoire.md` ; supervision : `docs/supervision.md`.
 
-**Analyse radar** (étape 3, sur le Mac) : `POST /api/analyses` avec une emprise et un passage Sentinel 1 ; le
-service d'inférence extrait l'image et détecte les échos ; l'API lit l'AIS autour de l'instant du passage, applique
-la fusion (`mars/fusion/pipeline.py`) et la persistance des échos fixes, écrit détections et alertes.
-
-## 5. Arborescence
+## 6. Carte du code
 
 ```
-mars_c2/
-  CLAUDE.md, start.sh, pyproject.toml, docker-compose.yml, docker-compose.serveur.yml
-  config/rules.yaml       seuils versionnés
-  db/init/01 à 27         schéma et migrations (idempotentes à partir de 02)
-  mars/
-    ais/live.py, ingest.py, mid.py   zones, nettoyage, allègement, ingestion, pavillon
-    watchlist.py, archive.py, r2.py  listes, archivage et sauvegarde, client R2
-    satellites.py                    calendrier des passages Sentinel 1 et 2 (catalogue, plans de l'ESA, couverture)
-    travailleurs.py, viirs.py        orchestrateur des travailleurs éphémères ; granules VIIRS, appariement, alertes
-  travailleurs/viirs.py              script du travailleur VIIRS (exécuté dans l'image publique d'allenai)
-  travailleurs/otel_mini.py, traces.sh  traces des travailleurs (OTLP JSON en bibliothèque standard, et en bash)
-  mars/traces.py                     traces OpenTelemetry : init, spans, filtre des données sensibles, journaux
-  otel/collecteur.yaml, tempo.yaml   collecteur OpenTelemetry et Tempo (étape D2, docs/opentelemetry.md)
-  mars/sentinel.py                   Sentinel 1 : sélection des passages, garde fous, clés de lecture, fusion, alertes
-  mars/evaluation.py                 détection satellite évaluable ou non (zone de réception fiable), VIIRS et Sentinel
-  travailleurs/sentinel.py           script du travailleur GPU (image publique d'AI2, Python 3.8)
-  .github/workflows/                 nettoyage du registre GitHub (trois dernières versions par image)
-    fusion/                          positions à l'instant du passage, tolérance Doppler, appariement, persistance
-    sar/                             passages, extraction Sentinel Hub, CircleNet
-    regions/provision.py             infrastructures EMODnet
-  mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
-  mars/supervision.py                signes de vie, mesures du disque, ntfy, alertes de secours, durée des requêtes
-  scripts/sante.py                   contrôle de santé de la collecte et de l'ingestion, redémarrage automatique
-  grafana/generer.py, provisioning/  tableaux (produits en JSON), source, règles, canal ntfy ; config/supervision.env : seuils
-  backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo ;
-                                     backend/regions.py : région affichée ; backend/satellites.py : passages ;
-                                     backend/travailleurs.py : retour des travailleurs, VIIRS, /api/metrics ;
-                                     backend/sentinel.py : détections Sentinel 1, vérification satellite
-  inference/app.py                   service d'inférence
-  scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar,
-                                     mesures de calibration (mesures_calibration.py)
-  tests/                             contrat du modèle, fusion, direct, archivage
-  web/                               interface React
-  docs/                              déploiement, audit, historique danois
+config/rules.yaml, config/supervision.env   seuils versionnés, seuils de supervision
+db/init/01 à 42                              schéma et migrations (registre schema_migrations depuis 39)
+mars/ais/          live.py (zones, collecte), ingest.py, mid.py (pavillon)
+mars/rules.py      règles en continu ; watchlist.py, archive.py, r2.py, r2_signature.py
+mars/satellites.py calendrier des passages ; viirs.py ; sentinel.py ; sentinel2.py ; evaluation.py ; fusion/
+mars/tip_and_cue.py, trajectoire.py, trajectoire_mesures.py   vérification satellite, cercle appris, analogues
+mars/travailleurs.py, validation.py, diagnostic.py            orchestrateur Scaleway, contrôle des résultats, diagnostics
+mars/controle.py, dossiers.py, frise.py, supervision.py, echeances.py, restauration.py, traces.py, config.py
+backend/           app.py, contenu.py, dossiers.py, controle.py, demandes.py, travailleurs.py, sentinel.py,
+                   satellites.py, preuves.py, regions.py, demo.py
+travailleurs/      viirs.py, sentinel.py (Python 3.8), sentinel2.py, demarrage.sh, otel_mini.py, traces.sh, faux_s3.py
+scripts/           taches.py, ais_live.py, ais_ingest.py, sante.py, build_masks.py, mesures_calibration.py,
+                   publier.sh, deployer.sh, essai_restauration.sh, verifier_images.sh, essai_traces/
+web/src/           components/, lib/ (api, libelles, urgence, clavier, temps, url, session…), registres/
+grafana/generer.py, grafana/provisioning/, otel/   supervision en code
+inference/, mars/sar/, models/                     chaîne radar du Mac (lot Z4)
+tests/                                             pytest (base de test facultative), web/tests (node --test)
 ```
 
-## 6. Base et API
+## 7. Base et API
 
-Tables principales : `positions` (30 jours), `vessels`, `vessel_identities` (vue `imo_history`), `watchlist` (vue
-`vessel_watch`), `alerts`, `alert_evidence`, `alert_actions`, `sar_passes` (passages des analyses radar et calendrier Sentinel 1 et 2, colonne `mission`), `stats_10min_region`, `analyses`, `detections`,
-`fixed_echoes`, `land`, `stationary_zones`, `reception_cells`, `regions`, `infrastructure`, `ais_days`,
-`ingested_files`, `archives`, `task_runs`, `disk_status`, `sim_clock` (direct par défaut). `ais_days.coverage`
-(union des zones collectées) situe le bord des données pour la coupure AIS ; les régions `Bretagne`, `Manche`,
-`Gascogne`, `Mediterranee` portent les infrastructures EMODnet. `alerts.rule_key` : clé stable d'une alerte
-comportementale (mise à jour en place, décisions des opérateurs conservées). Une migration ne
-s'applique pas seule à une base existante : `docker compose exec -T db psql -U mars -d mars < db/init/XX_nom.sql`.
+Tables par domaine : direct (`positions`, `vessels`, `vessel_identities` et vue `imo_history`, `ais_days`,
+`ingested_files`, `stats_minute`, `stats_10min`) ; listes (`watchlist`, vue `vessel_watch`) ; alertes (`alerts` avec
+`rule_key` stable, `alert_evidence`, `alert_actions`) ; carte (`regions`, `infrastructure`, `land`, `stationary_zones`,
+`reception_cells`, `fixed_echoes`) ; satellites (`sar_passes`, `analyses`, `detections`, `viirs_*`,
+`preuves_images`, `travailleurs`, `demandes_observation`) ; panneau (`interrupteurs_satellites`, `reglages_controle`,
+`journal_controle`, `sessions_operateur`, `zones_vigilance`, `scenarios_demo`, `notifications_*`,
+`tentatives_connexion`) ; exploitation (`task_runs`, `archives`, `signes_de_vie`, `mesures_disque`, `echeances`,
+`schema_migrations`). Une migration s'applique par `deployer.sh --migrations`.
 
-API : flux (`/api/stream?direct=1` : horloge chaque seconde, trafic en colonnes seulement quand l'ingestion a
-chargé du nouveau, au plus tard toutes les 30 s), trafic à un instant (`/api/traffic?at=`), traînées
-(`/api/traffic/trails?at=`), navires (`/api/vessels/{id}` avec identités, listes et alertes ; trajectoire allégée
-à `max_points`), listes (`/api/watchlist`), état du direct (`/api/ingestion` : retard, disque, tâches), frise
-(`/api/timeline?start&end&bins` : histogramme des navires et coupures du flux, lus dans `stats_minute` et
-`stats_10min`), alertes d'une plage (`/api/alerts?start&end`, avec `vessel_ids`) et décisions (acquitter,
-confirmer, classer avec motif obligatoire, rouvrir, commenter, champ auteur), radar (`/api/passes`,
-`/api/analyses`, détections, `/api/chip`), masques (`?jours=N`), infrastructures (`?tolerance=` pour simplifier),
-règles et test par injection (`/api/rules/...`). Contenu (`backend/contenu.py`) : recherche (`/api/search?q=` :
-navires par nom actuel ou ancien, MMSI, OMI via `imo_history` ; infrastructures ; alertes par numéro), alerte par
-numéro (`/api/alerts/{id}`), comportement d'un navire sur la plage (`/api/vessels/{id}/comportement` : silences,
-arrêts au large, passages à moins de 2 milles d'une infrastructure), trajectoire GPX, notes, photo (relayée depuis
-VesselFinder, sans écriture disque, `PHOTOS=aucune` la coupe), navires suivis (`/api/suivis`), fiches infrastructure
-(`/api/infrastructure/{id}` : navires passés, alertes liées) et zone (`/api/zones/{clé}`). **Région affichée** :
-`/api/regions`, et `?region=bretagne` (ou `manche`, `gascogne`, `mediterranee`) sur le trafic, le flux, les
-traînées, les alertes, la frise, les infrastructures, les masques, les suivis, la recherche (région en premier) et
-l'état du direct ; le filtre est dans la requête SQL (`dans_region`, géométrie de la table `regions`). **Passages
-satellites** : `/api/satellites/passes?start&end&region` (emprises en GeoJSON), `/api/satellites/passes/{id}`
-(fiche : infrastructures et navires des listes couverts, analyses, nuages annoncés pour Sentinel 2), prochain
-passage dans `/api/ingestion`. **VIIRS** : `/api/viirs/detections?start&end&region`, `/api/viirs/detections/{id}`,
-`/api/viirs/nuits`, état dans `/api/ingestion` (`satellites.viirs`) ; retour des travailleurs
-`POST /api/travailleurs/{id}/etat|resultats` (jeton, réseau privé seulement). **Mesures** : `/api/metrics` (texte
-Prometheus, pour Grafana plus tard). Tables du lot B : `travailleurs`, `viirs_granules`, `viirs_detections`,
-`viirs_lumieres_fixes` (migration 20). **Sentinel 1** : `/api/sentinel/detections?start&end&region`,
-`/api/sentinel/detections/{id}` (fiche : mesures, vignette, AIS à 2 km, navire apparié), `/api/vessels/{id}/satellite`
-(vérification satellite), `satellites.sentinel` dans `/api/ingestion` ; analyses `source = 'sentinel1'` dans `analyses`
-et `detections` (migration 25), alerte IDENTITY_MISMATCH. L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
-par l'interface : l'instant est tenu par chaque navigateur et inscrit dans l'adresse de la page.
+API par familles (liste à jour : `curl -s localhost:8000/openapi.json`) : flux et trafic (`/api/stream`,
+`/api/traffic?at=`), dossiers et décisions (`/api/dossiers`), alertes et fiches, recherche (`/api/search`), région
+(`?region=`), satellites (`/api/satellites/passes`, `/api/viirs/*`, `/api/sentinel/*`, `/api/vessels/{id}/satellite`),
+demandes d'observation (`/api/demandes`, `/api/observations`), panneau (`/api/controle/*`), état (`/api/ingestion`,
+`/api/controle/systeme` avec les échéances), retour des travailleurs (`/api/travailleurs/{id}/etat|resultats|journal`).
+L'instant est tenu par le navigateur (routes `?at=`), jamais par `/api/clock`.
 
-## 7. Interface
+## 8. Interface (lot U, `docs/ux_refonte.md`)
 
-Poste de commandement épuré et sombre ; **la couleur est réservée à ce qui demande l'attention**. Jetons
-(`web/src/styles.css`) : fond `#0e1419`, panneaux `#141c23`, surélevé `#1b252e`, filets `#26323d`, texte `#e6ecf0`,
-secondaire `#7c8b97`, signal système `#4fb6c8` ; navire sombre `#e85bc7`, rendez vous `#f0a84b`, coupure AIS
-`#ef6461`, position non confirmée `#e8d45a`, navire sur liste et alerte WATCHLIST `#b48cf2`, changement d'identité
-`#5fd3a5`. IBM Plex Sans et Sans Condensed, chiffres
-tabulaires.
+* Jetons (`web/src/styles.css`) : fond `#0e1419`, panneaux `#141c23`, surélevé `#1b252e`, filets `#26323d`, texte
+  `#e6ecf0`, secondaire `#7c8b97`, signal `#4fb6c8` ; navire sombre `#e85bc7` ; IBM Plex Sans, chiffres tabulaires.
+  **La couleur est réservée à ce qui demande l'attention.** Échelle d'urgence (`lib/urgence.ts`) : 3 `#ef6461`,
+  2 `#f0a84b`, 1 `#aab6bf` ; couleurs par type seulement dans la vue Trafic complet.
+* Barre d'état : région affichée (un seul réglage pour tout l'écran), voyant Système unique, recherche (Cmd + K).
+* Rail à deux espaces : **Veille** (dossiers par navire ou par point, « à examiner », « à noter » repliés ; onglets À
+  examiner, Alertes, Suivis) et **Coulisses** (quatre groupes, dix rubriques : Compte, Notifications, Affichage et
+  démonstration ; Règles d'alerte, Zones de vigilance ; Sources et capteurs, Activité satellite, Budget ; Système avec
+  les échéances, Journal ; pas d'accueil, Échap ramène à la Veille).
+* Carte et vues (Veille, Trafic complet, Satellites, Couches) ; **Enquête** (`components/Recit.tsx`) : récit du dossier
+  et preuve dessinée (`lib/preuve.ts`) ; fiches par registre (`registres/sections.tsx`) ; frise en bas.
+* Clavier : J, K, Entrée ; F confirmer, C puis 1 2 3 classer, S suivre, V vérifier, ? aide. Une écriture sans session
+  ouvre la connexion puis reprend ; le mode démonstration (pseudonymes, photos retirées) est en lecture seule.
+* Temps (`lib/temps.ts`) : direct, plage, rejeu ; adresse de la page (`lib/url.ts`) : un lien rouvre la même vue.
+* Panneaux redimensionnables (`components/Poignee.tsx`) ; registres (`web/src/registres/`) : alertes, couches,
+  sections, frise, réglages, état.
 
-Disposition (lot U, 21/10/2026, `docs/ux_refonte.md`) : **barre d'état** en haut (**sélecteur de région**, puis un
-seul **voyant Système**, vert quand tout fonctionne, sinon la cause ; les indicateurs flux AIS, ingestion, listes,
-disque, archivage, satellites et version se déplient au clic ; **recherche** par Cmd + K), **rail** à deux espaces
-(**Veille** et **Coulisses**), panneau contextuel, carte avec ses **vues** (Veille, Trafic complet, Satellites,
-Couches), **fiche** à droite, **frise** en bas.
+## 9. Démarrer et tester
 
-* **Échelle d'urgence** (`lib/urgence.ts`) : 3 `#ef6461`, 2 `#f0a84b`, 1 `#aab6bf` ; le type passe par l'icône, ses
-  couleurs ne restent que dans la vue Trafic complet.
-* **Veille** (`components/VeillePanel.tsx`) : dossiers par navire ou par point (`/api/dossiers`), « N à examiner »,
-  « à noter » repliés, fil d'alertes complet en second onglet, état calme, état dégradé en tête (plus de 15 min sans
-  AIS en direct, `lib/systeme.ts`). Carte calme : navires des dossiers nets et nommés, le reste en poussière,
-  infrastructures à moins d'un mille d'un dossier seules nettes.
-* **Enquête** (`components/Recit.tsx`) : tout clic sur un navire ouvre sa fiche, sections repliées ; s'il a un
-  dossier, le récit vient en tête (niveau, qui, phrase, gestes, légende de la preuve, chronologie, détail technique
-  replié). Preuve dessinée sur la carte (`lib/preuve.ts`, mêmes chiffres que la légende).
-* **Clavier** (`lib/clavier.ts`) : J, K, Entrée dans la Veille ; F confirmer, C puis 1 2 3 classer, S suivre, V
-  vérifier (devis, Entrée demande, Échap annule), ? aide avec les vrais et faux positifs.
-* **Coulisses** (`components/Coulisses.tsx`, rubriques dans `components/Reglages.tsx`, groupes, recherche et
-  redirections dans `registres/reglages.ts`) : critère de tri et inventaire dans `docs/ux_refonte.md`, section 13.
-  Quatre groupes, dix rubriques : Mon espace (Compte, Notifications, Affichage et démonstration), Surveillance (Règles
-  d'alerte, Zones de vigilance), Capteurs (Sources et capteurs, Activité satellite, Budget), Plateforme (Système,
-  Journal). Pas d'accueil : dernière rubrique consultée, sinon Système ; point d'attention seulement si besoin ;
-  adresse `espace=coulisses&rubrique=…`, anciennes rubriques redirigées ; Échap ramène à la Veille. Les outils de
-  travail sont dans la Veille : onglets À examiner, Alertes, Suivis ; couches dans la vue « Couches » de la carte.
-* **Panneaux redimensionnables** (`components/Poignee.tsx`, `lib/largeur.ts`) : panneau de gauche (Veille, Coulisses)
-  et fiche de droite, de 280 (300 pour la fiche) à 640 px, jamais plus de la moitié de l'écran ; flèches par pas de
-  16 px, double clic pour la largeur par défaut, largeur gardée par navigateur ; la carte suit (ResizeObserver).
+Mac : `./start.sh` (base, API, interface, inférence, Vite) ; interface de développement http://localhost:5173
+(`MARS_API=http://localhost:8765 npm run dev` pour une autre API) ; construite http://localhost:8080 ; API
+http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulement. Après une modification : `backend/`,
+`docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).
 
-* **Fiches** (registre `registres/sections.tsx`, composants `components/Fiches.tsx`) : navire (en tête avec photo et
-  source, signal, état, suivre ; listes ; identités en frise compacte ; alertes ; comportement ; trajectoire avec
-  rejeu et GPX ; notes ; sections futures déclarées), alerte (motif, preuves, navires concernés, décisions),
-  infrastructure (identité, navires passés à moins de 2 milles sur la plage, alertes liées), zone (surface,
-  réception, mouillages, trafic et alertes de la plage), passage satellite (heure, état acquis ou prévu, capteur,
-  orbite, emprise, « non analysé », infrastructures et navires des listes couverts). Un clic sur une infrastructure,
-  une zone ou une emprise de passage ouvre sa fiche.
-* **Détections nocturnes VIIRS** : couche (avec AIS neutre, sans AIS couleur du navire sombre, écartée discrète),
-  piste des nuits dans la frise, fiche « détection nocturne » (heure, intensité, lune, navire AIS apparié ou absence,
-  alertes liées), alertes DARK_SHIP de source VIIRS dans le fil avec leurs preuves ; l'indicateur « Satellites » donne
-  aussi la dernière nuit traitée et l'état du dernier travailleur.
-* **Échos radar Sentinel 1** (lot C) : anneaux de la couche « Détections radar et optiques » (blanc avec AIS, couleur
-  du navire sombre sans AIS, gris écarté), fiche « détection radar Sentinel 1 » (mesures, vignette avec AIS, navire
-  apparié et longueur déclarée), section « Vérification satellite » de la fiche navire, passage analysé plus haut et
-  cerclé sur la frise, alertes IDENTITY_MISMATCH et AIS_UNCONFIRMED actives.
-* **Photos dans les alertes** : vignette (source VesselFinder indiquée, emplacement neutre sinon) devant chaque navire
-  de « Navires concernés » ; dans le fil, très petite vignette facultative (bouton image de l'en tête du fil, réglage
-  gardé dans le navigateur, désactivée par défaut).
-* **Région affichée** (barre d'état) : Toute la France ou une région ; **un seul réglage** pour la carte et son
-  compteur, les infrastructures, le fil, les suivis, la recherche, la frise (histogramme par région, coupures du flux
-  toujours globales), les passages et le contour de la couche « couverture ». Changer de région recentre la carte.
-* **Navires suivis** (table `followed_vessels`) : panneau du rail ; visibles et colorés à toutes les échelles ; leurs
-  alertes à traiter en tête du fil.
-* **Mode focus** : tout objet sélectionné est mis en valeur et le reste atténué (navire, alerte, infrastructure avec
-  les navires passés, zone).
+Tests : `python -m pytest tests` (chaque test borné à 60 s) ; avec la base de test
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 42) : **484 réussis, 1 ignoré**
+(24/10/2026) ; sans base, 360 réussis, 125 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
+`scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `s2`, `s2-s3` selon le
+travail). Décomptes passés : `docs/journal.md`.
 
-* **Temps** (`lib/temps.ts`) : modes direct (la plage glisse, 1 h à 30 jours), plage (période fixe, bornes
-  déplaçables ou saisie libre, instant placé d'un clic) et rejeu (l'instant avance à × 1 à × 300). Tout l'écran
-  s'aligne sur la plage : fil, frise, trajectoires ; les navires sont placés à l'instant.
-* **Adresse de la page** (`lib/url.ts`) : mode, plage, instant, vitesse, objet sélectionné, couches, région (l'ancien
-  paramètre `zone` est encore lu). Un lien
-  rouvre la même vue.
-* **Libellés** : tous dans `web/src/lib/libelles.ts` (français, prêt pour une traduction) ; aucun texte visible en
-  dur dans les composants.
-* **Registres** (`web/src/registres/`), les quatre points d'extension de la vision : `alertes.tsx` (dix types, actifs
-  ou à venir : libellé, icône, couleur, navires, titre, signe distinctif, rendu des preuves), `couches.ts` (groupe,
-  étape, défaut, calques MapLibre, légende ; les couches futures grisées « à venir »), `sections.tsx` (sections de
-  fiche par objet, ordre, condition, étape), `frise.ts` (pistes de marqueurs) ; plus `etat.ts` pour la barre d'état.
-* **Fil** (`lib/fil.ts`) : filtres par type, gravité et statut (la région vient de la barre d'état) ; tri par gravité
-  puis date ; alertes d'un même
-  navire regroupées ; le pavillon en tête de ligne, le signe distinctif du type ensuite.
-* **Carte** : infrastructures par type (par défaut câbles électriques et parcs éoliens), tracés
-  simplifiés et estompés aux échelles larges, noms à partir du zoom 9, mode « concernées seulement » (alertes
-  ouvertes, ou à moins de 2 milles de la sélection) ; navires ordinaires estompés aux échelles larges, ceux des
-  listes et en alerte nets et colorés.
+## 10. Déployer et exploiter
 
-## 8. Modèle radar et configuration
+Guide complet : `docs/exploitation.md` (publier, déployer, vérifier, migrations, sauvegarde et essai de restauration,
+reprise après sinistre, échéances, sécurité, dépendances figées) ; installation initiale : `docs/deploiement.md`.
+Images construites sur le Mac en `linux/amd64` (le serveur ne construit rien), publiées sur ghcr
+(`mars_c2-backend`, `mars_c2-web`, `mars_c2-scripts`, `latest` et empreinte), une image à la fois sur un disque
+serré. Mettre en pause ou reprendre un capteur : panneau (Coulisses, Sources et capteurs) ou `taches.py
+satellites-pause on|off <source>`. Version en service : `bash scripts/deployer.sh --verifier`.
 
-**CircleNet V2S** (xView3, membre 4, TorchScript `models/xview3_membre4_v2s.jit`, couvert par
-`tests/test_contract.py`) : canaux **VH puis VV**, sigma0 en dB, normalisation sigmoïde de ((x + 20) × 0,18) ;
-tuiles de 2048 pixels au pas de 1536 ; Sentinel Hub **SIGMA0_ELLIPSOID en BILINEAR** (le plus proche voisin fait
-tomber le F1 de 0,96 à 0,89) ; précision mixte coupée sur le GPU Apple ; seuils présence 0,20, navire 0,338,
-pêche 0,35.
+## 11. Pièges vivants
 
-`config/rules.yaml` : toutes les règles et l'ingestion. **Monter la version à chaque changement**, chaque alerte
-l'enregistre. Les valeurs des règles viennent de la calibration danoise et sont **à recalibrer pour la France**
-(liste et méthode : `docs/audit_code.md`, section 3).
+Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : `docs/pieges.md`.
 
-## 9. État et mesures
+**Données et base**
+* Horodatages AISStream : `format="ISO8601"`, arrondir à la microseconde ; archive : lire les 19 premiers caractères
+  avec Arrow (`trajectoire_mesures.secondes`), jamais une division fixe.
+* Arrow : allocateur du système (`pa.set_memory_pool(pa.system_memory_pool())`, `read_table(use_threads=False)`) ;
+  mesures longues en colonnes numpy ; mesure lourde par `TACHES_MEM_LIMIT=1200m docker compose run --rm --no-deps
+  taches …`, jamais dans le conteneur en service.
+* NaN en NULL avant JSON ou base ; paramètres asyncpg typés (`$1::timestamptz`) ; psycopg n'adapte pas les entiers numpy.
+* `LIKE 'préfixe%'` sans index : charger en une requête. Géométrie lourde dans un `WITH` : `MATERIALIZED`. Distance à
+  la côte : table subdivisée, plus proches voisins, jamais `ST_DWithin` large sur `land`. GSHHG lu en numpy.
+* Identités qui alternent (227000000, « MUTIN » et « FS MUTIN ») ; entrées GUR sans nom (PASIPHAE, OMI 9289518) ;
+  `Vessels1.db` en WAL (`load_gur` remet les octets 18 et 19 à 1).
+* Règles en continu : fenêtre de 24 h (une durée plus longue se relit depuis l'alerte précédente) ; tout filtre avant
+  un appariement garde une marge sous le seuil final ; un trou de collecte agit de trois façons sur les coupures.
+* Recharger d'anciens jours : `taches.py restaurer-positions` ; la collecte écrit un fichier caché puis renomme.
+* Les tests en base vident des tables de la base de test : sauvegarder d'abord un jeu chargé.
+* Statuts AIS déclaratifs : indices seulement ; VIIRS sans AIS ne veut pas dire navire sombre (réception absente au large).
 
-**Étape 1 terminée (06/10/2026)** : collecte des quatre zones (environ 680 messages par minute), ingestion
-(34 000 positions conservées par heure), mode direct, liste de surveillance (8 navires des listes dans la collecte
-du 05/10, dont 3 au signal fort : GELIOTROP, VULKAN, PASIPHAE), archivage R2, purge à 30 jours, sauvegarde,
-surveillance du disque.
+**Serveur, images, déploiement**
+* `tests/test_images.py` et `verifier_images.sh` avant publication (un test passe depuis le dépôt même si l'image ne
+  copie pas un module) ; `pg_isready -h 127.0.0.1` ; noms d'images fixes ; surcouche Compose : `!override`, `!reset`.
+* YAML ne partage pas les ancres entre fichiers : la surcouche recopie les ancres `x-*` (test d'égalité).
+* Pas de commentaire en fin de ligne dans `.env` ; une variable changée n'atteint un conteneur qu'à sa recréation.
+* `pg_dump` 16 ; `init: true` ; Docker ne relance pas un conteneur « unhealthy » ; jamais le socket Docker dans un
+  conteneur ; aucune tâche asyncio sans garde.
+* nginx : `Host $http_host`, `X-Forwarded-Host`, `X-Real-IP` ; cookie Secure seulement en https. Les scripts visent le
+  port 8000. FastAPI récent enveloppe les routeurs (`original_router`) : parcourir les routes à plat.
+* zsh : `$i:latest` applique le modificateur `:l` (écrire `${i}:latest`) ; une variable de boucle `path` écrase `PATH`.
+* Le dossier temporaire de Claude Code est purgé au bout de quelques jours : repartir d'un clone neuf.
+* L'horloge de la machine Docker du Mac peut prendre du retard ou sauter après une veille.
 
-| Mesure | Valeur |
-|---|---|
-| Ingestion, collecte du 05/10 | 21 197 positions lues, 11 597 conservées, 9 s pour 460 fichiers |
-| Taille d'une position en base | 282 octets index compris ; **75 Mo par jour mesurés sur le serveur** (18/10, base 982 Mo dont positions 893 Mo pour 12 jours) ; équilibre à 30 jours environ 2,2 Go de positions, 2,4 Go de base (l'estimation de 7,5 Go était fausse) |
-| Archive R2 | 27,4 octets par position, 22,5 par message statique ; 26 Mo par jour ; 10 Go gratuits en 13 mois |
-| CircleNet | F1 0,942 (ensemble, phase 0), 0,958 avec l'harmonisation Sentinel Hub ; 1,6 s par tuile sur le Mac |
+**Stockage et sources externes**
+* R2 : `request_checksum_calculation="when_required"`, MD5 fourni ; ETag d'un envoi en morceaux relu ; adresse
+  `.eu.` ; deux jetons, deux seaux : jamais `r2_get_url` pour un travailleur (jeton principal filtré sur l'IP).
+* Copernicus : adresses présignées refusées, en tête `Authorization` seulement ; expiration des clés dans le `.env` ;
+  STAC refuse un multipolygone chevauchant ; COG seulement dans `sentinel-1-grd` ; identifiant de prise de vue
+  réattribué (rapprocher par satellite et orbite absolue).
+* Sentinel 2 : heure de la tuile dans `SENSING_TIME` ; SCL classe le navire en nuage (juger un voisinage) ; absence
+  jugée dans le cœur des fenêtres lues seulement ; rasterio refuse les clés AWS en options GDAL (`AWSSession` ou
+  environnement) ; satlaspretrain télécharge son squelette (servi depuis R2) ; GDAL ne compte pas le premier bloc lu.
+* Photos VesselFinder : usage personnel, conditions à vérifier avant une démonstration publique.
 
-**Nettoyage après audit (06/10/2026)** : code danois retiré (lecteur DMA et son import, dans l'historique Git),
-code mort supprimé, régions Manche et Gascogne en migration (14), bord des données de la coupure AIS mesuré sur
-les zones réelles, terres exclues (15), test par injection adapté à un AIS allégé, carte et masques centrés sur la
-France.
+**Travailleurs Scaleway** (détail : `docs/travailleurs.md`)
+* Destruction : « stopped in place » (poweroff, attendre, supprimer) ; volume bloc supprimé à part ; taille d'un
+  volume bloc dans l'API Block Storage ; disponibilités paginées ; « scarce » ne garantit rien ; Pascal incompatible.
+* PrivateNetworksFullAccess, carte « available » avant démarrage, DHCP au démarrage, `SCW_PRIVATE_NETWORK_ID` du
+  réseau et non du VPC, réseau privé régional ; pas de SSH : `taches.py journal-travailleur` ou console série.
+* Plafond compté sur les instances créées ; facturation à l'heure entamée (CPU) ou à la minute (GPU).
+* Image d'AI2 Sentinel 1 : Python 3.8, imports `src.*`, `nms_thresh` entier, fenêtre d'au moins 2 300 pixels ;
+  bibliothèque standard seulement dans le script ; travailleur sans scène aboutie en « echec ».
 
-**Règles en continu (06/10/2026)** : dans le conteneur `taches`, toutes les 5 minutes, sur une fenêtre glissante de
-24 heures bornée par la dernière position reçue (`mars/rules.py`, `run_continuous` ; section `continu` de
-`config/rules.yaml`, seuils de calibration inchangés) :
-* rendez vous et coupures AIS, comme avant, mais enregistrés par clé stable ; les minutes de flux AIS coupé (moins
-  de 20 % de la médiane par minute) ne comptent pas dans un silence ; **coupures AIS en mode observation** depuis le
-  11/10/2026 (`ais_gap.mode`) : épisodes comptés et décrits dans `task_runs`, aucune alerte, tant que leurs seuils
-  sont danois ;
-* **WATCHLIST** : une alerte par passage dans nos eaux d'un navire des listes (fort, sanctionné, flotte fantôme,
-  suspect GUR), gravité selon le niveau, un cran de moins si reconnu par le MMSI seul ;
-* **IDENTITY_CHANGE** : nouveau nom confirmé 6 h sans retour à un nom antérieur (les alternances comme MUTIN ne
-  sont jamais signalées), ou même OMI sous un autre MMSI (pavillon changé, usage simultané) ; MMSI génériques
-  (code pays et six zéros, comme 227000000) écartés.
-Éprouvé sur une base de test : chaque cas attendu, décisions conservées d'un cycle à l'autre, alerte vierge retirée
-quand des données tardives comblent un silence, 41 fausses coupures évitées lors d'une coupure générale du flux de
-140 min. Coût sur 867 000 positions (émulation, borne haute) : 1,4 s pour les coupures, 33 s pour les rendez vous
-dans un cas extrême (5 700 épisodes), 181 Mo de mémoire.
+**Supervision et traces**
+* Grafana 12 : pas de variables d'environnement dans les règles provisionnées (seuils dans `parametres_supervision`),
+  gabarit du webhook, tuiles colorées en SQL, `noValue` ; jamais lire `positions` ; alerte « une fois » sur 55 min ;
+  une règle modifiée n'est relue qu'au redémarrage de Grafana.
+* Traces : requests remplace `traceparent` posé à la main ; images du collecteur et de Tempo sans shell ; TraceQL `[.]` ;
+  Tempo 3 ; filtre OTTL entre apostrophes ; commande nouvelle par `@commande`.
 
-**Charpente de l'interface (07/10/2026)** : lot 1 de `docs/vision_interface.md` (section 7). Mesures sur la base de
-test (3 000 navires, 867 000 positions sur 24 h) : frise sur 24 h en 0,08 s (13,6 Ko), sur 7 et 30 jours en 0,02 s ;
-coupure du flux de 40 min retrouvée à la minute près ; trafic à un instant, 3 042 navires en 240 Ko (78 octets par
-navire) et 0,13 s ; flux en direct 274 Ko au premier envoi puis 0,1 Ko par seconde (680 Ko par seconde avant, sur
-le serveur) ; infrastructures 2,6 Mo en pleine résolution, simplifiées à 50 m par l'API.
-
-**Contenu de l'interface (07/10/2026)** : lot 2 de la vision (section 7). Constats sur les données réelles :
-EMODnet ne nomme aucun câble électrique et seulement 74 câbles télécoms sur 649 (les fiches se replient sur le type
-et le numéro) ; les tracés communs aux régions Bretagne et Manche, qui se chevauchent, sont stockés deux fois
-(dédoublonnés à l'affichage). Le lot 1 n'avait pas été déployé côté API (transferts SSH en échec) : d'où les 680 Ko
-par seconde encore mesurés sur le serveur, résolus au premier déploiement par le registre.
-
-**Recalibration préparée et listes automatiques (07/10/2026)** (version des règles 2026.10.18, aucun seuil de
-calibration changé) :
-* **Rendez vous** : les positions à moins de 1 km de la terre (`rendezvous.coast_prefilter_m`, paramètre
-  d'optimisation, 2 km sous `min_coast_km`) sont écartées avant de former les paires. Sur le serveur, 4 483 épisodes
-  sur 4 485 étaient calculés puis écartés comme côtiers, et un cycle montait à 132 s. Mesure sur la base de test
-  avec ports densifiés (165 000 positions, 7 000 navires sur 24 h, émulation amd64) : 419 s avant, 10,5 s après
-  (40 fois moins) ; fichiers temporaires PostgreSQL 15,8 Go avant, 107 Mo après ; plus gros nœud en mémoire 665 Mo
-  avant, 8 Mo après ; 18 044 épisodes dont 18 040 côtiers avant, 10 dont 6 côtiers après ; **mêmes 4 épisodes
-  retenus, donc mêmes 4 alertes**, y compris une paire qui dérive vers la rade de Brest.
-* **Changements d'identité** : bâtiment militaire (type AIS 35, MMSI de la liste `identite.militaire.mmsi`,
-  préfixe HMS, FS, USS…, nom réduit à un numéro de coque comme « 101 ») en gravité faible, étiqueté « militaire »
-  dans le fil et la fiche ; même OMI sous un MMSI du même pays, sans navire des listes en cause : faible (moyenne en
-  cas d'usage simultané), cas de L'HORIZON 1 (OMI 8542248) ; tout navire des listes en cause garde la gravité élevée.
-* **Listes** : OpenSanctions chaque jour, GUR chaque semaine si l'empreinte Git de `Vessels1.db` a changé ;
-  lecture en mémoire, journal ajoutés, retirés, modifiés dans `task_runs`, règles des listes relancées aussitôt ;
-  un échec garde la liste précédente et met l'indicateur « Listes » à l'orange. Essai : 20 725 navires
-  OpenSanctions et 1 206 GUR importés en 2 s, second passage « inchangée », échec simulé sans perte.
-* **Mesures de calibration** : `scripts/mesures_calibration.py` (ou `taches.py mesures`) écrit
-  `docs/mesures_calibration.md` : intervalles par type, navire et zone, réception selon `min_pairs`, continuité et
-  intervalle, épisodes et alertes par jour, puis une proposition par seuil. Le rapport versionné vient de la base
-  de test : à régénérer sur le serveur après une à deux semaines de collecte.
-
-**Région affichée et calendrier des passages (07/10/2026)** (migration 19) : sélecteur de région dans la barre d'état
-(les filtres par zone du fil et des couches sont retirés) ; réponses allégées par l'API, sur la base de test : trafic
-179 Ko pour la France, 14 Ko pour la Bretagne ; infrastructures 701 Ko contre 195 Ko ; alertes 26 Ko contre 6 Ko.
-Étape 3, lot A : calendrier des passages Sentinel 1 et 2 (`docs/passages_satellites.md`) : catalogue STAC public de
-Copernicus Data Space pour les passages acquis, plans d'acquisition de l'ESA pour les passages prévus, réunis par
-satellite et orbite absolue ; 30 jours lus en 32 s et 137 Mo de mémoire (98 passages Sentinel 1, 80 Sentinel 2,
-81 prévus) ; plans confrontés au catalogue du 20/09 au 07/10 : 90 passages retrouvés sur 91 ; heure prévue
-Sentinel 1 interpolée sur nos régions, 0,2 min d'écart médian ; 3,5 Ko par passage en base. Pour chaque passage :
-infrastructures et navires des listes dans l'emprise (base du déclenchement au lot C). Couche « Passages Sentinel 1
-et 2 » (plein acquis, pointillé prévu), piste de la frise, fiche passage, indicateur « Satellites » (prochain passage
-sur la région affichée).
-
-**Étape 3, lot B (07/10/2026)** (migration 20, règles 2026.10.19, `docs/travailleurs_viirs.md`) : architecture
-« orchestrateur et travailleurs éphémères » commune aux lots B et C (instances Scaleway créées par l'API, retour par
-réseau privé et jeton, durée de vie de 45 min, plafonds de 4 travailleurs et 180 minutes par jour, orphelins détruits
-chaque minute, journal dans `task_runs`). VIIRS : 12 granules par nuit sur nos régions (catalogue CMR, temps quasi
-réel), modèle allenai dans son image publique (886 Mo), 1,45 Go de mémoire et 12,5 s par granule mesurés en émulation,
-DEV1-M ; appariement AIS (1 500 m plus l'estime), côtes à 5 km, lumières fixes (3 nuits en 30 jours, alertes
-antérieures classées), DARK_SHIP de gravité élevée près d'une infrastructure ou d'un navire des listes. Coût estimé :
-**environ 0,76 € HT par mois**. Éprouvé sur la base de test et avec un faux client Scaleway ; **pas encore sur une vraie
-instance** (clés absentes) : la première nuit réelle donnera durée, mémoire et coût dans `task_runs`. Aussi :
-nuages annoncés des passages Sentinel 2 (lot C), vignettes des navires dans les alertes, nettoyage du registre GitHub,
-`/api/metrics`.
-
-**Fiabilité des travailleurs après le premier essai réel (08/10/2026)** (migration 21) : création dans l'ordre
-vérifié (éteinte, réseau privé attendu « available », cloud-init avec la MAC, démarrage attendu « running ») ; script
-de démarrage qui configure l'interface privée en DHCP, contacte le serveur et lui envoie son journal ; échec de
-lancement journalisé « echec » avec destruction immédiate ; destruction après 10 minutes sans signe de vie ; verrou en
-base (un seul travailleur VIIRS actif) ; une même détection jamais écrite deux fois (index unique, traitement d'un
-résultat verrouillé). Script de démarrage éprouvé dans un conteneur Ubuntu contre l'API locale.
-
-**Évaluation des détections VIIRS (09/10/2026)** (migration 22, règles 2026.10.20) : AIS le plus proche et réception
-AIS mesurés pour chaque détection ; non évaluable pendant une coupure du flux ou sans réception AIS autour ; gravité
-faible « à confirmer » sauf corridor, navire des listes ou au delà de 12 milles ; section VIIRS du rapport de mesures
-(par nuit et par région, luminosité, distances, tolérances) ; état Scaleway d'un travailleur muet relevé avant sa
-destruction. Détail et chiffres : `docs/travailleurs_viirs.md`.
-
-**Preuves images (09/10/2026)** (migration 23) : vignette PNG de 30 km par détection VIIRS, tirée par le travailleur
-de l'image en mémoire, rangée sur R2 par taches, registre `preuves_images` générique (Sentinel 1 et 2 au lot C),
-relue par l'API sans boto3 (`mars/r2_signature.py`, signature vérifiée sur l'exemple d'AWS et contre boto3) ;
-superposition des positions AIS à 5 km dans la fiche détection et les preuves des alertes DARK_SHIP, agrandissable ;
-4,7 Ko par vignette, environ 0,25 Mo par nuit ; conservation sans limite avec alerte, 30 jours sinon.
-
-**Fiches, sources et séjours (09/10/2026)** (migration 24, règles 2026.10.21) : photo du navire en tête de toute
-fiche d'alerte qui concerne un navire (section `navire` du registre), motif de l'échec dans la fiche et dans les
-journaux de l'API (`mars.photos` : page refusée, pas de photo, image refusée, source injoignable) ; vérifié sur le
-serveur, SMYRTOS (27,6 Ko) et GROSSULYAR (51,7 Ko) servies par VesselFinder. Sources des listes regroupées par
-organisme (`web/src/lib/sources.ts` : GUR, Union européenne, Royaume Uni, États Unis, puis les autres, d'après le
-préfixe du jeu OpenSanctions, motifs et liens réunis) : pour SMYRTOS, les sept entrées OpenSanctions deviennent six autorités, les deux listes de l'UE fusionnées. Champ `source` dans chaque position et dans
-le Parquet (`mars.ais.live.SOURCE`, `aisstream`). Séjour prolongé d'un navire des listes (`watchlist.sejour_prolonge_h`,
-24 h) : durée mesurée depuis le début du passage (la fenêtre des règles de 24 h le tronquerait), part du temps à
-l'arrêt pondérée par la durée (un point toutes les dix minutes à l'arrêt contre un par minute en route), lieu
-(mouillage connu ou non, distance à la côte), dans l'alerte WATCHLIST et la fiche navire. Rapport de mesures :
-section portée de réception.
-
-**Zone de réception fiable provisoire (11/10/2026)** (règles 2026.10.22, aucune migration) : mesuré sur le serveur
-du 06 au 09/10, les seuils danois (intervalle normal 3 min, continuité 95 %, 200 paires) donnent une zone vide (flux
-AISStream partiel, un point par minute en route) ; réglage provisoire 10 min, 90 %, 50 paires, 3 navires (1 067
-cellules, environ 44 000 km² sur le serveur), à recalibrer sur dix jours. Dès que la zone existe, elle seule décide
-qu'une détection satellite sans AIS est évaluable (`mars/evaluation.py`, commun à VIIRS et à Sentinel ; alerte notée
-`critere_evaluation`) ; `taches.py viirs-reevaluer` après chaque reconstruction. Coupures AIS en observation. Test par
-injection partagé (`ais_gap_injection`, API et `taches.py coupures-injection`), éprouvé sur 135 769 positions réelles
-de 500 navires en route (48 h lues sur le serveur), zone de test de 351 cellules : **181 coupures de 3 h retrouvées sur 253 injectées (72 %)** ; 54 manquées prises pour des sorties de couverture (route projetée hors d'une zone de test plus petite que celle du serveur), 18 par d'autres filtres ; avant tout essai, 316 navires en route sur 988 (32 %) n'ont pas les 10 messages dans l'heure qu'exige `min_prior_messages` (valeur danoise) : premier seuil à recalibrer. Rapport de mesures : surface de la zone par
-région, part des détections VIIRS évaluables avant et après, portée de réception (trait de côte subdivisé et indexé,
-32 plus proches voisins : 14,8 s pour 12 000 positions au lieu d'environ 13 min, écart au calcul exact de 14 m au
-plus), progression affichée par section.
-
-**Étape 3, lot C, C1 et C2 (11/10/2026)** (migration 25, règles 2026.10.23, `docs/sentinel.md`) : travailleur GPU
-L4-1-24G en fr-par-2 (réseau privé régional, image Ubuntu GPU OS sur volume bloc, supprimé explicitement : jamais
-`terminate`), image publique d'AI2 épinglée (`sha-fafc6c3`, 5 Go) avec un script maison qui appelle sa chaîne (son
-serveur intégré est incohérent à cette version) ; scènes COG lues en S3 par le travailleur, signature par en tête,
-avec une paire de clés dédiée remise par le réseau privé (corrigé le 14/10/2026, voir les pièges) ; sélection des passages sur corridor avec navire des listes ou alerte VIIRS moyenne au moins,
-scènes utiles seulement, une session GPU ; plafond de 2 scènes par jour et budget de 6 € par mois ; fusion existante
-réutilisée sans scipy ni pyproj dans l'image des scripts (mêmes résultats, testé) ; éoliennes, échos fixes,
-évaluation commune avec VIIRS ; alertes DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH (longueur au delà de 40 m
-et 40 %, orientation en travers seulement) ; vignette radar de 3 km, 19 Ko au plus (essai GDAL sur image synthétique
-géolocalisée : cible au pixel près, contraste de 32,6 dB attendu) ; couche, fiche, vérification satellite, frise,
-indicateur, `/api/metrics`. Éprouvé de bout en bout sur la base de test avec de faux clients Copernicus et Scaleway ;
-**pas encore sur un vrai GPU** (CUDA 11.3 de l'image sur L4, mémoire, poids dans l'image : à trancher au premier
-essai, `taches.py sentinel-analyser <id>`).
-
-**Corrections après les essais des 11 et 12/10/2026** (règles 2026.10.25, aucune migration ; seule l'image
-`mars_c2-scripts` change) :
-* **Plafond des travailleurs** : seuls comptent ceux dont une instance a été créée (`scw_server_id`) ; les sept refus de
-  Scaleway en 0,1 s (lancements Sentinel 10 à 16) avaient épuisé le plafond et privé la nuit VIIRS du 12/10 ; place
-  réservée à VIIRS (1 travailleur, 60 min) tant que sa nuit n'a pas eu son travailleur ; échec de lancement Sentinel :
-  sélection automatique suspendue jusqu'au lendemain (motif dans `task_runs` et l'indicateur), passage jamais bloqué.
-* **Image GPU** : résolution sur volume bloc (`sbs_snapshot` accepté, taille lue dans l'API Block Storage si la fiche
-  la donne nulle, confirmé par le diagnostic du 13/10 : `sbs_snapshot` de taille 0, 20 Go au stockage bloc), un message
-  par cause ; DEV1-M inchangées. Clés Copernicus
-  vérifiées par une lecture réelle avant tout appel à Scaleway. `taches.py sentinel-diagnostic` (lecture seule, fiche
-  brute de l'image, quota, droits, réseau privé).
-* **Garde fou des images** : `tests/test_images.py` (modules locaux copiés par chaque Dockerfile, bibliothèques
-  chargées au démarrage déclarées) et `scripts/verifier_images.sh` (images construites démarrées sur le Mac, API
-  jusqu'à `/api/health`), étape de `docs/deploiement.md`.
-* **Coupures AIS** (observation) : route déclarée suivie 60 min (un point toutes les 10 min, recherche par clé de
-  cellule) : sortie de couverture si elle quitte la zone fiable ; points de disparition collectifs (3 navires sans lien,
-  maille de 0,2 × 0,1 degré, même jour) : coupures déclassées en faible ; comptés à part dans le rapport de mesures.
-  Mesuré sur une copie réelle du 11/10 (Manche et Bretagne, 1 752 navires en route, 146 635 positions, vraie zone
-  fiable de 1 395 cellules, lues sur le serveur) : avant, 85 coupures retenues dont 43 élevées (le serveur en voyait 88
-  dont 45) ; route suivie, 22 sorties de plus, 63 retenues ; points collectifs, 13 points dont le premier, 19 navires
-  en 50,35 N 0,9 O (en pleine Manche, 40 km au sud de l'île de Wight, voie ouest du dispositif de séparation du trafic :
-  limite de couverture, silences étalés de 00:39 à 18:51, tous vers l'ouest), 47 coupures déclassées : 55 faibles, 2 moyennes, 6 élevées. **Coût** : la projection
-  ajoute 0,01 s ; le cycle lent venait d'ailleurs : PostgreSQL recalculait le bord des données en mer (union du trait
-  de côte) pour chaque silence ; sous requêtes `MATERIALIZED`, `find_gaps` passe de 68 s à 0,7 s, mêmes silences.
-  Cycle complet sur la copie, étape par étape (ancien, nouveau) : rendez vous 7,0 et 7,2 s ; coupures 92,4 et 0,9 s ;
-  listes et identités 0,03 et 0,01 s ; frise 1,7 et 1,6 s ; total **101 s et 9,7 s** (serveur avant correctif : 113 s).
-  Chaque cycle consigne désormais `durees_s` par étape dans `task_runs`.
-* **Points collectifs, nature et garde** (13/10/2026) : la moitié au moins des silences d'un point en une demi heure,
-  coupure de réception simultanée ; sinon limite de couverture (les 13 points du 11/10, dont celui de 50,35 N 0,9 O :
-  19 navires vers l'ouest, cap médian 254°, de 00:39 à 18:51). Un indice propre au navire (partenaire au large,
-  rendez vous lié, arrêt pendant le silence) garde sa gravité : seul le silence long sans réapparition est déclassé
-  (les 30 élevées déclassées du 11/10 l'étaient toutes pour cette seule raison) ; `gravite_avant_declassement` gardée.
-* **Trous de notre collecte** (déploiement, coupure d'AISStream : toutes les minutes vides à la fois, `feed_outage`) :
-  minutes retirées des silences (déjà), silence dont le début tombe dans le trou ou 10 min avant écarté (début
-  inconnu, `debut_incertain_min`), historique exigé réduit au prorata des minutes collectées, points collectifs sur les
-  vrais silences seulement. Copie du 11/10 : arrêt simulé de 20 min, résultat identique à sans arrêt (63 retenues, 6
-  élevées) ; 140 min, mêmes élevées, 7 coupures dont le début tombait dans le trou écartées (choix délibéré).
-
-**Clés Copernicus dédiées aux travailleurs (14/10/2026)** (règles 2026.10.26, aucune migration ; images backend et
-scripts, web inchangée) : Copernicus refuse les adresses présignées (piège ci dessous) ; le travailleur Sentinel
-demande sa tâche au démarrage (`tache_par_le_reseau`) et reçoit scènes et paire `CDSE_TRAVAILLEUR_*` une seule fois,
-sur jeton, par le réseau privé ; il lit les images COG en S3 avec signature par en tête. `sentinel-diagnostic` lit
-16 octets avec chacune des deux paires et surveille l'expiration de la paire dédiée. `scenes_max_par_jour` reste à 0.
-
-**Supervision, étape D (19/10/2026)** (migration 26, `docs/supervision.md`), après l'incident du 18/10/2026 (pièges) :
-* plus de mort silencieuse : la collecte journalise une écriture en échec et garde les messages en mémoire (120 000 au
-  plus), s'arrête si une tâche interne meurt ; l'ingestion ne s'arrête plus sur une erreur (DiskFull dit en clair,
-  attente croissante jusqu'à 5 min, échec consigné dans `task_runs`) ;
-* contrôle de santé qui arrête un processus figé, relancé par `restart` (`scripts/sante.py`, `init: true`), sans le
-  socket Docker ; redémarrages dans `task_runs` (`redemarrage_collecte`, `redemarrage_ingestion`) ; éprouvé dans
-  Docker (`verifier_images.sh sante` : collecte figée relancée en 75 s, collecte saine laissée en paix) ;
-* alertes sur le téléphone par ntfy (sujet secret `NTFY_SUJET`) : Grafana (disque sous 15 %, collecte sans fichier
-  depuis 5 min, ingestion en retard de plus de 10 min, nuit VIIRS absente à 08:00 UTC, tâche en échec deux fois de
-  suite), au plus une fois par heure, retour à la normale annoncé ; secours par taches pour les trois plus graves si
-  Grafana ne répond pas, sans écrire en base ; `taches.py tester-alerte` ; seuils dans `config/supervision.env` ;
-* Grafana 12.4.2 (214 Mo à télécharger, 763 Mo décompressée, 187 Mo de mémoire mesurés sur le Mac), cinq tableaux
-  (Direct, Disque et base, Tâches, Satellites, Alertes) ; mesures du disque historisées toutes les 10 min
-  (`mesures_disque`), signes de vie chaque minute (`signes_de_vie`) ; `taches.py mesurer-tableaux` : 86 mesures sous
-  0,1 s sur un historique synthétique de 30 jours, à refaire sur le serveur.
-
-**Points ouverts France** : masques France à construire sur le serveur (`docker compose exec taches python
-scripts/build_masks.py --sans-cache --jours 7` : 61 s, 300 Mo de mémoire, 142 Mo de disque au plus, mesurés) ;
-recalibration des seuils après une à deux semaines de mesures (liste et méthode : `docs/audit_code.md`, section 3). Mesure déjà faite sur
-données synthétiques : à un point toutes les 3 minutes, `reception.min_pairs` (200, valeur danoise) écarte un tiers
-des cellules d'un rail de 30 navires, et le test par injection n'a plus de candidat ; à un point toutes les
-2 minutes, 5 sur 5. Le test par injection indique désormais combien de candidats il écarte, et pourquoi.
-
-
-**Étape D2, traces OpenTelemetry (19/10/2026)** (migration 27, `docs/opentelemetry.md`) : tout le système envoie
-ses traces à un collecteur OpenTelemetry (contrib, nécessaire pour le tail sampling, le filtre `transform` et la
-file d'attente sur disque : la distribution de base refuse la configuration), gardées 72 h dans Tempo 3.1 (binaire
-unique, sans Kafka) et lues dans Grafana (source Tempo, tableau « Traces », liens depuis les tâches et les
-travailleurs). API (FastAPI, asyncpg, httpx, requests, spans métier ; SSE et santé exclus), collecte (par écriture
-et par connexion AISStream), ingestion (par cycle et par fichier), taches (toute tâche par `run()`, toute commande
-par le registre `COMMANDES`, chaque minute, chaque étape des règles, de l'archivage, des listes, des passages, du
-disque), appels externes nommés (`peer.service`), interface (requêtes vers l'API, par nginx), travailleurs : une
-analyse est une trace de bout en bout (lancement et étapes Scaleway, script de démarrage bash, script Python,
-téléchargements, granules ou scènes, inférence, renvoi, traitement des résultats, alertes, destruction). Images
-d'AI2 et d'allenai en Python 3.8 et 3.10 avec protobuf 4, alors que tout exportateur OTLP officiel exige protobuf 5 :
-exportateur OTLP JSON en bibliothèque standard (`travailleurs/otel_mini.py`). Travailleurs authentifiés par nginx
-(port 8090, jeton de l'exécution vérifié par l'API, refusé après la destruction). trace_id dans `task_runs`,
-`travailleurs`, `analyses` et les détails de chaque alerte (déclencheur). Échantillonnage : tâches et travailleurs
-100 %, API erreurs et plus de 1 s, 10 % du reste. Données sensibles filtrées dans le code et dans le collecteur.
-Alertes ntfy : collecteur muet 15 min, ou spans refusés. Empreinte du commit dans chaque image (indicateur
-« Version », Grafana). Mesures (émulation) : surcoût des règles dans le bruit, ingestion +0,8 % ; environ 45 000
-spans par jour, moins de 30 Mo de traces à 72 h ; collecteur 110 à 200 Mo, Tempo 90 à 185 Mo. Bilan serveur : **la
-mémoire de la DEV1-S ne suffit plus (passer en DEV1-M) et le disque tombe sous l'alerte des 15 % à l'équilibre
-(agrandir à 20 Go)**, docs/deploiement.md.
-
-**Vue d'ensemble de Grafana (19/10/2026)** (provisionnement seulement, aucune image) : tableau « Vue d'ensemble »,
-page d'accueil de Grafana : six tuiles (Collecte, Ingestion, Disque, Tâches, Satellites, Traces) dont la requête
-calcule le niveau avec les seuils des alertes (`parametres_supervision`) et donne une valeur courte, un clic vers le
-tableau détaillé ; « Dernières traces de bout en bout » (analyses satellites, lien vers la vue Gantt de Tempo).
-Grafana est tracé lui même (OTLP gRPC vers `otel:4317`, réseau Docker seulement). Trace de démonstration :
-`docs/supervision.md`.
-
-**Réglages de la supervision (19/10/2026)** : Grafana n'est plus tracé (variables retirées, port gRPC du collecteur
-fermé, filtre `filter/outils` qui écarte tout span de Grafana, Tempo ou du collecteur, éprouvé) ; mémoire relevée
-d'après les mesures du serveur passé en DEV1-M (collecteur 400 Mo et memory_limiter 250, Tempo 448, Grafana 384) ;
-appels externes nommés par leur opération (« GET CMR granules VJ102DNB_NRT », « POST STAC sentinel-1-grd », « PUT R2
-archive »), service distant dans `peer.service` ; recherche des granules VIIRS en parallèle, quatre appels à la fois
-(sur de vraies recherches CMR : 5,5 et 15,3 s en série, 1,5 et 3,6 s en parallèle, chaque appel reste un span de la
-tâche) ; indicateur « Disque » de la barre d'état aligné sur `config/supervision.env` comme la tuile de Grafana
-(`SEUIL_DISQUE_ORANGE_PTS`).
-
-**Lot C3, Sentinel 1 robuste (19/10/2026)** (migration 28, règles 2026.10.27, `docs/sentinel.md`) : disponibilité des
-GPU lue avant toute création (API Instances, publique) ; rupture de stock à la création ou au démarrage : instance et
-volume supprimés, travailleur hors plafond et sans coût, analyse en « attente_gpu » reprise à chaque cycle pendant 24 h
-après l'acquisition, puis abandon et alerte ntfy ; types de secours dans l'ordre (L4 fr-par-2, L4 fr-par-1, L40S,
-RENDER-S P100) et repli sur processeur GP1-S après 3 h ; **analyse limitée aux fenêtres utiles** (carrés de 24 km
-autour des points d'intérêt, réunis s'ils se chevauchent) lues par GDAL en `/vsis3/` (requêtes partielles signées,
-points d'appui recalés) ; choix du calcul et sa raison dans l'analyse et la trace ; coût selon le type et les fenêtres ;
-Grafana : analyses par mode, octets lus, attente ; `taches.py sentinel-candidats` et plafond d'essai
-`SENTINEL_PLAFOND_ESSAI` pour la seule commande manuelle. Essais dans la vraie image d'AI2 : faux S3 qui vérifie la
-signature AWS version 4 de GDAL, 11,6 % du fichier lu pour une fenêtre de 24 km sur une scène synthétique de 113 Mo ;
-chaîne d'AI2 sur une fenêtre et sur la scène entière : mêmes détections à 6,3 m près, 470 s contre 855 s sur processeur
-émulé. Pas encore éprouvé contre Copernicus ni sur une instance réelle ; `scenes_max_par_jour` reste à 0.
-
-**Lot C4, GPU inutilisable (19/10/2026)** (migration 29, règles 2026.10.28, `docs/sentinel.md`) : essai réel du lot C3
-(passage 149, analyse 96, travailleur 26) sur un RENDER-S, `docker run --gpus` en échec, « failed to initialize NVML:
-Driver Not Loaded » (modules noyau ouverts de NVIDIA, sans Pascal) : RENDER-S retiré de la liste. Contrôle du GPU par
-`nvidia-smi` avant l'analyse (étape `controle_gpu`, attributs du GPU) ; état « gpu_inutilisable » : instance détruite,
-analyse remise en attente, type marqué incompatible 7 jours (`types_incompatibles`, une alerte ntfy par marquage,
-levée par `taches.py sentinel-lever-incompatible`) ; toute sortie en échec du script de démarrage signale « echec »
-avec l'étape et le motif (destruction à la minute suivante, attente si la machine est en cause, échec si c'est
-l'analyse), filet sur une instance arrêtée d'elle même ; budget sur le coût réel de chaque travailleur ;
-`SENTINEL_CALCUL_ESSAI=cpu` pour la seule commande manuelle (repli GP1-S immédiat) ; sondages de Scaleway en un seul
-span d'attente. Analyse 96 remise en échec (passage 149 relançable à la main).
-
-**Lot C5, statistiques sans trou et processeur en premier (19/10/2026)** (migration 30, règles 2026.10.29,
-`docs/supervision.md` et `docs/sentinel.md`) : trou de `stats_minute` du 17/10 22:46 au 19/10 06:00 (31 h), positions
-intactes : les statistiques n'étaient tenues qu'à la fin d'un cycle des règles (en échec pendant le disque plein) et
-sur 3 h, les positions chargées en retard jamais comptées. Désormais étape à part avant les règles, fichiers chargés en
-retard recomptés (`stats_suivi`), garde toutes les 10 min (plus de 10 minutes absentes sur 24 h : reconstruction,
-`task_runs` `stats_reconstruction`, alerte Grafana), commandes `stats-reconstruire DEBUT FIN` (idempotente),
-`stats-trous`, `sentinel-flux ID`, `viirs-reevaluer DEBUT FIN`. Premier essai Sentinel 1 abouti (analyse 97, GP1-S,
-1,7 % de la scène lue, 119 s d'inférence par fenêtre, 6 min 15 s, 0,19 €). Point de déclenchement d'un navire des
-listes en mer seulement (2 km de la côte, ou mouillage hors port ; « à quai, invisible au radar »). Processeur en
-premier : 4 fenêtres au plus sur GP1-S (POP2-8C-32G en secours), au delà GPU, en rupture de GPU processeur par lots ;
-durée de vie calculée (5 + 3 par fenêtre + 15 min) ; `SENTINEL_CALCUL_ESSAI=gpu`. Facturation par type (minute pour
-L4 et L40S, heure entamée sinon : essai 26 facturé 1,23 € pour 0,28 € estimés), coût réel à la destruction, garde des
-types horaires de plus de 0,50 €/h jamais éprouvés.
-**Sentinel 1 automatique (19/10/2026)** (règles 2026.10.30) : preuves du lot C5 faites sur le serveur,
-`scenes_max_par_jour` à 2, budget de 6 € par mois ; `stats-trous` qualifie de vrai arrêt du flux un trou sous 5 % du
-flux habituel.
-
-**Lot T1, tip and cue (20/10/2026)** (migration 31, règles 2026.10.31, `docs/tip_and_cue.md`) : un signal suspect
-(VIIRS moyenne au moins, coupure élevée près d'une infrastructure même en observation, rendez vous au large, navire des
-listes près d'une infrastructure, changement d'identité moyen, demande manuelle) crée une demande d'observation
-(`demandes_observation`, origines regroupées par navire ou par zone, expiration 36 h) ; position prédite à l'heure de
-chaque passage Sentinel 1 (dernière position reçue, sinon estime ; cercle de 2 km plus 30 % du parcours, 30 km au
-plus ; 1,5 km à l'arrêt, 3 km sans navire), fenêtres de 24 km (4 au plus), point à moins de 2 km de la côte écarté ;
-passage acquis dans les 6 h, sinon le prochain prévu ; points « tip_and_cue » dans la sélection Sentinel (même
-session, plafonds et budget ; demandes d'abord dans le plafond) ; résultat (présent apparié, présent sans AIS, absent,
-non évaluable) en preuve de l'alerte, gravité ajustée par table, jamais de retrait, ntfy si relevée à élevée ;
-vérification gardée par les mises à jour en place des règles (`GARDE_VERIFICATION`). Liens de spans entre alerte,
-demande et analyse (`traces.span(liens=…)`). Livré coupé. Rejeu sur le serveur (7 jours, API) : 7 demandes avec passage
-sur 43 tips, 6 sessions, environ 4,90 € par mois ; navires des listes en transit presque jamais observables.
-
-**Tip and cue activé (20/10/2026)** (règles 2026.10.32) : coupure_ais, viirs (12 h au plus entre la lumière et le
-passage), rendezvous, identite et demande manuelle ; watchlist coupé ; budget Sentinel 8 € par mois. Panneau
-« Observations » du rail (`/api/observations` : ordre planifiées, en attente, analysées, closes repliées ; région et
-plage ; cercle d'incertitude dessiné au clic ; compteur des actives).
-**Navires muets en transit (20/10/2026)** (règles 2026.10.33) : une demande n'attend jamais sans motif ; estime d'un
-navire muet bornée à 6 h et à nos zones (au delà, « navire en transit, hors de portée au prochain passage »), muet lent
-sous 3 nœuds à position fixe ; pêcheurs et coupures déclassées écartés du tip coupure_ais ; motif au survol dans le
-panneau Observations.
-**Lot S2, mesures (20/10/2026)** (`docs/sentinel2.md`, aucun code de production) : toute notre mer acquise par
-Sentinel 2, large compris (un passage tous les 1,7 jours en Atlantique, 3,3 en Méditerranée, entre 10:00 et 11:30 UTC) ;
-0,8 passage dégagé par semaine et par point au large en Atlantique et Manche, 1,15 en Méditerranée (SCL de la fenêtre) ;
-annonce du catalogue utile comme premier tri seulement ; JP2 sur eodata, 47 Mo lus par fenêtre (15 %). Détecteur
-Sentinel 2 absent de l'image d'AI2 épinglée et de toutes ses étiquettes ; modèle rslearn d'AI2 essayé (L1C, 13 bandes,
-longueurs à 4 % près sur quatre navires de l'AIS sur cinq), `verifier_images.sh s2`.
-
-**Lot S2, Sentinel 2 construit et livré coupé (20/10/2026)** (migration 32, règles 2026.10.34, `docs/sentinel2.md`) :
-modèle rslearn d'AI2 épinglé par empreinte, poids sur R2 (licence Apache 2.0, 22 % du quota gratuit, dépassement vers
-le 28/07/2027) ; travailleur GP1-S (`travailleurs/sentinel2.py`) : SCL du L2A par fenêtre (close « nuages » au delà de
-20 %), 13 bandes du L1C, inférence, vignettes en couleurs réelles de 2 et 10 km ; heure propre des tuiles au calendrier
-et dans la fusion (sans Doppler) ; garde des nuages annoncés (50 %), masque attendu 3 h puis « masque absent » ; navire
-sous un nuage écarté, aucune absence déclarée sous les nuages ; alertes de source `sentinel2` ; plafond propre, budget
-partagé avec Sentinel 1 ; tip and cue sur les passages optiques ; couche, fiche optique, vérification satellite, frise,
-Observations, Grafana. Essai réel pas à pas : `docs/sentinel2.md`, section 11.
-
-**Premier essai réel Sentinel 2 et seau des modèles (20/10/2026)** (règles 2026.10.35, aucune migration) : passage
-325, analyse 98, travailleur 29 : réseau privé, Docker et image rslearn (7,2 Go en 4 min 23 s) fonctionnent, échec
-403 AccessDenied au téléchargement des poids (jeton R2 principal filtré sur l'IP du serveur). Poids dans un seau dédié
-`mars-c2-modeles` à jeton sans filtre IP (`R2_MODELES_*`), seul à présigner pour un travailleur ; `sentinel2-poids`
-copie et `--nettoyer` retire l'ancienne copie ; contrôle d'un octet de chaque adresse R2 dès le réseau privé joint,
-avant Docker (étape `controle_r2`, état « acces ») ; `sentinel2-diagnostic` (variables dans taches et dans backend,
-seau, poids, adresse présignée).
-
-**Lot P, panneau de contrôle (21/10/2026)** (`docs/controle.md`) : icône « Contrôle » du rail ; état en base qui prime
-sur `config/rules.yaml` (`mars/controle.appliquer`), seuils jamais édités dans l'interface ; chaque action dans
-`journal_controle` ; écriture réservée aux opérateurs connectés (`MARS_OPERATEURS`, mot de passe haché, cookie HttpOnly
-SameSite strict, 12 h). Phase A (migration 33, règles 2026.10.36) : interrupteurs Sentinel 1, Sentinel 2, VIIRS et tip
-and cue (aucun travailleur en pause, commande manuelle refusée sauf `--malgre-pause`, reprise prévue et notification
-la veille, `taches.py satellites-pause`), plafond quotidien réglable de 0 à 4, budget du mois, demande d'observation
-d'un point, Grafana muette en pause. Phase B : section Système (services, version, signe de vie, mémoire du
-conteneur lue dans son cgroup, retard, disque, échecs avec lien vers la trace, lien vers Grafana). Phase C (migration
-34, règles 2026.10.37) : mode actif, observation ou coupé par règle et sous type, en base, prime sur le fichier
-(`ais_gap.mode` compris), aucune alerte supprimée, épisodes observés comptés, empreinte de l'état du panneau dans
-chaque alerte (`alerts.controle_empreinte`). Phase D (migration 35, règles 2026.10.38) : préférences de notification par
-gravité et type d'alerte, tip and cue, catégories système, heures calmes de Paris avec résumé au réveil, appliquées à
-taches, à l'API et à Grafana (`notification_permise`), notification de test. Phase E (migration 36, règles 2026.10.39) :
-zones de vigilance (polygone dessiné ou tampon d'infrastructure, profils du fichier : gravité minimale, seuils
-abaissés dans la zone, priorité tip and cue et Sentinel), zone et profil inscrits dans l'alerte, couche et fiche,
-priorité aux navires suivis. Phase F (migration 37) : rejeu tel qu'il était (alertes et demandes à leur état
-de l'instant, lecture seule), scénarios enregistrés, masquage des navires par l'API sous un cookie de session
-(pseudonymes stables, photos et GPX refusés, bandeau « démonstration »).
-
-**Lot U, refonte UX, phase 1 (21/10/2026)** (`docs/ux_refonte.md`, maquettes `docs/ux/maquettes/`) : audit mesuré sur
-la base de test (captures sans affichage, navires masqués) : 231 mots et 10 couleurs vives sur l'écran par défaut,
-navire le plus suspect éclaté en trois lignes du fil ; heuristiques de Nielsen ; trois tâches de référence (20 s, 41 s,
-6 s par alerte) ; cible : dossier par navire, trois niveaux d'urgence, phrase d'explication, Veille, Enquête,
-Coulisses, tri au clavier ; prototype du modèle des dossiers (`docs/ux/maquettes/dossiers.py`).
-
-**Lot A, correctifs (21/10/2026)** : trafic visible en mode plage et rejeu, origine vérifiée derrière nginx,
-`operateur-hacher` et lignes de `MARS_OPERATEURS` contrôlées, libellés et bandeau (`docs/deploiement.md`).
-
-**Lot U, phase 2 (21/10/2026)** (règles 2026.10.42, aucune migration ; `docs/ux_refonte.md`, section 11) : dossiers
-calculés à la lecture (`mars/dossiers.py`, `backend/dossiers.py` : liste, récit, décision journalisée alerte par
-alerte, devis de vérification, `/api/decisions/mesures`), Veille, Enquête, clavier, Coulisses (section 7). Mesures sur
-le jeu d'essai : écran par défaut de 231 à 149 mots et de 10 à 5 couleurs vives, fiche du navire suspect de 621 à 297
-mots ; navire le plus suspect trouvé sans geste (environ 7 s au lieu de 20, réponse juste), compris par la phrase de
-sa ligne, classé en deux touches pour tout le dossier (au lieu de 6 s par alerte).
-
-**Séjour hors port et cadrage de la Veille (21/10/2026)** (règles 2026.10.43, aucune migration) : le séjour prolongé
-d'un navire des listes mesure aussi sa part à l'arrêt hors port (`arret_hors_port_part`, à plus de
-`watchlist.hors_port_m`, 2 km, de la côte ; `stay_offshore` dans `mars/rules.py`) ; il ne rend le dossier « à
-examiner » qu'à partir de `dossiers.sejour_hors_port_part` (0,2). Mesuré sur le serveur (lecture seule) : sur 30 jours,
-18 séjours prolongés, 15 à 0 (transits de 26 à 37 h, escales à quai), NOSTOS 0,09, SAFEEN BARONESS 0,33, SMYRTOS 1 ;
-16 redescendent à « à noter ». Sur les 72 h du 21/10, 17 dossiers, un seul change (VICTOR ANDRYUKHIN, à quai à
-Marseille) : 0 à examiner au lieu de 1. Une alerte écrite avant cette version n'a pas la mesure : séjour noté « non
-mesuré », sans relever le niveau. La Veille cadre la carte sur les dossiers à examiner à son ouverture
-(`lib/cadre.ts`).
-
-**Lot T, prévision de trajectoire, phase 1 (22/10/2026)** (`docs/trajectoire.md`, aucune construction de modèle
-avant validation) : préparation et références (`mars/trajectoire.py` : découpage au silence de 2 h, à l'arrêt, au
-changement de destination et au saut durable, pas de 10 minutes, côte à un mille ; estime, estime mesurée, routes
-fréquentes), mesure de l'archive R2 par `taches.py trajectoire-mesures` (lecture seule, conteneur à part). Pré mesure
-sur 340 navires lus en GET : cargos et pétroliers, routes fréquentes à 1,1, 3,8 et 10,4 km d'erreur médiane à 1, 2 et
-3 h ; cercle actuel de la vérification satellite à 52 % de couverture à 3 h ; 13 des 20 demandes de vérification
-satellite sans passage parce que le passage tombait 13 à 31 h après la dernière position.
-
-**Cercle appris (22/10/2026)** (règles 2026.10.44, `docs/trajectoire.md` section 11) : le cercle de la vérification
-satellite n'est plus 2 km plus 30 % du parcours (gardé en repli) mais le rayon qui a contenu 80 % des positions
-réelles autour de l'estime, par tranche de vitesse et par horizon (`tip_and_cue.rayon_appris`), plafonné au rayon que
-couvrent les 4 fenêtres permises (20 km, `fenetres_demande`). Pré mesure du 17 au 22/10 : navire trouvé 78, 74, 63, 40,
-29 et 22 % du temps à 1 à 6 h, contre 63, 44, 19, 9, 4 et 2 %. Table provisoire, à remplacer par la mesure complète.
-**Garde de probabilité (22/10/2026)** (règles 2026.10.45, migration 38, `docs/trajectoire.md` section 12) : table des
-quantiles de l'erreur de l'estime de 1 à 30 h (vérité : la position où le navire réapparaît), rayon au quantile 80 %
-plafonné aux fenêtres, contenance estimée écrite dans la demande, la trace et l'interface ; un passage n'est retenu
-qu'à 40 % de contenance au moins (le plus proche au dessus du seuil) ; estime bornée à 30 h. Avec l'estime seule,
-plus aucun passage retenu au delà d'environ 4 h. Table de l'archive en 2026.10.46 (étalonnage juste jusqu'à 8 h).
-Étape 2 mesurée hors production (`docs/trajectoire.md` section 13) : routes fréquentes en plusieurs hypothèses
-(analogues, sans le même navire, garde sur la borne basse de Wilson) ; pré mesure : utiles de 12 à 30 h pour les
-navires aux routes régulières, pas encore pour les cargos et pétroliers (`trajectoire-mesures --hypotheses` sur
-l'archive pour trancher).
-Données externes retenues (DMA, GeoTrackNet Bretagne, École navale) : usage personnel et non commercial, aucune
-redistribution, ni des données ni d'un jeu dérivé ni des poids (section 10).
-
-**Lots Z1 et Z2, sécurité et exploitation (22/10/2026)** (migrations 39 à 42, règles 2026.10.47 ; guide :
-`docs/exploitation.md`) : toute écriture de l'API exige une session d'opérateur, du JSON et la même origine, auteur tiré
-de la session (liste blanche `ECRITURES_LIBRES`, test qui parcourt toutes les routes) ; l'interface ouvre la connexion
-sur un refus 401 puis reprend l'action ; démonstration en lecture seule. Un environnement par service (plus aucun
-`env_file: .env`), confronté au code par `tests/test_environnement.py`. FastAPI 0.159.1 et Starlette 1.9.0 ; verrous
-`requirements.lock` avec empreintes ; `npm ci` ; nginx 1.28, noms du tunnel seulement, en têtes de sécurité,
-`X-Real-IP` ; tentatives de connexion en base. Jeton Earthdata remis par le réseau privé ; groupe de sécurité
-`mars-travailleurs` ; résultats des travailleurs validés contre leur tâche (`mars/validation.py`). Échéances des
-secrets (`mars/echeances.py`, Coulisses, Système). Base et API du Mac sur 127.0.0.1. Exploitation :
-`scripts/publier.sh`, `scripts/deployer.sh`, registre `schema_migrations`, essai de restauration mensuel
-(`mars/restauration.py`, `scripts/essai_restauration.sh`), `pg_stat_statements`, `pytest-timeout`. Règle Grafana « Tâche en
-échec plusieurs fois de suite » (fausse alerte permanente du 20/10, travailleur_sentinel2 avec Sentinel 2 en pause) :
-fonction SQL `taches_en_echec_suite` (migration 42), série dont le dernier échec a moins de 24 h, source en pause tue.
-Défaut corrigé au passage : le filtre des journaux (`mars/traces.py`) vidait `record.args`, le journal d'accès
-d'uvicorn levait une erreur à chaque requête tracée (déjà présent en production).
-
-## 10. Tests
-
-**22/10/2026, lots Z1 et Z2** : 480 réussis, 1 ignoré avec la base de test ; sans base, 358 réussis, 123 ignorés ;
-chaque test borné à 60 s.
-
-`python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :
-227 réussis, 46 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 45 sans
-`MARS_TEST_DATABASE_URL` (travailleurs sur une vraie base : verrou contre les lancements concurrents, échec de
-lancement, délai de démarrage, résultats reçus deux fois, travailleur arrêté par des données inaccessibles, refus sans
-trace ; origine des positions écrite par l'ingestion ; séjour prolongé au delà de la fenêtre des règles). Avec la base
-de test des migrations (`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`) : 272 réussis, 1 ignoré (lot C4 : GPU inutilisable, échec signalé, instance arrêtée, essai forcé sur processeur ; script de démarrage exécuté avec de fausses commandes, `tests/test_demarrage.py`, avec `gdate` ; lot C3 : rupture de stock, attente, reprise, repli sur processeur, abandon, plafond de l'essai manuel, reclassement des analyses sans scène aboutie ; identifiant de trace des alertes par le déclencheur ; rôle grafana_lecture et requêtes des tableaux sous la seconde, redémarrage consigné, mesures du disque ; volumes bloc nommés au journal de destruction ; remise unique de la tâche et des clés dédiées sur jeton, cloud-init Sentinel sans scène ni clé ; trous de collecte sans effet sur les coupures, essai Sentinel à la main avant la nuit VIIRS ; plafond et place réservée de VIIRS, report d'un échec de lancement Sentinel, diagnostic en lecture seule, route des coupures et points collectifs ; zone de réception fiable qui décide de l'évaluation des détections ; chaîne Sentinel 1 complète avec de faux clients Copernicus et Scaleway). Couvrent aussi fusion,
-direct, archivage, règles en continu, vérification R2 avec un faux client S3, frise, garde de destruction, ordre de
-création d'un travailleur, résolution de l'image et vérification du volume de démarrage. `tests/test_images.py` : modules copiés par chaque Dockerfile, sans Docker. `tests/test_traces.py` : chaque commande de `taches.py` et chaque type de travailleur tracés (échoue sinon), filtre des données sensibles, script de démarrage bash (avec `gdate` sur le Mac). `npx knip` et `npm run typecheck` pour
-l'interface ; `npm test` (node --test, `web/tests/` : trafic, preuve, clavier, état dégradé, cadrage, largeur, recherche des réglages ; 22 réussis) ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. Lot U et séjour hors port : 406 réussis, 1 ignoré avec la base de test ; 293 réussis, 114 ignorés sans.
-
-## 11. Pièges connus
-
-* **Lot Z1, écritures** : toute nouvelle route POST, PUT, PATCH ou DELETE prend `Depends(exiger_operateur)` et ne lit
-  jamais d'auteur dans le corps ; un script qui écrivait par l'API (masques, règles à la demande) doit écrire en base
-  lui même (`scripts/build_masks.py`). Les appels d'écriture de l'interface passent par `ecrire` de `lib/api.ts`.
-* **Variables par service** : une variable nouvelle lue par le code doit être ajoutée au service dans Compose, ou
-  déclarée dans `FACULTATIVES` de `tests/test_environnement.py` avec sa raison. YAML ne partage pas les ancres entre
-  fichiers : la surcouche du serveur recopie les ancres `x-*` (test d'égalité).
-* **FastAPI récent** enveloppe les routeurs inclus (`_IncludedRouter`, `original_router`) : parcourir les routes à plat.
-* **zsh** : `$i:latest` applique le modificateur `:l` (minuscules) ; écrire `${i}:latest`.
-* Toute migration à partir de 39 se termine par l'inscription de son nom dans `schema_migrations`.
-
-* **Horodatages de l'archive** : selon le nombre de décimales, pandas lit les instants en microsecondes ou en
-  nanosecondes ; une conversion en secondes par division fixe se trompe d'un facteur 1 000. Lire les 19 premiers
-  caractères avec Arrow (`trajectoire_mesures.secondes`).
-* **Mémoire d'Arrow** : l'allocateur par défaut (mimalloc) garde la mémoire libérée de journée en journée (447 Mo après
-  16 journées de lecture contre 257 Mo avec l'allocateur du système) ; pour une lecture longue dans le conteneur des
-  tâches (768 Mo), `pa.set_memory_pool(pa.system_memory_pool())` et `read_table(use_threads=False)`.
-* **Mesures longues** : un dictionnaire Python par fenêtre (vingt valeurs) coûte environ 0,6 Ko ; pour des centaines
-  de milliers de fenêtres, construire des colonnes numpy par trajet (`evaluer_longs`). La vraie archive coûte environ
-  1,65 fois l'archive synthétique en mémoire : lancer une mesure lourde avec `TACHES_MEM_LIMIT=1200m docker compose
-  run --rm --no-deps taches …`, jamais dans le conteneur en service.
-* **Dossiers** : une décision ou un devis lit le dossier à l'instant affiché (`instant`, `end`), plafonné à
-  maintenant ; à l'instant réel seul, un dossier d'une plage passée est hors de la fenêtre de 72 h (404).
-* La carte MapLibre ne se redimensionne qu'avec la fenêtre : quand un panneau change de largeur, `map.resize()` est
-  appelé par un ResizeObserver sur son conteneur (`MapView.tsx`), sinon elle s'étire ou se décale.
-* Une poignée posée dans une zone qui défile défile avec elle : la fiche de droite a une enveloppe (la poignée) et une
-  zone intérieure qui défile.
-* Raccourcis : un écouteur qui doit passer avant celui de l'application (Échap qui fermerait la fiche) s'inscrit en
-  capture (`addEventListener(…, true)`) et arrête la propagation.
-
-* Ne jamais remplacer un dossier par le Finder : utiliser `ditto`.
-* **Tailwind 4** : une règle hors couche l'emporte ; la carte MapLibre se positionne par style direct.
-* Tracé au trackpad en **deux clics** ; zoom par sélection désactivé.
-* L'interface interroge l'API toutes les 2 s tant qu'une analyse épinglée n'est pas terminée.
-* MapLibre : pas de `line-dasharray` dépendant des données (deux couches filtrées).
-* NaN devient NULL avant JSON ou base ; typer les paramètres asyncpg (`$1::timestamptz`) ; psycopg n'adapte pas
-  les entiers numpy.
-* Les scripts visent le port 8000 (nginx coupait les requêtes longues).
-* Statuts AIS déclaratifs : indices seulement. Avant de conclure à un manque du détecteur, regarder la vignette et
-  les scores bruts.
-* **Horodatages AISStream** : partie décimale de longueur variable, toujours `format="ISO8601"`, arrondir à la
-  microseconde.
-* **Identités qui alternent** (MMSI 227000000 partagé par la Marine nationale, « MUTIN » et « FS MUTIN ») : une
-  identité déjà vue est reprise.
-* **Entrées GUR sans nom** : l'appartenance au catalogue ne se lit pas sur le nom (cas PASIPHAE, OMI 9289518).
-* Surcouche Compose : `ports` se cumule, utiliser `!override` ou `!reset`.
-* **R2 et boto3** : `request_checksum_calculation="when_required"`, MD5 fourni ; l'ETag d'un envoi simple est le MD5,
-  celui d'un envoi en plusieurs morceaux (sauvegardes en flux) ne l'est pas : `R2.verify` relit alors l'objet.
-* **Seau R2 européen** : adresse en `https://<compte>.eu.r2.cloudflarestorage.com`, sinon tout accès est refusé.
-* **Deux jetons R2, deux seaux** (essai Sentinel 2 du 20/10/2026, 403 AccessDenied au travailleur 29) : le jeton
-  principal (`mars-c2`) est filtré sur l'IP du serveur et doit le rester ; une adresse qu'il présigne est refusée depuis
-  toute autre IP. Toute adresse R2 remise à un travailleur vient du seau des modèles (`R2_MODELES_*`, jeton jamais
-  filtré par IP : les travailleurs sortent par des IP variables), par `r2_modeles_get_url` ; ne jamais présigner pour
-  un travailleur avec `r2_get_url`. Un test depuis le serveur ne révèle pas un filtre IP : seul le contrôle du
-  travailleur (étape `controle_r2`) le fait.
-* **satlaspretrain_models télécharge son squelette à chaque chargement** (467 Mo depuis Hugging Face, `requests.get`
-  codé en dur, ni cache ni variable pour le couper) : le travailleur Sentinel 2 le reçoit de R2 comme les autres poids
-  et le sert par `servir_satlas` dans le lanceur de l'inférence ; tout autre téléchargement de la bibliothèque est
-  refusé. Le champ `satlas` doit suivre dans les paramètres de la tâche (`mars/sentinel2.py`), sinon l'inférence
-  s'arrête. Un `restore_path` de configuration rslearn n'est lu qu'à l'entraînement.
-* **rasterio refuse les clés AWS en options GDAL** (essai Sentinel 2 du 20/10/2026, analyse 99, travailleur 30 :
-  « EnvError: GDAL's AWS config options can not be directly set », 0 octet lu) : `AWS_ACCESS_KEY_ID` et
-  `AWS_SECRET_ACCESS_KEY` ne passent jamais dans `rasterio.Env(...)`. Les remettre par une
-  `rasterio.session.AWSSession` (boto3 présent dans l'image rslearn) ou, sans boto3, par les variables d'environnement
-  posées le temps de la lecture puis retirées (`env_gdal` de `travailleurs/sentinel2.py`) ; options non sensibles
-  (`AWS_S3_ENDPOINT`, `AWS_VIRTUAL_HOSTING`, `AWS_HTTPS`) dans `rasterio.Env`. GDAL seul (`gdal.SetConfigOption`,
-  travailleur Sentinel 1) n'a pas cette limite. Leçon : une lecture S3 d'un travailleur s'éprouve par son chemin S3
-  réel, signature comprise, jamais seulement sur des fichiers locaux ou un miroir sans clé (`verifier_images.sh s2-s3`,
-  `fenetres`, `tests/test_lectures_s3.py`).
-* Pas de commentaire en fin de ligne dans `.env` : `mars/config.py` ne les retire pas.
-* **Noms d'images fixes** (`mars_c2-backend`, `mars_c2-web`, `mars_c2-scripts`) : sans eux, le nom dépend du dossier
-  du projet, et une image construite sur le Mac n'aurait pas le nom attendu sur le serveur.
-* `LIKE 'préfixe%'` n'utilise pas un index btree avec la collation par défaut : charger les alertes en une requête
-  plutôt qu'une recherche par épisode.
-* Lire GSHHG avec pyshp coûte environ 120 octets par point (liste de tuples) : le polygone de l'Eurasie porte la
-  mémoire au delà de 500 Mo. `build_masks.py` lit les enregistrements en numpy (16 octets par point), et découpe
-  avant de réparer la géométrie.
-* Une règle en continu ne doit jamais effacer puis recréer ses alertes : les décisions des opérateurs seraient
-  perdues à chaque cycle (`save_alerts`).
-* `pg_dump` en version 16 (dépôt PGDG dans l'image des scripts).
-* Recharger d'anciens jours ne passe pas par l'ingestion en direct : `taches.py restaurer-positions`.
-* La collecte écrit dans un fichier caché puis renomme ; l'ingestion ignore les fichiers de moins de 5 s.
-* Tester R2 en local : `moto_server` dans un conteneur Python (MinIO n'est plus publié).
-* Le navigateur sans affichage de gstack n'a pas WebGL. Le Chromium de Playwright, lui, dessine la carte sans
-  affichage (`--use-angle=swiftshader --enable-unsafe-swiftshader`, Metal fonctionne aussi) : captures de l'audit UX
-  du lot U. Une limite d'erreur (`components/Garde.tsx`) garde le reste de l'écran si WebGL manque.
-* **Deux formes du trafic en colonnes** : le flux en direct envoie `{navires: {cols, rows}}`, `/api/traffic` (plage et
-  rejeu) `{at, cols, rows}` ; `decodeTraffic` accepte les deux (lot A, 21/10/2026 : n'accepter que la première vidait
-  la carte hors du direct, depuis des jours). Test : `npm test` dans `web/` (node --test, `web/tests/`).
-* **nginx et proxy_pass sur une variable** : l'en tête Host devient « backend:8000 ». Toute vérification qui compare
-  l'hôte à l'en tête Origin (écritures du panneau de contrôle) refusait tout (« Origine refusée », connexion des
-  opérateurs impossible le 21/10/2026). `web/nginx.conf` garde l'hôte du navigateur (`proxy_set_header Host
-  $http_host`, et X-Forwarded-Host) ; l'API lit X-Forwarded-Host d'abord ; cible `verifier_images.sh controle`.
-* **Ligne à copier dans un fichier** (`.env`, configuration) : jamais par `print` pendant un span, qui ajoute
-  « trace_id=… span_id=… » (`mars/traces.py`, journaux) ; `traces.ligne_brute`. Le 21/10/2026, une ligne
-  MARS_OPERATEURS copiée avec son suffixe (empreinte de 131 caractères au lieu de 64) rendait la connexion impossible ;
-  l'API refuse désormais une entrée abîmée en le disant (`controle.operateurs_abimes`, panneau, `taches.py
-  controle-diagnostic`).
-* Cookie de session : Secure seulement en https (`_https`) ; Safari ne renvoie pas un cookie Secure sur
-  http://localhost:8080.
-* L'horloge partagée (`sim_clock`) est commune à tous les utilisateurs : un rejeu chez l'un changeait l'écran de tous.
-  L'instant est désormais tenu par l'interface (routes `?at=` sans état) ; ne plus faire dépendre l'écran de
-  `/api/clock`.
-* Une requête en mode plage a une clé fixe : sans nouvelle tentative, une erreur passagère (redémarrage de l'API) y
-  reste affichée. Garder `retry` sur les requêtes de la frise et du trafic.
-* Pour savoir quelle version d'API tourne sur le serveur : `curl -s localhost:8000/openapi.json` (liste des routes) ;
-  un comportement inattendu venait d'une image non déployée, pas du code.
-* `tsconfig.json` impose `noUnusedLocals` : les imports et variables inutilisés sont des erreurs de types.
-* `Vessels1.db` est publié en mode WAL (octets 18 et 19 de l'en tête à 2) : `sqlite3.deserialize` le refuse
-  (« unable to open database file ») ; `load_gur` les remet à 1 en mémoire.
-* Les règles en continu font sur le serveur l'essentiel de leur coût dans les ports : tout filtre qui retire des
-  positions avant un appariement deux à deux doit garder une marge sous le seuil final (cas du préfiltre côtier).
-* **Catalogue STAC de Copernicus** : un multipolygone dont les parties se chevauchent (Bretagne et Manche) est
-  invalide et renvoie une erreur 500 (« TopologyException ») ; chercher région par région et dédoublonner.
-* **Identifiant de prise de vue Sentinel 1** : réattribué à l'exécution (le plan et le catalogue diffèrent de
-  quelques unités) ; rapprocher plan et catalogue par satellite et orbite absolue.
-* Sous zsh, une variable de boucle nommée `path` écrase le `PATH` (plus aucune commande trouvée).
-* Du 07 au 09/10/2026, l'application qui exécute Claude Code n'avait plus accès au dossier Documents (protection de
-  macOS, « Operation not permitted », même hors bac à sable) : ni le `.venv` du dépôt, ni `data/`, ni Git (le
-  worktree pointe vers `.git` du dépôt principal). Contournement : environnement Python et clone du dépôt dans le
-  dossier temporaire, `npm ci` dans le worktree. Rétablir : Réglages Système, Confidentialité et sécurité, Fichiers
-  et dossiers (ou Accès complet au disque) pour l'application du terminal.
-* Node 26 ne lit plus un `node_modules` relié par lien symbolique dans Documents : installer avec `npm ci` dans le
-  worktree.
-* Travailleurs : **jamais une autre instance détruite**. Toute destruction passe par `Scaleway.destroy`, qui relit
-  l'instance et refuse le serveur principal (`SCW_SERVEUR_PRINCIPAL`, métadonnées), une instance protégée, un autre
-  projet, un nom autre que `mars-travailleur-<n>` ou des étiquettes discordantes ; ne jamais ajouter de chemin
-  destructeur qui l'évite (`action` n'accepte que le démarrage). Couvert par tests/test_travailleurs.py.
-* **Premier essai réel des travailleurs (07 et 08/10/2026)** : PrivateNetworksReadOnly ne permet pas de rattacher
-  une carte au réseau privé (il faut PrivateNetworksFullAccess) ; le rattachement est asynchrone, et l'image Scaleway
-  « docker » ne configure pas d'elle même l'interface privée (travailleur rattaché en 172.16.8.3, injoignable) :
-  attendre la carte « available » avant de démarrer, et configurer l'interface en DHCP dans le script de démarrage
-  (`travailleurs/demarrage.sh`). Deux lancements simultanés (rattrapage au démarrage du conteneur et commande manuelle)
-  avaient créé deux travailleurs : verrou par index unique en base. Les travailleurs n'ont pas de SSH : journal envoyé
-  au serveur (`taches.py journal-travailleur`), sinon console série Scaleway.
-* `SCW_PRIVATE_NETWORK_ID` est l'identifiant du réseau privé (onglet Overview du réseau), pas celui du VPC.
-* **VIIRS sans AIS ne veut pas dire navire sombre** (mesure du 09/10, 152 détections) : la distance à l'AIS le plus
-  proche est bimodale (moins de 1 km, ou plus de 10 km), la tolérance n'y change rien ; 68 des 87 détections sans AIS
-  n'avaient aucun navire AIS reçu à moins de 20 km : c'est la réception AISStream qui manque au large (Méditerranée
-  surtout). D'où « non évaluable » (coupure du flux, ou aucune réception à 30 km) et la gravité faible « à confirmer »
-  par défaut (règles 2026.10.20, `taches.py viirs-reevaluer` pour l'existant).
-* **Essai du 08/10 à 06:30 (travailleur 5)** : Ubuntu, réseau privé, Docker et image d'AI2 fonctionnent. Les 39
-  granules ont échoué (« NetCDF: Unknown file format ») : licence LANCE NRT non acceptée sur le compte Earthdata, la
-  NASA renvoyait une page HTML de 10 Ko. Chaque fichier est désormais vérifié (taille, signature HDF5) et la cause
-  nommée ; sans jeton valide, la redirection vers /profiles/licenses se poursuit vers /oauth/login : c'est alors le
-  jeton qui manque, pas la licence. La destruction échouait : une instance éteinte depuis son système est « stopped in
-  place » et Scaleway refuse sa suppression (« should be powered off ») : poweroff, attendre « stopped », supprimer
-  instance et volumes ; une instance en marche : terminate.
-* **Cause réelle des premiers essais (08/10/2026)** : la console série des travailleurs affichait « UEFI Interactive
-  Shell » puis `Shell>` : aucun système amorçable sur le volume de démarrage. La création imposait un volume racine
-  décrit avec un nom, sans lien vérifié avec l'image (image « docker » du catalogue, ni architecture ni volume racine
-  contrôlés). Désormais : image Ubuntu 24.04 résolue (zone, type, x86_64, disque local, fiche de l'image), volume
-  racine décrit par sa seule taille et son type, instance relue après création (image, démarrage local, volume),
-  Docker installé au démarrage.
-* Travailleurs : le serveur n'expose aucun port sur Internet ; le retour passe par le réseau privé Scaleway (nginx,
-  port 8090 sur `MARS_IP_PRIVEE`). Les instances CPU sont facturées à l'heure entamée, les GPU à la minute.
-* Image d'un travailleur : une image publique (allenai) n'entame pas le quota de 500 Mo des paquets privés ; le
-  script passe par cloud-init plutôt que par une image privée de près d'un Go.
-* Un élément `fixed` placé dans un panneau à `backdrop-blur` est contenu par ce panneau (le flou crée un bloc
-  conteneur) : une vue agrandie passe par un portail (`createPortal` vers `document.body`).
-* Les tests en base (`MARS_TEST_DATABASE_URL`) vident des tables de la base de test (positions, zone de réception) :
-  sauvegarder d'abord un jeu chargé pour une mesure (`pg_dump -Fc -t positions …`).
-* Distance à la côte de nombreux points : jamais `ST_DWithin` à grand rayon sur `land` (distance géodésique à des
-  centaines de polygones par point) ; table subdivisée et indexée, plus proches voisins puis distance exacte.
-* Une règle en continu ne voit que sa fenêtre (24 h) : une durée qui la dépasse (séjour d'un navire des listes) se
-  mesure depuis le début repris de l'alerte précédente, en relisant les positions.
-* **Image d'AI2 pour Sentinel** (`sha-fafc6c3`) : Ubuntu 20.04, donc **Python 3.8** (pas de `str | None` hors
-  annotations différées, pas de fusion de dictionnaires par `|`) ; son `main.py` passe à `detect_vessels` des arguments
-  qu'elle n'accepte pas : appeler `prepare_scenes` puis `detect_vessels` (16 arguments) directement. Son code importe
-  tout en `src.*` : mettre `/home/vessel_detection` (pas `.../src`) sur `sys.path` et importer `src.data.image`,
-  `src.inference.pipeline` (second essai réel du 14/10/2026, « No module named 'src' »). `nms_thresh` doit être un
-  entier (grille en division entière). Éprouver le script dans la vraie image avant tout essai réel :
-  `scripts/verifier_images.sh ai2` (imports, une minute) ou `ai2-complet` (scène synthétique sur CPU, environ 5 min,
-  4 cibles retrouvées à moins de 50 m).
-* Un travailleur dont aucune scène n'aboutit doit finir en « echec » avec le motif (`failure` côté serveur, erreur
-  déclarée par le script) : le second essai réel était compté « terminé » malgré son unique scène en échec.
-* **Taille d'un volume bloc** : l'API Instances renvoie `size` 0 pour un volume `sbs_volume` (et pour l'instantané
-  `sbs_snapshot` de l'image) ; la taille se lit dans l'API Block Storage. Premier essai réel du 14/10/2026 (passage
-  110, travailleur 19) refusé pour « 0 Go » ; `boot_problem` la lit désormais là, sans refus si elle reste illisible.
-* **GPU L4 chez Scaleway** : pas de disque local, volume bloc (`sbs_volume`, image de type `instance_sbs`) ; `terminate`
-  laisse le volume bloc (facturé) : extinction, suppression de l'instance, puis du volume par l'API Block Storage
-  (droit BlockStorageFullAccess) ; volumes enregistrés en base dès la création.
-* Le catalogue STAC `sentinel-1-grd` ne renvoie que la version COG des produits (`IW_GRDH_1S-COG`, fichiers
-  `-cog.tiff`) ; le produit d'origine reste trouvable par OData (`S3Path`).
-* **Plafond des travailleurs** : ne compter que les instances vraiment créées ; un refus de Scaleway avant création
-  (image, quota) répété toutes les 30 minutes épuisait le plafond quotidien et privait VIIRS de sa nuit (12/10/2026).
-* **Image GPU sur volume bloc** : la fiche de l'API Instances d'une image `instance_sbs` peut donner une taille nulle
-  pour son volume racine (instantané bloc) : la lire dans l'API Block Storage, comme la ligne de commande Scaleway.
-* Le dossier temporaire de Claude Code est purgé par le système au bout de quelques jours (le 12/10/2026 : clone Git
-  du dépôt corrompu, environnement Python vidé) : repartir d'un clone neuf ; Documents est de nouveau accessible, le
-  `.venv` du dépôt sert aux tests.
-* Les tests passent depuis le dépôt même si une image ne copie pas un module (cas de `backend/sentinel.py`, 11/10) :
-  `tests/test_images.py` et `scripts/verifier_images.sh` avant chaque publication.
-* Un trou de notre collecte agit de trois façons sur la règle des coupures : durée des silences, début inconnu des
-  silences qui commencent dedans, historique manquant dans l'heure qui suit. Ne retirer que les minutes ne suffit pas
-  (arrêt de 20 min : une coupure élevée fabriquée, un point collectif perdu, avant correction).
-* La disponibilité des types d'instance (`/products/servers/availability`) est paginée, 100 types par page : les GPU ne
-  sont pas sur la première (« illisible (HTTP 200) » au diagnostic du 13/10/2026). Lire toutes les pages.
-* L'expiration des clés S3 de Copernicus n'est pas lisible avec ces clés : `CDSE_CLES_EXPIRENT_LE` et
-  `CDSE_TRAVAILLEUR_EXPIRENT_LE` dans le `.env`.
-* **Copernicus refuse les adresses présignées** (test du 14/10/2026 sur le serveur, même objet, mêmes clés) :
-  `get_object` de boto3 (signature par en tête) lit ; l'adresse présignée de boto3 et celle de MARS C2 donnent
-  toutes deux 403 InvalidAccessKeyId. Ce n'est ni la clé ni notre signature : `eodata.dataspace.copernicus.eu`
-  n'accepte que l'en tête `Authorization`. Le travailleur Sentinel lit donc lui même, avec une paire dédiée
-  (`CDSE_TRAVAILLEUR_*`) que l'API lui remet une seule fois, sur jeton, par le réseau privé (route `etat`,
-  `{"etat": "tache"}`), jamais dans le cloud-init, en base ni dans un journal ; la paire du serveur ne le quitte
-  jamais. Test à trois lignes et garde fous : `docs/sentinel.md`.
-* L'image d'AI2 (`vessel-detection-sentinels`) tourne en Python 3.8 : le script du travailleur reste en
-  bibliothèque standard (signature AWS version 4 écrite à la main, identique à botocore, testé).
-* PostgreSQL 12 et plus déplie une sous requête `WITH` utilisée une fois : une géométrie lourde (union du trait de
-  côte) y est recalculée pour chaque ligne. La marquer `MATERIALIZED` (cas de `find_gaps`, 68 s ramenées à 0,7 s).
-* `scripts/verifier_images.sh` : l'image PostGIS initialise sa base par un serveur temporaire qui n'ouvre que la
-  socket locale ; `pg_isready` sans `-h` le croit prêt et l'API se connecte pendant son arrêt (faux échec,
-  ConnectionRefused). Attendre en TCP (`pg_isready -h 127.0.0.1`). La publication s'enchaîne par `&&` après la
-  vérification.
-* **Incident du 18/10/2026** : disque plein (8 Go) vers 01:00 UTC ; la collecte s'est figée à 01:27 sans s'arrêter
-  (plus de journal ni de fichier, conteneur « Up ») : l'écriture des fichiers tournait dans une tâche asyncio sans
-  protection, tuée en silence par l'erreur ; l'ingestion a planté en boucle 21 h sur DiskFull (`REFRESH MATERIALIZED
-  VIEW CONCURRENTLY vessel_watch`) ; environ 21 h de données AIS perdues (AISStream ne garde rien) ; l'alerte des 15 %
-  n'était que dans la barre d'état. Désormais : aucune tâche asyncio sans garde, aucun service qui meurt sur une
-  erreur passagère, contrôle de santé qui relance un processus figé, alertes sur le téléphone (étape D). Disque passé à
-  15 Go (13 utilisables).
-* Docker (hors Swarm) ne redémarre jamais un conteneur « unhealthy ». Le contrôle de santé arrête lui même le processus
-  figé, et `restart` relance le conteneur ; il faut `init: true`, car le noyau ignore un signal envoyé au processus
-  numéro 1 depuis son conteneur quand il ne l'a pas prévu. Ne pas donner le socket Docker à un conteneur (droits root).
-* **Grafana 12** remplace les variables d'environnement dans la source de données et le canal d'alerte, **pas dans les
-  règles d'alerte provisionnées** (`$SEUIL_…` restait tel quel dans le SQL) : seuils lus dans `parametres_supervision`.
-  Et l'adresse d'un canal webhook est elle même un gabarit : `{{ "{{.title}}" }}` pour laisser `{{.title}}` à ntfy.
-* Tableaux Grafana : ne jamais lire la table `positions` ; `ingested_files` ne garde que deux jours (les journées
-  archivées en sortent), `task_runs` des règles aussi.
-* **Heure d'une tuile Sentinel 2** : l'heure du catalogue et du nom de produit est le début de la prise de vue sur
-  toute l'orbite ; la tuile est vue plusieurs minutes plus tard (387 s pour T30UXA le 17/10/2026, soit 2 km de
-  décalage à 10 nœuds). Lire `SENSING_TIME` dans `MTD_TL.xml` pour la fusion.
-* **Analyse par fenêtres** : toute conclusion d'absence (AIS_UNCONFIRMED, « absent » du tip and cue) ne vaut que dans
-  le cœur des fenêtres réellement lues, jamais sur l'emprise de la scène (défaut corrigé le 21/10/2026 pour Sentinel 1,
-  `sentinel.dans_coeur`).
-* **Masque SCL et navires** : le SCL du L2A classe en nuage le navire lui même et son sillage (1 à 8 % des pixels
-  autour d'un navire dégagé) : juger une part du voisinage, jamais un seul pixel.
-* GDAL ne journalise pas le premier bloc de 16 Ko lu à l'ouverture d'un fichier par `/vsicurl/` ou `/vsis3/` : le
-  compter à part (`travailleurs/sentinel2.py`, `octets_journal`).
-* L'image `vessel-detection-sentinels` d'AI2 n'a pas les poids de son détecteur Sentinel 2 (seulement `cfg.json`) ; le
-  modèle Sentinel 2 d'AI2 est celui de rslearn (`sentinel2-vessel-detection`), poids hors de l'image. Lancer avec
-  `--shm-size=2g` et un dossier des poids accessible en écriture.
-* **Panneau de contrôle (lot P)** : ne plus modifier `config/rules.yaml` sur le serveur pour suspendre quoi que ce soit
-  (pause, plafond, mode d'une règle) : l'état est en base et prime, et une modification locale bloque `git pull`. Un
-  module qui décide d'un lancement ou d'une alerte lit `rules["_controle"]` des règles appliquées
-  (`controle.appliquer`), jamais `load_rules()` seul ; une nouvelle écriture d'alerte passe par `controle.decision`
-  et `controle.marquer_zone` (ou `save_alerts`, `filtrer_sync`) et porte `controle_empreinte`.
-* Un `Envois` vide (liste) est faux en Python : tester `envoi is not None`, jamais `envoi or défaut`.
-* Photo des navires : source VesselFinder (fiche publique par MMSI), à usage personnel ; conditions d'utilisation à
-  vérifier avant une démonstration publique.
-* **Traces (étape D2)** : l'instrumentation de requests remplace l'en tête `traceparent` posé à la main par le
-  contexte courant ; les travailleurs n'ont pas le kit (aucun conflit), mais un test qui exécute leur script dans le
-  processus des tests doit désinstrumenter requests. Les images du collecteur et de Tempo sont sans système (pas de
-  shell, pas de `du`) : lancées en root pour écrire dans leur volume nommé ; mesurer la place par un conteneur
-  `alpine` qui monte le volume. TraceQL refuse un point échappé par une barre oblique inverse venu de Grafana :
-  écrire `[.]`. Tempo 3 a changé sa configuration (plus d'ingester ni de compactor : `live_store`, `backend_worker`,
-  `backend_scheduler`) ; la conservation se règle dans `backend_worker` et `backend_scheduler`. Une commande nouvelle
-  de `taches.py` se déclare par `@commande` (sinon refusée par l'analyse des arguments, et le test le signale).
-* Filtre du collecteur (OTTL) : écrire chaque condition entre apostrophes dans le YAML ; non citée, une condition
-  `IsMatch(…)` a été acceptée par `validate` mais n'écartait rien. Vérifier par `otelcol_processor_filter_spans_filtered`.
-* Grafana : une tuile colorée selon un seuil lu en base se fait en SQL (colonnes `metric`, texte affiché, et `value`,
-  niveau 0, 1 ou 2, format time_series, `textMode: name`) ; les seuils d'un panneau sont fixes. Le texte « aucune
-  donnée » d'un tableau (`noValue`) s'applique aussi à chaque cellule vide : remplir les cellules en SQL. Une variable
-  d'environnement de Grafana changée demande `docker compose up -d grafana` (`restart` garde l'ancienne).
-* Construire les images sur le Mac par `docker build` (docs/deploiement.md) : la surcouche du serveur exige ses
-  secrets (`:?`), Compose refuse alors toute commande sans eux.
-* **Chaîne d'AI2 et images partielles** : `detect_vessels` découpe en carreaux de 2 048 pixels (Web Mercator, après
-  reprojection) ; une image plus petite dans une dimension donne des décalages négatifs et une découpe fausse. Une
-  fenêtre fait au moins 2 300 pixels de côté (`COTE_MIN_PX` du travailleur). `gdal.Translate(srcWin=…)` recale les
-  points d'appui d'un GRD sur la fenêtre (vérifié : écart nul) ; `prepare_scenes` reprojette par ces points d'appui.
-* **Stock des GPU chez Scaleway** : catalogue et disponibilités publics (`/instance/v1/zones/<zone>/products/servers`
-  et `/availability`, sans clé) ; « scarce » ne garantit rien (412 out_of_stock au démarrage le 16/10/2026). Le réseau
-  privé est régional : un GPU de pl-waw-2 ne peut pas renvoyer ses résultats au serveur de fr-par.
-* **GPU Pascal et image GPU de Scaleway** (essai 26 du 19/10/2026) : « Ubuntu Noble GPU OS 13 » charge les modules
-  noyau ouverts de NVIDIA, qui ne gèrent que Turing et plus récent ; un P100 (RENDER-S) démarre mais `docker run
-  --gpus` échoue (« failed to initialize NVML: Driver Not Loaded »). Le catalogue ne le dit pas : seul le contrôle du
-  GPU sur l'instance (`controle_gpu`) le révèle.
-* Une alerte « une fois » de Grafana (abandon Sentinel, GPU marqué incompatible) regarde une fenêtre de 55 minutes :
-  avec le rappel d'une heure de la politique ntfy, une fenêtre plus longue enverrait une seconde notification.
+**Interface**
+* Tailwind 4 : règle hors couche prioritaire ; MapLibre : pas de `line-dasharray` par donnée, `map.resize()` par
+  ResizeObserver, position par style direct ; poignée hors de la zone qui défile ; `fixed` sous `backdrop-blur` par
+  portail ; raccourcis en capture.
+* Deux formes du trafic en colonnes (`decodeTraffic`) ; `retry` sur frise et trafic ; dossiers lus à l'instant
+  affiché ; `noUnusedLocals`.
+* Playwright : Chromium sans affichage avec swiftshader pour voir la carte (`chrome-headless-shell`).
+* Un `Envois` vide est faux en Python : `envoi is not None`. Ne jamais remplacer un dossier par le Finder (`ditto`).

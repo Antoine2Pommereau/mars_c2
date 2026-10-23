@@ -1,3 +1,5 @@
+> Archivé le 24/10/2026 (lot Z3) : historique, ne décrit plus l'état actuel.
+
 # Historique danois : la version de rejeu et sa calibration (juin à octobre 2026)
 
 Issu de l'audit du 06/10/2026 (`docs/audit_code.md`, section 5). Ce document rassemble ce que CLAUDE.md contenait

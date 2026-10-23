@@ -1,3 +1,5 @@
+> Archivé le 24/10/2026 (lot Z3) : historique, ne décrit plus l'état actuel.
+
 # Inventaire du worktree de calibration, à porter vers le dépôt principal
 
 Ce document suit ce qui a été construit dans le worktree de la session de calibration

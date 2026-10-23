@@ -414,7 +414,7 @@ coupe vers 4 h 30 à 12 nœuds (contenance de 20 km : 72 % à 3 h, 53 % à 4 h, 
 **Rejeu du serveur, 14 jours, garde et table provisoire** : coupures AIS 3 passages (5 écartés pour contenance),
 rendez vous 3 (2 écartés), identité et VIIRS inchangés ; contenance estimée moyenne des passages retenus 80 % sur 5 ;
 délai médian 2,5 h ; 6 sessions, 11 fenêtres, environ 2,45 € par mois. Le rejeu avec la table de l'archive est à
-relancer (section 8 de docs/deploiement.md).
+relancer : `taches.py tip-rejeu 14` sur le serveur (docs/calibration.md).
 
 **Étape 2, méthode** (`mars/trajectoire.py`, `deplacements`, `Analogues`, `evaluer_hypotheses`). Pour un navire
 (position, cap, vitesse), on regarde où sont allés, h heures plus tard, les navires d'apprentissage partis de la même

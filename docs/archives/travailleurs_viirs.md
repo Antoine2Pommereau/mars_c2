@@ -1,3 +1,6 @@
+> Archivé le 24/10/2026 (lot Z3) : historique, ne décrit plus l'état actuel.
+> Fusionné le 24/10/2026 dans docs/travailleurs.md ; document archivé.
+
 # Travailleurs éphémères et détections nocturnes VIIRS
 
 Étape 3, lot B. Le serveur (Scaleway DEV1-S, 2 Go) ne peut pas faire tourner les modèles de détection satellite : il

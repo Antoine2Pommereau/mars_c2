@@ -1,4 +1,4 @@
-"""Routes du contenu de l'interface (lot 2 de docs/vision_interface.md) : recherche, fiches navire (comportement,
+"""Routes du contenu de l'interface (lot 2 de docs/archives/vision_interface.md) : recherche, fiches navire (comportement,
 trajectoire en GPX, notes, photo), alerte, infrastructure et zone, navires suivis.
 
 Sobriété : aucune écriture sur le disque du serveur (la photo est relayée, gardée en mémoire pour quelques navires,

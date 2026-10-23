@@ -1,22 +1,34 @@
-# Déploiement sur le serveur Scaleway (DEV1-M)
+# Installation du serveur Scaleway (DEV1-M)
 
-> **Depuis le 22/10/2026 (lot Z2)**, publier et déployer une version se fait par `bash scripts/publier.sh` (Mac) et
-> `bash scripts/deployer.sh <empreinte> --migrations` (serveur) : voir `docs/exploitation.md`, qui décrit aussi la
-> restauration, les échéances des secrets et la reprise après sinistre. Ce document garde l'installation initiale et
-> l'historique des lots ; ses blocs de publication collés à la main ne sont plus à suivre.
+> **État au 24/10/2026.** Serveur Scaleway **DEV1-M** (4 Go de mémoire, disque de **20 Go**), Ubuntu 24.04, zone
+> fr-par-1, dépôt dans `/opt/mars_c2`. Neuf services Docker Compose : `db`, `backend`, `web`, `collector`, `ingest`,
+> `taches`, `grafana`, `otel`, `tempo`. Schéma : migrations **01 à 42** de `db/init`, suivies par le registre
+> `schema_migrations` depuis la migration 39. Ce document décrit **l'installation initiale** et la mise en place de
+> chaque brique ; **l'exploitation courante** (publier, déployer, vérifier les versions, sauvegarde et essai de
+> restauration, échéances des secrets, reprise après sinistre) est dans `docs/exploitation.md` ; **l'historique des
+> lots** et leurs anciens blocs de déploiement sont dans `docs/journal.md`.
 
-Le serveur (`/opt/mars_c2`) fait tourner en permanence, avec Docker Compose, six services : la base (`db`),
-l'API (`backend`), l'interface (`web`), la collecte AISStream (`collector`), l'ingestion en base (`ingest`) et les
-tâches planifiées (`taches` : règles en continu, archivage sur R2, purge, sauvegarde, surveillance du disque). Pas de
-cron sur l'hôte : tout redémarre avec la plateforme (`restart: unless-stopped`). Les images sont construites sur le
-Mac en linux/amd64, publiées sur le registre GitHub (paquets privés `ghcr.io/antoine2pommereau/mars_c2-backend`,
-`mars_c2-web` et `mars_c2-scripts`), puis téléchargées par le serveur (section « Construire sur le Mac et déployer ») :
-le serveur n'a ni la place ni la mémoire pour les construire, et les gros transferts par SSH échouent depuis le Mac
-(« Result too large »). Le service d'inférence radar reste sur le Mac (GPU
-Apple) ; sur le serveur, l'API le signale « injoignable », ce qui est attendu.
+Le serveur fait tourner en permanence, avec Docker Compose : la base (`db`), l'API (`backend`), l'interface (`web`),
+la collecte AISStream (`collector`), l'ingestion en base (`ingest`), les tâches planifiées (`taches` : règles en
+continu, archivage sur R2, purge, sauvegarde, surveillance du disque, satellites) et la supervision (`grafana`, le
+collecteur OpenTelemetry `otel`, `tempo`). Pas de cron sur l'hôte : tout redémarre avec la plateforme
+(`restart: unless-stopped`). Les images sont construites sur le Mac en linux/amd64, publiées sur le registre GitHub
+(paquets privés `ghcr.io/antoine2pommereau/mars_c2-backend`, `mars_c2-web` et `mars_c2-scripts`) par
+`scripts/publier.sh`, puis téléchargées et démarrées par `scripts/deployer.sh` (`docs/exploitation.md`) : le serveur
+n'a ni la place ni la mémoire pour les construire, et les gros transferts par SSH échouent depuis le Mac (« Result too
+large »). Le service d'inférence radar reste sur le Mac (GPU Apple) ; sur le serveur, l'API le signale « injoignable »,
+ce qui est attendu.
 
-Rien n'est ouvert sur Internet hormis SSH : la base n'a aucun port publié, l'API et l'interface écoutent sur
-127.0.0.1 et se consultent par un tunnel SSH. C'est le rôle de `docker-compose.serveur.yml`.
+Rien n'est ouvert sur Internet hormis SSH : la base n'a aucun port publié, l'API, l'interface et Grafana écoutent sur
+127.0.0.1 et se consultent par un tunnel SSH ; le retour des travailleurs passe par le réseau privé Scaleway (port
+8090). C'est le rôle de `docker-compose.serveur.yml`.
+
+## Créer l'instance
+
+Console Scaleway, Instances, Create : type **DEV1-M** (4 Go), zone fr-par-1, image **Ubuntu 24.04**, volume de
+**20 Go**, clé SSH du Mac. Une fois créée : poser la protection contre la suppression (section « Travailleurs
+éphémères », étape 4) et rattacher le réseau privé des travailleurs (même section, étape 1). L'adresse publique ne
+s'écrit nulle part dans le dépôt : `IP_DU_SERVEUR` dans les commandes ci dessous.
 
 ## Première installation
 
@@ -27,7 +39,7 @@ Sur le serveur (Ubuntu 24.04, `root`) :
 curl -fsSL https://get.docker.com | sh
 docker compose version
 
-# Mémoire d'échange : la DEV1-S n'a que 2 Go de mémoire
+# Mémoire d'échange de 2 Go, en marge des 4 Go de la DEV1-M (aux pics, environ 1,6 Go sont utilisés)
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
@@ -35,7 +47,7 @@ git clone https://github.com/Antoine2Pommereau/mars_c2.git /opt/mars_c2 && cd /o
 mkdir -p data/ais_live data/listes
 ```
 
-Fichier `/opt/mars_c2/.env` (jamais versionné, `chmod 600`) :
+Fichier `/opt/mars_c2/.env` (jamais versionné, `chmod 600`), pour commencer :
 
 ```bash
 AISSTREAM_API_KEY=ta_cle
@@ -49,7 +61,12 @@ R2_BUCKET=mars-c2
 ```
 
 `COMPOSE_FILE` et `COMPOSE_PROFILES` font qu'un simple `docker compose up -d` applique la surcouche du serveur et
-démarre collecte, ingestion et tâches (profil `direct` inactif sur le Mac : une seule collecte par clé).
+démarre collecte, ingestion et tâches (profil `direct` inactif sur le Mac : une seule collecte par clé). Les autres
+variables s'ajoutent brique par brique (sections suivantes : supervision, travailleurs, Copernicus, seau des modèles,
+opérateurs) ; leur liste complète, à garder dans la note sécurisée du gestionnaire de mots de passe, est dans
+`docs/exploitation.md`, section 5. Pas de commentaire en fin de ligne dans ce fichier. Chaque service ne reçoit que ses
+propres variables (`docker-compose.yml`, `docker-compose.serveur.yml`) ; une variable modifiée n'atteint un conteneur
+qu'à sa recréation (`docker compose up -d <service>`).
 
 Connexion du serveur au registre GitHub, une fois, avec un jeton personnel **en lecture seule** (GitHub, Settings,
 Developer settings, Personal access tokens, Tokens (classic), portée `read:packages`) enregistré dans un fichier lisible
@@ -60,23 +77,33 @@ umask 077 && nano /root/.ghcr_lecture            # coller le jeton, enregistrer
 docker login ghcr.io -u antoine2pommereau --password-stdin < /root/.ghcr_lecture
 ```
 
-Premier démarrage : publier les images depuis le Mac (section « Construire sur le Mac et déployer », étapes 1 et 2),
-télécharger les images, démarrer, charger les listes de surveillance (téléchargées par le conteneur taches, rien à
+**Premier démarrage.** Les variables de la supervision (section « Supervision ») doivent être dans le `.env` avant tout
+`docker compose`. Publier les images depuis le Mac (`bash scripts/publier.sh`, qui affiche `PUBLIÉ <empreinte>`), puis
+sur le serveur : démarrer la base seule (une base neuve exécute d'elle même toutes les migrations de `db/init`, 01 à
+42), déployer la version publiée, charger les listes de surveillance (téléchargées par le conteneur taches, rien à
 copier), puis construire les masques France :
 
 ```bash
-cd /opt/mars_c2 && docker compose pull && docker compose up -d --no-build
-docker compose exec taches python scripts/taches.py listes
-docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
+( cd /opt/mars_c2 || { echo "PAS SUR LE SERVEUR : arrêt"; exit 1; }
+  git checkout <empreinte> && docker compose up -d db && sleep 30
+  bash scripts/deployer.sh <empreinte> --migrations
+  MARS_TAG=<empreinte> docker compose exec taches python scripts/taches.py listes
+  MARS_TAG=<empreinte> docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7 )
 ```
+
+`deployer.sh` doit finir par `DÉPLOYÉ <empreinte>` ; ce qu'il vérifie et ce qu'on doit lire : `docs/exploitation.md`,
+section 2. Ensuite : section « Vérifier » ci dessous.
+
+Ne jamais lancer `docker system prune --volumes` : il effacerait le volume de la base.
 
 ## Configurer Cloudflare R2
 
 1. Tableau de bord Cloudflare, R2, « Create bucket » : nom `mars-c2`, emplacement automatique (Europe de
    préférence). Ne pas activer d'accès public.
 2. R2, « Manage R2 API Tokens », « Create API token » : permission **Object Read & Write**, limitée au seau
-   `mars-c2`. Noter l'identifiant de clé, le secret et le point d'accès S3
-   (`https://<identifiant_du_compte>.r2.cloudflarestorage.com`) ; les reporter dans `.env`.
+   `mars-c2`, **filtrée sur l'adresse IP du serveur** (ce jeton ne présigne jamais pour un travailleur). Noter
+   l'identifiant de clé, le secret et le point d'accès S3 (`https://<identifiant_du_compte>.r2.cloudflarestorage.com`) ;
+   les reporter dans `.env`.
 3. Ne pas mettre de règle de cycle de vie sur le seau : la suppression des anciennes sauvegardes est faite par la
    tâche elle même, après vérification de la nouvelle.
 
@@ -98,6 +125,24 @@ Organisation du seau :
 | `ais/positions/zone=…/date=AAAA-MM-JJ/` | Positions brutes d'une journée et d'une zone, un fichier Parquet par passage d'archivage (zstd, trié par navire puis par instant, colonnes identiques à la collecte) |
 | `ais/statiques/zone=…/date=AAAA-MM-JJ/` | Messages statiques, même organisation |
 | `sauvegardes/mars_AAAAMMJJTHHMMSS.dump` | Sauvegardes de la base (`pg_dump` au format personnalisé), les 7 plus récentes |
+
+### Seau des modèles
+
+Les poids des modèles (Sentinel 2, `docs/sentinel2.md`, section 9) sont dans un seau R2 à part, `mars-c2-modeles`
+(juridiction UE, même adresse `R2_ENDPOINT`), avec un jeton dédié « Object Read & Write » limité à ce seau. Variables
+du `.env` du serveur : `R2_MODELES_BUCKET`, `R2_MODELES_ACCESS_KEY_ID`, `R2_MODELES_SECRET_ACCESS_KEY`, transmises aux
+conteneurs backend (qui présigne les adresses remises aux travailleurs) et taches, après recréation du conteneur.
+
+* **Le jeton des modèles ne doit jamais être filtré par IP** : les travailleurs sortent par des IP variables (essai du
+  20/10/2026 : 403 AccessDenied depuis le travailleur 29).
+* **Le jeton principal doit rester filtré sur l'IP du serveur** : il ne présigne plus jamais pour un travailleur.
+* Quota gratuit de 10 Go **par compte** : une seule copie des poids (`sentinel2-poids --nettoyer` retire l'ancienne).
+
+```bash
+docker compose exec taches python scripts/taches.py sentinel2-poids            # copie vers mars-c2-modeles, vérifiée
+docker compose exec taches python scripts/taches.py sentinel2-poids --nettoyer # relit la copie, retire l'ancienne
+docker compose exec taches python scripts/taches.py sentinel2-diagnostic       # MANQUE si une variable n'arrive pas
+```
 
 ## Tâches planifiées (service `taches`)
 
@@ -141,7 +186,7 @@ Chaque nuit à 02:30 UTC (`TACHES_HEURE`), dans cet ordre, chacune consignée da
    données de la nuit : un travailleur éphémère Scaleway analyse les granules des trois dernières nuits pas encore
    traitées (rattrapage automatique). Chaque minute, le conteneur surveille les travailleurs : résultats traités,
    instances finies ou trop vieilles détruites, orphelins détruits, chaque exécution journalisée dans `task_runs`
-   (tâche `travailleur_viirs` : durée, coût estimé, résultat). Détail : `docs/travailleurs_viirs.md`.
+   (tâche `travailleur_viirs` : durée, coût estimé, résultat). Détail : `docs/travailleurs.md`.
 
 **Confirmation des envois.** L'ETag d'un objet envoyé en une seule requête est son MD5 : il est comparé au MD5
 calculé avant l'envoi, avec la taille. L'ETag d'un objet envoyé en plusieurs morceaux (au delà de 16 Mo, cas des
@@ -160,13 +205,12 @@ de 24 heures bornée par la dernière position reçue :
 | Navire d'une liste dans nos eaux | `WATCHLIST`, une par passage (12 h sans position ouvrent un passage nouveau), niveaux fort, sanctionné, flotte fantôme, suspect GUR | listes importées |
 | Changement d'identité | `IDENTITY_CHANGE` : nouveau nom confirmé 6 h, ou même OMI sous un autre MMSI | aucun |
 
-Après les règles, chaque cycle tient aussi les statistiques de la frise de l'interface (`stats_minute`,
+Avant les règles, une étape à part tient les statistiques de la frise de l'interface (`stats_minute`,
 `stats_10min` : positions par minute, navires par tranche de 10 minutes ; `stats_10min_region` : la même chose par
-région, pour le sélecteur de la barre d'état). Au premier cycle après la migration 19, les statistiques par région
-sont rattrapées sur toutes les positions en base : environ 9 s par journée (mesuré en émulation sur 288 000
-positions, 3,2 s), soit 4 à 5 minutes une seule fois pour 30 jours, pendant lesquelles ce cycle des règles est
-retardé. Sur une base neuve, toutes les statistiques sont calculées au premier cycle ; l'histogramme et les coupures
-du flux apparaissent donc dans la frise dans les 5 minutes qui suivent le déploiement.
+région, pour le sélecteur de la barre d'état), fichiers chargés en retard recomptés (`stats_suivi`), avec une garde
+toutes les 10 minutes qui reconstruit un trou (lot C5, `docs/supervision.md`). Sur une base neuve, toutes les
+statistiques sont calculées au premier cycle ; l'histogramme et les coupures du flux apparaissent donc dans la frise
+dans les 5 minutes qui suivent le déploiement.
 
 Une règle dont le prérequis manque est sautée (le motif apparaît dans `task_runs`) : lancer d'abord la construction
 des masques. Les alertes sont mises à jour en place (clé `rule_key`) : statut et décisions des opérateurs sont
@@ -216,7 +260,7 @@ scp root@IP_DU_SERVEUR:/tmp/mesures_calibration.md ~/Documents/"Projet Perso"/Ma
 
 ## Travailleurs éphémères Scaleway (étape 3)
 
-Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_viirs.md`) :
+Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs.md`) :
 
 1. **Réseau privé** : console Scaleway, Network, VPC, région Paris, Private Networks, Create : `mars-c2-travailleurs`
    (dans le VPC par défaut). Puis Instances, le serveur, onglet Private Networks, Attach. Sur le serveur, l'adresse
@@ -268,7 +312,7 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs_
    `CDSE_TRAVAILLEUR_SECRET_KEY`, `CDSE_TRAVAILLEUR_EXPIRENT_LE=AAAA-MM-JJ`), que l'API remet à chaque travailleur par
    le réseau privé (Copernicus refuse les adresses présignées, `docs/sentinel.md`) ; `taches.py sentinel-diagnostic`
    lit 16 octets avec chacune et surveille l'expiration. Après un changement de clés :
-   `docker compose up -d backend taches` (les deux lisent le `.env`). Le réseau privé est régional : le travailleur GPU en fr-par-2
+   `docker compose up -d backend taches` (les deux reçoivent ces variables, à leur recréation). Le réseau privé est régional : le travailleur GPU en fr-par-2
    rejoint le serveur en fr-par-1 sans autre réglage. Migration 25 (`db/init/25_sentinel.sql`). Sans la paire des travailleurs, rien
    n'est lancé ; premier essai sur un passage choisi à la main : `taches.py sentinel-analyser <id>` (procédure dans
    `docs/sentinel.md`).
@@ -362,9 +406,9 @@ image (chaque lundi, et à la demande dans l'onglet Actions). Une fois par paque
 `mars_c2`, rôle **Admin**. Les images portent l'étiquette `org.opencontainers.image.source`, qui relie le paquet au
 dépôt à la publication suivante.
 
-**Mesures pour Grafana** : `curl -s localhost:8000/api/metrics` (format texte de Prometheus : exécutions et durée de
-chaque tâche, travailleurs, minutes et coût, détections VIIRS, passages, alertes). Aucun outil installé ; un agent
-Grafana pourra lire cette adresse plus tard.
+**Mesures au format Prometheus** : `curl -s localhost:8000/api/metrics` (format texte de Prometheus : exécutions et
+durée de chaque tâche, travailleurs, minutes et coût, détections VIIRS, passages, alertes), lisible par un agent
+Prometheus ; les tableaux de Grafana lisent, eux, la base (rôle `grafana_lecture`, section « Supervision »).
 
 ## Masques France (trait de côte, mouillages, réception)
 
@@ -395,20 +439,11 @@ docker compose exec taches python scripts/build_masks.py --sans-cache --jours 7
 * À relancer de temps en temps (chaque semaine par exemple) pour les zones de mouillage et la réception ; le trait
   de côte ne change pas (`--skip-land` pour ne recalculer que les masques déduits de l'AIS).
 
-## Construire sur le Mac et déployer
+## Registre d'images : connexion du Mac
 
-Le serveur ne construit rien. Les trois images sont construites sur le Mac pour linux/amd64, publiées sur le registre
-GitHub, puis téléchargées par le serveur :
-
-| Image | Services | Taille (07/10/2026) |
-|---|---|---|
-| `ghcr.io/antoine2pommereau/mars_c2-backend` | `backend` | 160 Mo |
-| `ghcr.io/antoine2pommereau/mars_c2-web` | `web` | 21 Mo |
-| `ghcr.io/antoine2pommereau/mars_c2-scripts` | `collector`, `ingest`, `taches` | 190 Mo |
-
-Chaque publication porte deux étiquettes : `latest`, que le serveur utilise par défaut, et l'empreinte courte du
-commit (par exemple `4238202`), pour revenir à une version précise (`MARS_TAG=4238202` dans le `.env` du serveur).
-Les couches inchangées ne sont ni republiées ni retéléchargées.
+Les trois images (`mars_c2-backend` pour `backend`, `mars_c2-web` pour `web`, `mars_c2-scripts` pour `collector`,
+`ingest` et `taches`) portent deux étiquettes : `latest` et l'empreinte courte du commit ; `deployer.sh` télécharge
+toujours l'empreinte. Publication : `docs/exploitation.md`, section 1.
 
 **Connexion du Mac au registre, une fois**, avec un jeton personnel en **écriture** (portée `write:packages`, qui
 inclut la lecture), gardé dans le trousseau de macOS plutôt que dans un fichier ou l'historique du terminal :
@@ -421,138 +456,7 @@ security find-generic-password -a antoine2pommereau -s ghcr-mars-c2 -w | docker 
 Les trois paquets sont privés : au premier envoi, GitHub les crée privés ; le jeton de lecture du serveur y a accès
 parce qu'ils appartiennent au même compte.
 
-**1. Sur le Mac : construire**, depuis le dépôt à jour (commandes compatibles zsh), avec `docker build` directement :
-ni Compose, ni `.env`, ni les secrets du serveur ne sont nécessaires (depuis l'étape D2 ; la surcouche du serveur
-exige `GRAFANA_ADMIN_MOT_DE_PASSE`, `GRAFANA_PG_MOT_DE_PASSE` et `NTFY_SUJET`, qui n'ont rien à faire sur le Mac).
-Chaque image reçoit l'empreinte du commit (`MARS_VERSION`), montrée par l'indicateur « Version » de la barre d'état
-et par Grafana :
-
-```zsh
-cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git pull origin main
-R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
-docker build --platform linux/amd64 -f backend/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-backend:latest . \
-  && docker build --platform linux/amd64 -f scripts/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-scripts:latest . \
-  && docker build --platform linux/amd64 --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-web:latest web
-for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
-  docker image inspect "${R}/${i}:latest" --format "${i} {{.Architecture}} {{index .Config.Labels \"org.opencontainers.image.revision\"}}"
-done
-```
-
-Les trois doivent afficher `amd64` et l'empreinte du commit. Ces images remplacent sur le Mac celles du même nom :
-pour retrouver des images natives en local, relancer ensuite `docker compose build backend web`.
-
-**1 bis. Sur le Mac : vérifier les images construites**, avant toute publication. Le 11/10/2026, l'API a planté en
-boucle au démarrage sur le serveur (`backend/sentinel.py` non copié par `backend/Dockerfile`), alors que les tests
-passaient depuis le dépôt. Le script démarre chaque image comme le serveur le fera :
-
-```zsh
-scripts/verifier_images.sh                     # les trois ; ou seulement celles qui changent : scripts/verifier_images.sh scripts
-scripts/verifier_images.sh ai2                 # facultatif : script du travailleur Sentinel dans l'image d'AI2 (5 Go)
-scripts/verifier_images.sh ai2-complet         # facultatif : analyse complète sur CPU d'une scène synthétique (5 min)
-scripts/verifier_images.sh traces              # trace complète de bout en bout dans Tempo, travailleur simulé compris (3 min)
-scripts/verifier_images.sh s2 s2-s3            # travailleur Sentinel 2 dans l'image rslearn ; s2-s3 obligatoire dès que travailleurs/sentinel2.py change :
-                                               # chemin S3 de production, faux S3 qui vérifie la signature (environ 9 min en émulation)
-```
-
-`traces` doit afficher `OK traces : trace … de bout en bout dans Tempo (OK 22 spans, services mars-api,
-mars-taches, mars-travailleur) ; jeton faux refusé ; données sensibles filtrées par le collecteur`. À lancer avant
-de publier dès que l'instrumentation, un script de travailleur, nginx ou la configuration du collecteur change.
-
-À lancer avant tout essai réel quand `travailleurs/sentinel.py` change : `OK chaîne d'AI2 importée`, et pour
-`ai2-complet`, `OK analyse complète sur CPU : 4 cibles sur 4 retrouvées`.
-
-Ce qu'on doit lire : une ligne `OK` par image (`backend : l'API démarre et /api/health répond`, `scripts : points
-d'entrée chargés`, `web : nginx sert la page`), puis `Publication possible`. Une ligne `ÉCHEC` arrête tout, avec le
-journal du conteneur. Le test `tests/test_images.py` fait la même vérification sans Docker (modules copiés par chaque
-Dockerfile, bibliothèques déclarées), à chaque `pytest`.
-
-**2. Sur le Mac : publier**, avec l'étiquette du commit en plus de `latest` :
-
-```zsh
-R=ghcr.io/antoine2pommereau
-TAG=$(git rev-parse --short HEAD)
-scripts/verifier_images.sh && for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
-  docker tag "${R}/${i}:latest" "${R}/${i}:${TAG}" && docker push "${R}/${i}:latest" && docker push "${R}/${i}:${TAG}" || break
-done
-```
-
-La vérification et la publication sont enchaînées par `&&` : une ligne `ÉCHEC` empêche tout envoi, et un envoi en
-échec arrête la boucle.
-
-Ne publier que les images qui changent est possible (retirer les autres de la liste), mais pas nécessaire : une
-couche déjà sur le registre n'est pas renvoyée.
-
-**3. Sur le serveur : télécharger et démarrer.** Code et migrations d'abord (une nouvelle migration de `db/init` ne
-s'applique pas seule à une base existante, et la nouvelle API peut en dépendre) :
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/1X_nom.sql   # chaque migration nouvelle
-docker compose pull backend web collector ingest taches
-docker compose up -d --no-build
-docker image prune -f                              # anciennes versions devenues sans étiquette
-```
-
-**Disque juste.** `docker compose pull` télécharge les couches compressées (environ 330 Mo pour les trois images
-quand tout change) puis les décompresse (environ 370 Mo) pendant que les anciennes images sont encore présentes et
-utilisées : prévoir environ 800 Mo libres. S'il n'y en a pas assez, libérer d'abord, dans cet ordre (la base et ses
-données ne sont pas touchées ; la collecte s'interrompt quelques minutes, sans conséquence sur les règles, les minutes
-de flux coupé ne comptant pas comme des silences) :
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/1X_nom.sql   # migrations nouvelles
-docker compose rm -sf backend web collector ingest taches   # arrêt et suppression des conteneurs, pas des volumes
-docker image prune -af                                      # images sans conteneur ; la base, en service, garde la sienne
-df -h /                                                     # vérifier la place libre avant le téléchargement
-docker compose pull backend web collector ingest taches
-docker compose up -d --no-build
-```
-
-`docker image prune -af` ne retire que les images qu'aucun conteneur n'utilise : celle de la base, en service, reste.
-Au passage aux images du registre, les anciennes images locales (`mars_c2-backend`, `mars_c2-web`,
-`mars_c2-scripts`, et plus anciennes `mars_c2-collector`, `mars_c2-ingest`, `mars_c2-taches`) partent avec elles.
-
-**Une seule image qui change, disque très juste** (354 Mo libres le 12/10/2026 : le serveur ne supporte qu'une image
-à la fois). Cas d'un lot qui ne touche que `mars/`, `scripts/`, `config/` : seule `mars_c2-scripts` (collecte,
-ingestion, tâches) est republiée. L'API garde son image : elle embarque aussi `mars/`, mais n'en utilise pas les
-parties modifiées, et la configuration (`config/rules.yaml`) est lue depuis le dépôt, montée dans les conteneurs.
-
-```zsh
-# Sur le Mac
-cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git checkout main && git pull origin main
-R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
-docker build --platform linux/amd64 -f scripts/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-scripts:latest .
-scripts/verifier_images.sh scripts && docker tag "${R}/mars_c2-scripts:latest" "${R}/mars_c2-scripts:${TAG}" \
-  && docker push "${R}/mars_c2-scripts:latest" && docker push "${R}/mars_c2-scripts:${TAG}"
-```
-
-```bash
-# Sur le serveur : l'ancienne image des scripts libérée avant le téléchargement de la nouvelle
-cd /opt/mars_c2 && git pull origin main
-docker compose rm -sf collector ingest taches               # conteneurs des scripts seulement ; API, interface et base restent
-docker image prune -af                                      # l'ancienne image des scripts part ; celles en service restent
-df -h /                                                     # environ 200 Mo nécessaires
-docker compose pull collector ingest taches
-docker compose up -d --no-build collector ingest taches
-```
-
-La collecte s'interrompt quelques minutes (minutes de flux coupé, sans effet sur les règles).
-
-**Revenir à une version précédente** : `MARS_TAG=<empreinte> docker compose pull` puis
-`MARS_TAG=<empreinte> docker compose up -d --no-build` (ou inscrire `MARS_TAG` dans le `.env` du serveur).
-
-**Migration 24 (origine des positions).** `db/init/24_sources_sejours.sql` ajoute la colonne `positions.source`
-(aujourd'hui toujours `aisstream`). Valeur par défaut constante : l'ajout est immédiat, sans réécrire la table, quel
-que soit le nombre de positions. Elle doit précéder le démarrage de la nouvelle image des scripts : la nouvelle
-ingestion écrit cette colonne. Les fichiers Parquet de la collecte portent le même champ ; les fichiers et archives
-antérieurs, qui ne l'ont pas, sont lus comme `aisstream` (ingestion, rechargement depuis R2 et compactage de
-l'archive le complètent). Contrôle : `SELECT source, count(*) FROM positions WHERE ts > now() - interval '1 hour'
-GROUP BY 1`.
-
-Ne jamais lancer `docker system prune --volumes` : il effacerait le volume de la base.
-
-## Supervision (étape D, docs/supervision.md)
+## Supervision (Grafana et ntfy, étape D, docs/supervision.md)
 
 Grafana sur 127.0.0.1:3000, alertes sur le téléphone par ntfy, contrôles de santé de la collecte et de l'ingestion.
 **Le `.env` du serveur doit contenir, avant tout `docker compose` (sinon Compose refuse de démarrer) :**
@@ -563,8 +467,8 @@ GRAFANA_ADMIN_MOT_DE_PASSE=<mot de passe de l'interface de Grafana>
 GRAFANA_PG_MOT_DE_PASSE=<mot de passe du rôle grafana_lecture, que taches donne au rôle au démarrage>
 ```
 
-Pas de commentaire en fin de ligne. Les seuils sont dans `config/supervision.env` (versionné). Migration 26
-(`db/init/26_supervision.sql` : tables de mesures et de signes de vie, rôle `grafana_lecture`), puis les images.
+Pas de commentaire en fin de ligne. Les seuils sont dans `config/supervision.env` (versionné). Le rôle
+`grafana_lecture` vient de la migration 26 ; taches lui donne son mot de passe au démarrage.
 
 Tunnel depuis le Mac, interface et Grafana ensemble :
 `ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 root@IP_DU_SERVEUR`, puis http://localhost:3000 (compte
@@ -581,26 +485,16 @@ docker compose exec db psql -U mars -d mars -c "SELECT service, dernier_le, deta
 df -h /                                              # au moins 3 Go libres
 ```
 
+Un changement qui ne touche que `grafana/provisioning` se prend par `git pull && docker compose restart grafana` ; un
+changement des variables d'environnement de Grafana exige sa recréation (`docker compose up -d grafana`), `restart`
+gardant les anciennes.
+
 ## Traces (étape D2, docs/opentelemetry.md)
 
 Collecteur OpenTelemetry (`otel`) et Grafana Tempo (`tempo`), dans la surcouche du serveur ; rien de nouveau dans le
 `.env`. Le collecteur écoute sur 127.0.0.1:4318 et le réseau Docker ; les travailleurs passent par nginx (port 8090,
 jeton vérifié), l'interface par nginx (port 8080). Tempo n'a aucun port publié : on le consulte dans Grafana (source
 « Tempo », tableau « Traces »), par le tunnel habituel (`-L 3000:localhost:3000`).
-
-Mise en place, une image à la fois (disque juste) :
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/27_traces.sql
-df -h /                                                   # environ 300 Mo nécessaires pour les deux images
-docker compose pull tempo otel && docker compose up -d tempo otel
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf backend web && docker image prune -af
-docker compose pull backend web && docker compose up -d --no-build backend web
-docker compose restart grafana                            # relit la source Tempo, le tableau Traces et les règles
-```
 
 Vérifier :
 
@@ -618,377 +512,10 @@ free -m                                                    # marge de mémoire d
 `recus` doit croître d'une ligne à l'autre ; `refuses` rester stable ; chaque tâche a un `trace_id` ; toutes les
 versions sont égales à l'empreinte publiée (indicateur « Version » vert dans la barre d'état).
 
-## Vue d'ensemble de Grafana (page d'accueil)
-
-Provisionnement seulement : aucune image à reconstruire ni à télécharger.
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose up -d grafana        # recrée Grafana : nouvelle page d'accueil et traces de Grafana (variables changées)
-docker compose restart otel         # relit otel/collecteur.yaml : récepteur gRPC des traces de Grafana
-```
-
-`docker compose restart grafana` ne suffit pas ici : il garde les anciennes variables d'environnement (page
-d'accueil, envoi des traces). Un lot qui ne touche que `grafana/provisioning` se déploie, lui, par
-`git pull && docker compose restart grafana`.
-
-## Réglages de la supervision (19/10/2026)
-
-Grafana n'est plus tracé, limites de mémoire revues, appels externes nommés, recherche VIIRS en parallèle, seuil du
-disque de la barre d'état aligné sur Grafana. **Les trois images changent** (API : seuils du disque dans l'état du
-direct ; scripts : noms des spans, recherche en parallèle, seuils ; interface : indicateur Disque).
-
-```zsh
-# Sur le Mac : construire, vérifier l'empreinte du commit, éprouver, publier
-cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git checkout main && git pull origin main
-R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
-docker build --platform linux/amd64 -f backend/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-backend:latest . \
-  && docker build --platform linux/amd64 -f scripts/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-scripts:latest . \
-  && docker build --platform linux/amd64 --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-web:latest web
-for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
-  v=$(docker image inspect "${R}/${i}:latest" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
-  [ "$v" = "$TAG" ] && echo "$i : $v" || { echo "$i : empreinte $v, attendue $TAG"; break; }
-done
-scripts/verifier_images.sh backend scripts web traces && for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
-  docker tag "${R}/${i}:latest" "${R}/${i}:${TAG}" && docker push "${R}/${i}:latest" && docker push "${R}/${i}:${TAG}" || break
-done
-```
-
-```bash
-# Sur le serveur
-cd /opt/mars_c2 && git pull origin main
-docker compose up -d otel tempo grafana        # nouvelles limites, filtre des outils, plus de traces de Grafana
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf backend web && docker image prune -af
-docker compose pull backend web && docker compose up -d --no-build backend web
-```
-
-Vérifier :
-
-```bash
-# Grafana absent de Tempo depuis le déploiement (attendu : 0 trace)
-docker compose exec taches python -c "import json, time, urllib.parse as p, urllib.request as u; t = int(time.time()); print(len(json.load(u.urlopen('http://tempo:3200/api/search?' + p.urlencode({'q': '{ resource.service.name = \"grafana\" }', 'start': t - 3600, 'end': t, 'limit': 100})))['traces']), 'trace(s) de Grafana dans la dernière heure')"
-# Spans reçus par jour (sans Grafana à partir du jour du déploiement ; environ 45 000 prévus)
-docker compose exec db psql -U mars -d mars -c "SELECT date_trunc('day', mesure_le)::date AS jour, sum(greatest(recus - prec, 0)) AS spans FROM (SELECT mesure_le, recus, lag(recus) OVER (ORDER BY mesure_le) AS prec FROM mesures_otel) x GROUP BY 1 ORDER BY 1"
-docker stats --no-stream otel tempo grafana    # sous 400, 448 et 384 Mo
-```
-
-L'indicateur « Disque » de la barre d'état doit avoir la couleur de la tuile Disque de Grafana (vert à 39 % libres :
-rouge sous 15 %, orange jusqu'à 25 %), et l'indicateur « Version » être vert avec l'empreinte publiée. La première
-journée complète sans Grafana donne le nombre de spans reçus par jour ; celle du déploiement mélange les deux.
-
-## Sentinel 1 robuste (lot C3, docs/sentinel.md)
-
-Rupture de stock des GPU, types de secours, analyse limitée aux fenêtres utiles, repli sur processeur. Migration 28
-(`db/init/28_sentinel_robuste.sql` : état « attente_gpu », mode et motif du calcul, fenêtres, octets lus, rupture de
-stock des travailleurs ; reclasse en échec l'analyse 94 de l'essai du 14/10). Règles 2026.10.27 (`config/rules.yaml`,
-relu à chaque cycle). **Deux images changent : scripts (taches, mais aussi le script du travailleur, déposé par
-cloud-init depuis cette image) et API (état de l'attente pour la barre d'état) ; l'interface aussi (indicateur
-Satellites).** `scenes_max_par_jour` reste à 0.
-
-```zsh
-# Sur le Mac
-cd ~/Documents/"Projet Perso"/MarsC2/mars_c2 && git checkout main && git pull origin main
-R=ghcr.io/antoine2pommereau; TAG=$(git rev-parse --short HEAD)
-docker build --platform linux/amd64 -f backend/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-backend:latest . \
-  && docker build --platform linux/amd64 -f scripts/Dockerfile --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-scripts:latest . \
-  && docker build --platform linux/amd64 --build-arg MARS_VERSION=$TAG -t ${R}/mars_c2-web:latest web
-for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
-  v=$(docker image inspect "${R}/${i}:latest" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
-  [ "$v" = "$TAG" ] && echo "$i : $v" || { echo "$i : empreinte $v, attendue $TAG"; break; }
-done
-scripts/verifier_images.sh backend scripts web traces fenetres ai2 && for i in mars_c2-backend mars_c2-web mars_c2-scripts; do
-  docker tag "${R}/${i}:latest" "${R}/${i}:${TAG}" && docker push "${R}/${i}:latest" && docker push "${R}/${i}:${TAG}" || break
-done
-```
-
-```bash
-# Sur le serveur
-cd /opt/mars_c2 && git pull origin main
-docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/28_sentinel_robuste.sql
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf backend web && docker image prune -af
-docker compose pull backend web && docker compose up -d --no-build backend web
-docker compose restart grafana                         # panneaux Sentinel 1, tuile, règle d'abandon
-docker compose exec taches python scripts/taches.py sentinel-diagnostic   # disponibilité et prix de chaque type
-```
-
-L'essai réel se fait ensuite pas à pas, plafond relevé pour la seule commande manuelle (docs/sentinel.md, « Essai réel
-du lot C3 »).
-
-## Sentinel 1, GPU inutilisable (lot C4, docs/sentinel.md)
-
-Migration 29 (`db/init/29_gpu_inutilisable.sql` : état « gpu_inutilisable », table `types_incompatibles`, analyse 96
-remise en échec, cause NVML du travailleur 26) ; règles 2026.10.28 (RENDER-S retiré). Images qui changent : scripts
-(script de démarrage et surveillance des travailleurs, déposés par cloud-init depuis cette image) et API (états
-« echec » et « gpu_inutilisable » reçus des travailleurs) ; l'interface est inchangée. Grafana : nouveau panneau et
-nouvelle règle (redémarrage).
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/29_gpu_inutilisable.sql
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf backend && docker image prune -af
-docker compose pull backend && docker compose up -d --no-build backend
-docker compose restart grafana
-docker compose exec taches python scripts/taches.py sentinel-diagnostic
-```
-
-## Statistiques sans trou, Sentinel 1 processeur en premier (lot C5, docs/sentinel.md et docs/supervision.md)
-
-Migration 30 (`db/init/30_stats_processeur.sql` : `stats_suivi`, `analyses.fenetres_faites`, durée de vie, mode de
-facturation, coûts prévu et réel des travailleurs, 1,23 € facturés reportés sur le travailleur 26) ; règles
-2026.10.29. Images qui changent : scripts (taches : statistiques, garde, commandes, stratégie de calcul ; script du
-travailleur Sentinel déposé par cloud-init) et API (modules partagés `mars/`). Interface inchangée. Grafana : deux
-tuiles dans Direct, colonnes de coût dans Satellites, une règle d'alerte (redémarrage).
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/30_stats_processeur.sql
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf backend && docker image prune -af
-docker compose pull backend && docker compose up -d --no-build backend
-docker compose restart grafana
-docker compose exec taches python scripts/taches.py stats-reconstruire 2026-10-17T22:00 2026-10-19T07:00
-docker compose exec taches python scripts/taches.py sentinel-flux 97
-docker compose exec taches python scripts/taches.py viirs-reevaluer 2026-10-17T22:00 2026-10-19T07:00
-docker compose exec taches python scripts/taches.py stats-trous 2026-10-06
-docker compose exec taches python scripts/taches.py sentinel-candidats 72
-docker compose exec taches python scripts/taches.py sentinel-diagnostic
-```
-
-## Tip and cue (lot T1, docs/tip_and_cue.md)
-
-Migration 31 (`db/init/31_tip_and_cue.sql` : tables `demandes_observation` et `demandes_origines`, preuve « demande »
-des alertes) ; règles 2026.10.31, `tip_and_cue.actif: false`. Images qui changent : API (routes des demandes,
-passages), scripts (cycle, sélection Sentinel, commande `tip-rejeu`) et interface (section, bouton, clic droit, frise,
-indicateur). Grafana : section « Tip and cue » du tableau Satellites (redémarrage). La migration passe avant l'API (ses
-routes lisent les nouvelles tables).
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose exec -T db psql -v ON_ERROR_STOP=1 -U mars -d mars < db/init/31_tip_and_cue.sql
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf backend && docker image prune -af
-docker compose pull backend && docker compose up -d --no-build backend
-docker compose rm -sf web && docker image prune -af
-docker compose pull web && docker compose up -d --no-build web
-docker compose restart grafana
-docker compose exec taches python scripts/taches.py tip-rejeu 7
-```
-
-## Tip and cue activé, panneau Observations (règles 2026.10.32)
-
-Aucune migration. `config/rules.yaml` est relu à chaque tour de taches : l'activation prend effet au `git pull`, avant
-même les nouvelles images. Images qui changent : API (route `/api/observations`), scripts (délai VIIRS, rejeu) et
-interface (panneau Observations).
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf backend && docker image prune -af
-docker compose pull backend && docker compose up -d --no-build backend
-docker compose rm -sf web && docker image prune -af
-docker compose pull web && docker compose up -d --no-build web
-docker compose restart grafana
-docker compose exec taches python scripts/taches.py tip-rejeu 7
-```
-
-## Tip and cue : navires muets en transit (règles 2026.10.33)
-
-Aucune migration. Seule l'image des scripts change (planification, filtres, rejeu) et celle de l'interface (motif au
-survol). Les demandes en attente sont replanifiées au premier cycle de la nouvelle image (5 minutes au plus).
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf web && docker image prune -af
-docker compose pull web && docker compose up -d --no-build web
-```
-
-## Sentinel 2, détection optique (lot S2, règles 2026.10.34, migration 32, docs/sentinel2.md)
-
-Livré coupé (`sentinel2.scenes_max_par_jour: 0`) : rien n'est lancé automatiquement. La migration passe **avant**
-l'API (colonne `role` des preuves lue par toutes les fiches de détection). Les trois images changent : API (fiche
-optique, remise des poids, passages), scripts (calendrier, sélection, fusion, travailleur) et interface.
-
-```bash
-cd /opt/mars_c2 && git pull origin main
-docker compose exec -T db psql -U mars -d mars < db/init/32_sentinel2.sql
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches && docker compose up -d --no-build collector ingest taches
-docker compose rm -sf backend && docker image prune -af
-docker compose pull backend && docker compose up -d --no-build backend
-docker compose rm -sf web && docker image prune -af
-docker compose pull web && docker compose up -d --no-build web
-docker compose restart grafana
-docker compose exec taches python scripts/taches.py sentinel2-poids      # une fois : 2,24 Go en flux, seau des modèles
-docker compose exec taches python scripts/taches.py sentinel2-heures 3   # heure propre des tuiles des trois derniers jours
-```
-
-Le travailleur Sentinel 2 utilise la paire Copernicus des travailleurs et le seau des modèles (adresses présignées des
-poids, 3 h, section suivante). L'image d'analyse (7,2 Go) n'est téléchargée que par le travailleur, jamais par
-le serveur. Essai réel : `docs/sentinel2.md`, section 11.
-
-## Seau des modèles (20/10/2026, docs/sentinel2.md, section 9)
-
-Les poids des modèles sont dans un seau R2 à part, `mars-c2-modeles` (juridiction UE, même adresse `R2_ENDPOINT`),
-avec un jeton dédié « Object Read & Write » limité à ce seau. Variables du `.env` du serveur : `R2_MODELES_BUCKET`,
-`R2_MODELES_ACCESS_KEY_ID`, `R2_MODELES_SECRET_ACCESS_KEY` ; tout le `.env` arrive dans les conteneurs backend (qui
-présigne les adresses remises aux travailleurs) et taches (`env_file`), après recréation du conteneur.
-
-* **Le jeton des modèles ne doit jamais être filtré par IP** : les travailleurs sortent par des IP variables (essai du
-  20/10/2026 : 403 AccessDenied depuis le travailleur 29).
-* **Le jeton principal doit rester filtré sur l'IP du serveur** : il ne présigne plus jamais pour un travailleur.
-* Quota gratuit de 10 Go **par compte** : une seule copie des poids (`sentinel2-poids --nettoyer` retire l'ancienne).
-
-```bash
-docker compose exec taches python scripts/taches.py sentinel2-poids            # copie vers mars-c2-modeles, vérifiée
-docker compose exec taches python scripts/taches.py sentinel2-poids --nettoyer # relit la copie, retire l'ancienne
-docker compose exec taches python scripts/taches.py sentinel2-diagnostic       # MANQUE si une variable n'arrive pas
-```
-
-## Panneau de contrôle (lot P, 21/10/2026, migrations 33 à 37, règles 2026.10.39, docs/controle.md)
-
-L'état du panneau est en base et prime sur `config/rules.yaml` : on ne modifie plus ce fichier sur le serveur. Le
-dossier `config` est monté dans taches : dès que le fichier revient à sa version du dépôt, l'ancien taches relit le
-plafond de Sentinel 1 (2 scènes par jour). D'où l'ordre : taches arrêté avec le retour du fichier, pauses posées par
-un conteneur jetable de la nouvelle image avant le démarrage de la boucle.
-
-```bash
-cd /opt/mars_c2 && git checkout config/rules.yaml && docker compose stop taches
-git pull origin main
-for f in 33_controle 34_modes_regles 35_notifications 36_zones_vigilance 37_scenarios; do
-  docker compose exec -T db psql -U mars -d mars -v ON_ERROR_STOP=1 < db/init/$f.sql || break; done
-docker compose rm -sf collector ingest taches && docker image prune -af
-docker compose pull collector ingest taches
-docker compose run --rm --no-deps taches python scripts/taches.py satellites-pause on sentinel1 --motif "maîtrise des coûts"
-docker compose run --rm --no-deps taches python scripts/taches.py satellites-pause on sentinel2 --motif "essai du passage 325 en attente"
-docker compose up -d --no-build collector ingest taches
-docker compose run --rm --no-deps taches python scripts/taches.py operateur-hacher antoine   # saisie masquée
-nano .env                                    # coller la ligne MARS_OPERATEURS=antoine:pbkdf2_sha256:… à la fin
-docker compose rm -sf backend && docker image prune -af
-docker compose pull backend && docker compose up -d --no-build backend
-docker compose rm -sf web && docker image prune -af
-docker compose pull web && docker compose up -d --no-build web
-docker compose restart grafana                 # règles (notification_permise) et tableaux Satellites
-```
-
-Une pause posée par le fichier (plafond à 0 modifié à la main) est remplacée par `satellites-pause` ; VIIRS reste en
-service (environ 0,76 € par mois). La première connexion se fait dans l'interface, icône « Contrôle » du rail.
-
-## Lot A, correctifs (21/10/2026)
-
-Trafic visible en plage et rejeu (interface), hôte du navigateur transmis par nginx (connexion des opérateurs), ligne
-MARS_OPERATEURS imprimée sans suffixe de trace et contrôlée à la lecture, libellé de la couche « Zones de vigilance »,
-bandeau de démonstration sous les détails des voyants. Aucune migration, aucune règle changée.
-
-Le correctif à chaud de nginx sur le serveur (« proxy_set_header Host $http_host; ») est remplacé par l'image web : rien
-à garder à la main. Une ligne MARS_OPERATEURS copiée avec « trace_id=… » se refait : `taches.py operateur-hacher <nom>`
-(la nouvelle ligne n'a plus de suffixe), puis `taches.py controle-diagnostic` doit dire PRÊT pour taches et backend.
-
-## Lot U, refonte de l'interface (21/10/2026)
-
-Veille, Enquête, Coulisses et triage au clavier (`docs/ux_refonte.md`, section 11). Aucune migration ; règles
-2026.10.42 (section `dossiers` de `config/rules.yaml`, lue par l'API à chaque requête, arrivée par `git pull`). Images
-qui changent : backend (`backend/dossiers.py`, `mars/dossiers.py`) et web ; scripts seulement si le lot A n'a pas
-encore été publié (`mars/controle.py`, `mars/traces.py`, `operateur-hacher`).
-
-Vérifier après déploiement, par le tunnel, en lecture seule :
-
-```bash
-curl -s "localhost:8000/api/dossiers?end=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | python3 -c "import json, sys; d = json.load(sys.stdin); print(d['compteurs'], len(d['dossiers']))"
-curl -s "localhost:8000/api/decisions/mesures?jours=30"
-```
-
-Ce qu'on doit lire : des compteurs `urgent`, `a_examiner`, `a_noter` (les alertes ouvertes des 72 dernières heures,
-regroupées par navire) ; les mesures par type d'alerte (vide tant qu'aucune décision n'a été prise). Dans
-l'interface : la Veille s'ouvre par défaut, la barre d'état n'a plus que le voyant Système, les anciens panneaux sont
-dans les Coulisses ; une adresse avec `vue=trafic` rouvre la vue d'avant la refonte.
-
-## Séjour hors port et cadrage de la Veille (21/10/2026)
-
-Règles 2026.10.43 (`watchlist.hors_port_m`, `dossiers.sejour_hors_port_part`), arrivées par `git pull`. Aucune
-migration. Images qui changent : scripts (mesure dans le moteur, conteneur taches), backend (niveau des dossiers), web
-(cadrage). La mesure apparaît dans les alertes WATCHLIST au premier cycle des règles (5 minutes) pour les passages en
-cours ; les plus anciens restent « séjour non mesuré » et sortent de la fenêtre de 72 h en trois jours.
-
-```bash
-docker compose exec -T db psql -U mars -d mars -c "SELECT id, details->'navire'->>'name' AS navire,
-  details->'sejour'->>'duree_h' AS h, details->'sejour'->>'arret_hors_port_part' AS hors_port, rule_version
-  FROM alerts WHERE type = 'WATCHLIST' AND details->'sejour' IS NOT NULL AND detected_at > now() - interval '3 days'"
-```
-
-Ce qu'on doit lire : `rule_version` à 2026.10.43 et `hors_port` renseigné pour les passages en cours (0 pour une
-escale à quai comme VICTOR ANDRYUKHIN à Marseille).
-
-## Coulisses en rubriques et panneaux redimensionnables (21/10/2026)
-
-Interface seule (image web) : aucune route, aucune migration, aucune règle. Les écritures des rubriques passent par les
-routes du contrôle d'avant (connexion de l'opérateur, journal). Vérifier par le tunnel : ouvrir
-`http://localhost:8080/?espace=coulisses&rubrique=notifications`, la rubrique Notifications seule s'affiche ; le retour
-arrière du navigateur revient à la rubrique précédente ; la poignée du panneau de gauche l'élargit, la carte suit.
-
-## Coulisses en quatre groupes, sans accueil (21/10/2026)
-
-Images qui changent : backend (route en lecture `/api/decisions/journal`) et web. Aucune migration, aucune règle.
-Vérifier par le tunnel : `curl -s "localhost:8000/api/decisions/journal?limite=3"` renvoie les dernières décisions des
-opérateurs ; `http://localhost:8080/?espace=coulisses&rubrique=capteurs` est redirigé vers Sources et capteurs.
-
-## Table de l'archive et mesure de l'étape 2 (22/10/2026)
-
-Règles 2026.10.46 (table du cercle appris tirée de l'archive), arrivées par `git pull`, relues par la vérification
-satellite au cycle suivant. Image des scripts : option `--hypotheses` de `trajectoire-mesures`, rapports nommés par
-type et par lancement (`trajectoire_<type>_<du>_<au>_<instant>.json`). Aucune migration.
-
-## Garde de probabilité de la vérification satellite (22/10/2026)
-
-Migration 38 (colonne `contenance` de `demandes_observation`), règles 2026.10.45 (table des quantiles, seuil de 40 %,
-estime bornée à 30 h). Images : scripts (planification), backend (colonne renvoyée), web (liste et fiche). Les demandes
-planifiées portent leur contenance ; une demande dont aucun passage n'atteint le seuil passe « sans passage » avec le
-motif « contenance estimée de N % au passage du …, sous le seuil de 40 % ».
-
-## Cercle appris de la vérification satellite (22/10/2026)
-
-Règles 2026.10.44 (table `tip_and_cue.prediction.cercle_appris`, par `git pull`) ; image des scripts (le conteneur
-taches planifie les demandes). Aucune migration. La commande `trajectoire-mesures` calcule maintenant la table sur toute
-l'archive (section `cercle_appris` du rapport) : ses valeurs remplaceront la table provisoire. Vérifier après un cycle
-de la vérification satellite (5 minutes) :
-
-```bash
-docker compose exec -T db psql -U mars -d mars -c "SELECT id, etat, round(rayon_m) AS rayon_m, fenetres IS NOT NULL AS fenetres,
-  left(motif, 90) AS motif FROM demandes_observation WHERE mis_a_jour_le > now() - interval '1 hour' ORDER BY id DESC LIMIT 10"
-```
-
-Ce qu'on doit lire : des rayons de 20 000 m au plus pour les demandes planifiées en estime, et plus de motif
-« incertitude de … km : N fenêtres, au delà de 4 ».
-
-## Lot T, mesures de trajectoire (22/10/2026)
-
-Image qui change : scripts (commande `trajectoire-mesures`, modules `mars/trajectoire*.py`). Aucune migration, aucune
-règle. La mesure lit l'archive R2 et la base sans rien écrire (rapport JSON dans `data/ais_live/.trajectoire`) ; elle
-tourne dans un conteneur à part, pour ne jamais priver la boucle des tâches de ses 768 Mo :
-
-```bash
-cd /opt/mars_c2 || { echo "PAS SUR LE SERVEUR : arrêt"; exit 1; }
-docker compose run --rm --no-deps taches python scripts/taches.py trajectoire-mesures
-ls -la data/ais_live/.trajectoire/
-```
-
-Ce qu'on doit lire : une ligne par zone (positions réduites, trajets, fenêtres, mémoire), puis « Mesures écrites dans
-… », mémoire maximale sous 600 Mo. En cas de manque de mémoire, une zone à la fois : `trajectoire-mesures manche`.
-
 ## Vérifier
 
 ```bash
-docker compose ps                                   # huit services « running » (collector et ingest « healthy »)
+docker compose ps                                   # neuf services « running » (collector, ingest et grafana « healthy »)
 docker compose logs --tail 5 collector              # une ligne par minute : messages, navires par zone
 docker compose logs --tail 5 ingest                 # une ligne par cycle : positions lues, conservées, allégées
 docker compose logs --tail 20 taches                # tâches de la nuit, alertes disque
@@ -1065,18 +592,18 @@ le 05/10, exactement le résultat de l'ingestion d'origine.
 ## Consulter l'interface
 
 Depuis le Mac : `ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 root@IP_DU_SERVEUR`, puis http://localhost:8080
-(et Grafana sur http://localhost:3000). L'horloge est en
-direct (vitesse 1) ; la frise permet de revenir sur une période passée (sélecteur de vitesse du rejeu), le bouton
-« Direct » d'y revenir.
+(et Grafana sur http://localhost:3000). L'interface s'ouvre sur la Veille, en direct ; l'instant est tenu par le
+navigateur et inscrit dans l'adresse de la page ; la frise permet de revenir sur une période passée (mode plage ou
+rejeu), le bouton « Direct » d'y revenir.
 
-## Volumes à l'équilibre (mesure du serveur, 18/10/2026)
+## Dimensionnement (mesures du serveur)
 
 Débit : environ 680 messages par minute pour les quatre zones, soit 979 000 par jour (76 % de positions, 24 % de
-messages statiques, proportions de la collecte du 05/10).
+messages statiques, proportions de la collecte du 05/10). Historique des estimations et de l'incident du disque plein
+du 18/10/2026 : `docs/journal.md`, entrée du 18/10/2026.
 
-**Base** (30 jours de positions). **Corrigé le 19/10/2026** : l'estimation de 7,5 Go (34 000 positions conservées par
-heure, 282 octets chacune, soit 230 Mo par jour) était fausse. Mesure du serveur le 18/10/2026 : base de 982 Mo,
-dont 893 Mo de positions pour 12 jours, soit **environ 75 Mo par jour**, trois fois moins.
+**Base** (30 jours de positions) : mesure du serveur le 18/10/2026, base de 982 Mo, dont 893 Mo de positions pour
+12 jours, soit **environ 75 Mo par jour** (l'estimation initiale de 7,5 Go était fausse).
 * positions à l'équilibre : 75 × 30 = **environ 2,2 Go** ; base entière **environ 2,4 Go** (autres tables : 89 Mo le
   18/10, croissance lente) ;
 * 282 octets par position index compris, mesurés sur 2 millions de positions (table 101, index spatial 66, index
@@ -1088,18 +615,12 @@ dont 893 Mo de positions pour 12 jours, soit **environ 75 Mo par jour**, trois f
 * VIIRS : 12 granules par nuit (environ 1 Ko chacune) et quelques dizaines de détections (environ 300 octets chacune
   index compris), soit moins de 30 Ko par nuit ; aucune image n'est gardée, ni sur le serveur ni sur le travailleur.
 
-**Disque du serveur** : 15 Go depuis le 18/10/2026 (13 Go utilisables), 4,6 Go libres avec une base de 982 Mo. Le
-disque de 8 Go s'est rempli le 18/10/2026 vers 01:00 (incident, docs/supervision.md). Bilan prévisible :
-* Grafana : environ 0,8 Go (image décompressée et données), soit **environ 3,7 Go libres après déploiement** ;
-* la base gagne encore environ 1,35 Go jusqu'à l'équilibre (18 jours à 75 Mo) : **environ 2,4 Go libres à
-  l'équilibre**, soit 16 % de 15 Go, juste au dessus de l'alerte des 15 % et sous les 3 Go souhaités. À surveiller
-  dans le tableau Disque et base ; leviers, dans l'ordre : `docker image prune -af` et `docker builder prune -af`
-  (images et caches sans conteneur), puis l'index spatial de `positions` (23 % de la table, utile aux seules analyses
-  radar), puis un disque de 20 Go.
-* **Traces (étape D2)** : images du collecteur (environ 420 Mo décompressés) et de Tempo (environ 137 Mo), plus
-  40 Mo pour les images de l'API et des scripts : environ 0,6 Go ; traces gardées 72 h : moins de 30 Mo. Soit
-  **environ 3,1 Go libres après déploiement, et environ 1,8 Go à l'équilibre**, 12 % de 15 Go : **sous l'alerte des
-  15 %**. Il faut agrandir le volume : 20 Go donneraient environ 6,8 Go libres à l'équilibre (34 %).
+**Disque du serveur : 20 Go.** Estimation faite à 15 Go (`docs/journal.md`, 18/10/2026) : 20 Go donnent **environ
+6,8 Go libres à l'équilibre (34 %)**, base, Grafana (environ 0,8 Go), collecteur et Tempo (environ 0,6 Go d'images,
+moins de 30 Mo de traces à 72 h) compris ; alerte sous 15 %, orange jusqu'à 25 % (`config/supervision.env`).
+`deployer.sh` exige 3 Go libres. Leviers si l'espace manquait, dans l'ordre : `docker image prune -af` et
+`docker builder prune -af` (images et caches sans conteneur), puis l'index spatial de `positions` (23 % de la table,
+utile aux seules analyses radar).
 
 **Mémoire du serveur (DEV1-M, 4 Go, depuis le 19/10/2026).** La DEV1-S (2 Go) ne suffisait pas aux traces : serveur
 passé en DEV1-M, 3,5 Go disponibles avant les traces (`free -m`), soit environ 0,5 Go utilisés par la base, l'API,
@@ -1134,7 +655,7 @@ linux/amd64, donc une borne haute : 1,4 s pour les coupures AIS, presque rien po
 181 Mo de mémoire au plus pour le processus, environ 100 Mo de fichiers temporaires PostgreSQL. Sur le serveur, les
 rendez vous montaient à 132 s quand la fenêtre de 24 heures se remplissait (4 485 épisodes dont 4 483 côtiers) :
 depuis la version 2026.10.18, les positions à moins de 1 km de la terre (`rendezvous.coast_prefilter_m`) sont
-écartées avant de former les paires (mesures dans CLAUDE.md, section 9).
+écartées avant de former les paires (mesures dans `docs/journal.md`, 07/10/2026).
 
 **Compression TimescaleDB** : pas utile à cette échelle. Avec 30 jours en base, environ 2,4 Go ; la compression (de l'ordre de 10 fois) demanderait de changer l'image de la base, de refaire la clé de
 `positions` et de transformer la purge, pour un gain d'espace dont on n'a pas besoin. Elle deviendrait intéressante

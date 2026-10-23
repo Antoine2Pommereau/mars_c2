@@ -1,5 +1,22 @@
 # Sentinel 2 : mesures avant le lot S2 (20/10/2026)
 
+> **État au 24/10/2026**
+> * **En pause** depuis le 21/10/2026 par le panneau de contrôle (état en base, motif « essai du passage 325 en
+>   attente ») ; au fichier, `sentinel2.scenes_max_par_jour: 0` (livré coupé).
+> * Travailleur GP1-S en fr-par-2 (POP2-8C-32G en secours), modèle rslearn d'AI2 ; architecture commune :
+>   `docs/travailleurs.md`.
+> * **Jamais d'analyse aboutie.** Trois échecs réels le 20/10/2026 sur le passage 325 : 403 de R2 (analyse 98,
+>   travailleur 29 : jeton principal filtré sur l'IP du serveur), puis EnvError de GDAL deux fois (dont l'analyse 99,
+>   travailleur 30 : rasterio refuse les clés AWS en options GDAL, 0 octet lu).
+> * **Correctifs livrés** (seau des modèles dédié et contrôle `controle_r2`, section 9 ; clés remises à rasterio sans
+>   options GDAL et cible `s2-s3`, section 10, commit acd1c0a ; squelette SatlasPretrain servi localement) :
+>   **jamais rejoués sur une vraie instance**.
+> * Coût : 0,57 € dépensés pour ces trois échecs ; 0,19 € HT attendu par passage (une heure entamée de GP1-S), non
+>   mesuré.
+> * Ce qui manque : rejouer le passage 325 ou un passage dégagé récent (section 11) ; mesurer octets lus sur eodata,
+>   durée et mémoire sur un vrai GP1-S ; plan d'acquisition de l'ESA en 404 (bilan du 22/10/2026).
+> * Les sections 1 à 9 sont le rapport de mesures du 20/10/2026, la construction est en section 10.
+
 Rapport demandé avant de construire la détection optique (point 1 du lot S2). Toutes les mesures portent sur les 30
 derniers jours (20/09 au 20/10/2026) et nos quatre zones collectées. Sources : catalogue STAC public de Copernicus Data
 Space (`sentinel-2-l2a`, 1 862 tuiles ; `sentinel-2-l1c`), produits lus dans le miroir public de Google
@@ -73,8 +90,9 @@ ne pourra pas venir du seul SCL.
 
 * Sur eodata, les produits L1C et L2A sont des **SAFE avec des JP2** (`s3://eodata/Sentinel-2/MSI/L2A/AAAA/MM/JJ/...SAFE`,
   `B02_10m.jp2` de 60 à 97 Mo, `SCL_20m.jp2` de 0,5 Mo). Aucune version COG n'est au catalogue de Copernicus Data Space.
-  Même seau `eodata` que Sentinel 1 : mêmes clés dédiées et mêmes adresses signées par le serveur (requêtes partielles
-  identiques, la signature passe dans l'adresse).
+  Même seau `eodata` que Sentinel 1 : même paire de clés dédiée aux travailleurs, remise par le réseau privé ; le
+  travailleur signe lui même chaque lecture par en tête (Copernicus refuse les adresses présignées, constat du
+  14/10/2026 dans `docs/sentinel.md`).
 * GDAL (pilote JP2OpenJPEG, 3.12) lit une fenêtre de 24 km par requêtes partielles de 16 Ko, tuile JPEG 2000 par tuile :
 
 | Lecture d'une fenêtre de 24 km | Fenêtres | Lu (médiane, extrêmes) | Fichiers entiers | Part | Requêtes |
@@ -305,7 +323,8 @@ Sentinel 1) passent par le même faux S3 dans `tests/test_lectures_s3.py`.
 
 ## 11. Essai réel pas à pas
 
-Sentinel 2 reste coupé (`scenes_max_par_jour: 0`) : l'essai passe par la commande manuelle et le plafond d'essai.
+Sentinel 2 reste coupé (`scenes_max_par_jour: 0`) et, depuis le 21/10/2026, en pause par le panneau de contrôle :
+l'essai passe par la commande manuelle, le plafond d'essai et `--malgre-pause` (consigné dans le journal du panneau).
 
 1. **Préalables** (une fois, après le déploiement) : migration 32 appliquée, poids dans le seau des modèles (section
    9), diagnostic sans manque, heures des tuiles :
@@ -327,7 +346,7 @@ Sentinel 2 reste coupé (`scenes_max_par_jour: 0`) : l'essai passe par la comman
    vers 16:00 UTC, quand les produits du jour sont publiés.
 3. **Lancer** :
    ```bash
-   docker compose exec -e SENTINEL_PLAFOND_ESSAI=1 taches python scripts/taches.py sentinel2-analyser <passage>
+   docker compose exec -e SENTINEL_PLAFOND_ESSAI=1 taches python scripts/taches.py sentinel2-analyser <passage> --malgre-pause --motif "essai réel"
    ```
    On doit lire le travailleur créé (GP1-S en fr-par-2), le coût estimé et la durée de vie.
 4. **Suivre** : barre d'état (Satellites, « Dernier passage Sentinel 2 analysé »), Grafana Satellites (section

@@ -1,5 +1,21 @@
 # Tip and cue : une alerte déclenche une vérification satellite (lot T1, 20/10/2026)
 
+> **État au 24/10/2026**
+> * **En pause** depuis le 21/10/2026 par le panneau de contrôle (état en base, qui prime sur `tip_and_cue.actif: true`
+>   du fichier) ; Sentinel 1 et Sentinel 2, qui font ses observations, sont aussi en pause.
+> * En service du 20 au 21/10/2026 : boucle sans échec (559 cycles), **20 demandes réelles, aucune observation
+>   obtenue** (17 sans passage utile, 2 expirées, 1 en attente).
+> * Cercle d'incertitude : **cercle appris** (règles 2026.10.44 à 2026.10.46, table de l'archive en 2026.10.46 ;
+>   `docs/trajectoire.md`, sections 11 à 13), plafonné au rayon de 4 fenêtres (20 km), et **garde de probabilité** : un
+>   passage n'est retenu que si la contenance estimée de ses fenêtres atteint 40 % ; estime portée de 6 à 30 h.
+>   L'ancien cercle (2 km plus 30 % du parcours, 30 km au plus) n'est plus qu'un repli, sans table apprise.
+> * Interface : l'ancien panneau « Observations » du rail n'existe plus ; les vérifications en cours et la demande
+>   manuelle sont dans Coulisses, Activité satellite (`docs/ux_refonte.md`, section 13).
+> * Coût unitaire : celui de la session Sentinel qui porte la demande, 0,19 € HT sur GP1-S, dans le budget Sentinel
+>   de 8 € par mois ; aucun encore dépensé pour une demande aboutie.
+> * Ce qui manque : un passage réel utile et une observation aboutie ; avec l'estime seule, aucun passage au delà
+>   d'environ 4 h n'atteint 40 % (routes fréquentes de l'étape 2 encore hors production).
+
 Un signal suspect (le tip) crée une demande d'observation (le cue). MARS C2 prédit la position du navire au prochain
 passage Sentinel 1 qui la couvre (ou à un passage acquis dans les dernières heures), analyse la fenêtre utile dans la
 session Sentinel du passage et rattache le résultat à l'alerte d'origine. Code : `mars/tip_and_cue.py` ; réglages :
@@ -8,7 +24,8 @@ section `tip_and_cue` de `config/rules.yaml` (règles 2026.10.31) ; table `deman
 **Activé le 20/10/2026** (règles 2026.10.32), après le rejeu sur le serveur : tips coupure_ais, viirs, rendezvous,
 identite et demande manuelle ; `watchlist` coupé (la sélection directe des navires des listes dans un corridor reste en
 place) ; VIIRS limité à 12 h entre la lumière et le passage ; budget Sentinel de 8 € par mois, partagé entre tip and cue
-et la sélection, plafond de 2 scènes par jour inchangé. Remettre `actif: false` coupe tout au cycle suivant.
+et la sélection, plafond de 2 scènes par jour inchangé. Remettre `actif: false` coupe tout au cycle suivant ; depuis
+le lot P (21/10/2026), la pause se règle plutôt dans le panneau de contrôle, dont l'état en base prime sur le fichier.
 
 ## Chaîne
 
@@ -38,12 +55,18 @@ et la sélection, plafond de 2 scènes par jour inchangé. Remettre `actif: fals
    * navire qui émet encore : dernière position AIS reçue avant le passage (replanification à chaque cycle tant
      qu'aucune analyse ne porte la demande) ; navire muet : dernière position connue et estime (dernier cap, dernière
      vitesse) ;
-   * cercle d'incertitude : 2 km, plus 30 % de la distance parcourue à la vitesse déclarée, 30 km au plus ;
+   * cercle d'incertitude : depuis les règles 2026.10.44, **cercle appris** (quantile à 80 % de l'erreur de l'estime,
+     par tranche de vitesse et par horizon de 1 à 30 h, `prediction.cercle_appris`, `docs/trajectoire.md`), plafonné
+     au rayon que couvrent 4 fenêtres ; repli sans table apprise, l'ancien cercle : 2 km, plus 30 % de la distance
+     parcourue à la vitesse déclarée, 30 km au plus ;
    * à l'arrêt (moins de 1 nœud) ou au mouillage (statut AIS) : position fixe, 1,5 km ;
    * détection VIIRS ou point de la carte : position du tip, 3 km ;
    * le cercle devient une ou plusieurs fenêtres de 24 km (une jusqu'à 10 km de rayon, quatre jusqu'à 20 km) ; au delà
-     de 4 fenêtres, ou centre à moins de 2 km de la côte : passage écarté avec son motif ; si c'était le seul, demande
-     « sans_passage ».
+     de 4 fenêtres (ancien cercle) ou centre à moins de 2 km de la côte : passage écarté avec son motif ; si c'était le
+     seul, demande « sans_passage » ;
+   * **garde de probabilité** (règles 2026.10.45, `contenance_min: 0.4`) : un passage n'est retenu que si la contenance
+     estimée de ses fenêtres atteint 40 % ; le plus proche au dessus du seuil l'emporte ; la contenance est écrite dans
+     la demande (colonne `contenance`, migration 38) et sa trace (`tip.contenance`).
 
 4. **Passage** : d'abord un passage acquis dans les 6 dernières heures qui couvre la position prédite (déjà analysé :
    utile seulement si ses fenêtres couvrent le cercle, résultat aussitôt), sinon le prochain passage prévu (calendrier
@@ -82,7 +105,9 @@ et la sélection, plafond de 2 scènes par jour inchangé. Remettre `actif: fals
   section ; bouton « Demander une observation » sur les deux fiches et au clic droit sur la carte ; frise : point au
   dessus d'un passage qui porte une demande ; indicateur « Satellites » : demandes en attente et planifiées, prochaine
   observation prévue.
-* Panneau « Observations » du rail : une ligne par demande (icône et couleur du type de tip, celles des alertes ;
+* Panneau « Observations » du rail, **jusqu'au 21/10/2026** (lot U : ses demandes sont désormais la liste
+  « Vérifications en cours » de Coulisses, Activité satellite, `docs/ux_refonte.md`, section 13 ; description
+  d'origine gardée) : une ligne par demande (icône et couleur du type de tip, celles des alertes ;
   pavillon et nom du navire, ou « point » ; état ; heure du passage ; résultat en un signe : coche pour présent avec
   AIS, œil barré couleur du navire sombre pour présent sans AIS, tiret pour absent, point d'interrogation pour non
   évaluable). Ordre de l'API : planifiées par passage le plus proche, en attente, analysées les plus récentes ; les
@@ -103,6 +128,9 @@ et la sélection, plafond de 2 scènes par jour inchangé. Remettre `actif: fals
   par catégorie, dernières demandes avec leur trace.
 
 ## Rejeu sur les données du serveur (20/10/2026)
+
+Historique : rejeux faits avec l'ancien cercle ; ceux du cercle appris et de la garde sont dans `docs/trajectoire.md`,
+sections 12 et 13.
 
 Alertes du 13/10 08:26 au 20/10 08:26 UTC lues par l'API du serveur en lecture seule (78 alertes), passages Sentinel 1
 IW de la période et des 36 h suivantes (29, dont 8 prévus), position, cap et vitesse des navires par
@@ -160,7 +188,7 @@ Correctifs :
    … », « passage du … déjà analysé sans fenêtre sur le cercle », « aucun passage Sentinel 1 prévu au calendrier
    avant l'expiration le … ». Une demande planifiée dont le passage ne convient plus revient en attente, avec son motif.
 2. **Estime bornée pour un navire muet** (aucune position depuis `prediction.muet_min`, 30 min) : en route, l'estime ne
-   vaut que `estime_max_h` (6 h) après la dernière position et dans nos zones collectées ; au delà, la demande passe
+   vaut que `estime_max_h` (6 h à l'époque, 30 h depuis les règles 2026.10.45 : la garde de contenance décide) après la dernière position et dans nos zones collectées ; au delà, la demande passe
    `sans_passage` avec le motif « navire en transit, hors de portée au prochain passage (muet depuis le …, à N nœuds,
    …) ». Un navire muet lent (sous `lent_kn`, 3 nœuds) ou à l'arrêt garde sa position et le petit cercle (1,5 km). Un
    navire qui émet encore n'est pas borné : il est replanifié à chaque cycle sur sa dernière position.
@@ -168,7 +196,7 @@ Correctifs :
    (point de disparition collectif, `exclure_declassees`) écartés d'emblée ; compte et motif dans `task_runs`
    (`ecartes`, `ecartes_detail`) et sur la trace du cycle (`tip.ecartes.type`, `tip.ecartes.declassee`). Une demande
    déjà créée sur un pêcheur, née seulement de coupures, est close au cycle suivant avec son motif.
-4. Panneau Observations : le motif d'une demande en attente ou close s'affiche au survol de la ligne.
+4. Panneau Observations (aujourd'hui Coulisses, Activité satellite) : le motif d'une demande en attente ou close s'affiche au survol de la ligne.
 5. Rejeu : même estime bornée, colonne « transit » ; mêmes filtres sur les coupures.
 
 ## Passages optiques (lot S2, 20/10/2026, docs/sentinel2.md)
@@ -201,8 +229,9 @@ tour, aucun redémarrage).
 
 ## Limites
 
-* La replanification suit la dernière position reçue ; un navire muet n'est suivi à l'estime que 6 h et dans nos
-  zones : un navire sombre qui file au delà n'est plus cherché (motif « navire en transit »).
+* La replanification suit la dernière position reçue ; un navire muet n'est suivi à l'estime que 30 h au plus (6 h
+  avant les règles 2026.10.45) et dans nos zones, et en pratique la garde de contenance écarte les passages au delà
+  d'environ 4 h : un navire sombre qui file au delà n'est plus cherché (motif « navire en transit » ou contenance).
 * La distance aux emprises du motif d'attente est approchée sur un plan tangent : quelques pour cent d'écart au delà
   de 200 km.
 * Le résultat « absent » ne distingue pas un navire parti d'une petite unité invisible au radar (moins de 20 à 30 m).

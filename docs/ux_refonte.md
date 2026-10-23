@@ -125,9 +125,9 @@ Mesurées sur le jeu d'essai, plage du 09/10, instant 21:00. Interface actuelle 
 ## 7. La cible
 
 Maquettes HTML autonomes, données de la base de test, navires masqués, carte en SVG tirée de la base (trait de côte,
-câbles, trafic à l'instant) : `docs/ux/maquettes/index.html` (et le tableau des dossiers calculés),
+câbles, trafic à l'instant) : `docs/archives/maquettes_ux/index.html` (et le tableau des dossiers calculés),
 `veille.html`, `dossier_navire.html`, `dossier_point.html`, `coulisses.html`, `calme.html`, `degrade.html`,
-`triage.html`. Régénérées par `docs/ux/maquettes/generer.py`.
+`triage.html`. Régénérées par `docs/archives/maquettes_ux/generer.py`.
 
 | Maquette | Mots | Ce qu'elle montre |
 |---|---|---|
@@ -182,8 +182,8 @@ lu), ⌘K, direct, plage et rejeu (la frise reste en bas, repliable), démonstra
 
 ## 8. Modèle de données du dossier
 
-Prototype exécutable : `docs/ux/maquettes/dossiers.py`, éprouvé sur le jeu d'essai (tableau de
-`docs/ux/maquettes/index.html`) : **17 alertes deviennent 13 dossiers**, dont 1 urgent, 2 à examiner, 10 à noter.
+Prototype exécutable : `docs/archives/maquettes_ux/dossiers.py`, éprouvé sur le jeu d'essai (tableau de
+`docs/archives/maquettes_ux/index.html`) : **17 alertes deviennent 13 dossiers**, dont 1 urgent, 2 à examiner, 10 à noter.
 
 **Regroupement**
 * Dossier **navire** : toute alerte ouverte (nouvelle, vue, confirmée) qui a le navire pour preuve
@@ -416,3 +416,112 @@ copie.
    action à deux entrées (un outil de travail sur la carte, et sa place dans la rubrique) ; aucun réglage copié.
 6. **Rejeu tel qu'il était** : absent de la liste demandée ; réglage de ce navigateur, rangé dans Affichage et
    démonstration.
+
+## 14. Registres et principes (repris de vision_interface.md)
+
+La vision de l'interface du 06/10/2026 (`docs/archives/vision_interface.md`) a guidé les lots 1 et 2 et l'étape 3.
+Ce qui en reste vrai dans le code au 24/10/2026 est repris ici ; l'ancienne disposition (rail à quatre panneaux, fil
+d'alertes au centre du travail, filtres par zone, barre d'état à sept voyants) est remplacée par les sections 7 à 13
+et reste dans l'archive.
+
+### Principes
+
+1. **Tout s'aligne sur la plage de temps.** Une seule plage, choisie dans la frise, gouverne la carte, la Veille, le
+   fil, les trajectoires et les compteurs. Par défaut : le direct.
+2. **La couleur est réservée à ce qui demande l'attention.** Depuis le lot U, elle dit l'urgence (section 7) ; le
+   trafic ordinaire reste gris.
+3. **Chaque alerte s'explique par ses preuves** (positions, sources des listes, identités successives, images) :
+   l'opérateur juge sur pièces, jamais sur un score seul.
+4. **Chaque décision est tracée** : datée, avec son auteur, journalisée alerte par alerte dans `alert_actions`.
+5. **Une grammaire unique pour tous les objets** : chacun se sélectionne sur la carte, se retrouve par la recherche
+   et s'ouvre dans la même fiche ; sélectionner un objet le met en valeur sur la carte et atténue le reste (mode
+   focus).
+6. **Sobriété** : peu de texte, des chiffres utiles, une interface fluide avec plusieurs milliers de navires, servie
+   par un serveur de 4 Go de mémoire (DEV1-M ; 2 Go à l'écriture de la vision).
+7. **Ajouter sans refondre** : ce qui varie est déclaré dans un registre ; une source nouvelle arrive côté API par une
+   route qui accepte la plage et la région, avec un format commun, les données lourdes allégées ou agrégées par le
+   serveur.
+
+### Les registres (`web/src/registres/`)
+
+| Registre | Ce que déclare chaque entrée | Contenu actuel |
+|---|---|---|
+| `alertes.tsx` | type, icône, couleur, piste (flotte fantôme, infrastructures, les deux), étape, actif ou non, navires concernés (le premier sert au regroupement), titre et signe distinctif de la ligne du fil, rendu des preuves, infrastructures concernées, vignette | dix types ; actifs : WATCHLIST, IDENTITY_CHANGE, RENDEZVOUS, AIS_GAP, DARK_SHIP, AIS_UNCONFIRMED, IDENTITY_MISMATCH ; à venir : INFRA_THREAT (recalibration), TRAJECTOIRE_ANORMALE (pilote), PASSAGE_PREVU (étape 4). Le fil ne propose en filtre que les types actifs ; les couleurs de type ne servent plus que dans la vue « Trafic complet » |
+| `couches.ts` | groupe, étape (`null` en place, sinon « à venir »), état par défaut, calques MapLibre commandés, légende, couleur, type d'infrastructure servi par l'API | 16 couches en six groupes (trafic, infrastructures, zones, satellites, activité, prédictions) ; à venir et grisées dans le panneau des couches : corridors, cartes de chaleur, trajectoires prédites. Aussi les vues de la carte (`VUES` : veille, trafic, satellites) |
+| `sections.tsx` | objet de la fiche, ordre, étape, condition d'affichage, titre, rendu | une section sans donnée ou d'une étape future ne s'affiche pas (score de risque reporté, comportement appris en pilote, trajectoire prédite à l'étape 4) |
+| `frise.ts` | forme (marques ou hachures), étape, source d'événements | quatre pistes : alertes, coupures du flux (`/api/timeline`), passages satellites, nuits VIIRS |
+| `etat.ts` | libellé, étape, évaluation en vert, orange, rouge ou gris avec un résumé et un détail, lue dans `/api/ingestion` | flux AIS, ingestion, listes, disque, archivage, satellites, version ; résumés depuis le lot U par le seul voyant Système, détaillés dans les Coulisses |
+| `preuves.ts` | source, étape, route de la fiche de la détection | preuves images VIIRS, Sentinel 1 et Sentinel 2 (même table `preuves_images` côté serveur) |
+| `reglages.ts` | rubrique, partie, libellé, mots de recherche | rubriques des Coulisses et index des réglages (section 13) |
+
+### Les objets et leurs fiches
+
+Sept objets s'ouvrent dans la fiche, chacun avec ses sections au registre, empilées dans un ordre fixe :
+
+| Objet | Sections de la fiche |
+|---|---|
+| Navire | en tête (photo et source, signal, état, suivre), listes de surveillance (sources regroupées par organisme, `lib/sources.ts`), séjour prolongé, identités successives en frise compacte, alertes, comportement (silences, arrêts au large, passages à moins de 2 milles d'une infrastructure), trajectoire (rejeu, GPX), vérification satellite, demandes d'observation, notes |
+| Alerte | photo et navire en tête, motif, vignette, preuves, demande d'observation, navires concernés (avec vignette), décisions |
+| Infrastructure | identité, navires passés à moins de 2 milles sur la plage, alertes liées |
+| Zone | résumé (surface, réception, mouillages), trafic et alertes de la plage |
+| Passage satellite | heure, état acquis ou prévu, capteur, orbite, emprise, état de l'analyse ; infrastructures et navires des listes couverts |
+| Détection satellite | VIIRS (mesures, image, navire apparié, alertes liées), Sentinel 1 (mesures radar, vignette avec AIS, navire apparié et longueur déclarée, alertes liées), Sentinel 2 (image, contexte optique) |
+| Zone de vigilance | tracée dans les Coulisses (lot P) |
+
+Depuis le lot U, la fiche d'un navire ou d'une alerte qui appartient à un dossier commence par le récit du dossier
+(section 11), la fiche complète suit, sections repliées.
+
+### Le temps (`lib/temps.ts`) et la frise
+
+* La **plage** est la période étudiée, l'**instant** le moment où les navires sont placés ; les deux sont tenus par
+  chaque navigateur (jamais par l'horloge partagée `sim_clock`) et inscrits dans l'adresse.
+* Trois modes : **direct** (l'instant suit l'heure réelle, la plage glisse : 1 h, 6 h, 24 h par défaut, 7 jours,
+  30 jours), **plage** (période fixe, par raccourci, bornes déplaçables ou saisie libre ; l'instant se place d'un clic,
+  ce qui fige le direct) et **rejeu** (l'instant avance dans la plage à × 1, × 10, × 60 ou × 300, et repart du début
+  de la plage).
+* La plage ne remonte pas au delà de la conservation en base (30 jours), ni dans le futur ; au delà, les données sont
+  dans l'archive R2 (`taches.py restaurer-positions`).
+* En direct, les requêtes sur la plage sont arrondies à 30 s pour garder des clés stables.
+* La frise porte un histogramme du nombre de navires de la région affichée (un creux signale une coupure de la
+  collecte) et les coupures du flux AIS en hachures, toujours globales, pour ne jamais confondre un navire silencieux
+  avec une panne de la réception ; les passages Sentinel en plein (acquis) ou pointillé (prévu), plus haut et cerclés
+  quand ils sont analysés.
+
+### L'adresse de la page (`lib/url.ts`)
+
+Un lien rouvre la même vue : `mode`, `duree`, et hors direct `debut`, `fin`, `instant`, `vitesse` ; `sel`, l'objet
+sélectionné (`alerte:12`, `navire:345`, `infrastructure:`, `zone:`, `passage:`, `vigilance:`, `viirs:`, `s1:`,
+`s2:`) ; `couches` ; `region` (l'ancien paramètre `zone` est encore lu) ; `vue` (absente pour la Veille) ; `espace`
+et `rubrique` pour les Coulisses. Le dossier d'un navire s'ouvre par la sélection du navire ou d'une de ses alertes
+(`sel=navire:6140`) : le paramètre `dossier=` de la section 7 n'a pas été retenu. Changer d'espace ou de rubrique
+ajoute une entrée à l'historique du navigateur ; le reste remplace l'adresse.
+
+### Région affichée, recherche et carte
+
+* **Région affichée** (barre d'état) : Toute la France, Bretagne, Manche, Gascogne ou Méditerranée ; un seul réglage
+  pour la carte et son compteur, les infrastructures, la Veille et le fil, les suivis, la recherche (région en
+  premier), la frise et la couverture ; le filtre est appliqué par l'API, et changer de région recentre la carte.
+* **Recherche** (Cmd + K) : navires par nom actuel ou ancien, MMSI ou OMI (un OMI retrouve les MMSI successifs) ;
+  infrastructures ; alertes par numéro ; lieux (`lib/lieux.ts`). Résultats groupés, flèches et Entrée ; un résultat
+  ouvre sa fiche et centre la carte. Les réglages ont leur propre recherche dans les Coulisses.
+* **Infrastructures** : une sous couche par type (par défaut câbles électriques et parcs éoliens, les plus sensibles),
+  demandées pour la seule région affichée et simplifiées par l'API, estompées aux échelles larges, noms à partir du
+  zoom 9 ; mode « concernées seulement » (alertes ouvertes, ou à moins de 2 milles de la sélection) ; un clic ouvre la
+  fiche. Dans la vue Veille, seules les infrastructures à moins d'un mille d'un dossier restent nettes (section 11).
+* **Navires** : ordinaires estompés aux échelles larges ; ceux des listes, en alerte et suivis nets et colorés à toutes
+  les échelles. Fond sombre, terre noire, mer gris bleuté.
+
+### Libellés (`lib/libelles.ts`)
+
+Tous les textes visibles sont dans ce fichier, en français, aucun en dur dans les composants ; une traduction le
+remplace en entier, même structure. Les durées y sont rendues lisibles (« AIS coupé 19 h » plutôt que 1168 min) ;
+pas de tiret, dates au format 17/06/2024.
+
+### Décisions de la vision toujours valables
+
+| Question | Décision |
+|---|---|
+| Photo des navires | dans l'en tête de la fiche, source indiquée, emplacement neutre sans photo ; vignette devant chaque navire de « Navires concernés » ; dans le fil, très petite vignette facultative, réglée dans Affichage et démonstration. Conditions d'utilisation de VesselFinder à vérifier avant une démonstration publique |
+| Couches et sections « à venir » | grisées dans le panneau des couches avec leur étape ; absentes du fil et des fiches tant qu'elles ne sont pas branchées |
+| Score de risque | reporté (section `risque` du registre) ; le niveau du dossier (section 8) en tient lieu |
+| Langue | français, libellés centralisés pour permettre l'anglais |
