@@ -196,6 +196,14 @@ async def worker_log(request: Request, wid: int, authorization: str | None = Hea
     return {"ok": True}
 
 
+def _regles() -> dict:
+    """Règles du fichier ; sans lui (conteneur sans config monté), les seuils par défaut de la validation."""
+    try:
+        return load_rules()
+    except OSError:
+        return {}
+
+
 @router.post("/api/travailleurs/{wid}/resultats")
 async def worker_results(request: Request, wid: int, authorization: str | None = Header(None)):
     """Résultats d'un travailleur, validés contre sa tâche avant d'être gardés (mars/validation.py) : un refus est
@@ -211,7 +219,7 @@ async def worker_results(request: Request, wid: int, authorization: str | None =
         row = await c.fetchrow("SELECT tache, parametres FROM travailleurs WHERE id = $1", wid)
         try:
             with traces.span("travailleurs.validation", **{"travailleur.id": wid, "travailleur.tache": row["tache"]}):
-                validation.valider(row["tache"], row["parametres"], body, load_rules())
+                validation.valider(row["tache"], row["parametres"], body, _regles())
         except validation.Refus as e:
             motif = f"résultats refusés : {e}"[:1000]
             traces.erreur(motif)

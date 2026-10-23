@@ -87,7 +87,7 @@ indice, jamais une excuse).
 
 ## 3. Démarrer
 
-**Serveur** (Scaleway DEV1-S, `/opt/mars_c2`) : tout est décrit dans `docs/deploiement.md` (installation, R2,
+**Serveur** (Scaleway DEV1-M, `/opt/mars_c2`) : tout est décrit dans `docs/deploiement.md` (installation, R2,
 vérification, restauration). Les images sont **construites sur le Mac en linux/amd64**, publiées sur le registre
 GitHub (`ghcr.io/antoine2pommereau/mars_c2-backend`, `mars_c2-web`, `mars_c2-scripts`, paquets privés, étiquettes
 `latest` et empreinte du commit), téléchargées par le serveur (jeton en lecture seule) et démarrées par
@@ -728,7 +728,26 @@ l'archive pour trancher).
 Données externes retenues (DMA, GeoTrackNet Bretagne, École navale) : usage personnel et non commercial, aucune
 redistribution, ni des données ni d'un jeu dérivé ni des poids (section 10).
 
+**Lots Z1 et Z2, sécurité et exploitation (22/10/2026)** (migrations 39 à 42, règles 2026.10.47 ; guide :
+`docs/exploitation.md`) : toute écriture de l'API exige une session d'opérateur, du JSON et la même origine, auteur tiré
+de la session (liste blanche `ECRITURES_LIBRES`, test qui parcourt toutes les routes) ; l'interface ouvre la connexion
+sur un refus 401 puis reprend l'action ; démonstration en lecture seule. Un environnement par service (plus aucun
+`env_file: .env`), confronté au code par `tests/test_environnement.py`. FastAPI 0.159.1 et Starlette 1.9.0 ; verrous
+`requirements.lock` avec empreintes ; `npm ci` ; nginx 1.28, noms du tunnel seulement, en têtes de sécurité,
+`X-Real-IP` ; tentatives de connexion en base. Jeton Earthdata remis par le réseau privé ; groupe de sécurité
+`mars-travailleurs` ; résultats des travailleurs validés contre leur tâche (`mars/validation.py`). Échéances des
+secrets (`mars/echeances.py`, Coulisses, Système). Base et API du Mac sur 127.0.0.1. Exploitation :
+`scripts/publier.sh`, `scripts/deployer.sh`, registre `schema_migrations`, essai de restauration mensuel
+(`mars/restauration.py`, `scripts/essai_restauration.sh`), `pg_stat_statements`, `pytest-timeout`. Règle Grafana « Tâche en
+échec plusieurs fois de suite » (fausse alerte permanente du 20/10, travailleur_sentinel2 avec Sentinel 2 en pause) :
+fonction SQL `taches_en_echec_suite` (migration 42), série dont le dernier échec a moins de 24 h, source en pause tue.
+Défaut corrigé au passage : le filtre des journaux (`mars/traces.py`) vidait `record.args`, le journal d'accès
+d'uvicorn levait une erreur à chaque requête tracée (déjà présent en production).
+
 ## 10. Tests
+
+**22/10/2026, lots Z1 et Z2** : 480 réussis, 1 ignoré avec la base de test ; sans base, 358 réussis, 123 ignorés ;
+chaque test borné à 60 s.
 
 `python -m pytest tests` (lot T1 : 244 réussis, 65 ignorés sans base ; 308 réussis, 1 ignoré avec la base de test) :
 227 réussis, 46 ignorés : 1 sans `MARS_TEST_MODEL=1` (contrat du modèle), 45 sans
@@ -741,6 +760,16 @@ création d'un travailleur, résolution de l'image et vérification du volume de
 l'interface ; `npm test` (node --test, `web/tests/` : trafic, preuve, clavier, état dégradé, cadrage, largeur, recherche des réglages ; 22 réussis) ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre API que le port 8000. Lot U et séjour hors port : 406 réussis, 1 ignoré avec la base de test ; 293 réussis, 114 ignorés sans.
 
 ## 11. Pièges connus
+
+* **Lot Z1, écritures** : toute nouvelle route POST, PUT, PATCH ou DELETE prend `Depends(exiger_operateur)` et ne lit
+  jamais d'auteur dans le corps ; un script qui écrivait par l'API (masques, règles à la demande) doit écrire en base
+  lui même (`scripts/build_masks.py`). Les appels d'écriture de l'interface passent par `ecrire` de `lib/api.ts`.
+* **Variables par service** : une variable nouvelle lue par le code doit être ajoutée au service dans Compose, ou
+  déclarée dans `FACULTATIVES` de `tests/test_environnement.py` avec sa raison. YAML ne partage pas les ancres entre
+  fichiers : la surcouche du serveur recopie les ancres `x-*` (test d'égalité).
+* **FastAPI récent** enveloppe les routeurs inclus (`_IncludedRouter`, `original_router`) : parcourir les routes à plat.
+* **zsh** : `$i:latest` applique le modificateur `:l` (minuscules) ; écrire `${i}:latest`.
+* Toute migration à partir de 39 se termine par l'inscription de son nom dans `schema_migrations`.
 
 * **Horodatages de l'archive** : selon le nombre de décimales, pandas lit les instants en microsecondes ou en
   nanosecondes ; une conversion en secondes par division fixe se trompe d'un facteur 1 000. Lire les 19 premiers

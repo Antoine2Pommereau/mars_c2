@@ -672,11 +672,7 @@ TUILE_TACHES = f"""SELECT now() AS time,
       CASE WHEN suite > 0 THEN 2 WHEN n > 0 THEN 1 ELSE 0 END AS value
     FROM (SELECT (SELECT count(*) FROM task_runs WHERE status = 'echec' AND NOT (details ? 'refus')
                   AND started_at > now() - interval '24 hours') AS n,
-                 (SELECT count(*) FROM (SELECT task, array_agg(status ORDER BY started_at DESC) AS st FROM task_runs
-                   WHERE started_at > now() - interval '7 days' AND status <> 'en_cours' AND NOT (details ? 'refus')
-                   GROUP BY task) t
-                  WHERE array_length(st, 1) >= {_seuil("seuil_echecs_successifs", 2)}::int
-                    AND st[1:{_seuil("seuil_echecs_successifs", 2)}::int] <@ ARRAY['echec']) AS suite) x"""
+                 (SELECT count(*) FROM taches_en_echec_suite({_seuil("seuil_echecs_successifs", 2)}::int)) AS suite) x"""
 TUILE_SATELLITES = f"""SELECT now() AS time,
       CASE WHEN absente THEN 'Nuit du ' || to_char(veille, 'DD/MM') || ' absente'
            WHEN attente_min IS NOT NULL THEN 'GPU indisponible chez Scaleway, nouvel essai dans '

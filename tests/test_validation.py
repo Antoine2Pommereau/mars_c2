@@ -137,3 +137,12 @@ def test_route_keeps_genuine_results(conn):
         r = client.post(f"/api/travailleurs/{wid}/resultats", json=VIIRS, headers={"Authorization": "Bearer jv2"})
         assert r.status_code == 200
     assert conn.execute("SELECT etat FROM travailleurs WHERE id = %s", (wid,)).fetchone()[0] == "resultats"
+
+
+def test_defaults_apply_without_the_rules_file():
+    """Conteneur sans config monté : seuils par défaut (le 22/10/2026, la route répondait 500 sans eux)."""
+    validation.valider("viirs", TACHE_VIIRS, VIIRS, {})
+    r = copy.deepcopy(VIIRS)
+    r["granules"][0]["detections"][0]["lon"] = 30.0
+    with pytest.raises(validation.Refus, match="hors de nos zones"):
+        validation.valider("viirs", TACHE_VIIRS, r, {})

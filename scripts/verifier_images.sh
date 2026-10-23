@@ -349,6 +349,7 @@ verifier_traces() {
   [ -n "$prete" ] || echec "traces : la base de vérification ne répond pas"
   local env=(-e DATABASE_URL=postgresql://mars:mars@db:5432/mars -e OTEL_EXPORTER_OTLP_ENDPOINT=http://otel:4318)
   docker run -d --name "$API" --platform "$PLATEFORME" --network "$RESEAU" --network-alias backend "${env[@]}" \
+    -v "$PWD/config:/app/config:ro" \
     -e CDSE_TRAVAILLEUR_ACCESS_KEY=essai -e CDSE_TRAVAILLEUR_SECRET_KEY=essai "$api" >/dev/null
   docker run -d --name "$WEB" --platform "$PLATEFORME" --network "$RESEAU" --network-alias web "$web" >/dev/null
   for _ in $(seq 1 90); do

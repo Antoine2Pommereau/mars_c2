@@ -105,6 +105,8 @@ groups:
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
 
+      # Série dont le dernier échec a moins de 24 h, source en pause tue (fonction taches_en_echec_suite, migration 42 ;
+      # fausse alerte permanente du 20 au 23/10/2026 sur travailleur_sentinel2, Sentinel 2 en pause)
       - uid: mars-taches
         title: Tâche en échec plusieurs fois de suite
         condition: C
@@ -119,7 +121,7 @@ groups:
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "WITH n AS (SELECT coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int AS v) SELECT task AS tache, 1 AS alerte FROM n, (SELECT task, array_agg(status ORDER BY started_at DESC) AS s FROM task_runs WHERE started_at > now() - interval '7 days' AND status <> 'en_cours' AND NOT (details ? 'refus') GROUP BY task) x WHERE array_length(s, 1) >= n.v AND s[1:n.v] <@ ARRAY['echec'] AND notification_permise('pannes', false)"}
+                    rawSql: "SELECT tache, 1 AS alerte FROM taches_en_echec_suite(coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int) WHERE notification_permise('pannes', false)"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}

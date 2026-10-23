@@ -184,10 +184,15 @@ def test_sentinel_cloud_init_carries_neither_task_nor_keys(conn, monkeypatch):
 # Lot Z1 : jeton Earthdata des travailleurs VIIRS, remis comme la paire Copernicus (plus jamais dans le cloud-init)
 
 def _viirs():
-    sys.path.insert(0, str(ROOT / "travailleurs"))
-    spec = importlib.util.spec_from_file_location("travailleur_viirs_cles", ROOT / "travailleurs" / "viirs.py")
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
+    """Script du travailleur VIIRS chargé à part : il ajoute son dossier au chemin d'import (otel_mini), retiré ensuite
+    pour que travailleurs/sentinel.py ne masque pas backend/sentinel.py dans les tests suivants."""
+    avant = list(sys.path)
+    try:
+        spec = importlib.util.spec_from_file_location("travailleur_viirs_cles", ROOT / "travailleurs" / "viirs.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+    finally:
+        sys.path[:] = avant
     return m
 
 

@@ -15,6 +15,15 @@ pytest.importorskip("fastapi")
 
 @pytest.fixture(scope="module")
 def api():
+    # Un test précédent a pu charger travailleurs/sentinel.py sous le nom « sentinel » : modules homonymes du dossier
+    # backend retirés du cache pour que l'application importe les siens
+    for nom in [p.stem for p in (ROOT / "backend").glob("*.py")]:
+        m = sys.modules.get(nom)
+        if m is not None and Path(getattr(m, "__file__", "") or "").parent != ROOT / "backend":
+            del sys.modules[nom]
+    if str(ROOT / "backend") in sys.path:
+        sys.path.remove(str(ROOT / "backend"))
+    sys.path.insert(0, str(ROOT / "backend"))
     import app as module
     import controle
     return module.app, controle

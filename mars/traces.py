@@ -458,7 +458,9 @@ class _FiltreJournal(logging.Filter):
     def filter(self, record):
         suf = suffixe()
         if suf and not getattr(record, "_mars_trace", False):
-            record.msg, record.args, record._mars_trace = record.getMessage() + suf, None, True
+            # Arguments gardés : le formateur d'accès d'uvicorn les lit directement (args à None : « cannot unpack
+            # non-iterable NoneType », journal d'accès perdu, vu le 22/10/2026) ; le suffixe ne contient aucun %
+            record.msg, record._mars_trace = f"{record.msg}{suf}", True
         return True
 
 

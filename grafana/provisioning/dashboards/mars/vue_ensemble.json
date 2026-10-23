@@ -317,7 +317,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "time_series",
-     "rawSql": "SELECT now() AS time, CASE n WHEN 0 THEN 'aucun échec sur 24 h' WHEN 1 THEN '1 échec sur 24 h' ELSE n || ' échecs sur 24 h' END AS metric, CASE WHEN suite > 0 THEN 2 WHEN n > 0 THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT count(*) FROM task_runs WHERE status = 'echec' AND NOT (details ? 'refus') AND started_at > now() - interval '24 hours') AS n, (SELECT count(*) FROM (SELECT task, array_agg(status ORDER BY started_at DESC) AS st FROM task_runs WHERE started_at > now() - interval '7 days' AND status <> 'en_cours' AND NOT (details ? 'refus') GROUP BY task) t WHERE array_length(st, 1) >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int AND st[1:coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int] <@ ARRAY['echec']) AS suite) x"
+     "rawSql": "SELECT now() AS time, CASE n WHEN 0 THEN 'aucun échec sur 24 h' WHEN 1 THEN '1 échec sur 24 h' ELSE n || ' échecs sur 24 h' END AS metric, CASE WHEN suite > 0 THEN 2 WHEN n > 0 THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT count(*) FROM task_runs WHERE status = 'echec' AND NOT (details ? 'refus') AND started_at > now() - interval '24 hours') AS n, (SELECT count(*) FROM taches_en_echec_suite(coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_echecs_successifs'), 2)::int)) AS suite) x"
     }
    ],
    "fieldConfig": {

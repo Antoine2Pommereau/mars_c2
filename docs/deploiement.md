@@ -1,4 +1,9 @@
-# Déploiement sur le serveur Scaleway (DEV1-S)
+# Déploiement sur le serveur Scaleway (DEV1-M)
+
+> **Depuis le 22/10/2026 (lot Z2)**, publier et déployer une version se fait par `bash scripts/publier.sh` (Mac) et
+> `bash scripts/deployer.sh <empreinte> --migrations` (serveur) : voir `docs/exploitation.md`, qui décrit aussi la
+> restauration, les échéances des secrets et la reprise après sinistre. Ce document garde l'installation initiale et
+> l'historique des lots ; ses blocs de publication collés à la main ne sont plus à suivre.
 
 Le serveur (`/opt/mars_c2`) fait tourner en permanence, avec Docker Compose, six services : la base (`db`),
 l'API (`backend`), l'interface (`web`), la collecte AISStream (`collector`), l'ingestion en base (`ingest`) et les

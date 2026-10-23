@@ -454,3 +454,43 @@ def test_measures_and_parameters_are_written(tmp_path):
         c.execute("DELETE FROM mesures_disque WHERE mesure_le >= now() - interval '1 minute'")
     assert row == (1000, 1, True, True) and m["positions_octets"] > 0
     assert params["seuil_disque_pct"] == 15 and params["budget_sentinel_eur"] == 8 and params["ratio_coupure"] == 0.2
+
+
+def test_failing_task_rule_ignores_stale_series_and_paused_sources():
+    """Cas exact du 20 au 23/10/2026 : les deux derniers travailleur_sentinel2 en échec le 20/10, Sentinel 2 en pause
+    depuis le 21/10 ; la règle « Tâche en échec plusieurs fois de suite » les relisait 7 jours, rappel chaque heure.
+    Désormais : dernier échec de moins de 24 h, et source en pause tue (fonction taches_en_echec_suite, migration 42)."""
+    if not URL:
+        pytest.skip("MARS_TEST_DATABASE_URL absente : base de test requise")
+    import psycopg
+    doc = yaml.safe_load((ROOT / "grafana" / "provisioning" / "alerting" / "regles.yaml").read_text())
+    regle = next(r for r in doc["groups"][0]["rules"] if r["uid"] == "mars-taches")["data"][0]["model"]["rawSql"]
+    assert "taches_en_echec_suite(" in regle
+    with psycopg.connect(URL, autocommit=True) as c, c.transaction(force_rollback=True):
+        c.execute("DELETE FROM task_runs")
+        def echecs(tache, il_y_a_h):
+            for k in (0, 1):
+                c.execute("INSERT INTO task_runs (task, run_day, status, started_at, finished_at, details) VALUES "
+                          "(%s, current_date, 'echec', now() - make_interval(hours => %s), now(), '{\"erreur\": \"x\"}')",
+                          (tache, il_y_a_h + k))
+        def pause(source, oui):
+            c.execute("UPDATE interrupteurs_satellites SET en_pause = %s, jusqu_a = NULL WHERE source = %s", (oui, source))
+        def suite():
+            return {r[0] for r in c.execute("SELECT tache FROM taches_en_echec_suite(2)")}
+        # Le cas du serveur : échecs du 20/10 (plus de 48 h), Sentinel 2 en pause
+        echecs("travailleur_sentinel2", 60)
+        pause("sentinel2", True)
+        assert suite() == set()
+        pause("sentinel2", False)
+        assert suite() == set(), "série ancienne : plus d'alerte, même source active"
+        # Série récente : alerte, sauf si la source du travailleur est en pause
+        echecs("travailleur_sentinel2", 1)
+        assert suite() == {"travailleur_sentinel2"}
+        pause("sentinel2", True)
+        assert suite() == set()
+        # Une tâche sans source (archivage) n'est jamais tue
+        echecs("archivage", 2)
+        assert suite() == {"archivage"}
+        # La règle elle même s'exécute sous le rôle de Grafana
+        c.execute("SET LOCAL ROLE grafana_lecture")
+        c.execute(regle).fetchall()

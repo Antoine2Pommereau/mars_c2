@@ -13,6 +13,11 @@ from datetime import datetime
 from mars.ais.live import zones_extent
 
 
+# Seuils par défaut, ceux de config/rules.yaml du 22/10/2026 : la validation ne dépend jamais de la présence du fichier
+DEFAUTS = {"marge_deg": 0.5, "ecart_heure_h": 3, "detections_max_viirs": 500, "detections_max_sentinel": 1000,
+           "detections_max_sentinel2": 1000, "fenetres_max": 200, "vignette_max_octets": 400_000}
+
+
 class Refus(ValueError):
     """Résultats refusés : le message est le motif."""
 
@@ -145,7 +150,7 @@ def _sentinel(corps: dict, params: dict, v: dict, emprise, plafond: int):
 
 def valider(tache: str, params: dict | None, corps, rules: dict) -> None:
     """Lève Refus (motif) si les résultats ne correspondent pas à la tâche `params` d'un travailleur de type `tache`."""
-    v = rules["travailleurs"]["validation"]
+    v = {**DEFAUTS, **(((rules or {}).get("travailleurs") or {}).get("validation") or {})}
     x0, y0, x1, y1 = zones_extent()
     m = float(v["marge_deg"])
     emprise = (x0 - m, y0 - m, x1 + m, y1 + m)

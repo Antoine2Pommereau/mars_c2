@@ -485,3 +485,20 @@ def test_cmr_searches_run_in_parallel_within_the_task_trace(spans):
     assert len(appels) == 36 and recherche.parent.span_id == tache.context.span_id
     assert all(a.parent.span_id == recherche.context.span_id and a.context.trace_id == tache.context.trace_id
                for a in appels)
+
+
+def test_log_filter_keeps_args_for_uvicorn_access_lines():
+    """22/10/2026 : le filtre des journaux remettait args à None ; le formateur d'accès d'uvicorn, qui lit args
+    directement, levait « cannot unpack non-iterable NoneType » à chaque requête tracée (journal d'accès perdu)."""
+    import logging
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from mars import traces as tr
+    rec = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+                            ("127.0.0.1:1", "GET", "/api/health", "1.1", 200), None)
+    with TracerProvider().get_tracer("essai").start_as_current_span("requete"):
+        assert trace.get_current_span().get_span_context().is_valid
+        tr._FiltreJournal().filter(rec)
+    assert rec.args == ("127.0.0.1:1", "GET", "/api/health", "1.1", 200)
+    message = rec.getMessage()
+    assert message.startswith('127.0.0.1:1 - "GET /api/health HTTP/1.1" 200') and "trace_id=" in message

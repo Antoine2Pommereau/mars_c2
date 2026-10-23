@@ -3,7 +3,8 @@
 # démarrage (travailleurs/traces.sh), puis le vrai script Sentinel (travailleurs/sentinel.py), sans GPU ni modèle :
 # il s'arrête à la préparation, renvoie son échec, et ses spans partent par nginx (port 8090, jeton vérifié).
 set -euo pipefail
-apt-get -qq update >/dev/null && apt-get -qq install -y curl >/dev/null
+# Check-Date : horloge de la machine de Docker Desktop parfois en retard sur un index Debian tout juste publié (22/10/2026)
+apt-get -qq -o Acquire::Check-Date=false update >/dev/null && apt-get -qq install -y curl >/dev/null
 export SPANS=/tmp/spans.json
 . /t/traces.sh
 etape contact_serveur
