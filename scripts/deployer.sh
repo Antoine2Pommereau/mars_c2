@@ -101,8 +101,13 @@ attente=$(en_attente)
 if [ -n "$attente" ]; then
   echo "Migrations non appliquées :"; echo "$attente" | sed 's/^/  /'
   [ "$MIGRATIONS" = 1 ] || { echo "ARRÊT   relancer avec --migrations pour les appliquer (sauvegarde d'abord)"; exit 2; }
-  docker compose exec -T taches python scripts/taches.py sauvegarder >/dev/null || echec "sauvegarde avant migration"
-  echo "OK      sauvegarde faite avant les migrations"
+  # Sauvegarde sur R2 juste avant la première migration ; si elle échoue (code 1), aucune migration n'est appliquée
+  docker compose exec -T taches python scripts/taches.py sauvegarder >/dev/null \
+    || echec "sauvegarde sur R2 en échec : aucune migration appliquée"
+  cle=$(psql_mars -c "SELECT details->>'cle' FROM task_runs WHERE task = 'sauvegarde' AND status = 'ok'
+                      AND started_at > now() - interval '10 minutes' ORDER BY started_at DESC LIMIT 1")
+  [ -n "$cle" ] || echec "sauvegarde introuvable dans task_runs : aucune migration appliquée"
+  echo "OK      sauvegarde sur R2 avant les migrations : $cle"
   while [ -n "$attente" ]; do
     f=$(echo "$attente" | head -1)
     psql_mars --single-transaction -q < "db/init/$f" >/dev/null || echec "migration $f (transaction annulée)"

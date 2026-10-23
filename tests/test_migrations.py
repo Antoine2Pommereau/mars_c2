@@ -40,6 +40,10 @@ def test_deployer_and_publisher_keep_their_guards():
     assert 'cd "${MARS_DEPLOYER_ESSAI:-/opt/mars_c2}"' in d and "PAS SUR LE SERVEUR" in d
     assert 'if [ "${BASH_SOURCE[0]}" != "$0" ]' in d and "return 1" in d, "un script sourcé ne doit jamais faire exit"
     assert "--single-transaction" in d and "3000000000" in d and ":latest" not in d
+    # Sauvegarde sur R2 juste avant la première migration, refus de migrer si elle échoue ou reste introuvable
+    i_sauv, i_migr = d.index("taches.py sauvegarder"), d.index("--single-transaction -q <")
+    assert i_sauv < i_migr and "aucune migration appliquée" in d[i_sauv:i_migr]
+    assert d[i_sauv:i_migr].count("|| echec") >= 1 and "[ -n \"$cle\" ] || echec" in d[i_sauv:i_migr]
     p = (ROOT / "scripts" / "publier.sh").read_text()
     assert 'git status --porcelain' in p and 'origin/main' in p and "org.opencontainers.image.revision" in p
     assert p.index("verifier_images.sh backend scripts web controle sante") < p.index("docker push")

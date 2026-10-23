@@ -1280,7 +1280,8 @@ def parser() -> argparse.ArgumentParser:
 def main():
     a = parser().parse_args()
     load_env()
-    traces.init("mars-taches")
+    # Sortie d'une commande manuelle lisible telle quelle (diagnostics, tableaux) ; la boucle du service garde le suffixe
+    traces.init("mars-taches", sortie_lisible=a.commande != "boucle")
     executer(a.commande, a)
 
 

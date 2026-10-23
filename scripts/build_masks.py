@@ -154,7 +154,7 @@ def load_shapes(cur, path, source: str, region) -> int:
 
 
 def main():
-    traces.init("mars-taches")                # lancée dans le conteneur taches : spans masques.* dans sa trace
+    traces.init("mars-taches", sortie_lisible=True)   # lancée à la main dans taches : spans masques.*, sortie lisible
     ap = argparse.ArgumentParser(description="Masques géographiques de MARS C2")
     lon0, lat0, lon1, lat1 = zones_extent()
     ap.add_argument("--region", nargs=4, type=float,

@@ -17,6 +17,9 @@ from pathlib import Path
 
 from mars import traces
 from mars.archive import BACKUP_PREFIX, EXCLUDED_DATA
+from mars.config import ROOT
+
+DB_INIT = ROOT / "db" / "init"          # copié dans l'image des scripts (scripts/Dockerfile)
 
 BASE_ESSAI = "essai_restauration"
 LIBRE_MIN_OCTETS = 3_000_000_000
@@ -45,6 +48,25 @@ def comptes(conn, tables=TABLES) -> dict[str, int | None]:
             continue
         r = conn.execute("SELECT to_regclass(%s) IS NOT NULL", (f"public.{t}",)).fetchone()[0]
         out[t] = conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] if r else None
+    return out
+
+
+def migrations_de_la_sauvegarde(rc) -> list[str]:
+    """Migrations connues au moment de la sauvegarde : son registre schema_migrations, ou, pour une sauvegarde d'avant
+    le registre (migration 39), les migrations 01 à 38."""
+    if rc.execute("SELECT to_regclass('public.schema_migrations') IS NOT NULL").fetchone()[0]:
+        return sorted(r[0] for r in rc.execute("SELECT nom FROM schema_migrations"))
+    return sorted(p.name for p in DB_INIT.glob("*.sql") if int(p.name.split("_", 1)[0]) < 39)
+
+
+def tables_des_migrations(noms) -> set[str]:
+    """Tables créées par ces fichiers de migration (CREATE TABLE, hors tables temporaires)."""
+    out = set()
+    for n in noms:
+        p = DB_INIT / n
+        if p.exists():
+            texte = re.sub(r"--[^\n]*", "", p.read_text())
+            out |= {m.lower() for m in re.findall(r"CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-z_][a-z0-9_]*)", texte, re.I)}
     return out
 
 
@@ -93,19 +115,31 @@ def essai(conn, r2, database_url: str, cible: str | None = None, libre_octets: i
             with traces.span("restauration.pg_restore"):
                 restaurer(f, url)
             out["restauration_s"] = round(time.time() - t, 1)
+            # Comparaison aux tables connues de la sauvegarde (son registre des migrations), jamais à la base actuelle :
+            # une table créée depuis la sauvegarde n'est pas un échec (24/10/2026 : sauvegarde d'avant les migrations 39
+            # à 42, 55 tables pour 60, faux échec)
             with traces.span("restauration.comparaison"):
-                vivants = comptes(conn)
                 with psycopg.connect(url, autocommit=True) as rc:
-                    restaures = comptes(rc)
-                    out["tables_restaurees"] = rc.execute(
-                        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'").fetchone()[0]
-            out["tables_en_service"] = conn.execute(
-                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'").fetchone()[0]
+                    migrations = migrations_de_la_sauvegarde(rc)
+                    presentes = {r[0] for r in rc.execute(
+                        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")}
+                    attendues = tables_des_migrations(migrations)
+                    cles = tuple(t for t in TABLES if t in attendues)
+                    restaures = comptes(rc, cles)
+                vivants = comptes(conn, cles)
+            en_service = {r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")}
+            out.update({"migrations_de_la_sauvegarde": len(migrations), "derniere_migration": migrations[-1] if migrations else None,
+                        "tables_attendues": len(attendues), "tables_restaurees": len(presentes),
+                        "tables_en_service": len(en_service),
+                        # tables de nos migrations postérieures à la sauvegarde (ni vues ni tables de PostGIS)
+                        "tables_creees_depuis": sorted((tables_des_migrations(p.name for p in DB_INIT.glob("*.sql"))
+                                                        & en_service) - attendues)})
             out["comptes"] = {t: [restaures.get(t), v] for t, v in vivants.items()}
-            pb = ecarts(vivants, restaures)
-            if out["tables_restaurees"] < out["tables_en_service"] - 1:      # tolérance : une table créée depuis
-                pb.append(f"{out['tables_restaurees']} tables restaurées pour {out['tables_en_service']} en service")
-            traces.attributs(**{"restauration.tables": out["tables_restaurees"], "restauration.ecarts": len(pb)})
+            pb = [f"{t} absente de la restauration" for t in sorted(attendues - presentes)]
+            pb += ecarts(vivants, restaures)
+            traces.attributs(**{"restauration.tables": len(presentes), "restauration.ecarts": len(pb),
+                                "restauration.migrations": len(migrations)})
             if pb:
                 raise RuntimeError("restauration incomplète : " + " ; ".join(pb[:5]))
         finally:

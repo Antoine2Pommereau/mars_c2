@@ -67,21 +67,42 @@ def _copie(conn, tables):
     return restaurer
 
 
-def test_full_run_on_a_temporary_database_then_dropped(conn):
-    tables = [t for t in R.TABLES if conn.execute("SELECT to_regclass(%s)", (f"public.{t}",)).fetchone()[0]]
-    nb = conn.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'").fetchone()[0]
-    r2 = FauxR2(["sauvegardes/mars_20261022T023000.dump"])
-    with pytest.raises(RuntimeError, match="tables restaurées"):        # seulement les tables clés : schéma incomplet
-        R.essai(conn, r2, URL, libre_octets=10**10, restaurer=_copie(conn, tables))
+def _avant(n: int) -> list[str]:
+    return sorted(p.name for p in R.DB_INIT.glob("*.sql") if int(p.name.split("_", 1)[0]) < n)
+
+
+def test_backup_from_before_the_registry_is_compared_to_its_own_tables(conn):
+    """Cas réel du 24/10/2026 : sauvegarde d'avant les migrations 39 à 42 (ni schema_migrations, ni echeances, ni
+    tentatives_connexion), 55 tables pour 60 en service : faux échec. Désormais comparée aux tables de ses migrations."""
+    tables = sorted(R.tables_des_migrations(_avant(39)))
+    r2 = FauxR2(["sauvegardes/mars_20261024T023000.dump"])
+    out = R.essai(conn, r2, URL, libre_octets=10**10, restaurer=_copie(conn, tables))
+    assert out["migrations_de_la_sauvegarde"] == 38 and out["derniere_migration"].startswith("38_")
+    assert out["tables_attendues"] == len(tables) and out["tables_restaurees"] == len(tables)
+    assert {"schema_migrations", "echeances", "tentatives_connexion"} <= set(out["tables_creees_depuis"])
+    assert "schema_migrations" not in out["comptes"]
     assert conn.execute("SELECT count(*) FROM pg_database WHERE datname = %s", (R.BASE_ESSAI,)).fetchone()[0] == 0
 
-    def complet(fichier, url):
-        _copie(conn, tables)(fichier, url)
+
+def test_a_table_known_to_the_backup_but_missing_is_a_failure(conn):
+    tables = sorted(R.tables_des_migrations(_avant(39)))
+    r2 = FauxR2(["sauvegardes/mars_20261024T023000.dump"])
+    with pytest.raises(RuntimeError, match="alert_actions absente"):
+        R.essai(conn, r2, URL, libre_octets=10**10, restaurer=_copie(conn, [t for t in tables if t != "alert_actions"]))
+    assert conn.execute("SELECT count(*) FROM pg_database WHERE datname = %s", (R.BASE_ESSAI,)).fetchone()[0] == 0
+
+
+def test_backup_with_its_registry_expects_the_tables_of_its_migrations(conn):
+    """Sauvegarde d'après le registre : ses migrations (01 à 42 ici) disent les tables attendues, registre compris."""
+    tables = sorted(R.tables_des_migrations(_avant(99)))
+    noms = _avant(99)
+
+    def restaurer(f, url):
+        _copie(conn, [t for t in tables if t != "schema_migrations"])(f, url)
         import psycopg
         with psycopg.connect(url, autocommit=True) as rc:
-            for i in range(nb - len(tables)):
-                rc.execute(f"CREATE TABLE autre_{i} (x int)")
-    out = R.essai(conn, r2, URL, libre_octets=10**10, restaurer=complet)
-    assert out["sauvegarde"] == "sauvegardes/mars_20261022T023000.dump" and out["cible"] == "base temporaire"
-    assert out["tables_restaurees"] == nb and all(a == b for a, b in out["comptes"].values())
-    assert conn.execute("SELECT count(*) FROM pg_database WHERE datname = %s", (R.BASE_ESSAI,)).fetchone()[0] == 0
+            rc.execute("CREATE TABLE schema_migrations (nom text)")
+            rc.cursor().executemany("INSERT INTO schema_migrations VALUES (%s)", [(n,) for n in noms])
+    out = R.essai(conn, FauxR2(["sauvegardes/mars_20261025T023000.dump"]), URL, libre_octets=10**10, restaurer=restaurer)
+    assert out["migrations_de_la_sauvegarde"] == len(noms) and out["tables_creees_depuis"] == []
+    assert out["comptes"]["schema_migrations"][0] == len(noms)

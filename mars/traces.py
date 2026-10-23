@@ -197,9 +197,10 @@ class Nettoyeur(_Base):
         return self.suivant.force_flush(timeout_millis)
 
 
-def init(service: str, exportateur=None):
+def init(service: str, exportateur=None, sortie_lisible: bool = False):
     """Fournisseur de traces du processus (une seule fois). `exportateur` : exportateur supplémentaire (tests), envoyé
-    sans attente."""
+    sans attente. `sortie_lisible` : commande lancée à la main (diagnostic, tableau, rapport), sa sortie standard reste
+    sans suffixe trace_id et span_id ; les journaux (logging) et les services gardent le suffixe."""
     global _provider
     if _provider is not None:
         if exportateur is not None:
@@ -223,7 +224,7 @@ def init(service: str, exportateur=None):
         _provider.add_span_processor(SimpleSpanProcessor(Nettoyeur(exportateur)))
     trace.set_tracer_provider(_provider)
     _instrumenter_requests()
-    journaux()
+    journaux(sortie=not sortie_lisible)
     return _provider
 
 
@@ -464,10 +465,12 @@ class _FiltreJournal(logging.Filter):
         return True
 
 
-def journaux():
-    if not isinstance(sys.stdout, _Lignes):
+def journaux(sortie: bool = True):
+    """Identifiants de trace dans les journaux : sur chaque ligne de la sortie standard et d'erreur (services), et sur
+    chaque enregistrement de logging. `sortie` faux : sortie laissée telle quelle (commandes lues par un humain)."""
+    if sortie and not isinstance(sys.stdout, _Lignes):
         sys.stdout = _Lignes(sys.stdout)
-    if not isinstance(sys.stderr, _Lignes):
+    if sortie and not isinstance(sys.stderr, _Lignes):
         sys.stderr = _Lignes(sys.stderr)
     filtre = _FiltreJournal()
     for name in (None, "uvicorn", "uvicorn.error", "uvicorn.access", "mars"):

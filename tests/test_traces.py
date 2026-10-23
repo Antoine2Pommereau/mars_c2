@@ -502,3 +502,29 @@ def test_log_filter_keeps_args_for_uvicorn_access_lines():
     assert rec.args == ("127.0.0.1:1", "GET", "/api/health", "1.1", 200)
     message = rec.getMessage()
     assert message.startswith('127.0.0.1:1 - "GET /api/health HTTP/1.1" 200') and "trace_id=" in message
+
+
+def test_manual_command_output_has_no_trace_suffix_but_service_logs_do():
+    """24/10/2026 : la sortie d'une commande lue par un humain (diagnostic, tableau) reste sans « trace_id=… span_id=… »,
+    les journaux des services (sortie de la boucle, logging) le gardent."""
+    import subprocess
+    code = ("import logging, sys; from mars import traces; traces.init('essai', sortie_lisible=sys.argv[1] == '1'); "
+            "logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True); traces.journaux(sortie=sys.argv[1] != '1')\n"
+            "with traces.span('commande essai'):\n    print('ligne lue', flush=True); logging.getLogger('mars').info('journal')")
+    env = {k: v for k, v in os.environ.items() if k not in ("OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT")}
+    env["PYTHONPATH"] = str(ROOT)                     # spans valides, rien d'envoyé (aucune adresse de collecteur)
+    commande = subprocess.run([sys.executable, "-c", code, "1"], capture_output=True, text=True, env=env, cwd=ROOT)
+    service = subprocess.run([sys.executable, "-c", code, "0"], capture_output=True, text=True, env=env, cwd=ROOT)
+    assert commande.stdout.strip() == "ligne lue", commande.stdout + commande.stderr
+    assert "trace_id=" in commande.stderr, "le journal (logging) garde le suffixe"
+    assert "ligne lue trace_id=" in service.stdout
+
+
+def test_only_the_service_loop_keeps_the_suffix_on_its_output():
+    """taches.py : la boucle (service) garde le suffixe ; toute commande lancée à la main (sentinel-diagnostic,
+    controle-diagnostic, satellites-pause, essai-restauration, deploiement) a une sortie lisible."""
+    t = (ROOT / "scripts" / "taches.py").read_text()
+    assert 'traces.init("mars-taches", sortie_lisible=a.commande != "boucle")' in t
+    assert "sortie_lisible=True" in (ROOT / "scripts" / "build_masks.py").read_text()
+    for s in ("backend/app.py", "scripts/ais_live.py", "scripts/ais_ingest.py"):
+        assert "sortie_lisible" not in (ROOT / s).read_text(), f"{s} : service, journaux avec suffixe"

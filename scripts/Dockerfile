@@ -26,6 +26,8 @@ LABEL org.opencontainers.image.revision=$MARS_VERSION
 COPY mars ./mars
 COPY scripts ./scripts
 COPY travailleurs ./travailleurs
+# Migrations : tables attendues d'une sauvegarde lors de l'essai de restauration (mars/restauration.py)
+COPY db/init ./db/init
 # Requêtes des tableaux Grafana, pour taches.py mesurer-tableaux (durées sur la base du serveur)
 COPY grafana/generer.py ./grafana/generer.py
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app
