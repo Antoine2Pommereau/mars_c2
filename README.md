@@ -182,8 +182,9 @@ otel/ grafana/ observability configuration, dashboards as code
 docs/          design notes and measurements (in French)
 ```
 
-The design notes in `docs/` are written in French; start with `docs/sentinel.md`, `docs/trajectoire.md`,
-`docs/opentelemetry.md`, `docs/ux_refonte.md` and `docs/exploitation.md`.
+The design notes in `docs/` are written in French; the index is `docs/README.md`. Good entry points:
+`docs/travailleurs.md` (ephemeral satellite workers), `docs/regles_alertes.md` (every alert, its thresholds and their
+origin), `docs/trajectoire.md`, `docs/opentelemetry.md`, `docs/ux_refonte.md` and `docs/exploitation.md`.
 
 ## Data sources and licences
 
