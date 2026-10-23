@@ -5,7 +5,7 @@
 **Maritime surveillance for French waters: spot the strange ship before it matters.**
 
 AIS tracking, behavioural rules and satellite cross checks (Sentinel 1 radar, Sentinel 2 optical, VIIRS night lights)
-fused into one operator console, running live on a single 4 GB server.
+fused into one operator console, running live on a single 4 GB server for about 20 € a month.
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
@@ -137,7 +137,10 @@ A few design choices worth reading about:
 | Learned uncertainty circle | ship actually inside it 63 % of the time at 3 hours, versus 19 % before (pre measurement, 17 to 22 October 2026) |
 | Satellite check booking guard | 40 % minimum probability of containment, about 2.45 € a month |
 | Operator task "understand why this ship is flagged" | about 41 s down to 6 to 8 s after the UX rework |
-| Running cost | server 0.0202 € per hour excluding VAT (about 14.7 € a month); satellite workers 2.51 € from 1 to 22 October 2026 |
+| Server | Scaleway DEV1-M, 0.0202 € per hour (about 14.7 € a month) |
+| Network and storage | about 4 € a month, measured on the Scaleway invoice |
+| Satellite workers | from a few cents to 0.19 € per analysis |
+| Running cost | about 19 € a month excluding VAT in steady state, measured |
 | Tests | 480 passing (pytest, with a PostGIS test database), plus type checks and frontend tests |
 
 ## Honest status
