@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from mars.ais.live import ZONES
 from mars.ais.mid import flag_of
 from mars.evaluation import GARDE_VERIFICATION
+from mars.geo import distance_m
 
 WATCH_SEVERITY = {"fort": "critique", "sanctionne": "elevee", "flotte_fantome": "elevee", "suspect_gur": "moyenne"}
 SEVERITIES = ["faible", "moyenne", "elevee", "critique"]
@@ -484,10 +485,7 @@ def point_kind(times: list[datetime], need: int) -> str:
     return "coupure_simultanee" if burst >= need and burst >= len(ts) / 2 else "limite_de_couverture"
 
 
-def _hav(lon1, lat1, lon2, lat2) -> float:
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
-    return 2 * 6371000 * math.asin(math.sqrt(h))
+_hav = distance_m                    # lot Z4 : distance commune (mars/geo.py)
 
 
 async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:

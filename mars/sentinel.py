@@ -34,6 +34,7 @@ from datetime import datetime, timedelta
 
 from mars import traces
 from mars.evaluation import GARDE_VERIFICATION, critere, motif_non_evaluable
+from mars.geo import distance_m
 
 STAC = "https://stac.dataspace.copernicus.eu/v1/search"
 S3_HOST = "eodata.dataspace.copernicus.eu"
@@ -88,10 +89,7 @@ def guard(n_scenes: int, scenes_today: int, spent_month: float, estimate: float,
     return None
 
 
-def _hav_m(lon1, lat1, lon2, lat2) -> float:
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
-    return 2 * 6371000 * math.asin(math.sqrt(h))
+_hav_m = distance_m                  # lot Z4 : distance commune (mars/geo.py)
 
 
 def _inside(lon: float, lat: float, ring: list) -> bool:

@@ -14,7 +14,6 @@ suspicion à trois niveaux et une phrase d'explication tirée des faits. Calcul 
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime, timedelta
 
 OUVERTS = ("nouvelle", "acquittee", "confirmee")
@@ -136,9 +135,8 @@ def phrase(alertes: list[dict]) -> str:
 
 
 def _dist_m(a: tuple, b: tuple) -> float:
-    la1, la2 = math.radians(a[1]), math.radians(b[1])
-    h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin(math.radians(b[0] - a[0]) / 2) ** 2
-    return 2 * 6371000 * math.asin(math.sqrt(h))
+    from mars.geo import distance_m                  # lot Z4 : distance commune
+    return distance_m(a[0], a[1], b[0], b[1])
 
 
 def regrouper(alertes: list[dict], p: dict, navires: dict, contextes: dict | None = None) -> list[dict]:

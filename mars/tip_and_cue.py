@@ -12,11 +12,11 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from mars import traces
+from mars.geo import TERRE_M
 
 ACTIFS = ("en_attente", "planifiee")
 SEVERITES = ["faible", "moyenne", "elevee", "critique"]
 MASQUES_IGNORES = ("terre", "eolienne probable", "echo fixe", "nuages")
-TERRE_M = 6371000.0
 
 
 def actif(rules: dict) -> bool:
@@ -44,11 +44,6 @@ def _rang(g: str | None) -> int:
 
 
 # Calculs purs
-
-def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
-    return 2 * TERRE_M * math.asin(math.sqrt(h))
 
 
 def destination(lon: float, lat: float, cap_deg: float, dist_m: float) -> tuple[float, float]:

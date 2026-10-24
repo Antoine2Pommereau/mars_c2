@@ -2,6 +2,17 @@
 import math
 
 
+TERRE_M = 6371000.0          # rayon moyen de la Terre
+
+
+def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    """Distance du grand cercle (haversine), en mètres. Seule version du serveur depuis le lot Z4 ; la trajectoire garde
+    sa version numpy (mars/trajectoire.py), et les scripts des travailleurs la leur (envoyés seuls par cloud-init)."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 2 * TERRE_M * math.asin(math.sqrt(h))
+
+
 def utm_epsg(lon: float, lat: float) -> int:
     """Code EPSG de la zone UTM contenant le point."""
     zone = int((lon + 180) // 6) + 1

@@ -1172,3 +1172,20 @@ rupture du processeur et le lot suivant), la lecture des analyses passées faite
 « processeur indisponible pendant toute la fenêtre utile » ; la règle d'alerte de Grafana reconnaît l'ancien et le
 nouveau. La variable `GPU` du script de démarrage devient `DOCKER_OPTS`.
 
+## 24/10/2026, lot Z4, étape 4 : mise en commun, ce qui est fait et ce qui attend
+
+Fait : **une seule distance** côté serveur, `mars.geo.distance_m` (haversine, 6 371 km), à la place de cinq copies
+identiques au caractère près (`viirs.haversine_m`, `rules._hav`, `sentinel._hav_m`, `tip_and_cue.distance_m`,
+`dossiers._dist_m`, gardés comme alias là où d'autres modules les appellent). Restent à part, volontairement : la
+version numpy de la trajectoire (`mars/trajectoire.py`, latitude en premier, sur des tableaux) et celles des scripts
+des travailleurs (envoyés seuls par cloud-init, Python 3.8, bibliothèque standard).
+
+Listé pour plus tard (réécriture risquée sans essai réel des travailleurs, aucun gain de comportement) :
+* module commun des travailleurs (`travailleurs/viirs.py`, `sentinel.py`, `sentinel2.py` : récupération de la tâche,
+  envoi des résultats, signature S3, journal), qui suppose de livrer deux fichiers par cloud-init ;
+* une seule évaluation (« évaluable ou non ») : `mars/evaluation.py` est déjà commun, mais VIIRS, Sentinel 1 et
+  Sentinel 2 gardent chacun leur appel et leur gravité ;
+* un seul squelette Sentinel 1 et Sentinel 2 (`mars/sentinel.py`, `mars/sentinel2.py` : sélection, plafond, budget,
+  attente, lancement, ingestion) ;
+* renommer l'état `attente_gpu` (migration et requêtes de Grafana).
+

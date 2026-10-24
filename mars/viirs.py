@@ -19,6 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from mars import traces
 from mars.ais.live import ZONES
 from mars.evaluation import GARDE_VERIFICATION, critere, motif_non_evaluable
+from mars.geo import distance_m
 from mars.satellites import extent
 
 CMR = "https://cmr.earthdata.nasa.gov/search/granules.json"
@@ -135,11 +136,7 @@ def detection_time(lon: float, lat: float, start: datetime, end: datetime, frame
     return start + (end - start) * min(1.0, max(0.0, f))
 
 
-def haversine_m(lon1, lat1, lon2, lat2) -> float:
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp, dl = p2 - p1, math.radians(lon2 - lon1)
-    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * 6371000 * math.asin(math.sqrt(h))
+haversine_m = distance_m             # lot Z4 : distance commune (mars/geo.py)
 
 
 def position_at(track: list[dict], t: datetime, max_min: float):

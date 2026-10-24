@@ -13,6 +13,7 @@ import pytest
 
 from mars import tip_and_cue as tc
 from mars.config import load_rules
+from mars.geo import distance_m
 
 VERSIONNEES = load_rules()
 RULES = {**VERSIONNEES, "tip_and_cue": {**VERSIONNEES["tip_and_cue"], "actif": True}}
@@ -44,7 +45,7 @@ def test_dead_reckoning_and_growing_circle():
     ancien = {k: v for k, v in P.items() if k != "cercle_appris"}
     pr = tc.predire(*LARGE, NOW, 10.0, 90.0, NOW + timedelta(hours=3), ancien)
     assert pr["mode"] == "estime"
-    assert tc.distance_m(*LARGE, pr["lon"], pr["lat"]) == pytest.approx(3 * 10 * 1852, rel=1e-3)
+    assert distance_m(*LARGE, pr["lon"], pr["lat"]) == pytest.approx(3 * 10 * 1852, rel=1e-3)
     assert pr["lon"] > LARGE[0] and pr["lat"] == pytest.approx(LARGE[1], abs=0.01)          # plein est
     assert pr["rayon_m"] == pytest.approx(P["rayon_depart_m"] + P["part_vitesse_par_h"] * 3 * 10 * 1852)
     loin = tc.predire(*LARGE, NOW, 15.0, 0.0, NOW + timedelta(hours=30), ancien)
