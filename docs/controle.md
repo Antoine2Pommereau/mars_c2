@@ -127,7 +127,7 @@ Préférences en base (`reglages_controle`, clé `notif:preferences`) par dessus
 |---|---|---|
 | Nouvelles alertes | gravité élevée au moins ; tous les types sauf AIS_UNCONFIRMED | une notification par nouvelle alerte (au plus 5 par minute, puis une synthèse) ; au premier passage, la dernière alerte est seulement notée |
 | Résultat de tip and cue | oui | alerte relevée par une vérification satellite (gravités de `tip_and_cue.ntfy_gravites`) |
-| Catégories système | pannes, disque, collecte, travailleurs : oui | pannes : tâches en échec, collecteur de traces, statistiques ; disque ; collecte : collecte figée et ingestion ; travailleurs : nuit VIIRS absente, GPU, pauses et reprises |
+| Catégories système | pannes, disque, collecte, travailleurs : oui | pannes : tâches en échec, collecteur de traces, statistiques ; disque ; collecte : collecte figée et ingestion ; travailleurs : nuit VIIRS absente, analyse abandonnée, pauses et reprises |
 | Heures calmes | 23:00 à 07:00, heure de Paris | tout est retenu sauf les pannes graves (disque presque plein, collecte figée, ingestion) ; résumé au réveil en un message |
 
 * Appliqué aux envois de taches (`controle.notifier`, `controle.decider`) et de l'API, aux alertes de secours (catégorie

@@ -110,7 +110,6 @@ dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibr
 | Règle AIS_GAP | observation (fichier) | 84 épisodes observés en 7 jours (22/10), aucune alerte | inclus |
 | VIIRS (travailleur DEV1-M) | en pause depuis le 21/10 ; reprise au déploiement de 29bcfff | 21/10, 12 granules | environ 0,02 € la nuit |
 | Sentinel 1 sur processeur (GP1-S, POP2 en secours) | en pause depuis le 21/10 | 19/10, analyse 97, 1,7 % de la scène lue | 0,19 € l'analyse |
-| Sentinel 1 sur GPU (L4, L40S) | jamais éprouvé (rupture de stock, Pascal incompatible) | aucun | L4 0,7875 € l'heure à la minute |
 | Sentinel 2 (GP1-S, rslearn) | en pause depuis le 21/10 | 20/10 : 3 échecs, correctif livré non rejoué | 0,19 € la session |
 | Tip and cue, vérification satellite | en pause depuis le 21/10 | 20 demandes réelles, aucune observation | selon le capteur |
 | Alertes radar (DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH) | jamais éprouvées | aucune alerte réelle | inclus |
@@ -135,7 +134,7 @@ AIS le 29/10 (`docs/calibration.md`), lot Z4 (code mort), Z6 (satellites en rée
 | `ingest` | profil `direct` | Parquet vers la base toutes les 15 s, allègement (un point par minute en route, toutes les dix minutes à l'arrêt) |
 | `taches` | serveur | règles toutes les 5 min ; chaque nuit : archive R2, purge, sauvegarde, listes, passages, échéances ; VIIRS à 06:30 ; Sentinel toutes les 30 min ; tip and cue ; surveillance des travailleurs chaque minute ; disque ; essai de restauration chaque mois |
 | `grafana`, `otel`, `tempo` | serveur, 127.0.0.1 | tableaux et alertes ntfy (Grafana sur PostgreSQL, rôle `grafana_lecture`), collecteur OpenTelemetry, traces gardées 72 h |
-| Travailleurs | instances Scaleway éphémères | VIIRS sur DEV1-M (fr-par-1) ; Sentinel 1 sur GP1-S puis POP2 (fr-par-2), GPU au delà de 4 fenêtres ; Sentinel 2 sur GP1-S ; tâche et secrets remis une fois par le réseau privé ; groupe de sécurité `mars-travailleurs` ; résultats validés (`mars/validation.py`) |
+| Travailleurs | instances Scaleway éphémères | VIIRS sur DEV1-M (fr-par-1) ; Sentinel 1 sur GP1-S puis POP2 (fr-par-2), lots de 4 fenêtres (voie GPU retirée au lot Z4) ; Sentinel 2 sur GP1-S ; tâche et secrets remis une fois par le réseau privé ; groupe de sécurité `mars-travailleurs` ; résultats validés (`mars/validation.py`) |
 
 Serveur Scaleway DEV1-M (4 Go de mémoire, 20 Go de disque), `/opt/mars_c2`, aucun port public hormis SSH ; interface
 et Grafana par tunnel SSH. Chaîne du direct : AISStream, Parquet, ingestion, base, flux SSE. Chaîne satellite :
@@ -271,10 +270,10 @@ Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : 
 
 **Travailleurs Scaleway** (détail : `docs/travailleurs.md`)
 * Destruction : « stopped in place » (poweroff, attendre, supprimer) ; volume bloc supprimé à part ; taille d'un
-  volume bloc dans l'API Block Storage ; disponibilités paginées ; « scarce » ne garantit rien ; Pascal incompatible.
+  volume bloc dans l'API Block Storage ; disponibilités paginées ; « scarce » ne garantit rien.
 * PrivateNetworksFullAccess, carte « available » avant démarrage, DHCP au démarrage, `SCW_PRIVATE_NETWORK_ID` du
   réseau et non du VPC, réseau privé régional ; pas de SSH : `taches.py journal-travailleur` ou console série.
-* Plafond compté sur les instances créées ; facturation à l'heure entamée (CPU) ou à la minute (GPU).
+* Plafond compté sur les instances créées ; facturation à l'heure entamée, même pour un échec au démarrage.
 * Image d'AI2 Sentinel 1 : Python 3.8, imports `src.*`, `nms_thresh` entier, fenêtre d'au moins 2 300 pixels ;
   bibliothèque standard seulement dans le script ; travailleur sans scène aboutie en « echec ».
 

@@ -970,8 +970,7 @@ def rejeu_base(conn, rules: dict, debut: datetime, fin: datetime) -> dict:
     r = rejeu(tips, passages, rules, lambda lon, lat: distance_cote_m(conn, lon, lat, s["point_cote_min_km"] * 1000.0),
               lambda vid, t: _derniere_position(conn, vid, t))
     jours = max((fin - debut).total_seconds() / 86400, 1e-6)
-    cout = sum(estimation(rules, s, n, 0, "cpu" if n <= s["fenetres_max_cpu"] else "gpu")
-               for n in r["fenetres_par_session"].values())
+    cout = sum(estimation(rules, s, n) for n in r["fenetres_par_session"].values())
     cont = [x["contenance"] for x in r["lignes"] if x["issue"] == "passage" and x.get("contenance") is not None]
     return {**{k: v for k, v in r.items() if k != "lignes"}, "jours": round(jours, 1), "passages_examines": len(passages),
             "contenance_moyenne": round(sum(cont) / len(cont), 3) if cont else None, "contenance_n": len(cont),

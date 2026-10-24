@@ -1,6 +1,7 @@
 """Travailleur Sentinel 1 : détection des navires sur les images radar (étape 3, lot C).
 
-Exécuté sur une instance GPU éphémère (NVIDIA L4), dans l'image publique ghcr.io/allenai/vessel-detection-sentinels
+Exécuté sur une instance éphémère, sur processeur (GP1-S ou POP2-8C-32G ; voie GPU retirée au lot Z4), dans l'image
+publique ghcr.io/allenai/vessel-detection-sentinels
 (modèle et chaîne d'AI2, licence Apache 2.0, code dans /home/vessel_detection/src). Le serveur de MARS C2 transmet ce
 fichier par cloud-init (mars/travailleurs.py), et la tâche par le réseau privé ; ce script n'utilise que la bibliothèque standard et ce que
 l'image contient déjà (torch, GDAL, numpy, Pillow).
@@ -16,7 +17,7 @@ serveur intégré à l'image, main.py, lui passe des arguments qu'elle n'accepte
 détection dans nos régions : position, score, longueur, largeur, cap (classe la plus probable), vitesse, pêche,
 contraste local mesuré sur l'image VV d'origine, et une vignette radar PNG d'environ 3 km de côté (VV en décibels,
 marqueur, échelle, nord, date, satellite, polarisation) avec sa géoréférence pour superposer l'AIS. Fichiers effacés
-après chaque scène. Mesures : durées de téléchargement et d'analyse, volume, mémoire GPU et mémoire du processus.
+après chaque scène. Mesures : durées de téléchargement et d'analyse, volume, mémoire du processus.
 
 Variables : MARS_TACHE (fichier JSON de la tâche). Essai local sur des fichiers déjà présents :
     python3 sentinel.py --local tache.json   (scènes avec « vv_path » et « vh_path », résultat sur la sortie standard)
@@ -61,7 +62,8 @@ POIDS_MIN = 1_000_000                                             # un pointeur 
 
 
 class Arret(Exception):
-    """Cause commune à toutes les scènes (GPU absent, poids absents, accès refusé) : le travailleur s'arrête."""
+    """Cause commune à toutes les scènes (chaîne non importable, poids absents, accès refusé) : le travailleur
+    s'arrête."""
 
 
 class FichierInvalide(Exception):
@@ -299,8 +301,9 @@ def ai2():
     return prepare_scenes, detect_vessels
 
 
-def preflight(force_cpu: bool = False):
-    """Chaîne d'AI2 importable, poids des modèles présents dans l'image, GPU disponible (sinon, arrêt avec la cause)."""
+def preflight():
+    """Chaîne d'AI2 importable et poids des modèles présents dans l'image (sinon, arrêt avec la cause) ; calcul sur
+    processeur."""
     import torch
     ai2()
     for d in (DETECTEUR, ATTRIBUTS):
@@ -308,27 +311,16 @@ def preflight(force_cpu: bool = False):
         if not os.path.exists(w) or os.path.getsize(w) < POIDS_MIN:
             raise Arret(f"poids du modèle absents de l'image ({w} : "
                         f"{os.path.getsize(w) if os.path.exists(w) else 'introuvable'} octets, pointeur Git LFS ?)")
-    if force_cpu:
-        return torch.device("cpu"), {"gpu": None}
-    if not torch.cuda.is_available():
-        raise Arret("aucun GPU visible par PyTorch dans le conteneur (pilotes NVIDIA, option --gpus all, ou CUDA 11.3 "
-                    "de l'image incompatible avec le pilote)")
-    p = torch.cuda.get_device_properties(0)
-    torch.zeros(1, device="cuda")                                     # noyau CUDA réellement exécuté
-    return torch.device("cuda"), {"gpu": p.name, "gpu_memoire_mo": round(p.total_memory / 2 ** 20),
-                                  "cuda": torch.version.cuda, "torch": torch.__version__}
+    return torch.device("cpu"), {"torch": torch.__version__}
 
 
 def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, device, tmp: str, tr, coeur=None) -> dict:
     """Chaîne d'AI2 sur une image (scène entière ou fenêtre, rangée en SAFE sous `raw`), puis mesures et vignettes
     sur l'image VV d'origine. `coeur` (lon_min, lat_min, lon_max, lat_max) : seules les détections dedans sont gardées
     (fenêtre : les objets coupés au bord sont écartés)."""
-    import torch
     prepare_scenes, detect_vessels = ai2()
     r = {}
     t = time.time()
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats()
     base = os.path.join(tmp, "travail_" + scene_id)
     scratch, out = os.path.join(base, "scratch"), os.path.join(base, "sortie")
     os.makedirs(scratch, exist_ok=True)
@@ -343,8 +335,6 @@ def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, dev
                        float(task.get("confiance", 0.9)), int(round(float(task.get("nms_m", 10)))), False, device,
                        "sentinel1", None)
     r["analyse_s"] = round(time.time() - t, 1)
-    if device.type == "cuda":
-        r["gpu_max_mo"] = round(torch.cuda.max_memory_allocated() / 2 ** 20)
     with tr.span("sentinel.mesures_et_vignettes") as ms:
         radar = Radar(files["vv"])
         dets, hors, bord = [], 0, 0
@@ -545,7 +535,7 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
                 ecartees += d["ecartees_marge"]
                 dets += d["detections"]
                 rf.update({"analyse_s": d["analyse_s"], "detections": len(d["detections"]),
-                           "ecartees_marge": d["ecartees_marge"], "gpu_max_mo": d.get("gpu_max_mo")})
+                           "ecartees_marge": d["ecartees_marge"]})
                 sf.set(**{"sentinel.detections": len(d["detections"]), "sentinel.octets": rf["octets"]})
             except FenetreInvalide as e:
                 rf["erreur"] = str(e)[:300]
@@ -570,14 +560,14 @@ def run(task: dict, local: bool = False, tr=None) -> dict:
     t0 = time.time()
     tr = tr or otel_mini.Traceur(None, None, None)
     out, stop, octets = [], None, 0.0
-    with tr.span("sentinel.preparation_gpu") as sp:
+    with tr.span("sentinel.preparation") as sp:
         try:
-            device, gpu = preflight(force_cpu=bool(task.get("force_cpu")))
-            sp.set(**{"sentinel.gpu": gpu.get("gpu"), "sentinel.cuda": gpu.get("cuda")})
+            device, prep = preflight()
+            sp.set(**{"sentinel.torch": prep.get("torch")})
         except Arret as e:
             sp.erreur(str(e))
             return {"scenes": [], "erreur": str(e)[:500], "mesures": {"rss_max_mo": rss_mo()}}
-    print(json.dumps({"preparation": gpu, "s": round(time.time() - t0, 1)}), flush=True)
+    print(json.dumps({"preparation": prep, "s": round(time.time() - t0, 1)}), flush=True)
     for k, scene in enumerate(task["scenes"]):
         tmp = tempfile.mkdtemp(prefix="scene_", dir=task.get("travail"))
         with tr.span("sentinel.scene", **{"sentinel.index": k, "sentinel.analyse": scene.get("analyse"),
@@ -611,7 +601,7 @@ def run(task: dict, local: bool = False, tr=None) -> dict:
             print(f"arrêt du travailleur : {stop}", flush=True)
             break
     result = {"scenes": out, "mesures": {"duree_s": round(time.time() - t0, 1), "rss_max_mo": rss_mo(),
-                                         "telecharge_mo": round(octets, 1), **gpu}}
+                                         "telecharge_mo": round(octets, 1), **prep}}
     if stop:
         result["erreur"] = stop
     elif out and all(sc.get("erreur") for sc in out):

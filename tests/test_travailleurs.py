@@ -6,8 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 import yaml
 
 from mars.config import ROOT
-from mars.travailleurs import (TAG, cloud_init, cost, garde_essai, granularite_min, orphans, quota, type_params,
-                               variantes)
+from mars.travailleurs import TAG, cloud_init, cost, granularite_min, orphans, quota, type_params, variantes
 from mars.viirs import (detection_time, granule_key, last_night, match, night_of, pair_granules, position_at,
                         severity)
 
@@ -25,25 +24,25 @@ def test_daily_caps():
     assert "minutes" in quota(RULES, [w(4, 100), w(2, 90)], T0)
 
 
-def test_cost_is_billed_by_started_hour_on_cpu_and_by_minute_on_gpu():
-    viirs, gpu = type_params(RULES, "viirs"), type_params(RULES, "sentinel")
-    assert viirs["facturation"] == "heure_entamee" and gpu["facturation"] == "minute"
+def test_cost_is_billed_by_started_hour():
+    viirs, s1 = type_params(RULES, "viirs"), type_params(RULES, "sentinel")
+    assert viirs["facturation"] == "heure_entamee" and s1["facturation"] == "heure_entamee"
     assert cost(7, viirs["prix_heure"], granularite_min(viirs)) == 0.0202        # une heure entamée
     assert cost(61, viirs["prix_heure"], granularite_min(viirs)) == 0.0404
-    assert cost(12, gpu["prix_heure"], granularite_min(gpu)) == round(12 / 60 * 0.7875, 4)
+    assert cost(12, s1["prix_heure"], granularite_min(s1)) == s1["prix_heure"]  # GP1-S : une heure entamée
+    assert cost(12, 0.7875, granularite_min({"facturation": "minute"})) == round(12 / 60 * 0.7875, 4)
 
 
-def test_essai_26_would_have_cost_a_full_hour_and_is_now_guarded():
-    """Essai 26 du 19/10/2026 : RENDER-S, échec au démarrage en quelques minutes, facturé une heure entière (1,23 €)."""
+def test_essai_26_would_have_cost_a_full_hour():
+    """Essai 26 du 19/10/2026 : RENDER-S, échec au démarrage en quelques minutes, facturé une heure entière (1,23 €).
+    Depuis le lot Z4, la liste de Sentinel 1 ne contient plus que des types sur processeur."""
     render = {**type_params(RULES, "sentinel"), "commercial_type": "RENDER-S", "prix_heure": 1.221,
               "facturation": "heure_entamee", "zone": "fr-par-2"}
     assert cost(4, render["prix_heure"], granularite_min(render)) == 1.221
-    assert "SENTINEL_CALCUL_ESSAI requis" in garde_essai(RULES, render, set(), False)
-    assert garde_essai(RULES, render, {("RENDER-S", "fr-par-2")}, False) is None          # éprouvé
-    assert garde_essai(RULES, render, set(), True) is None                                # essai explicite
-    gp1 = type_params(RULES, "sentinel", variantes(RULES, "sentinel")[3])
-    assert garde_essai(RULES, gp1, set(), False) is None                                  # 0,19 € : sous le plafond
-    assert garde_essai(RULES, type_params(RULES, "sentinel"), set(), False) is None        # L4 : à la minute
+    v = variantes(RULES, "sentinel")
+    assert [type_params(RULES, "sentinel", x)["commercial_type"] for x in v] == ["GP1-S", "POP2-8C-32G"]
+    assert all(x["calcul"] == "cpu" and "--gpus" not in type_params(RULES, "sentinel", x).get("docker_opts", "")
+               for x in v)
 
 
 def test_orphans_unknown_or_too_old_instances_are_destroyed():
@@ -64,7 +63,7 @@ def test_cloud_init_carries_boot_script_task_and_secrets():
     assert '"jeton": "abc"' in base64.b64decode(files["/mars/tache.json"]).decode()
     boot = base64.b64decode(files["/mars/demarrage.env"]).decode()
     assert 'MAC="02:00:00:aa:bb:cc"' in boot and 'RETOUR="http://172.16.8.2:8090/api/travailleurs/3"' in boot
-    assert 'GPU=""' in boot and 'SCRIPT="viirs.py"' in boot
+    assert 'DOCKER_OPTS=""' in boot and 'SCRIPT="viirs.py"' in boot
     script = base64.b64decode(files["/mars/demarrage.sh"]).decode()
     assert "netplan" in script and "signal reseau" in script and "/journal" in script
     assert "/mars/viirs.py" in files and "runcmd:\n  - [bash, /mars/demarrage.sh]" in text

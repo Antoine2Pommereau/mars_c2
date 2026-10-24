@@ -85,7 +85,8 @@ def _expiry(pair: dict, now: datetime, required: bool = False) -> tuple[str, str
 
 
 def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
-    """Clés, zone du GPU, image GPU résolue (fiche brute affichée), disponibilité et quota du L4, droits, réseau privé."""
+    """Clés, zone du type de base de Sentinel 1, image résolue (fiche brute affichée), disponibilité des types de la
+    liste, droits, groupes de sécurité, réseau privé."""
     from mars.travailleurs import ScalewayError, type_params
     if scw is None:
         return [(MANQUE, "Clés Scaleway", "SCW_SECRET_KEY ou SCW_PROJECT_ID absentes du .env")]
@@ -100,15 +101,15 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
     out.append((PRET, f"API Instances en {zone}", "lecture autorisée") if code == 200 else
                (MANQUE, f"API Instances en {zone}", f"HTTP {code} : {str(body)[:200]}"))
 
-    # Image GPU : résolution complète (catalogue, fiche de l'API Instances, instantané bloc), fiche brute affichée
+    # Image du type de base : résolution complète (catalogue, fiche de l'API Instances), fiche brute affichée
     try:
         img = scw.resolve_image(zone, t["image_label"], ctype, t.get("arch", "x86_64"), t.get("volume", "l_ssd"))
-        out.append((PRET, "Image GPU", f"{img['name']} ({img['id']}), volume racine de {img['root_size'] / 1e9:.0f} Go, "
-                                       f"démarrage sur {img['root_type']}"))
+        out.append((PRET, "Image Sentinel 1", f"{img['name']} ({img['id']}), volume racine de "
+                                              f"{img['root_size'] / 1e9:.0f} Go, démarrage sur {img['root_type']}"))
         show(f"Fiche brute de l'image {img['id']} (API Instances, {zone}) :")
         show(json.dumps(img["fiche"], ensure_ascii=False, indent=2, default=str))
     except ScalewayError as e:
-        out.append((MANQUE, "Image GPU", str(e)[:400]))
+        out.append((MANQUE, "Image Sentinel 1", str(e)[:400]))
         code, cat = _get(scw, f"/marketplace/v2/local-images?image_label={t['image_label']}&zone={zone}")
         show(f"Catalogue brut pour {t['image_label']} en {zone} (HTTP {code}) :")
         show(json.dumps(cat, ensure_ascii=False, indent=2, default=str)[:4000])
@@ -121,7 +122,6 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
     out.append(_availability(scw, zone, ctype, show))
     out += types_calcul(scw, rules)
 
-    out += _quota(scw, ctype, zone)
     out += _rights(scw, zone)
     out += groupes_securite(scw, rules)
 
@@ -137,12 +137,12 @@ def scaleway(scw, rules: dict, show=print) -> list[tuple[str, str, str]]:
 
 
 def zones_travailleurs(rules: dict) -> list[str]:
-    """Zones où un travailleur peut être créé : zone par défaut, celle de chaque type, de ses secours et replis."""
+    """Zones où un travailleur peut être créé : zone par défaut, celle de chaque type et de ses secours."""
     p = rules["travailleurs"]
     zones = {p["zone"]}
     for t in p["types"].values():
         zones.add(t.get("zone", p["zone"]))
-        zones |= {x.get("zone", t.get("zone", p["zone"])) for x in (t.get("secours") or []) + (t.get("repli_cpu") or [])}
+        zones |= {x.get("zone", t.get("zone", p["zone"])) for x in (t.get("repli_cpu") or [])}
     return sorted(zones)
 
 
@@ -162,7 +162,7 @@ def groupes_securite(scw, rules: dict) -> list[tuple[str, str, str]]:
 
 
 def types_calcul(scw, rules: dict) -> list[tuple[str, str, str]]:
-    """Chaque type de la liste de calcul Sentinel (GPU, secours, processeurs), dans l'ordre de la liste : mode de
+    """Chaque type de la liste de calcul Sentinel 1 (GP1-S, puis ses secours), dans l'ordre de la liste : mode de
     facturation, disponibilité annoncée et prix du catalogue Scaleway, comparé au prix de config/rules.yaml (coût estimé). Une
     rupture de stock n'est pas un manque : l'analyse attend et réessaie (lot C3)."""
     from mars.travailleurs import type_params, variantes
@@ -180,7 +180,7 @@ def types_calcul(scw, rules: dict) -> list[tuple[str, str, str]]:
         prix = (cat[zone].get(ctype) or {}).get("hourly_price")
         ecart = prix is not None and abs(prix - t["prix_heure"]) > 0.05 * t["prix_heure"]
         mode = "à la minute" if t["facturation"] == "minute" else "à l'heure entamée"
-        texte = (f"{'GPU' if v['calcul'] == 'gpu' else 'processeur'} facturé {mode}, {etat}, "
+        texte = (f"processeur facturé {mode}, {etat}, "
                  + (f"{prix:.4f} €/h au catalogue" if prix is not None else "prix inconnu").replace(".", ",")
                  + (f", {t['prix_heure']} €/h dans config/rules.yaml : à mettre à jour".replace(".", ",") if ecart else ""))
         statut = PRET if etat == "available" and not ecart else A_VERIFIER
@@ -191,8 +191,8 @@ def types_calcul(scw, rules: dict) -> list[tuple[str, str, str]]:
 
 
 def _availability(scw, zone: str, ctype: str, show) -> tuple[str, str, str]:
-    """Disponibilité annoncée du type d'instance. La réponse est paginée (100 types au plus par page, GPU au delà de la
-    première : « illisible (HTTP 200) » au premier diagnostic du 13/10/2026) : pages lues jusqu'à trouver le type ;
+    """Disponibilité annoncée du type d'instance. La réponse est paginée (100 types au plus par page ; les GPU, cherchés
+    alors, étaient au delà de la première : « illisible (HTTP 200) » au premier diagnostic du 13/10/2026) : pages lues jusqu'à trouver le type ;
     introuvable, la réponse brute de la première page est affichée."""
     rubrique, first, seen = f"{ctype} en {zone}", None, 0
     for page in range(1, 11):
@@ -213,33 +213,6 @@ def _availability(scw, zone: str, ctype: str, show) -> tuple[str, str, str]:
     show(f"Réponse brute de la disponibilité (première page, {seen} types lus en tout) :")
     show(json.dumps(first, ensure_ascii=False, indent=2, default=str)[:3000])
     return (A_VERIFIER, rubrique, f"{ctype} absent des {seen} types listés (réponse brute affichée)")
-
-
-def _quota(scw, ctype: str, zone: str) -> list[tuple[str, str, str]]:
-    """Quota du type GPU (API IAM, organisation du projet). Une clé limitée au projet n'a en général pas le droit de
-    le lire : la ligne le dit, sans conclure."""
-    code, proj = _get(scw, f"/account/v3/projects/{scw.project}")
-    org = proj.get("organization_id") if code == 200 and isinstance(proj, dict) else None
-    if not org:
-        return [(A_VERIFIER, f"Quota {ctype}", f"organisation illisible avec cette clé (HTTP {code}) : console Scaleway, "
-                                                "Organization, Quotas (L4-1-24G : 1 après validation de l'identité)")]
-    code, body = _get(scw, f"/iam/v1alpha1/quota?organization_id={org}&page_size=100")
-    if code != 200 or not isinstance(body, dict):
-        return [(A_VERIFIER, f"Quota {ctype}", f"quotas illisibles avec cette clé (HTTP {code}) : console Scaleway, "
-                                                "Organization, Quotas")]
-    key = ctype.lower().replace("-", "_")
-    found = [q for q in body.get("quota", []) if key in q.get("name", "").lower() or "l4" in q.get("name", "").lower()]
-    if not found:
-        return [(A_VERIFIER, f"Quota {ctype}", "aucun quota à ce nom dans la liste de l'organisation")]
-    lines = []
-    for q in found:
-        limits = q.get("limits") or [{"limit": q.get("limit"), "unlimited": q.get("unlimited")}]
-        mine = [x for x in limits if x.get("zone") in (None, zone)]
-        val = [("illimité" if x.get("unlimited") else x.get("limit")) for x in mine]
-        ok = any(x.get("unlimited") or (x.get("limit") or 0) >= 1 for x in mine)
-        lines.append((PRET if ok else MANQUE, f"Quota {q.get('name')}",
-                      f"{val} en {zone}" + ("" if ok else " : demander la validation de l'identité ou le support")))
-    return lines
 
 
 def _rights(scw, zone: str) -> list[tuple[str, str, str]]:
@@ -312,21 +285,11 @@ def config(rules: dict) -> list[tuple[str, str, str]]:
     return [(INFO, "Plafond de scènes", f"{s['scenes_max_par_jour']} par jour, budget {s['budget_mensuel_eur']} €")]
 
 
-def marquages(marques: list | None) -> list[tuple[str, str, str]]:
-    """Types marqués incompatibles (GPU inutilisable, lot C4) encore actifs : jamais essayés avant leur date de fin ;
-    levée à la main par taches.py sentinel-lever-incompatible TYPE ZONE. Information, hors du verdict : le reste de la
-    liste suffit à lancer."""
-    return [(INFO, f"Marqué incompatible : {t} en {z}",
-             f"jusqu'au {fin:%d/%m/%Y %H:%M} UTC (depuis le {depuis:%d/%m/%Y %H:%M}, travailleur {w or '?'}) : "
-             f"{(m or '')[:200]}") for t, z, depuis, fin, m, w in (marques or [])]
-
-
 def run(rules: dict, session, scw, now: datetime | None = None, show=print,
-        recorded: list | None = None, marques: list | None = None) -> list[tuple[str, str, str]]:
+        recorded: list | None = None) -> list[tuple[str, str, str]]:
     now = now or datetime.now(timezone.utc)
     lines = copernicus(session, now)
     lines += scaleway(scw, rules, show)
-    lines += marquages(marques)
     lines += block_volumes(scw, rules, recorded)
     lines += config(rules)
     return lines

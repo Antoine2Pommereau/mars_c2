@@ -3,21 +3,18 @@
 #   1. interface du réseau privé trouvée par son adresse MAC, configurée en DHCP si le système ne l'a pas fait ;
 #   2. contact du serveur sur son adresse privée (état « reseau »), journal envoyé dès que le réseau fonctionne ;
 #   3. adresses R2 remises au travailleur (poids du modèle) : un octet lu de chacune, avant Docker et l'image ;
-#   4. contrôle du GPU s'il est demandé ;
-#   5. image d'analyse tirée du registre GitHub, script du travailleur exécuté, journal final envoyé, arrêt.
+#   4. image d'analyse tirée du registre GitHub, script du travailleur exécuté, journal final envoyé, arrêt.
 # Chaque étape est écrite dans /var/log/mars-travailleur.log et sur la console série (lignes « MARS »), lisible depuis
 # la console Scaleway même si le réseau privé ne fonctionne pas. En cas d'échec, la machine s'arrête au bout de
 # 10 minutes (le temps de lire la console) ; le serveur la détruit au plus tard 10 minutes après sa création.
 # Traces (étape D2) : chaque étape est un span OTLP (JSON) rattaché à la trace du lancement (TRACEPARENT), gardé dans
 # un fichier puis envoyé au serveur dès que le réseau privé fonctionne ; le script d'analyse reçoit le contexte de
 # l'étape « analyse », ses propres spans s'y rattachent (travailleurs/otel_mini.py).
-# GPU (lot C4, essai du 19/10/2026 sur un RENDER-S : « failed to initialize NVML: Driver Not Loaded ») : avant l'analyse,
-# étape controle_gpu (nvidia-smi) ; un GPU inutilisable est signalé au serveur (état « gpu_inutilisable », message)
-# sans lancer l'analyse : le serveur détruit l'instance, marque le type incompatible et remet l'analyse en attente.
+# Le contrôle du GPU (lot C4, nvidia-smi, état « gpu_inutilisable ») est retiré au lot Z4 avec la voie GPU.
 # Chemins surchargeables pour l'essai sur le Mac (tests/test_demarrage.py) ; en production, les valeurs par défaut.
 set -uo pipefail
 MARS=${MARS_DIR:-/mars}
-. "$MARS/demarrage.env"               # RETOUR, JETON, MAC, IMAGE, SCRIPT, GPU, TRACEPARENT
+. "$MARS/demarrage.env"               # RETOUR, JETON, MAC, IMAGE, SCRIPT, DOCKER_OPTS, TRACEPARENT
 LOG=${MARS_LOG:-/var/log/mars-travailleur.log}
 CONSOLE=${MARS_CONSOLE:-/dev/console}
 NET=${MARS_NET_DIR:-/sys/class/net}
@@ -49,21 +46,6 @@ echec() {
   shutdown -h +10; exit 1
 }
 a_une_ipv4() { ip -4 -br addr show "$1" 2>/dev/null | grep -q '[0-9]\.[0-9]'; }
-# GPU inutilisable : journal, message (dernières lignes utiles et dmesg nvidia), état signalé au serveur, étape en
-# erreur, arrêt sans analyse. Le serveur détruit l'instance aussitôt.
-gpu_inutilisable() {
-  local msg="$1" dm
-  dm=$(dmesg 2>/dev/null | grep -i nvidia | tail -n 5)
-  log "GPU INUTILISABLE : $msg"
-  [ -n "$dm" ] && { log "dmesg nvidia :"; echo "$dm" | tee -a "$LOG" > "$CONSOLE"; }
-  attribut gpu.message "$msg"
-  fin_etape 2 "GPU inutilisable : $msg"
-  signal gpu_inutilisable "$msg${dm:+ | dmesg : $dm}" > /dev/null
-  envoyer_journal
-  span "travailleur.demarrage" "$RACINE" "$PARENT" "$RACINE_DEBUT" 2 "GPU inutilisable"
-  envoyer_spans
-  shutdown -h +10; exit 1
-}
 
 log "démarrage ; réseau privé attendu sur l'interface d'adresse $MAC ; serveur $RETOUR"
 
@@ -144,25 +126,7 @@ attribut r2.adresses "$N_R2"
 [ "$N_R2" = "0" ] || log "R2 : $N_R2 adresse(s) lisible(s) depuis le travailleur"
 fin_etape
 
-# 4. GPU demandé : contrôle avant tout téléchargement (nvidia-smi : nom, pilote, mémoire, CUDA)
-case "$GPU" in
-  *--gpus*)
-    etape controle_gpu
-    SORTIE_GPU=$(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>&1)
-    CODE_GPU=$?
-    if [ "$CODE_GPU" != "0" ] || [ -z "$(echo "$SORTIE_GPU" | grep -v '^ *$')" ]; then
-      gpu_inutilisable "nvidia-smi (code $CODE_GPU) : $(echo "$SORTIE_GPU" | grep -v '^ *$' | tail -n 3)"
-    fi
-    IFS=',' read -r GPU_NOM GPU_PILOTE GPU_MEMOIRE <<< "$(echo "$SORTIE_GPU" | head -n 1)"
-    GPU_CUDA=$(nvidia-smi 2>/dev/null | grep -o 'CUDA Version: [0-9.]*' | awk '{print $3}')
-    log "GPU : $GPU_NOM, pilote $GPU_PILOTE, mémoire $GPU_MEMOIRE, CUDA ${GPU_CUDA:-inconnue}"
-    attribut gpu.nom "$(echo "$GPU_NOM" | xargs)"; attribut gpu.pilote "$(echo "$GPU_PILOTE" | xargs)"
-    attribut gpu.memoire "$(echo "$GPU_MEMOIRE" | xargs)"; attribut gpu.cuda "${GPU_CUDA:-inconnue}"
-    fin_etape
-    ;;
-esac
-
-# 5. Analyse : Docker installé s'il manque (image Ubuntu officielle), puis image d'analyse
+# 4. Analyse : Docker installé s'il manque (image Ubuntu officielle), puis image d'analyse
 log "système : $(. /etc/os-release && echo "$PRETTY_NAME"), disque $(df -h / | awk 'NR==2 {print $2 " dont " $4 " libres"}')"
 if ! command -v docker > /dev/null; then
   etape installation_docker
@@ -182,15 +146,11 @@ envoyer_spans
 log "analyse"
 SORTIE=$(mktemp)
 # shellcheck disable=SC2086
-docker run --rm $GPU --env-file "$MARS/env" -e MARS_TACHE=/mars/tache.json -e "TRACEPARENT=00-$TRACE-$ETAPE_ID-01" \
+docker run --rm $DOCKER_OPTS --env-file "$MARS/env" -e MARS_TACHE=/mars/tache.json -e "TRACEPARENT=00-$TRACE-$ETAPE_ID-01" \
   -v "$MARS:/mars:ro" --entrypoint python3 "$IMAGE" "/mars/$SCRIPT" 2>&1 | tee -a "$LOG" "$SORTIE"
 CODE_ANALYSE=${PIPESTATUS[0]}
 log "analyse terminée (code $CODE_ANALYSE)"
-# Filet : le conteneur n'a pas pu recevoir le GPU (NVML, CDI) malgré le contrôle
-if [ "$CODE_ANALYSE" = "125" ] && grep -qiE 'NVML|CDI|nvidia-container' "$SORTIE"; then
-  gpu_inutilisable "docker run --gpus (code 125) : $(grep -v '^ *$' "$SORTIE" | tail -n 3)"
-fi
-# Autre sortie en échec : codes 125 à 127, Docker n'a pas lancé le conteneur (machine) ; sinon, l'analyse elle même
+# Sortie en échec : codes 125 à 127, Docker n'a pas lancé le conteneur (machine) ; sinon, l'analyse elle même
 if [ "$CODE_ANALYSE" != "0" ]; then
   case "$CODE_ANALYSE" in 125|126|127) ETAPE=analyse_docker ;; esac
   echec "code de sortie $CODE_ANALYSE : $(grep -iE 'error|erreur|exception|traceback' "$SORTIE" | tail -n 1)"

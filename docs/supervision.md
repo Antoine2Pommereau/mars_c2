@@ -103,7 +103,7 @@ plus ancien fichier, écrite par l'ingestion), taches.
 | Direct | dernier fichier de la collecte, retard de l'ingestion, messages par minute (dernière heure et courbe), signe de vie de taches, positions conservées par minute, positions par heure et par région, coupures du flux (minutes sous 20 % de la médiane, comme la frise) |
 | Disque et base | espace libre, base, positions, croissance par jour (sept derniers jours), jours restants, courbes et croissance par jour |
 | Tâches | échecs sur 7 jours, redémarrages automatiques, dernier cycle des règles, tâches en échec deux fois de suite, dernière exécution de chaque tâche, cycle des règles par étape, durée des tâches, redémarrages, échecs |
-| Satellites | coût Sentinel du mois et part du budget, coût VIIRS, dernière nuit VIIRS, ruptures de stock GPU, travailleurs actifs, détections VIIRS par statut, nuits, travailleurs (durée, mémoire, coût, motif), passages Sentinel 1 |
+| Satellites | coût Sentinel du mois et part du budget, coût VIIRS, dernière nuit VIIRS, ruptures de stock, travailleurs actifs, détections VIIRS par statut, nuits, travailleurs (durée, mémoire, coût, motif), passages Sentinel 1 |
 | Alertes | alertes de la période, élevées encore nouvelles, part traitée, délai médian de première décision, par jour et par type, par jour et par gravité, par type |
 
 Aucun tableau ne lit la table des positions : statistiques (`stats_minute`, `stats_10min_region`), registre
@@ -149,8 +149,8 @@ celles qui restent à un travailleur éphémère (DEV1-M, facturée à l'heure e
   `{"nuits": …, "granules": 0}` ; sa trace ne contient que la recherche des granules auprès de la NASA (CMR), sans
   travailleur, et n'apparaît donc pas dans « Dernières traces de bout en bout ».
 
-Pour une analyse Sentinel 1 choisie à la main : `taches.py sentinel-analyser ID` (GPU facturé à la minute, plafond
-et budget appliqués, `docs/sentinel.md`).
+Pour une analyse Sentinel 1 choisie à la main : `taches.py sentinel-analyser ID` (GP1-S facturé à l'heure entamée,
+plafond et budget appliqués, `docs/sentinel.md`).
 
 Où la retrouver :
 * **Vue d'ensemble**, panneau « Dernières traces de bout en bout » : la ligne apparaît dès le lancement (statut

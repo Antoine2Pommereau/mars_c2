@@ -228,7 +228,7 @@ def complet(w) -> int:
     base = {"analyse": 1, "id": "S1C_IW_GRDH_1SDV_20261018T061500_20261018T061525_004321_008765_ABCD_COG",
             "debut": "2026-10-18T06:15:00Z", "fin": "2026-10-18T06:15:25Z", "satellite": "S1C",
             "vv_path": paths["vv"], "vh_path": paths["vh"]}
-    task = {"regions": [[-7.5, 46.5, -3.0, 49.6]], "confiance": 0.5, "nms_m": 10, "vignette_km": 3, "force_cpu": True,
+    task = {"regions": [[-7.5, 46.5, -3.0, 49.6]], "confiance": 0.5, "nms_m": 10, "vignette_km": 3,
             "travail": racine}
     t = time.time()
     entiere = w.run({**task, "scenes": [base]}, local=True)["scenes"][0]

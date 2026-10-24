@@ -178,51 +178,25 @@ groups:
       # Lot C3 : une simple rupture de stock n'alerte pas (l'analyse attend et réessaie) ; seule une analyse abandonnée
       # au delà de la fenêtre utile (sentinel.fenetre_utile_h) prévient, une fois
       - uid: mars-sentinel-abandon
-        title: Analyse Sentinel 1 abandonnée faute de GPU
+        title: Analyse Sentinel 1 abandonnée faute de calcul
         condition: C
         for: 0s
         noDataState: OK
         execErrState: Alerting
         labels: {source: grafana}
         annotations:
-          summary: '{{ printf "%.0f" $values.A.Value }} analyse(s) Sentinel 1 abandonnée(s) : aucun GPU ni processeur disponible pendant toute la fenêtre utile.'
+          summary: '{{ printf "%.0f" $values.A.Value }} analyse(s) Sentinel 1 abandonnée(s) : aucun processeur disponible pendant toute la fenêtre utile.'
         data:
           - refId: A
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: A, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE 'GPU indisponible pendant toute la fenêtre utile%' AND completed_at > now() - interval '55 minutes'"}
+                    rawSql: "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE '%indisponible pendant toute la fenêtre utile%' AND completed_at > now() - interval '55 minutes'"}
           - refId: B
             relativeTimeRange: {from: 600, to: 0}
             datasourceUid: mars
             model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN count(*) > 0 AND notification_permise('travailleurs', false) THEN 1 ELSE 0 END AS alerte FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE 'GPU indisponible pendant toute la fenêtre utile%' AND completed_at > now() - interval '55 minutes'"}
-          - refId: C
-            datasourceUid: __expr__
-            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
-
-      # Lot C4 : GPU inutilisable constaté par un travailleur (nvidia-smi, NVML) : type et zone marqués incompatibles
-      # pendant 7 jours ; une alerte par marquage (fenêtre de 55 minutes après le marquage, évaluée chaque minute)
-      - uid: mars-gpu-incompatible
-        title: GPU marqué incompatible
-        condition: C
-        for: 0s
-        noDataState: OK
-        execErrState: Alerting
-        labels: {source: grafana}
-        annotations:
-          summary: 'GPU inutilisable sur {{ printf "%.0f" $values.A.Value }} type(s) d''instance : marqué(s) incompatible(s) 7 jours, type suivant essayé.'
-        data:
-          - refId: A
-            relativeTimeRange: {from: 600, to: 0}
-            datasourceUid: mars
-            model: {refId: A, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT count(*) AS types FROM types_incompatibles WHERE depuis > now() - interval '55 minutes' AND leve_le IS NULL"}
-          - refId: B
-            relativeTimeRange: {from: 600, to: 0}
-            datasourceUid: mars
-            model: {refId: B, editorMode: code, format: table, rawQuery: true,
-                    rawSql: "SELECT CASE WHEN count(*) > 0 AND notification_permise('travailleurs', false) THEN 1 ELSE 0 END AS alerte FROM types_incompatibles WHERE depuis > now() - interval '55 minutes' AND leve_le IS NULL"}
+                    rawSql: "SELECT CASE WHEN count(*) > 0 AND notification_permise('travailleurs', false) THEN 1 ELSE 0 END AS alerte FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE '%indisponible pendant toute la fenêtre utile%' AND completed_at > now() - interval '55 minutes'"}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}

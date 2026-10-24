@@ -1,6 +1,6 @@
 #!/bin/bash
 # Essai des traces de bout en bout, côté travailleur (Python 3.8, comme l'image d'AI2) : étapes du script de
-# démarrage (travailleurs/traces.sh), puis le vrai script Sentinel (travailleurs/sentinel.py), sans GPU ni modèle :
+# démarrage (travailleurs/traces.sh), puis le vrai script Sentinel (travailleurs/sentinel.py), sans modèle :
 # il s'arrête à la préparation, renvoie son échec, et ses spans partent par nginx (port 8090, jeton vérifié).
 set -euo pipefail
 # Check-Date : horloge de la machine de Docker Desktop parfois en retard sur un index Debian tout juste publié (22/10/2026)

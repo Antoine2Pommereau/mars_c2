@@ -198,7 +198,7 @@ export const L = {
     prochain: (m: string) => `Prochain ${m === "S1" ? "Sentinel 1" : "Sentinel 2"}`, dernierAcquis: "Dernier passage acquis",
     calendrier: "Calendrier mis à jour le", nuitViirs: "Dernière nuit VIIRS", travailleur: "Dernier travailleur",
     motif: "Motif", lancement: "Dernier lancement VIIRS",
-    sentinel: "Dernier passage Sentinel 1 analysé", travailleurGpu: "Dernier travailleur GPU", lancementSentinel: "Dernier lancement Sentinel 1",
+    sentinel: "Dernier passage Sentinel 1 analysé", travailleurSentinel: "Dernier travailleur Sentinel 1", lancementSentinel: "Dernier lancement Sentinel 1",
     sentinelDe: (sat: string, le: string, etat: string, n: number) => `${sat}, ${le}, ${etat}, ${n} détections`,
     coutMois: "Coût Sentinel du mois", euros: (e: number) => `${e.toFixed(2).replace(".", ",")} €`,
     sentinel2: "Dernier passage Sentinel 2 analysé",
@@ -216,7 +216,7 @@ export const L = {
     demandesDe: (attente: number, planifiees: number) => `${attente} en attente, ${planifiees} planifiée${planifiees > 1 ? "s" : ""}`,
     observationDe: (sat: string, quand: string, objet: string) => `${sat.replace(/^S(\d)/, "Sentinel $1")} ${quand}, ${objet}`,
     tipCoupe: "tip and cue coupé",
-    attenteGpu: (dans: string) => `GPU indisponible chez Scaleway, nouvel essai dans ${dans}`,
+    attenteCalcul: (dans: string) => `En attente (processeur indisponible ou lot suivant), nouvel essai dans ${dans}`,
     services: { interface: "Interface", api: "API", taches: "Tâches", ingestion: "Ingestion", collecte: "Collecte" } as Record<string, string>,
     travailleurDe: (etat: string, type: string, le: string, s: number | null, eur: number | null) =>
       `${etat}, ${type}, ${le}${s != null ? `, ${Math.round(s / 60)} min d'analyse` : ""}${eur != null ? `, ${eur.toFixed(3).replace(".", ",")} €` : ""}`,

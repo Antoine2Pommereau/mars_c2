@@ -123,7 +123,7 @@ le résumé. Pièges résolus : `docs/pieges_archives.md`.
   surtout). D'où « non évaluable » (coupure du flux, ou aucune réception à 30 km) et la gravité faible « à confirmer »
   par défaut (règles 2026.10.20, `taches.py viirs-reevaluer` pour l'existant).
 * Travailleurs : le serveur n'expose aucun port sur Internet ; le retour passe par le réseau privé Scaleway (nginx,
-  port 8090 sur `MARS_IP_PRIVEE`). Les instances CPU sont facturées à l'heure entamée, les GPU à la minute.
+  port 8090 sur `MARS_IP_PRIVEE`). Les instances processeur sont facturées à l'heure entamée.
 * Un élément `fixed` placé dans un panneau à `backdrop-blur` est contenu par ce panneau (le flou crée un bloc
   conteneur) : une vue agrandie passe par un portail (`createPortal` vers `document.body`).
 * Les tests en base (`MARS_TEST_DATABASE_URL`) vident des tables de la base de test (positions, zone de réception) :
@@ -143,20 +143,21 @@ le résumé. Pièges résolus : `docs/pieges_archives.md`.
 * **Taille d'un volume bloc** : l'API Instances renvoie `size` 0 pour un volume `sbs_volume` (et pour l'instantané
   `sbs_snapshot` de l'image) ; la taille se lit dans l'API Block Storage. Premier essai réel du 14/10/2026 (passage
   110, travailleur 19) refusé pour « 0 Go » ; `boot_problem` la lit désormais là, sans refus si elle reste illisible.
-* **GPU L4 chez Scaleway** : pas de disque local, volume bloc (`sbs_volume`, image de type `instance_sbs`) ; `terminate`
-  laisse le volume bloc (facturé) : extinction, suppression de l'instance, puis du volume par l'API Block Storage
-  (droit BlockStorageFullAccess) ; volumes enregistrés en base dès la création.
+* **Volume bloc chez Scaleway** (POP2-8C-32G de secours ; autrefois les GPU L4) : pas de disque local, volume bloc
+  (`sbs_volume`, image de type `instance_sbs`) ; `terminate` laisse le volume bloc (facturé) : extinction, suppression
+  de l'instance, puis du volume par l'API Block Storage (droit BlockStorageFullAccess) ; volumes enregistrés en base dès
+  la création.
 * Le catalogue STAC `sentinel-1-grd` ne renvoie que la version COG des produits (`IW_GRDH_1S-COG`, fichiers
   `-cog.tiff`) ; le produit d'origine reste trouvable par OData (`S3Path`).
-* **Image GPU sur volume bloc** : la fiche de l'API Instances d'une image `instance_sbs` peut donner une taille nulle
+* **Image sur volume bloc** : la fiche de l'API Instances d'une image `instance_sbs` peut donner une taille nulle
   pour son volume racine (instantané bloc) : la lire dans l'API Block Storage, comme la ligne de commande Scaleway.
 * Les tests passent depuis le dépôt même si une image ne copie pas un module (cas de `backend/sentinel.py`, 11/10) :
   `tests/test_images.py` et `scripts/verifier_images.sh` avant chaque publication.
 * Un trou de notre collecte agit de trois façons sur la règle des coupures : durée des silences, début inconnu des
   silences qui commencent dedans, historique manquant dans l'heure qui suit. Ne retirer que les minutes ne suffit pas
   (arrêt de 20 min : une coupure élevée fabriquée, un point collectif perdu, avant correction).
-* La disponibilité des types d'instance (`/products/servers/availability`) est paginée, 100 types par page : les GPU ne
-  sont pas sur la première (« illisible (HTTP 200) » au diagnostic du 13/10/2026). Lire toutes les pages.
+* La disponibilité des types d'instance (`/products/servers/availability`) est paginée, 100 types par page : le type cherché
+  peut ne pas être sur la première (« illisible (HTTP 200) » au diagnostic du 13/10/2026). Lire toutes les pages.
 * L'expiration des clés S3 de Copernicus n'est pas lisible avec ces clés : `CDSE_CLES_EXPIRENT_LE` et
   `CDSE_TRAVAILLEUR_EXPIRENT_LE` dans le `.env`.
 * **Copernicus refuse les adresses présignées** (test du 14/10/2026 sur le serveur, même objet, mêmes clés) :
@@ -223,12 +224,8 @@ le résumé. Pièges résolus : `docs/pieges_archives.md`.
   reprojection) ; une image plus petite dans une dimension donne des décalages négatifs et une découpe fausse. Une
   fenêtre fait au moins 2 300 pixels de côté (`COTE_MIN_PX` du travailleur). `gdal.Translate(srcWin=…)` recale les
   points d'appui d'un GRD sur la fenêtre (vérifié : écart nul) ; `prepare_scenes` reprojette par ces points d'appui.
-* **Stock des GPU chez Scaleway** : catalogue et disponibilités publics (`/instance/v1/zones/<zone>/products/servers`
+* **Stock chez Scaleway** : catalogue et disponibilités publics (`/instance/v1/zones/<zone>/products/servers`
   et `/availability`, sans clé) ; « scarce » ne garantit rien (412 out_of_stock au démarrage le 16/10/2026). Le réseau
-  privé est régional : un GPU de pl-waw-2 ne peut pas renvoyer ses résultats au serveur de fr-par.
-* **GPU Pascal et image GPU de Scaleway** (essai 26 du 19/10/2026) : « Ubuntu Noble GPU OS 13 » charge les modules
-  noyau ouverts de NVIDIA, qui ne gèrent que Turing et plus récent ; un P100 (RENDER-S) démarre mais `docker run
-  --gpus` échoue (« failed to initialize NVML: Driver Not Loaded »). Le catalogue ne le dit pas : seul le contrôle du
-  GPU sur l'instance (`controle_gpu`) le révèle.
-* Une alerte « une fois » de Grafana (abandon Sentinel, GPU marqué incompatible) regarde une fenêtre de 55 minutes :
+  privé est régional : une instance de pl-waw-2 ne peut pas renvoyer ses résultats au serveur de fr-par.
+* Une alerte « une fois » de Grafana (abandon Sentinel) regarde une fenêtre de 55 minutes :
   avec le rappel d'une heure de la politique ntfy, une fenêtre plus longue enverrait une seconde notification.

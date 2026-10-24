@@ -3,18 +3,19 @@
 > **État au 24/10/2026**
 > * **En pause** depuis le 21/10/2026 par le panneau de contrôle (état en base, table `interrupteurs_satellites` ;
 >   le fichier garde `scenes_max_par_jour: 2`). Reprise : Coulisses, Sources et capteurs, ou `taches.py satellites-pause off sentinel1`.
-> * Calcul : **processeur en premier** (GP1-S en fr-par-2, POP2-8C-32G en secours) pour 4 fenêtres au plus ; GPU
->   (L4 fr-par-2, L4 fr-par-1, L40S fr-par-2) seulement au delà de 4 fenêtres ou pour une scène entière ; RENDER-S retiré.
+> * Calcul : **processeur seul** depuis le lot Z4 (24/10/2026) : GP1-S en fr-par-2, POP2-8C-32G en secours, quatre
+>   fenêtres par session, lots de quatre au delà ; une scène entière est refusée. La voie GPU (L4, L40S, image GPU OS,
+>   contrôle du GPU, types incompatibles, `SENTINEL_CALCUL_ESSAI`, `sentinel-lever-incompatible`) est retirée.
 > * **Une seule analyse réelle aboutie** : analyse 97 du 19/10/2026 (passage 149, GP1-S, 1 scène, 122 s, 2,6 Go de
 >   mémoire, 1,7 % de la scène lue, 2 détections : MSC MERAVIGLIA appariée, un écho écarté à terre). **Jamais d'analyse
 >   aboutie sur GPU** (essai 20 du 14/10 : GPU vu, import corrigé depuis ; rupture du L4 le 16/10 ; RENDER-S incompatible
->   le 19/10). POP2-8C-32G jamais lancé.
+>   le 19/10), d'où son retrait. POP2-8C-32G jamais lancé.
 > * Coût unitaire mesuré : **0,19 € HT par session GP1-S** (heure entamée) ; budget de 8 € par mois partagé avec
 >   Sentinel 2 et tip and cue.
-> * Ce qui manque : une série d'analyses réelles (100 analyses sur 101 en échec, dont 82 essais du 12/10), un essai
->   GPU abouti, la recalibration des tolérances d'IDENTITY_MISMATCH.
+> * Ce qui manque : une série d'analyses réelles (100 analyses sur 101 en échec, dont 82 essais du 12/10), la
+>   recalibration des tolérances d'IDENTITY_MISMATCH.
 > * Travailleurs (création, types, destruction, sécurité, facturation, diagnostic) : `docs/travailleurs.md`. Les
->   sections datées plus bas sont l'historique des essais ; les sections qui supposaient un GPU unique sont signalées.
+>   sections datées plus bas sont l'historique des essais ; tout ce qu'elles disent du GPU est retiré au lot Z4.
 
 Lot C, première livraison (C1 et C2) : détection des navires sur les images radar Sentinel 1, déclenchée
 automatiquement sur les passages utiles, fusionnée avec l'AIS, avec ses alertes et ses preuves. Même architecture que
@@ -176,6 +177,8 @@ d'analyse aboutie sur GPU ; sur GP1-S, 6 min 15 s de la création à la destruct
 
 ## Image GPU sur volume bloc (corrigé le 12/10/2026, confirmé le 13/10/2026)
 
+> Historique : voie GPU retirée au lot Z4 (24/10/2026). Le volume bloc reste en usage pour le POP2-8C-32G de secours.
+
 Les lancements 10 à 16 ont échoué avant toute création : « image e6d1b7f4 (ubuntu_noble_gpu_os_13_nvidia) introuvable
 ou sans volume racine ». Le catalogue public trouve bien l'image `e6d1b7f4` (type `instance_sbs`, compatible
 L4-1-24G, fr-par-2). L'échec venait de la lecture de sa fiche dans l'API Instances, que la vérification écrite pour les
@@ -312,6 +315,8 @@ L4-1-24G, instance et volume créés pour rien.
 
 ### Rupture de stock des GPU
 
+> Historique : voie GPU retirée au lot Z4 (24/10/2026).
+
 * **Disponibilité lue avant toute création** (API Instances, `products/servers/availability`, lecture seule) : un type
   « shortage » n'est jamais essayé, rien n'est créé. Le 19/10/2026 à midi, le L4-1-24G était « shortage » en fr-par-1
   et en fr-par-2 : le stock varie d'heure en heure.
@@ -327,6 +332,8 @@ L4-1-24G, instance et volume créés pour rien.
   Scaleway, nouvel essai dans N min ».
 
 ### Types de secours (catalogue public de Scaleway, 19/10/2026)
+
+> Historique : voie GPU retirée au lot Z4 (24/10/2026).
 
 Exigences du modèle d'AI2 : PyTorch 1.13.1 compilé pour CUDA 11.7 (architectures sm_37 à sm_86, plus le PTX pour les
 plus récentes : le L4, sm_89, l'a confirmé à l'essai 20), 16 Go de mémoire GPU suffisent (réglage d'AI2 sur un T4 de
@@ -431,6 +438,8 @@ dans le panneau de contrôle ; une commande manuelle en pause demande `--malgre-
    GPU), durée et coût dans `task_runs` (`travailleur_sentinel`).
 
 ## Lot C4 : GPU inutilisable, échec signalé, essai forcé sur processeur (19/10/2026)
+
+> Historique : voie GPU retirée au lot Z4 (24/10/2026).
 
 * **Contrôle du GPU avant l'analyse** (`travailleurs/demarrage.sh`, étape `controle_gpu`, avant même le
   téléchargement de l'image de 5 Go) : `nvidia-smi` donne le nom du GPU, le pilote, la mémoire et la version de CUDA,
@@ -538,6 +547,9 @@ port de Brest à 281 m écartés ; point au large et mouillage de la rade de Bre
 
 ### Choix du calcul : processeur en premier
 
+**Remplacé au lot Z4 (24/10/2026)** : processeur seul, quatre fenêtres par session puis lots, scène entière refusée
+(`docs/travailleurs.md`, section 3.2). Le tableau ci dessous garde la règle du lot C5.
+
 | Passage | Calcul | Motif enregistré (analyse et trace) |
 |---|---|---|
 | 4 fenêtres au plus (`fenetres_max_cpu`), aucune scène entière | GP1-S d'emblée, POP2-8C-32G si le GP1-S est en rupture, sinon attente | « petit passage : processeur » |
@@ -570,9 +582,9 @@ budget du mois, le coût réel et Grafana l'utilisent.
 Coût réel de chaque travailleur, calculé à sa destruction (création à destruction, selon le mode du type) :
 `travailleurs.cout_reel_eur` et `task_runs` (`travailleur_sentinel`), à côté du coût prévu au lancement
 (`travailleurs.cout_prevu_eur`) ; span `travailleur.cout` avec l'écart. Le travailleur 26 porte les 1,23 € facturés
-(migration 30). Garde : un type facturé à l'heure entamée et plus cher que `prix_max_essai_eur` (0,50 €/h) n'est
-jamais lancé tant qu'aucun travailleur n'a abouti sur lui ; il faut alors `SENTINEL_CALCUL_ESSAI` explicite. Aucun type
-de la liste actuelle n'est concerné ; le RENDER-S l'aurait été.
+(migration 30). La garde de dépense (`prix_max_essai_eur`,
+`SENTINEL_CALCUL_ESSAI`) est retirée au lot Z4 : aucun type de la liste n'atteignait son seuil de 0,50 €/h, elle ne
+pouvait rien refuser (`docs/bilan.md`, section 2.2).
 
 ### Sentinel 1 rallumé en automatique (19/10/2026, règles 2026.10.30)
 

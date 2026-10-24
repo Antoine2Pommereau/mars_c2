@@ -335,7 +335,7 @@ async def devis_verification(request: Request, cle: str, end: datetime | None = 
             refus = f"Vérification satellite en pause : {pauses['tip_and_cue'] or 'sans motif'}"
         elif not missions:
             refus = "Sentinel 1 et Sentinel 2 en pause"
-        cout = sentinel.estimation(rules, rules["sentinel"], 1, 0, "cpu")
+        cout = sentinel.estimation(rules, rules["sentinel"], 1)
         sp.set_attributes({"dossiers.refus": refus or "", "dossiers.passage": bool(prochain)})
     return {"cle": cle, "refus": refus, "cout_estime_eur": round(cout, 2), "pauses": pauses,
             "prochain_passage": prochain and {"satellite": prochain["satellite"], "mission": prochain["mission"],

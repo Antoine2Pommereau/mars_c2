@@ -43,7 +43,7 @@ FACULTATIVES = {
         "MARS_IP_PRIVEE": "adresse de retour des travailleurs, écrite par taches au lancement",
         "CDSE_ACCESS_KEY": "paire Copernicus du serveur : taches seulement", "CDSE_SECRET_KEY": "idem",
         "CDSE_CLES_EXPIRENT_LE": "échéances relevées par taches", "CDSE_TRAVAILLEUR_EXPIRENT_LE": "idem",
-        "SENTINEL_CALCUL_ESSAI": "essai manuel, taches seulement", "SENTINEL_PLAFOND_ESSAI": "idem",
+        "SENTINEL_PLAFOND_ESSAI": "essai manuel, taches seulement",
         "GRAFANA_PG_MOT_DE_PASSE": "rôle de lecture de Grafana, posé par taches",
         "SEUIL_COLLECTE_MIN": "seuils de la supervision (taches)", "SEUIL_INGESTION_MIN": "idem",
         "SEUIL_DISQUE_LIBRE_PCT": "idem", "SEUIL_DISQUE_ORANGE_PTS": "idem", "SEUIL_COLLECTEUR_MUET_MIN": "idem",
@@ -62,7 +62,7 @@ FACULTATIVES = {
     "taches": {
         "MARS_OPERATEURS": "empreintes des opérateurs : l'API seulement (controle-diagnostic lit la session par l'API)",
         "MARS_OPERATEUR": "nom de l'auteur d'une commande manuelle (taches.py satellites-pause), facultatif",
-        "SENTINEL_CALCUL_ESSAI": "essai manuel (docker compose run -e)", "SENTINEL_PLAFOND_ESSAI": "idem",
+        "SENTINEL_PLAFOND_ESSAI": "essai manuel (docker compose run -e)",
         "DEPLOIEMENT": "posée par scripts/deployer.sh (docker compose exec -e)",
         "ESSAI_CIBLE": "posée par scripts/essai_restauration.sh (docker compose exec -e)",
     },

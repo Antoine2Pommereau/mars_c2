@@ -380,7 +380,7 @@
    "id": 5,
    "type": "stat",
    "title": "Satellites",
-   "description": "Dernière nuit VIIRS traitée, et les sources en pause (panneau de contrôle). Rouge si la nuit précédente manque après HEURE_NUIT_VIIRS (alerte, muette quand VIIRS est en pause) ; orange si une analyse Sentinel 1 attend un GPU (rupture de stock, nouvel essai à chaque cycle) ou si un travailleur a échoué en 24 h (hors rupture de stock).",
+   "description": "Dernière nuit VIIRS traitée, et les sources en pause (panneau de contrôle). Rouge si la nuit précédente manque après HEURE_NUIT_VIIRS (alerte, muette quand VIIRS est en pause) ; orange si une analyse Sentinel 1 attend (rupture de stock ou lot suivant, nouvel essai à chaque cycle) ou si un travailleur a échoué en 24 h (hors rupture de stock).",
    "datasource": {
     "type": "grafana-postgresql-datasource",
     "uid": "mars"
@@ -402,7 +402,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "time_series",
-     "rawSql": "SELECT now() AS time, CASE WHEN absente THEN 'Nuit du ' || to_char(veille, 'DD/MM') || ' absente' WHEN attente_min IS NOT NULL THEN 'GPU indisponible chez Scaleway, nouvel essai dans ' || greatest(attente_min, 0) || ' min' WHEN nuit IS NULL THEN 'aucune nuit VIIRS traitée' ELSE 'Nuit du ' || to_char(nuit, 'DD/MM') || ' traitée' END || coalesce(', en pause : ' || pauses, '') AS metric, CASE WHEN absente THEN 2 WHEN attente_min IS NOT NULL THEN 1 WHEN nuit IS NULL THEN -1 WHEN echec THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT max(nuit) FROM viirs_granules WHERE traite_le IS NOT NULL) AS nuit, (now() AT TIME ZONE 'UTC')::date - 1 AS veille, extract(hour FROM now() AT TIME ZONE 'UTC') >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_heure_nuit_viirs'), 8) AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1 AND traite_le IS NOT NULL) AND NOT source_en_pause('viirs') AS absente, (SELECT string_agg(CASE source WHEN 'sentinel1' THEN 'Sentinel 1' WHEN 'sentinel2' THEN 'Sentinel 2' WHEN 'viirs' THEN 'VIIRS' ELSE 'tip and cue' END, ', ' ORDER BY source) FROM interrupteurs_satellites WHERE en_pause) AS pauses, EXISTS (SELECT 1 FROM travailleurs WHERE etat = 'echec' AND NOT rupture_stock AND cree_le > now() - interval '24 hours') AS echec, (SELECT ceil(extract(epoch FROM min(prochain_essai) - now()) / 60)::int FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu') AS attente_min) x"
+     "rawSql": "SELECT now() AS time, CASE WHEN absente THEN 'Nuit du ' || to_char(veille, 'DD/MM') || ' absente' WHEN attente_min IS NOT NULL THEN 'Sentinel 1 en attente, nouvel essai dans ' || greatest(attente_min, 0) || ' min' WHEN nuit IS NULL THEN 'aucune nuit VIIRS traitée' ELSE 'Nuit du ' || to_char(nuit, 'DD/MM') || ' traitée' END || coalesce(', en pause : ' || pauses, '') AS metric, CASE WHEN absente THEN 2 WHEN attente_min IS NOT NULL THEN 1 WHEN nuit IS NULL THEN -1 WHEN echec THEN 1 ELSE 0 END AS value FROM (SELECT (SELECT max(nuit) FROM viirs_granules WHERE traite_le IS NOT NULL) AS nuit, (now() AT TIME ZONE 'UTC')::date - 1 AS veille, extract(hour FROM now() AT TIME ZONE 'UTC') >= coalesce((SELECT valeur FROM parametres_supervision WHERE cle = 'seuil_heure_nuit_viirs'), 8) AND NOT EXISTS (SELECT 1 FROM viirs_granules WHERE nuit = (now() AT TIME ZONE 'UTC')::date - 1 AND traite_le IS NOT NULL) AND NOT source_en_pause('viirs') AS absente, (SELECT string_agg(CASE source WHEN 'sentinel1' THEN 'Sentinel 1' WHEN 'sentinel2' THEN 'Sentinel 2' WHEN 'viirs' THEN 'VIIRS' ELSE 'tip and cue' END, ', ' ORDER BY source) FROM interrupteurs_satellites WHERE en_pause) AS pauses, EXISTS (SELECT 1 FROM travailleurs WHERE etat = 'echec' AND NOT rupture_stock AND cree_le > now() - interval '24 hours') AS echec, (SELECT ceil(extract(epoch FROM min(prochain_essai) - now()) / 60)::int FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu') AS attente_min) x"
     }
    ],
    "fieldConfig": {
@@ -628,35 +628,30 @@
             "color": "#ef6461",
             "index": 0
            },
-           "gpu_inutilisable": {
-            "text": "GPU inutilisable",
-            "color": "#ef6461",
-            "index": 1
-           },
            "termine": {
             "text": "terminée",
             "color": "#7c8b97",
-            "index": 2
+            "index": 1
            },
            "resultats": {
             "text": "résultats reçus",
             "color": "#4fb6c8",
-            "index": 3
+            "index": 2
            },
            "demarre": {
             "text": "en cours",
             "color": "#4fb6c8",
-            "index": 4
+            "index": 3
            },
            "cree": {
             "text": "créée",
             "color": "#4fb6c8",
-            "index": 5
+            "index": 4
            },
            "demande": {
             "text": "demandée",
             "color": "#4fb6c8",
-            "index": 6
+            "index": 5
            }
           }
          }

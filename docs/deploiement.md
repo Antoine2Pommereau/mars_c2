@@ -16,8 +16,7 @@ collecteur OpenTelemetry `otel`, `tempo`). Pas de cron sur l'hôte : tout redém
 (paquets privés `ghcr.io/antoine2pommereau/mars_c2-backend`, `mars_c2-web` et `mars_c2-scripts`) par
 `scripts/publier.sh`, puis téléchargées et démarrées par `scripts/deployer.sh` (`docs/exploitation.md`) : le serveur
 n'a ni la place ni la mémoire pour les construire, et les gros transferts par SSH échouent depuis le Mac (« Result too
-large »). Le service d'inférence radar reste sur le Mac (GPU Apple) ; sur le serveur, l'API le signale « injoignable »,
-ce qui est attendu.
+large »). (Le service d'inférence radar du Mac est retiré au lot Z4.)
 
 Rien n'est ouvert sur Internet hormis SSH : la base n'a aucun port publié, l'API, l'interface et Grafana écoutent sur
 127.0.0.1 et se consultent par un tunnel SSH ; le retour des travailleurs passe par le réseau privé Scaleway (port
@@ -304,15 +303,14 @@ Une fois, avant la première nuit VIIRS (détail et coûts : `docs/travailleurs.
    La zone et le type d'instance des travailleurs sont dans `config/rules.yaml` (`travailleurs`). Puis
    `docker compose up -d --no-build web taches` (nginx publie le port 8090 sur l'adresse privée).
 5. **Vérifier** sans attendre 06:30 : procédure d'essai ci dessous.
-6. **Sentinel 1 (lot C, `docs/sentinel.md`)** : quota GPU L4-1-24G (identité du compte validée), droit
-   **BlockStorageFullAccess** ajouté à la politique de l'application (les L4 n'ont que des volumes bloc, supprimés
-   explicitement), deux paires de clés S3 de Copernicus Data Space dans le `.env`, obtenues sur
+6. **Sentinel 1 (lot C, `docs/sentinel.md`)** : droit **BlockStorageFullAccess** ajouté à la politique de
+   l'application (le POP2-8C-32G de secours n'a qu'un volume bloc, supprimé explicitement), deux paires de clés S3 de Copernicus Data Space dans le `.env`, obtenues sur
    https://eodata-s3keysmanager.dataspace.copernicus.eu : celle du serveur (`CDSE_ACCESS_KEY`, `CDSE_SECRET_KEY`,
    `CDSE_CLES_EXPIRENT_LE`), qui ne le quitte jamais, et celle des travailleurs (`CDSE_TRAVAILLEUR_ACCESS_KEY`,
    `CDSE_TRAVAILLEUR_SECRET_KEY`, `CDSE_TRAVAILLEUR_EXPIRENT_LE=AAAA-MM-JJ`), que l'API remet à chaque travailleur par
    le réseau privé (Copernicus refuse les adresses présignées, `docs/sentinel.md`) ; `taches.py sentinel-diagnostic`
    lit 16 octets avec chacune et surveille l'expiration. Après un changement de clés :
-   `docker compose up -d backend taches` (les deux reçoivent ces variables, à leur recréation). Le réseau privé est régional : le travailleur GPU en fr-par-2
+   `docker compose up -d backend taches` (les deux reçoivent ces variables, à leur recréation). Le réseau privé est régional : le travailleur Sentinel en fr-par-2
    rejoint le serveur en fr-par-1 sans autre réglage. Migration 25 (`db/init/25_sentinel.sql`). Sans la paire des travailleurs, rien
    n'est lancé ; premier essai sur un passage choisi à la main : `taches.py sentinel-analyser <id>` (procédure dans
    `docs/sentinel.md`).

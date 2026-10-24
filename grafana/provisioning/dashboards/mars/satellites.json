@@ -477,8 +477,8 @@
   {
    "id": 7,
    "type": "stat",
-   "title": "Ruptures de stock GPU sur 30 jours",
-   "description": "Lancements refusés par Scaleway faute de GPU L4 disponible.",
+   "title": "Ruptures de stock sur 30 jours",
+   "description": "Lancements refusés par Scaleway faute d'instance disponible.",
    "datasource": {
     "type": "grafana-postgresql-datasource",
     "uid": "mars"
@@ -881,11 +881,6 @@
             "text": "terminé",
             "color": "#7c8b97",
             "index": 1
-           },
-           "gpu_inutilisable": {
-            "text": "GPU inutilisable",
-            "color": "#ef6461",
-            "index": 2
            }
           }
          }
@@ -961,8 +956,8 @@
   {
    "id": 13,
    "type": "stat",
-   "title": "En attente d'un GPU",
-   "description": "Rupture de stock chez Scaleway : nouvel essai à chaque cycle, repli sur processeur après repli_cpu_apres_h, abandon (et alerte) au delà de fenetre_utile_h.",
+   "title": "En attente d'un calcul",
+   "description": "Rupture de stock chez Scaleway ou lot suivant : nouvel essai à chaque cycle, abandon (et alerte) au delà de fenetre_utile_h.",
    "datasource": {
     "type": "grafana-postgresql-datasource",
     "uid": "mars"
@@ -1163,7 +1158,7 @@
   {
    "id": 16,
    "type": "stat",
-   "title": "Abandonnées faute de GPU, 30 jours",
+   "title": "Abandonnées faute de calcul, 30 jours",
    "description": "",
    "datasource": {
     "type": "grafana-postgresql-datasource",
@@ -1186,7 +1181,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE 'GPU indisponible pendant toute la fenêtre utile%' AND requested_at > now() - interval '30 days'"
+     "rawSql": "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'failed' AND error LIKE '%indisponible pendant toute la fenêtre utile%' AND requested_at > now() - interval '30 days'"
     }
    ],
    "fieldConfig": {
@@ -1439,7 +1434,7 @@
             "index": 0
            },
            "attente_gpu": {
-            "text": "attente GPU",
+            "text": "en attente",
             "color": "#f0a84b",
             "index": 1
            },
@@ -1507,109 +1502,6 @@
   {
    "id": 19,
    "type": "table",
-   "title": "Types marqués incompatibles",
-   "description": "GPU inutilisable constaté par le travailleur au contrôle du GPU (NVML) : type et zone jamais essayés jusqu'à la date de fin, sauf levée à la main (commande de levée, docs/sentinel.md).",
-   "datasource": {
-    "type": "grafana-postgresql-datasource",
-    "uid": "mars"
-   },
-   "gridPos": {
-    "x": 0,
-    "y": 40,
-    "w": 24,
-    "h": 6
-   },
-   "transparent": true,
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "grafana-postgresql-datasource",
-      "uid": "mars"
-     },
-     "editorMode": "code",
-     "rawQuery": true,
-     "format": "table",
-     "rawSql": "SELECT commercial_type || ' ' || zone AS \"Type\", depuis AS \"Depuis\", jusqu_au AS \"Jusqu'au\", CASE WHEN leve_le IS NOT NULL THEN 'levé le ' || to_char(leve_le, 'DD/MM HH24:MI') WHEN jusqu_au > now() THEN 'actif' ELSE 'expiré' END AS \"État\", travailleur_id AS \"Travailleur\", left(coalesce(message, ''), 160) AS \"Cause\", trace_id AS \"Trace\" FROM types_incompatibles WHERE jusqu_au > now() - interval '30 days' ORDER BY depuis DESC LIMIT 50"
-    }
-   ],
-   "fieldConfig": {
-    "defaults": {
-     "custom": {
-      "align": "auto",
-      "cellOptions": {
-       "type": "auto"
-      }
-     },
-     "color": {
-      "mode": "fixed",
-      "fixedColor": "#c2ccd3"
-     }
-    },
-    "overrides": [
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "Trace"
-      },
-      "properties": [
-       {
-        "id": "links",
-        "value": [
-         {
-          "title": "Ouvrir la trace dans Tempo (vue Gantt)",
-          "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22tempo%22%2C%22uid%22%3A%22tempo%22%7D%2C%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22${__value.raw}%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-3d%22%2C%22to%22%3A%22now%22%7D%7D%7D"
-         }
-        ]
-       },
-       {
-        "id": "custom.width",
-        "value": 120
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "État"
-      },
-      "properties": [
-       {
-        "id": "mappings",
-        "value": [
-         {
-          "type": "value",
-          "options": {
-           "actif": {
-            "text": "actif",
-            "color": "#f0a84b",
-            "index": 0
-           }
-          }
-         }
-        ]
-       },
-       {
-        "id": "custom.cellOptions",
-        "value": {
-         "type": "color-text"
-        }
-       }
-      ]
-     }
-    ]
-   },
-   "options": {
-    "showHeader": true,
-    "cellHeight": "sm",
-    "footer": {
-     "show": false
-    }
-   }
-  },
-  {
-   "id": 20,
-   "type": "table",
    "title": "Passages Sentinel 1",
    "description": "",
    "datasource": {
@@ -1618,7 +1510,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 46,
+    "y": 40,
     "w": 24,
     "h": 9
    },
@@ -1698,17 +1590,17 @@
    "type": "row",
    "title": "Sentinel 2, optique (lot S2)",
    "collapsed": false,
-   "id": 21,
+   "id": 20,
    "gridPos": {
     "x": 0,
-    "y": 55,
+    "y": 49,
     "w": 24,
     "h": 1
    },
    "panels": []
   },
   {
-   "id": 22,
+   "id": 21,
    "type": "stat",
    "title": "Passages dégagés à l'annonce, 30 jours",
    "description": "Passages Sentinel 2 acquis dont la couverture nuageuse annoncée (moyenne des tuiles) reste sous le seuil de lancement (sentinel2.nuages_annonce_max_pct, 50 %).",
@@ -1718,7 +1610,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 56,
+    "y": 50,
     "w": 6,
     "h": 4
    },
@@ -1773,7 +1665,7 @@
    }
   },
   {
-   "id": 23,
+   "id": 22,
    "type": "stat",
    "title": "Analyses exploitables, 30 jours",
    "description": "Analyses Sentinel 2 dont au moins une fenêtre a été lue (les autres closes « nuages » au masque de scène, sans inférence).",
@@ -1783,7 +1675,7 @@
    },
    "gridPos": {
     "x": 6,
-    "y": 56,
+    "y": 50,
     "w": 6,
     "h": 4
    },
@@ -1838,7 +1730,7 @@
    }
   },
   {
-   "id": 24,
+   "id": 23,
    "type": "stat",
    "title": "Octets lus ce mois (optique)",
    "description": "Masques de scène et 13 bandes du L1C, lus par fenêtre dans les JP2 (requêtes partielles).",
@@ -1848,7 +1740,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 56,
+    "y": 50,
     "w": 6,
     "h": 4
    },
@@ -1902,7 +1794,7 @@
    }
   },
   {
-   "id": 25,
+   "id": 24,
    "type": "stat",
    "title": "Coût Sentinel 2 du mois",
    "description": "Part optique du budget partagé avec Sentinel 1.",
@@ -1912,7 +1804,7 @@
    },
    "gridPos": {
     "x": 18,
-    "y": 56,
+    "y": 50,
     "w": 6,
     "h": 4
    },
@@ -1967,7 +1859,7 @@
    }
   },
   {
-   "id": 26,
+   "id": 25,
    "type": "timeseries",
    "title": "Analyses Sentinel 2 par résultat",
    "description": "",
@@ -1977,7 +1869,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 60,
+    "y": 54,
     "w": 12,
     "h": 8
    },
@@ -2110,7 +2002,7 @@
    }
   },
   {
-   "id": 27,
+   "id": 26,
    "type": "timeseries",
    "title": "Coût du mois par capteur",
    "description": "",
@@ -2120,7 +2012,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 60,
+    "y": 54,
     "w": 12,
     "h": 8
    },
@@ -2208,7 +2100,7 @@
    }
   },
   {
-   "id": 28,
+   "id": 27,
    "type": "table",
    "title": "Analyses Sentinel 2",
    "description": "",
@@ -2218,7 +2110,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 68,
+    "y": 62,
     "w": 24,
     "h": 8
    },
@@ -2358,17 +2250,17 @@
    "type": "row",
    "title": "Tip and cue (lot T1)",
    "collapsed": false,
-   "id": 29,
+   "id": 28,
    "gridPos": {
     "x": 0,
-    "y": 76,
+    "y": 70,
     "w": 24,
     "h": 1
    },
    "panels": []
   },
   {
-   "id": 30,
+   "id": 29,
    "type": "stat",
    "title": "Demandes en cours",
    "description": "Demandes d'observation en attente d'un passage ou planifiées sur un passage Sentinel 1.",
@@ -2378,7 +2270,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 77,
+    "y": 71,
     "w": 6,
     "h": 4
    },
@@ -2433,7 +2325,7 @@
    }
   },
   {
-   "id": 31,
+   "id": 30,
    "type": "stat",
    "title": "Délai médian du tip à l'observation",
    "description": "Heures entre la création de la demande et le passage analysé (négatif : passage déjà acquis au moment du tip).",
@@ -2443,7 +2335,7 @@
    },
    "gridPos": {
     "x": 6,
-    "y": 77,
+    "y": 71,
     "w": 6,
     "h": 4
    },
@@ -2498,7 +2390,7 @@
    }
   },
   {
-   "id": 32,
+   "id": 31,
    "type": "stat",
    "title": "Présents sans AIS",
    "description": "Écho radar sans AIS dans le cercle d'incertitude : preuve forte, gravité de l'alerte d'origine relevée selon la table de config/rules.yaml.",
@@ -2508,7 +2400,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 77,
+    "y": 71,
     "w": 6,
     "h": 4
    },
@@ -2567,7 +2459,7 @@
    }
   },
   {
-   "id": 33,
+   "id": 32,
    "type": "stat",
    "title": "Coût des analyses portant une demande",
    "description": "Coût estimé des sessions Sentinel 1 qui portaient au moins une demande (partagé avec les autres points du passage).",
@@ -2577,7 +2469,7 @@
    },
    "gridPos": {
     "x": 18,
-    "y": 77,
+    "y": 71,
     "w": 6,
     "h": 4
    },
@@ -2632,7 +2524,7 @@
    }
   },
   {
-   "id": 34,
+   "id": 33,
    "type": "table",
    "title": "Demandes par source et par état",
    "description": "",
@@ -2642,7 +2534,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 81,
+    "y": 75,
     "w": 12,
     "h": 7
    },
@@ -2684,7 +2576,7 @@
    }
   },
   {
-   "id": 35,
+   "id": 34,
    "type": "table",
    "title": "Résultats par catégorie",
    "description": "",
@@ -2694,7 +2586,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 81,
+    "y": 75,
     "w": 12,
     "h": 7
    },
@@ -2736,7 +2628,7 @@
    }
   },
   {
-   "id": 36,
+   "id": 35,
    "type": "table",
    "title": "Dernières demandes",
    "description": "",
@@ -2746,7 +2638,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 88,
+    "y": 82,
     "w": 24,
     "h": 9
    },

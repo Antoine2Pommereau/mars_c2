@@ -49,7 +49,6 @@ Usage :
     python scripts/taches.py sentinel2-heures [J]     # heure propre des tuiles Sentinel 2 du calendrier
     python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? aucune instance, aucun coût ; crée au besoin le groupe de sécurité des travailleurs
     python scripts/taches.py sentinel-candidats [H]    # passages des H (36) dernières heures avec un navire des listes
-    python scripts/taches.py sentinel-lever-incompatible TYPE ZONE   # lève le marquage d'un GPU inutilisable
     python scripts/taches.py coupures-injection [--jour 2026-10-09] [--essais 20]
                                                       # test par injection de la règle des coupures (rien n'est écrit)
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
@@ -268,7 +267,7 @@ def sentinel_suspended(conn) -> str | None:
 def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False, malgre_pause: bool = False,
                     motif_pause: str | None = None) -> dict:
     """Passages Sentinel 1 à analyser (corridor avec un navire des listes, alerte VIIRS), ou un passage choisi à la
-    main : une session GPU, dans les limites du plafond de scènes et du budget (mars/sentinel.py). `auto` : appel de
+    main : une session sur processeur, dans les limites du plafond de scènes et du budget (mars/sentinel.py). `auto` : appel de
     la boucle, suspendu jusqu'au lendemain après un échec du jour."""
     import requests
     from mars import sentinel, travailleurs
@@ -735,7 +734,7 @@ def _detruire_travailleurs(conn, _a):
     if scw is None:
         raise SystemExit("clés Scaleway absentes")
     p = load_rules()["travailleurs"]
-    zones = sorted({p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values())})   # GPU : fr-par-2
+    zones = sorted({p["zone"], *(t.get("zone", p["zone"]) for t in p["types"].values())})   # Sentinel : fr-par-2
     block = {r[0]: r[1] or [] for r in conn.execute(
         "SELECT scw_server_id, volumes_bloc FROM travailleurs WHERE scw_server_id IS NOT NULL").fetchall()}
     for zone in zones:
@@ -890,10 +889,7 @@ def _sentinel_diagnostic(conn, _a):
     recorded = conn.execute("SELECT id, volumes_bloc FROM travailleurs WHERE tache = 'sentinel' AND "
                             "cardinality(volumes_bloc) > 0 AND cree_le > now() - interval '30 days' "
                             "ORDER BY id").fetchall()
-    marques = conn.execute("SELECT commercial_type, zone, depuis, jusqu_au, message, travailleur_id FROM types_incompatibles "
-                           "WHERE leve_le IS NULL AND jusqu_au > now() ORDER BY depuis").fetchall()
-    lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env(), recorded=recorded,
-                           marques=marques)
+    lines = diagnostic.run(load_rules(), requests.Session(), travailleurs.Scaleway.from_env(), recorded=recorded)
     print(diagnostic.report(lines))
     sys.exit(1 if any(s == diagnostic.MANQUE for s, _r, _d in lines) else 0)
 
@@ -907,17 +903,6 @@ def _sentinel(manual: bool):
                parent=traces.traceparent()) is None:
             sys.exit(1)
     return go
-
-
-@commande("sentinel-lever-incompatible")              # GPU de nouveau utilisable (pilote corrigé) : marquage levé
-def _sentinel_lever_incompatible(conn, a):
-    if len(a.args) != 2:
-        raise SystemExit("Préciser le type et la zone : taches.py sentinel-lever-incompatible L40S-1-48G fr-par-2")
-    n = conn.execute("UPDATE types_incompatibles SET leve_le = now() WHERE commercial_type = %s AND zone = %s "
-                     "AND leve_le IS NULL AND jusqu_au > now()", tuple(a.args)).rowcount
-    traces.attributs(**{"marquage.type": a.args[0], "marquage.zone": a.args[1], "marquage.leves": n})
-    print(f"{n} marquage(s) levé(s) pour {a.args[0]} en {a.args[1]}" if n else
-          f"Aucun marquage actif pour {a.args[0]} en {a.args[1]}")
 
 
 @commande("sentinel-candidats")                      # essai réel : passages récents avec un navire des listes

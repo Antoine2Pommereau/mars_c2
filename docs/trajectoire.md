@@ -207,7 +207,7 @@ vues (50 époques de 770 000), soit 1,3 × 10^16 opérations.
 
 | Où | Durée estimée | Coût | Remarques |
 |---|---|---|---|
-| L4 éphémère (Scaleway, `fr-par-2`) | 13 min de calcul, plus environ 15 min de démarrage | 0,4 € par entraînement (0,79 € de l'heure, à la minute) | rupture de stock constatée le 16/10 : attente et reprise déjà codées pour Sentinel 1 ; L40S en secours (1,47 €/h) |
+| L4 éphémère (Scaleway, `fr-par-2`) | 13 min de calcul, plus environ 15 min de démarrage | 0,4 € par entraînement (0,79 € de l'heure, à la minute) | rupture de stock constatée le 16/10 ; la voie GPU de Sentinel 1 (attente, secours L40S à 1,47 €/h) est retirée au lot Z4, à refaire pour l'entraînement |
 | GPU du MacBook Air (MPS) | 4 h environ | aucun | sans ventilateur : ralentissement thermique probable ; convient aux essais sur un mois de données |
 | Processeur du Mac | 12 h environ | aucun | à éviter |
 | Serveur | non | | 4 Go, conteneur de 768 Mo : ni entraînement ni extraction lourde |

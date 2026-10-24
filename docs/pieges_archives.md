@@ -83,3 +83,12 @@ leçon, encore utile si le cas revient. Les pièges vivants sont dans CLAUDE.md,
   60 ; la comparaison suit désormais le registre des migrations de la sauvegarde.
 * Les tests passaient depuis le dépôt alors que `backend/sentinel.py` n'était pas copié par l'image (11/10/2026) :
   origine de `tests/test_images.py` et de `verifier_images.sh` (leçon gardée).
+
+## Voie GPU de Sentinel 1 (retirée au lot Z4, 24/10/2026)
+
+* **GPU Pascal et image GPU de Scaleway** (essai 26 du 19/10/2026) : « Ubuntu Noble GPU OS 13 » charge les modules
+  noyau ouverts de NVIDIA, qui ne gèrent que Turing et plus récent ; un P100 (RENDER-S) démarre mais `docker run
+  --gpus` échoue (« failed to initialize NVML: Driver Not Loaded »). Le catalogue ne le dit pas : seul un contrôle du
+  GPU sur l'instance le révèle. À refaire si un GPU revient (entraînement de la trajectoire, `docs/trajectoire.md`).
+* Quota GPU : L4-1-24G vaut 1 une fois l'identité du compte validée (sinon 0, refus de Scaleway). Les GPU de Scaleway
+  sont facturés à la minute.

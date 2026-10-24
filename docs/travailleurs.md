@@ -9,9 +9,9 @@ dans `docs/controle.md` ; les gestes d'exploitation et les échéances des secre
 > * VIIRS (DEV1-M, chaque nuit à 06:30 UTC) : **en service**, repris au déploiement de 29bcfff après la pause du
 >   21/10 ; dernière nuit relevée par le bilan, 21/10 : 12 granules, 0 détection, 0,02 € ; 12 travailleurs réussis
 >   et 5 en échec depuis le début (essais d'octobre compris).
-> * Sentinel 1 : **en pause** depuis le 21/10 (panneau de contrôle) ; processeur en premier (GP1-S, POP2-8C-32G en
->   secours), GPU (L4, L40S) seulement au delà de 4 fenêtres ou pour une scène entière ; **une seule analyse réelle
->   aboutie** (analyse 97, 19/10, GP1-S) ; **jamais d'analyse aboutie sur GPU**.
+> * Sentinel 1 : **en pause** depuis le 21/10 (panneau de contrôle) ; **processeur seul** depuis le lot Z4 (GP1-S,
+>   POP2-8C-32G en secours, lots de 4 fenêtres) ; **une seule analyse réelle aboutie** (analyse 97, 19/10, GP1-S). La
+>   voie GPU (L4, L40S, image GPU OS, contrôle du GPU, types incompatibles), jamais aboutie, est retirée (lot Z4).
 > * Sentinel 2 (GP1-S) : **en pause** depuis le 21/10 ; 3 échecs réels le 20/10, correctif livré, jamais rejoué.
 > * Sécurité du lot Z1 en place : groupe de sécurité `mars-travailleurs`, jeton Earthdata et paire Copernicus remis
 >   une seule fois par le réseau privé, résultats validés contre la tâche.
@@ -29,7 +29,7 @@ conteneur taches (serveur, fr-par-1)                     instance Scaleway éph�
   décide : nuit VIIRS (06:30 UTC), passages Sentinel 1     créée par l'API (type selon la tâche), réseau privé,
   et 2 utiles (toutes les 30 min), plafonds, budget  ─API─▶  groupe de sécurité mars-travailleurs
   cloud-init : script de démarrage, adresse de retour,     démarrage : interface privée, contact du serveur,
-  jeton de l'exécution (ni tâche ni secret)                 contrôle des accès R2, Docker, GPU s'il est demandé
+  jeton de l'exécution (ni tâche ni secret)                 contrôle des accès R2, Docker
   nginx :8090 (réseau privé) ───────────────────────────▶  POST …/etat {"etat":"tache"} : tâche et secret, une fois
                                                             image d'analyse publique (allenai), données lues
                                                             (NASA, Copernicus en S3), détection, vignettes
@@ -53,9 +53,9 @@ conteneur taches (serveur, fr-par-1)                     instance Scaleway éph�
 
 Ordre imposé par `mars/travailleurs.py`, chaque étape vérifiée avant la suivante :
 
-1. **Image** : Ubuntu 24.04 officielle résolue dans le catalogue (zone, type, `x86_64`, fiche de l'image) ; pour un GPU,
-   image « GPU OS » avec pilotes NVIDIA et Docker GPU (`ubuntu_noble_gpu_os_13_nvidia`, type `instance_sbs`). Un message
-   par cause : introuvable, architecture, pas de volume racine, taille inconnue.
+1. **Image** : Ubuntu 24.04 officielle résolue dans le catalogue (zone, type, `x86_64`, fiche de l'image), en
+   `instance_local` (disque local) ou `instance_sbs` (volume bloc, POP2). Un message par cause : introuvable,
+   architecture, pas de volume racine, taille inconnue.
 2. **Groupe de sécurité** `mars-travailleurs` de la zone, créé s'il manque (section 4).
 3. **Création éteinte**, volume racine décrit par sa seule taille et son type (disque local `l_ssd` ou volume bloc
    `sbs_volume`), étiquettes `mars-c2-travailleur` et `run-<n>`, nom `mars-travailleur-<n>`.
@@ -75,14 +75,13 @@ Une étape en échec : lancement « echec » dans `task_runs`, instance (et volu
 Étapes, chacune écrite dans `/var/log/mars-travailleur.log`, sur la console série (lignes « MARS ») et en span :
 `interface_privee` (interface trouvée par sa MAC, configurée en DHCP si le système ne l'a pas fait),
 `contact_serveur` (état « reseau » : premier signe de vie, journal envoyé dès lors), `controle_r2` (Sentinel 2 :
-adresses des poids présignées pour 5 minutes, un octet lu de chacune avant Docker), `controle_gpu` (si un GPU est
-demandé : `nvidia-smi`, nom, pilote, mémoire, CUDA), `installation_docker`, `telechargement_image`, `analyse`.
+adresses des poids présignées pour 5 minutes, un octet lu de chacune avant Docker), `installation_docker`, `telechargement_image`, `analyse`.
 
 * **Délai de démarrage** : 10 minutes sans signe de vie (le réseau privé n'a pas été joint) : destruction, motif
   enregistré.
 * **Échec signalé tout de suite** : toute sortie en échec envoie l'état « echec » avec l'étape et le motif, puis le
   journal, avant un arrêt différé de 10 minutes (le temps de lire la console). Le serveur détruit l'instance à la
-  minute suivante. GPU inutilisable : état « gpu_inutilisable », sans `docker run` (section 3.3).
+  minute suivante. (L'état « gpu_inutilisable » et l'étape `controle_gpu` sont retirés au lot Z4.)
 * Le travailleur n'a **pas de SSH** : son journal arrive au serveur (`taches.py journal-travailleur`), sinon console
   série Scaleway.
 
@@ -124,8 +123,8 @@ finit en « code 0 » sans aucune scène aboutie est classé en échec par le se
   un échec de la machine).
 * **Comment** : une instance en marche est arrêtée par `terminate` si elle n'a que son disque local ; une instance
   éteinte depuis son système (« stopped in place ») est d'abord mise hors tension (poweroff), attendue « stopped »,
-  puis supprimée avec ses volumes (Scaleway refuse sinon, « should be powered off »). **Volume bloc** (L4, L40S,
-  POP2) : jamais `terminate`, qui laisserait le volume, facturé ; extinction, suppression de l'instance, puis du volume
+  puis supprimée avec ses volumes (Scaleway refuse sinon, « should be powered off »). **Volume bloc** (POP2 ;
+  autrefois L4 et L40S) : jamais `terminate`, qui laisserait le volume, facturé ; extinction, suppression de l'instance, puis du volume
   par l'API Block Storage (droit BlockStorageFullAccess), retentée chaque minute jusqu'au bout ; les volumes supprimés
   sont nommés dans le journal (`volumes_bloc_supprimes`).
 * **Orphelins** : chaque minute, et au démarrage du conteneur, toute instance étiquetée `mars-c2-travailleur` inconnue
@@ -147,35 +146,31 @@ finit en « code 0 » sans aucune scène aboutie est classé en échec par le se
 | Tâche | Type | Zone | Ressources | Stockage | Prix HT | Facturation | État |
 |---|---|---|---|---|---|---|---|
 | VIIRS | DEV1-M | fr-par-1 | 3 vCPU, 4 Go | disque local 20 Go | 0,0202 €/h | heure entamée | en service |
-| Sentinel 1, processeur | GP1-S | fr-par-2 | 8 vCPU, 32 Go | disque local 60 Go | 0,1907 €/h | heure entamée | éprouvé une fois (analyse 97) |
-| Sentinel 1, processeur, secours | POP2-8C-32G | fr-par-2 | 8 vCPU, 32 Go | volume bloc 60 Go | 0,29 €/h | heure entamée | jamais lancé |
-| Sentinel 1, GPU | L4-1-24G | fr-par-2 puis fr-par-1 | 8 vCPU, 48 Go, L4 24 Go | volume bloc 60 Go | 0,7875 €/h | minute | jamais abouti |
-| Sentinel 1, GPU, secours | L40S-1-48G | fr-par-2 | L40S 48 Go | volume bloc | 1,4699 €/h | minute | jamais lancé |
+| Sentinel 1 | GP1-S | fr-par-2 | 8 vCPU, 32 Go | disque local 60 Go | 0,1907 €/h | heure entamée | éprouvé une fois (analyse 97) |
+| Sentinel 1, secours | POP2-8C-32G | fr-par-2 | 8 vCPU, 32 Go | volume bloc 60 Go | 0,29 €/h | heure entamée | jamais lancé |
+| (retirés au lot Z4) | L4-1-24G, L40S-1-48G | fr-par-2, fr-par-1 | GPU | volume bloc | 0,7875 et 1,4699 €/h | minute | jamais aboutis |
 | Sentinel 2 | GP1-S | fr-par-2 | 8 vCPU, 32 Go | disque local 80 Go | 0,1907 €/h | heure entamée | 3 échecs le 20/10 |
 | Sentinel 2, secours | POP2-8C-32G | fr-par-2 | 8 vCPU, 32 Go | volume bloc 80 Go | 0,29 €/h | heure entamée | jamais lancé |
 | (retiré le 19/10) | RENDER-S | fr-par-2 | P100 16 Go | | 1,221 €/h | heure entamée | incompatible |
 
 Région fr-par seulement : le réseau privé qui ramène les résultats est régional (fr-par-1 et fr-par-2 le partagent ;
-pl-waw-2 est injoignable). Écartés : H100 (Hopper, au delà de CUDA 11.7, 2,87 €/h), multi GPU, GPU-3070 (absent du
-catalogue), tout GPU Pascal (les modules noyau ouverts de NVIDIA de l'image GPU OS ne gèrent que Turing et plus
-récent).
+pl-waw-2 est injoignable). La voie GPU (L4, L40S) est retirée au lot Z4, le 24/10/2026 : jamais aboutie (rupture du L4
+le 16/10, RENDER-S Pascal incompatible le 19/10), et le processeur suffit aux fenêtres utiles. Elle reste dans
+l'historique Git (`docs/journal.md`).
 
-### 3.2 Choix du calcul pour Sentinel 1 (lot C5, 19/10/2026)
+### 3.2 Choix du calcul pour Sentinel 1 (processeur seul, lot Z4)
 
-| Passage | Calcul |
-|---|---|
-| 4 fenêtres au plus (`fenetres_max_cpu`), aucune scène entière | GP1-S d'emblée, POP2-8C-32G si le GP1-S est en rupture, sinon attente |
-| Au delà, ou scène entière | GPU dans l'ordre : L4 fr-par-2, L4 fr-par-1, L40S fr-par-2 |
-| Grand passage, GPU en rupture depuis `repli_cpu_apres_h` (3 h) | processeur par lots de 4 fenêtres |
-| `SENTINEL_CALCUL_ESSAI=cpu` ou `gpu` (commande manuelle) | ce calcul seulement |
+| Passage | Calcul | Motif |
+|---|---|---|
+| 4 fenêtres au plus (`fenetres_max_cpu`) | une session : GP1-S, POP2-8C-32G si le GP1-S est en rupture, sinon attente | « processeur » |
+| Au delà | lots de 4 fenêtres, le suivant au cycle d'après (30 min) | « processeur par lots » |
+| Scène entière (passage choisi à la main sans aucun point d'intérêt) | refusée, sans appel à Scaleway | motif du refus |
 
-Une scène entière n'est jamais envoyée sur processeur. Le choix, le type et la raison sont enregistrés dans l'analyse
-(`calcul`, `calcul_type`, `calcul_motif`) et dans la trace (`sentinel.choix_calcul`, `sentinel.essai_type`). Le
-processeur ne coûte pas moins que le L4 par session (l'heure entamée efface l'écart de prix) : il est choisi pour sa
-disponibilité. Détail : `docs/sentinel.md`, lots C3 à C5. Sentinel 2 va toujours sur GP1-S, POP2 en secours
+Le choix, le type et la raison sont enregistrés dans l'analyse (`calcul`, `calcul_type`, `calcul_motif`) et dans la
+trace (`sentinel.choix_calcul`, `sentinel.essai_type`). Détail : `docs/sentinel.md`. Sentinel 2 va toujours sur GP1-S, POP2 en secours
 (`docs/sentinel2.md`).
 
-### 3.3 Rupture de stock et GPU inutilisable
+### 3.3 Rupture de stock
 
 * **Disponibilité lue avant toute création** (`products/servers/availability`, toutes les pages lues) : un type
   « shortage » n'est jamais essayé. « scarce » ne garantit rien : un `out_of_stock` à la création ou au démarrage fait
@@ -183,11 +178,9 @@ disponibilité. Détail : `docs/sentinel.md`, lots C3 à C5. Sentinel 2 va toujo
   échecs de suite ») et essayer le type suivant dans le même cycle.
 * **Aucun type lançable** : analyse en « attente_gpu » avec son motif et l'heure du prochain essai, reprise à chaque
   cycle tant que la scène reste utile (`sentinel.fenetre_utile_h`, 24 h) ; au delà, abandon et notification ntfy
-  (« Analyse Sentinel 1 abandonnée faute de GPU »).
-* **GPU inutilisable** (`nvidia-smi` en échec, ou `docker run` qui sort en 125 avec NVML ou CDI) : instance détruite à
-  la minute, analyse remise en attente avec le type suivant, coût réel compté au budget, type et zone **marqués
-  incompatibles 7 jours** (`types_incompatibles`, `travailleurs.incompatibilite_jours`), notification ntfy. Levée à la
-  main : `taches.py sentinel-lever-incompatible <TYPE> <ZONE>`.
+  (« Analyse Sentinel 1 abandonnée faute de calcul »). L'état garde son nom historique, « attente_gpu ».
+* La table `types_incompatibles` (marquages des GPU inutilisables, lot C4) est gardée pour son historique ; plus rien
+  ne l'écrit depuis le lot Z4.
 
 ## 4. Réseau privé et sécurité
 
@@ -225,7 +218,6 @@ disponibilité. Détail : `docs/sentinel.md`, lots C3 à C5. Sentinel 2 va toujo
 | Plafonds quotidiens | 4 travailleurs et 180 minutes par jour, comptés sur les seules instances vraiment créées chez Scaleway (un lancement refusé avant, image, quota, clés, ne compte pas) |
 | Place réservée à VIIRS | tant que la nuit du jour n'a pas eu son travailleur, les autres tâches lui laissent 1 travailleur et 60 minutes (`reserve_viirs`) |
 | Verrou | un seul travailleur actif par tâche (index unique en base) : boucle et commande manuelle ne lancent jamais deux fois la même nuit ou le même passage |
-| Garde de dépense | un type facturé à l'heure entamée et plus cher que 0,50 €/h (`prix_max_essai_eur`) n'est jamais lancé tant qu'aucun travailleur n'a abouti sur lui, sauf `SENTINEL_CALCUL_ESSAI` explicite |
 | Plafond de scènes | `sentinel.scenes_max_par_jour` (2 au fichier) et `sentinel2.scenes_max_par_jour` (0 au fichier), réglables dans le panneau de 0 à 4 ; **l'état du panneau en base prime sur le fichier** |
 | Pause | interrupteurs `interrupteurs_satellites` (Sentinel 1, Sentinel 2, VIIRS, tip and cue) : aucun travailleur créé, décision consignée dans `task_runs` |
 
@@ -235,8 +227,8 @@ disponibilité. Détail : `docs/sentinel.md`, lots C3 à C5. Sentinel 2 va toujo
   Sentinel 1, Sentinel 2 et tip and cue. Le coût estimé avant lancement (selon le type réellement lancé et le nombre
   de fenêtres) s'ajoute au coût engagé du mois ; au delà, refus clair.
 * VIIRS est compté **hors budget** (0,02 € par nuit).
-* Estimation : GPU, 12 min fixes et 2 min par fenêtre au tarif du type (6 min par scène entière) ; processeur, une
-  heure entamée (0,19 € pour un GP1-S, de une à quatre fenêtres).
+* Estimation : une heure entamée par session de quatre fenêtres au plus (0,19 € pour un GP1-S), toutes les sessions
+  d'un passage comptées avant le premier lancement.
 * **Coût réel** de chaque travailleur, calculé à sa destruction (de la création à la destruction, selon le mode de
   facturation du type) : `travailleurs.cout_reel_eur`, à côté du coût prévu (`cout_prevu_eur`) ; span
   `travailleur.cout` avec l'écart ; jauge du panneau (Coulisses, Budget).
@@ -249,7 +241,7 @@ disponibilité. Détail : `docs/sentinel.md`, lots C3 à C5. Sentinel 2 va toujo
 | IPv4 dynamique | 0,005 € de l'heure depuis le 01/06/2026, environ 0,15 € par mois pour VIIRS |
 | Réseau privé, catalogues CMR et STAC, données NASA et Copernicus, images publiques d'AI2 | gratuits |
 | Analyse Sentinel 1 sur GP1-S (analyse 97, 19/10) | 0,19 € HT, 6 min 15 s de la création à la destruction |
-| Échec au démarrage (5 min) | L4 0,07 €, L40S 0,12 €, GP1-S 0,19 €, POP2 0,29 €, RENDER-S 1,22 € (1,23 € facturés à l'essai 26) |
+| Échec au démarrage (5 min) | GP1-S 0,19 €, POP2 0,29 € (RENDER-S 1,22 €, 1,23 € facturés à l'essai 26) |
 | Facture Scaleway, 01 au 23/10/2026 | RENDER-S 1,23 €, GP1-S 0,77 € (quatre essais Sentinel), L4 0,06 € |
 
 Ordres de grandeur par mois : VIIRS environ 0,76 € HT (0,61 € d'instance et 0,15 € d'IPv4, estimation du 07/10) ;
@@ -269,15 +261,14 @@ caractères) et erreur.
 | `travailleurs` | état des travailleurs, une surveillance tout de suite (identifiant de trace affiché) |
 | `journal-travailleur [ID]` | journal envoyé par un travailleur (le dernier par défaut), état Scaleway s'il est muet |
 | `detruire-travailleurs` | arrêt d'urgence : détruit toute instance étiquetée |
-| `sentinel-diagnostic` | lecture seule hormis le groupe de sécurité : paires Copernicus (lecture réelle de 16 octets, expiration), clés Scaleway et réseau privé, image GPU et sa fiche brute, disponibilité et prix de chaque type, quota GPU, stockage bloc, droits, volumes bloc des 30 derniers jours, marquages d'incompatibilité ; PRÊT, MANQUE ou À VÉRIFIER par ligne, code de sortie non nul s'il manque quelque chose |
+| `sentinel-diagnostic` | lecture seule hormis le groupe de sécurité : paires Copernicus (lecture réelle de 16 octets, expiration), clés Scaleway et réseau privé, image du type de base et sa fiche brute, disponibilité et prix de chaque type, stockage bloc, droits, volumes bloc des 30 derniers jours ; PRÊT, MANQUE ou À VÉRIFIER par ligne, code de sortie non nul s'il manque quelque chose |
 | `sentinel2-diagnostic` | seau des modèles, variables dans taches et backend, poids, un octet lu par adresse présignée |
-| `sentinel-lever-incompatible TYPE ZONE` | lève le marquage d'un GPU inutilisable |
 | `echeances` | échéances des secrets, relevées et notifiées |
 | `satellites-pause on\|off [source]` | pause ou reprise (aussi dans Coulisses, Sources et capteurs) ; les commandes manuelles sont refusées en pause sauf `--malgre-pause` |
 
 Ailleurs : indicateur « Satellites » et Coulisses (Activité satellite, Budget) ; Grafana, tableau Satellites
 (travailleurs : durée, mémoire, coût, motif ; ruptures de stock ; coût du mois) ; notifications ntfy
-de la catégorie « travailleurs » (nuit VIIRS absente, GPU, pauses et reprises). Chaque lancement est une trace de bout
+de la catégorie « travailleurs » (nuit VIIRS absente, analyse abandonnée, pauses et reprises). Chaque lancement est une trace de bout
 en bout, du serveur au travailleur et retour (`docs/opentelemetry.md`). Après un essai, vérifier dans la console
 Scaleway (Instances en fr-par-1 et fr-par-2, Block Storage) qu'aucune instance `mars-travailleur-*` ni aucun volume
 ne reste.
@@ -363,8 +354,7 @@ les 10 Go gratuits de R2.
    son adresse sur ce réseau (`ip -4 addr` sur le serveur, nouvelle interface) est `MARS_IP_PRIVEE`.
    `SCW_PRIVATE_NETWORK_ID` est l'identifiant du réseau privé (onglet Overview), pas celui du VPC. Régional : le même
    sert en fr-par-2. Gratuit.
-2. **Clé d'API Scaleway** limitée au projet, droits de la section 4 (`docs/deploiement.md`) ; quota GPU : L4-1-24G vaut
-   1 une fois l'identité du compte validée (sinon 0, refus de Scaleway dans `task_runs`).
+2. **Clé d'API Scaleway** limitée au projet, droits de la section 4 (`docs/deploiement.md`).
 3. **Jeton Earthdata** : https://urs.earthdata.nasa.gov, Generate Token, licence LANCE NRT acceptée sur le compte ;
    **60 jours** ; date dans `EARTHDATA_EXPIRENT_LE`.
 4. **Copernicus Data Space** : deux paires de clés S3 (serveur, travailleurs), procédure dans `docs/sentinel.md`.
@@ -381,11 +371,8 @@ les 10 Go gratuits de R2.
   Storage `v1alpha1`.
 * `terminate` laisse le volume bloc, facturé ; une instance « stopped in place » refuse la suppression tant qu'elle
   n'est pas mise hors tension.
-* Les GPU varient d'heure en heure (« shortage », « scarce ») ; la disponibilité est paginée (les GPU au delà de la
-  première page).
-* Instances processeur (DEV1, GP1, POP2, RENDER) facturées à l'heure entamée, même pour un échec au démarrage ; L4 et
-  L40S à la minute.
-* L'image GPU OS 13 charge les modules noyau ouverts de NVIDIA : aucun GPU Pascal (RENDER-S) ne peut servir.
+* La disponibilité varie d'heure en heure (« shortage », « scarce ») et sa réponse est paginée (100 types par page).
+* Instances processeur (DEV1, GP1, POP2, RENDER) facturées à l'heure entamée, même pour un échec au démarrage.
 * Une image publique (allenai) n'entame pas le quota de 500 Mo des paquets privés GitHub.
 * Un volume bloc dont l'instance aurait été supprimée hors de MARS C2 (console) n'est pas retrouvé automatiquement :
   `sentinel-diagnostic` relit les volumes enregistrés des 30 derniers jours.

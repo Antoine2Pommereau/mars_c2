@@ -117,7 +117,7 @@ async def vessel_check(request: Request, vessel_id: int, limit: int = 20):
 
 
 async def sentinel_status(c) -> dict:
-    """Barre d'état : dernier passage analysé, état du dernier travailleur GPU, coût engagé ce mois ci."""
+    """Barre d'état : dernier passage analysé, état du dernier travailleur, coût engagé ce mois ci."""
     last = await c.fetchrow(
         """SELECT a.id AS analyse, a.status AS statut, a.completed_at AS fini_le, p.id AS pass_id, p.satellite,
                   p.acquired_at AS acquis_le, (a.summary->>'alertes_dark_ship')::int AS alertes,
@@ -136,7 +136,7 @@ async def sentinel_status(c) -> dict:
         """SELECT coalesce(sum((mesures->>'cout_estime_eur')::float8), 0) FROM travailleurs
            WHERE tache = 'sentinel' AND cree_le >= date_trunc('month', now())""")
     attente = None
-    try:                                  # lot C3 : analyses en attente d'un GPU (rupture de stock chez Scaleway)
+    try:                                  # lot C3 : analyses en attente d'un calcul (rupture de stock chez Scaleway, lot suivant)
         a = await c.fetchrow(
             """SELECT count(*) AS analyses, min(attente_depuis) AS depuis, min(prochain_essai) AS prochain_essai,
                       (array_agg(calcul_motif ORDER BY id DESC))[1] AS motif

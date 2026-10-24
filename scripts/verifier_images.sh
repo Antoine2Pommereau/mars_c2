@@ -394,7 +394,7 @@ for b in d.get("batches", d.get("resourceSpans", [])):
             noms.add(sp["name"]); services.update(svc)
 attendus = {"tache sentinel", "sentinel.selection", "travailleur.lancement", "demarrage.contact_serveur",
             "demarrage.analyse", "travailleur.demarrage", "travailleur.sentinel", "travailleur.remise_tache",
-            "sentinel.preparation_gpu", "travailleur.renvoi_resultats", "travailleur.resultats",
+            "sentinel.preparation", "travailleur.renvoi_resultats", "travailleur.resultats",
             "travailleur.destruction"}
 manque = sorted(attendus - noms) + sorted({"mars-taches", "mars-travailleur", "mars-api"} - services)
 print("OK %d spans, services %s" % (len(noms), ", ".join(sorted(services))) if not manque else "MANQUE " + ", ".join(manque))

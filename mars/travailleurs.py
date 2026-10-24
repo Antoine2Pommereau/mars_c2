@@ -431,10 +431,10 @@ def failure(res: dict) -> str | None:
 
 
 def type_params(rules: dict, tache: str, variante: dict | None = None) -> dict:
-    """Paramètres du type de travailleur `tache`, avec une variante (type de secours, repli sur processeur) qui en
-    remplace certains : type d'instance, zone, volume, prix, options Docker."""
+    """Paramètres du type de travailleur `tache`, avec une variante (type de secours, `repli_cpu`) qui en remplace
+    certains : type d'instance, zone, volume, prix, options Docker."""
     p = rules["travailleurs"]
-    t = {k: v for k, v in p["types"][tache].items() if k not in ("secours", "repli_cpu")}
+    t = {k: v for k, v in p["types"][tache].items() if k != "repli_cpu"}
     t.update(variante or {})
     t.setdefault("facturation", p["facturation"])
     return t
@@ -444,28 +444,9 @@ FACTURATION = {"minute": 1, "heure_entamee": 60}
 
 
 def granularite_min(t: dict) -> int:
-    """Granularité de facturation d'un type (lot C5) : « minute » (L4, L40S) ou « heure_entamee » (GP1-S, POP2,
-    DEV1, RENDER-S : une heure entamée est due en entier, même pour un échec au démarrage)."""
+    """Granularité de facturation d'un type (lot C5) : « heure_entamee » (GP1-S, POP2, DEV1 : une heure entamée est
+    due en entier, même pour un échec au démarrage) ou « minute » (les GPU de Scaleway, voie retirée au lot Z4)."""
     return FACTURATION[t["facturation"]]
-
-
-def eprouves(conn, tache: str) -> set:
-    """Types (commercial_type, zone) sur lesquels au moins un travailleur a abouti."""
-    return {tuple(r) for r in conn.execute("SELECT DISTINCT commercial_type, zone FROM travailleurs WHERE tache = %s "
-                                           "AND etat = 'termine'", (tache,)).fetchall()}
-
-
-def garde_essai(rules: dict, t: dict, eprouves_: set | None, explicite: bool) -> str | None:
-    """Garde de dépense (lot C5, essai 26 : RENDER-S facturé 1,23 € pour 0,28 € estimés) : un type facturé à l'heure
-    entamée plus cher que prix_max_essai_eur n'est lancé qu'une fois éprouvé (un travailleur abouti), ou sur essai
-    explicite (SENTINEL_CALCUL_ESSAI). Retourne le motif du refus, ou None."""
-    plafond = rules["travailleurs"]["prix_max_essai_eur"]
-    if explicite or t["facturation"] != "heure_entamee" or t["prix_heure"] <= plafond:
-        return None
-    if (t["commercial_type"], t.get("zone", rules["travailleurs"]["zone"])) in (eprouves_ or set()):
-        return None
-    return (f"non éprouvé, facturé à l'heure entamée ({t['prix_heure']:.2f} €/h, au delà de {plafond:.2f} €) : "
-            "SENTINEL_CALCUL_ESSAI requis").replace(".", ",")
 
 
 def quota(rules: dict, today: list[dict], now: datetime, tache: str = "viirs") -> str | None:
@@ -514,7 +495,7 @@ def cloud_init(script: str, tache: dict, env: dict, image: str, mac: str, docker
                traceparent: str | None = None) -> str:
     """Configuration cloud-init : script de démarrage (travailleurs/demarrage.sh), script et tâche du travailleur,
     secrets en 0600 ; `mac` : adresse de la carte du réseau privé, que le démarrage configure explicitement ;
-    `docker_opts` : options du conteneur d'analyse (GPU : « --gpus all --shm-size=16g ») ; `traceparent` : contexte W3C
+    `docker_opts` : options du conteneur d'analyse (Sentinel : « --shm-size=16g ») ; `traceparent` : contexte W3C
     du lancement (pas un secret), dont le démarrage et l'analyse prolongent la trace (travailleurs/otel_mini.py)."""
     def f(path, content, mode):
         b = base64.b64encode(content.encode()).decode()
@@ -522,7 +503,7 @@ def cloud_init(script: str, tache: dict, env: dict, image: str, mac: str, docker
     envtxt = "".join(f"{k}={v}\n" for k, v in env.items())
     name = Path(tache.get("script", "travailleur.py")).name
     boot = {"RETOUR": tache["retour"], "JETON": tache["jeton"], "MAC": mac.lower(), "IMAGE": image, "SCRIPT": name,
-            "GPU": docker_opts, "TRACEPARENT": traceparent or ""}
+            "DOCKER_OPTS": docker_opts, "TRACEPARENT": traceparent or ""}
     boottxt = "".join(f"{k}={json.dumps(v)}\n" for k, v in boot.items())
     return ("#cloud-config\nwrite_files:\n" + f("/mars/demarrage.sh", (ROOT / "travailleurs" / "demarrage.sh").read_text(), "0755")
             + f("/mars/demarrage.env", boottxt, "0600") + f(f"/mars/{name}", script, "0644")
@@ -725,15 +706,12 @@ def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante=
 
 
 def variantes(rules: dict, tache: str) -> list[dict]:
-    """Variantes d'un type de travailleur, dans l'ordre : type de base, types de secours, types sur processeur (avec
-    « calcul » : gpu ou cpu, pour Sentinel ; un type sans secours n'a que sa base). `repli_cpu` : une liste depuis le
-    lot C5 (GP1-S, puis POP2-8C-32G en secours), un seul type avant."""
+    """Variantes d'un type de travailleur, dans l'ordre : type de base, puis types de secours de `repli_cpu` (Sentinel 1
+    et 2 : GP1-S, puis POP2-8C-32G). Toutes sur processeur depuis le lot Z4 (« calcul » gardé pour la colonne
+    analyses.calcul) ; un type sans secours n'a que sa base."""
     base = rules["travailleurs"]["types"][tache]
-    out = [{"calcul": "gpu" if "--gpus" in base.get("docker_opts", "") else "cpu"}]
-    out += [{**v, "calcul": "gpu"} for v in base.get("secours", [])]
     cpu = base.get("repli_cpu") or []
-    out += [{**v, "calcul": "cpu"} for v in (cpu if isinstance(cpu, list) else [cpu])]
-    return out
+    return [{"calcul": "cpu"}] + [{**v, "calcul": "cpu"} for v in (cpu if isinstance(cpu, list) else [cpu])]
 
 
 def variante_de(rules: dict, tache: str, commercial_type: str | None, zone: str | None) -> dict | None:
@@ -771,8 +749,6 @@ def _journal(conn, w: dict, rules: dict):
         details["volumes_bloc_supprimes"] = list(w["volumes_bloc"])        # journalisé une fois l'instance détruite
     if w.get("rupture_stock"):          # attendue : ni échec de tâche (alerte « deux échecs de suite »), ni coût
         details.update({"refus": True, "rupture_stock": True})
-    if (w.get("mesures") or {}).get("fin_signalee") == "gpu_inutilisable":   # alerte par le marquage seulement
-        details.update({"refus": True, "gpu_inutilisable": True})
     conn.execute(
         "INSERT INTO task_runs (task, run_day, started_at, finished_at, status, details, trace_id) "
         "VALUES (%s, %s, %s, now(), %s, %s, %s)",
@@ -832,16 +808,7 @@ def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: d
     mesures = w.get("mesures") or {}
     # Lot C4 : fin signalée par le travailleur (script de démarrage), ou instance arrêtée d'elle même : traitée tout de
     # suite (destruction à cette minute même), sans attendre la durée de vie
-    if w["etat"] == "gpu_inutilisable":
-        with traces.span("travailleur.gpu_inutilisable", parent=tp, **{**attrs, "travailleur.type": w.get("commercial_type"),
-                                                                     "travailleur.zone": w.get("zone")}):
-            traces.erreur(w.get("erreur") or "GPU inutilisable")
-            marquer_incompatible(conn, rules, w, log)
-            remettre_en_attente(conn, w, f"GPU inutilisable sur {w.get('commercial_type')} ({w.get('zone')}) : type "
-                                         "marqué incompatible, type suivant au prochain essai")
-            conn.execute("UPDATE travailleurs SET etat = 'echec' WHERE id = %s", (w["id"],))
-        w["etat"] = "echec"
-    elif w["etat"] == "echec" and mesures.get("fin_signalee") == "echec" and not mesures.get("echec_traite"):
+    if w["etat"] == "echec" and mesures.get("fin_signalee") == "echec" and not mesures.get("echec_traite"):
         _echec_signale(conn, w, tp, attrs, mesures.get("etape_echec") or "", w.get("erreur") or "échec signalé")
     elif (w["etat"] in ("cree", "demarre") and scw is not None and w["scw_server_id"] and age_min > 3
           and _arretee(scw, w)):
@@ -891,7 +858,7 @@ def _surveiller(conn, scw, rules: dict, handlers: dict, log, now: datetime, p: d
 # Étapes du script de démarrage dont l'échec relève de la machine (Docker, pilote, image, réseau) : l'analyse n'y est
 # pour rien et repart en attente ; un échec de l'étape « analyse » (code de sortie du script d'analyse) est le sien
 ETAPES_MACHINE = {"machine", "demarrage", "interface_privee", "contact_serveur", "installation_docker",
-                  "telechargement_image", "controle_gpu", "analyse_docker"}
+                  "telechargement_image", "analyse_docker"}
 
 
 def _arretee(scw, w: dict) -> bool:
@@ -932,31 +899,6 @@ def remettre_en_attente(conn, w: dict, motif: str) -> int:
         (motif[:1000], w["id"])).rowcount
     traces.attributs(**{"travailleur.analyses_en_attente": n})
     return n
-
-
-def incompatibles(conn) -> dict:
-    """Types marqués incompatibles et encore actifs : {(type, zone): fin du marquage}."""
-    return {(t, z): fin for t, z, fin in conn.execute(
-        "SELECT commercial_type, zone, max(jusqu_au) FROM types_incompatibles WHERE leve_le IS NULL AND jusqu_au > now() "
-        "GROUP BY 1, 2").fetchall()}
-
-
-def marquer_incompatible(conn, rules: dict, w: dict, log=print) -> bool:
-    """Type et zone d'un travailleur au GPU inutilisable marqués incompatibles pendant `incompatibilite_jours` (7) :
-    jamais essayés d'ici là (sauf levée à la main). Un seul marquage actif par type et zone ; la règle de Grafana
-    envoie une alerte par marquage."""
-    jours = rules["travailleurs"].get("incompatibilite_jours", 7)
-    with traces.span("travailleur.marquage_incompatible", **{"travailleur.type": w.get("commercial_type"),
-                                                             "travailleur.zone": w.get("zone"), "marquage.jours": jours}):
-        if (w.get("commercial_type"), w.get("zone")) in incompatibles(conn):
-            traces.attributs(**{"marquage.deja_actif": True})
-            return False
-        conn.execute("INSERT INTO types_incompatibles (commercial_type, zone, jusqu_au, message, travailleur_id, trace_id) "
-                     "VALUES (%s, %s, now() + make_interval(days => %s), %s, %s, %s)",
-                     (w.get("commercial_type"), w.get("zone"), jours, (w.get("erreur") or "")[:1000], w["id"],
-                      traces.trace_de(w.get("traceparent"))))
-        log(f"travailleur {w['id']} : {w.get('commercial_type')} en {w.get('zone')} marqué incompatible pour {jours} jours")
-        return True
 
 
 def _resultats(conn, handlers: dict, w: dict) -> bool:

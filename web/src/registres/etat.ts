@@ -110,11 +110,11 @@ const INDICATEURS: Indicateur[] = [
       if (nuit) niveaux.push(palier(age(nuit.traite_le, now), 30 * 60 * MIN, 54 * 60 * MIN));
       if (w?.etat === "echec" || lance?.statut === "echec") niveaux.push("orange");
       if (w && !w.detruit_le && age(w.cree_le, now) > 60 * MIN) niveaux.push("rouge");    // instance non détruite
-      const gpu = sat.sentinel?.travailleur, attente = sat.sentinel?.attente;
+      const w1 = sat.sentinel?.travailleur, attente = sat.sentinel?.attente;
       // Rupture de stock chez Scaleway : une attente (nouvel essai à chaque cycle), pas un échec
-      if (gpu?.etat === "echec" && !gpu.rupture_stock) niveaux.push("orange");
+      if (w1?.etat === "echec" && !w1.rupture_stock) niveaux.push("orange");
       if (attente) niveaux.push("orange");
-      if (gpu && !gpu.detruit_le && age(gpu.cree_le, now) > 60 * MIN) niveaux.push("rouge"); // GPU facturé à la minute
+      if (w1 && !w1.detruit_le && age(w1.cree_le, now) > 60 * MIN) niveaux.push("rouge"); // travailleur resté plus d'une heure
       const niveau = pire(niveaux);
       const prochains: any[] = sat.prochains ?? [];
       const premier = prochains.reduce((a: any, b: any) => (!a || b.acquired_at < a.acquired_at ? b : a), null);
@@ -131,14 +131,14 @@ const INDICATEURS: Indicateur[] = [
         w.duree_s, w.cout_eur) : L.commun.nd]);
       if (w?.erreur) detail.push([E.motif, w.erreur]);
       if (lance?.statut === "echec") detail.push([E.lancement, `${date(lance.le)}, ${E.echec}${lance.erreur ? ` : ${lance.erreur}` : ""}`]);
-      // Sentinel 1 (lot C) : dernier passage analysé, dernier travailleur GPU, coût du mois, dernier lancement ou refus
+      // Sentinel 1 (lot C) : dernier passage analysé, dernier travailleur, coût du mois, dernier lancement ou refus
       const s1 = sat.sentinel, a = s1?.dernier, g = s1?.travailleur, ls = s1?.lancement;
       detail.push([E.sentinel, a ? E.sentinelDe(String(a.satellite ?? "").replace(/^S1/, "Sentinel 1"), date(a.acquis_le),
         L.fiche.passage.analyses[a.statut] ?? a.statut, a.detections ?? 0) : L.commun.nd]);
-      if (g) detail.push([E.travailleurGpu, E.travailleurDe(E.etatsTravailleur[g.etat] ?? g.etat, g.commercial_type, date(g.cree_le),
+      if (g) detail.push([E.travailleurSentinel, E.travailleurDe(E.etatsTravailleur[g.etat] ?? g.etat, g.commercial_type, date(g.cree_le),
         null, g.cout_eur)]);
       if (g?.erreur) detail.push([E.motif, g.erreur]);
-      if (attente) detail.push([E.analyseSentinel, E.attenteGpu(duree(Math.max(0, Date.parse(attente.prochain_essai) - now)))]);
+      if (attente) detail.push([E.analyseSentinel, E.attenteCalcul(duree(Math.max(0, Date.parse(attente.prochain_essai) - now)))]);
       if (s1) detail.push([E.coutMois, E.euros(s1.euros_mois ?? 0)]);
       if (ls?.statut === "echec") detail.push([E.lancementSentinel, `${date(ls.le)}${ls.erreur ? ` : ${ls.erreur}` : ""}`]);
       // Sentinel 2 (lot S2) : dernière analyse optique et son résultat, part de chaque capteur dans le budget partagé

@@ -62,7 +62,7 @@ def main() -> int:
     w = worker()
     if "--imports" in sys.argv:
         prepare, detect = w.ai2()
-        device, _ = w.preflight(force_cpu=True)
+        device, _ = w.preflight()
         print(f"OK      chaîne d'AI2 importée ({prepare.__module__}.{prepare.__name__}, "
               f"{detect.__module__}.{detect.__name__}), poids présents, appareil {device}")
         return 0
@@ -72,7 +72,7 @@ def main() -> int:
                         "debut": "2026-10-14T17:29:19Z", "fin": "2026-10-14T17:29:44Z", "satellite": "S1C",
                         "vv_path": paths["vv"], "vh_path": paths["vh"]}],
             "regions": [[-6.8, 47.3, -3.0, 49.6]], "confiance": 0.5, "nms_m": 10, "vignette_km": 3,
-            "force_cpu": True, "travail": tmp}
+            "travail": tmp}
     t = time.time()
     res = w.run(task, local=True)
     sc = res["scenes"][0]

@@ -1157,3 +1157,18 @@ libellés ; les clés `model` et `contrast` propres à CircleNet (restent `model
 `contrast.min_vv_db`, lus par la fusion). Variables `INFERENCE_URL`, `SH_CLIENT_ID`, `SH_CLIENT_SECRET` retirées de
 Compose et de `.env.example`. Les analyses passées restent lisibles (`/api/analyses`, détections, alertes).
 
+## 24/10/2026, lot Z4, étape 3 : voie GPU de Sentinel 1 retirée
+
+Règles 2026.10.49, aucune migration. Sentinel 1 tourne sur processeur seulement : GP1-S en fr-par-2 (type de base),
+POP2-8C-32G en secours, quatre fenêtres par session et lots de quatre au delà ; un passage choisi à la main sans aucun
+point d'intérêt (scène entière) est refusé avec son motif, sans appel à Scaleway. Retirés : types L4-1-24G et
+L40S-1-48G, image GPU OS, `--gpus`, contrôle du GPU au démarrage (`controle_gpu`, état « gpu_inutilisable »),
+marquage des types incompatibles et sa levée (`sentinel-lever-incompatible`), garde de dépense des types non éprouvés
+(`prix_max_essai_eur`, qui ne pouvait rien refuser), choix GPU ou processeur (`strategie`, `repli_cpu_apres_h`),
+essai forcé `SENTINEL_CALCUL_ESSAI`, coût GPU (`minutes_fixes`, `minutes_par_fenetre_gpu`, `minutes_par_scene`), quota
+GPU du diagnostic, règle Grafana « GPU marqué incompatible » et sa tuile. Gardés : la gestion des volumes bloc (le POP2
+en a un), la table `types_incompatibles` (historique), l'état d'analyse « attente_gpu » (nom historique, aussi pour la
+rupture du processeur et le lot suivant), la lecture des analyses passées faites sur GPU. Le motif d'abandon devient
+« processeur indisponible pendant toute la fenêtre utile » ; la règle d'alerte de Grafana reconnaît l'ancien et le
+nouveau. La variable `GPU` du script de démarrage devient `DOCKER_OPTS`.
+
