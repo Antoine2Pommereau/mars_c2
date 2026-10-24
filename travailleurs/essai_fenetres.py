@@ -3,6 +3,10 @@
     python3 /mars/essai_fenetres.py --lecture   lecture partielle, signature, points d'appui (environ une minute)
     python3 /mars/essai_fenetres.py --complet   chaîne d'AI2 sur la scène entière puis sur une fenêtre : mêmes
                                                 détections au même endroit (environ 15 minutes sur CPU, en émulation)
+    python3 /mars/essai_fenetres.py --geolocalisation   vraie géométrie d'un GRD (210 points d'appui du produit S1D du
+                                                23/10/2026, /donnees/s1d_20261023_points_appui.json) : fenêtres
+                                                décentrées, reprojection d'AI2, cibles retrouvées à moins de 50 m de la
+                                                grille de l'ESA (environ une minute)
 
 Lecture : une scène synthétique au format des GRD (entiers 16 bits, tuiles de 512, géolocalisée par une grille de
 points d'appui légèrement tournée et courbée, comme une vraie fauchée) est servie par un faux S3 local. Le faux S3
@@ -263,6 +267,78 @@ def complet(w) -> int:
     return 0
 
 
+class _Image:
+    pixel_size = 10                          # comme RetrieveImage dans prepare_scenes
+
+
+def geolocalisation(w) -> int:
+    """Enquête sur l'analyse 103 (24/10/2026) : scène aux dimensions et aux 210 points d'appui d'un vrai GRD
+    (ascendant), creuse (seules les cibles sont écrites), cibles aux pixels des points d'appui intérieurs. Pour trois
+    emprises de 24 km décentrées autour de la baie de Weymouth : fenetre_pixels et decouper du travailleur (vrai
+    gdal.Translate), reprojection d'AI2 par warp_tps (et, pour mémoire, par le polynôme d'origine d'AI2), pic de chaque
+    cible converti comme le fait AI2 (colonne et ligne entières, transformation vers WGS84), et position par Radar,
+    celle des vignettes et du contraste. Écart à la position de l'ESA : moins de 50 m exigé."""
+    import json
+    import numpy as np
+    from osgeo import gdal, osr
+    from src.data import warp as ai2_warp
+    d = json.load(open("/donnees/s1d_20261023_points_appui.json"))
+    W, H = d["taille"]
+    pts = d["points_appui"]
+    racine = tempfile.mkdtemp(prefix="essai_geoloc_")
+    src = os.path.join(racine, "s1d-iw-grd-vv-20261023t175704-20261023t175729-005146-009c13-cog.tiff")
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    ds = gdal.GetDriverByName("GTiff").Create(src, W, H, 1, gdal.GDT_UInt16, ["TILED=YES", "SPARSE_OK=TRUE"])
+    ds.SetGCPs([gdal.GCP(x, y, 0, c, r) for c, r, x, y, _z in pts], srs.ExportToWkt())
+    for c, r, _x, _y, _z in pts:
+        if 60 <= c < W - 60 and 60 <= r < H - 60:
+            ds.GetRasterBand(1).WriteArray(np.full((3, 3), 3000, dtype=np.uint16), int(c) - 1, int(r) - 1)
+    ds = None
+    ds = gdal.Open(src)
+    pire = {"tps": 0.0, "polynome": 0.0, "radar": 0.0}
+    for dx_km, dy_km in ((0, 0), (7, -5), (-6, 4)):
+        lat_c = 50.56301 + dy_km * 1000 / 110574
+        lon_c = -2.36678 + dx_km * 1000 / (111320 * math.cos(math.radians(lat_c)))
+        dlat, dlon = 12000 / 110574, 12000 / (111320 * math.cos(math.radians(lat_c)))
+        bbox = [lon_c - dlon, lat_c - dlat, lon_c + dlon, lat_c + dlat]
+        win = w.fenetre_pixels(ds, bbox)
+        dst = os.path.join(racine, "fenetre.tiff")
+        w.decouper(src, win, dst)
+        cibles = [(c, r, x, y) for c, r, x, y, _z in pts
+                  if win[0] + 60 <= c < win[0] + win[2] - 60 and win[1] + 60 <= r < win[1] + win[3] - 60]
+        radar = w.Radar(dst)
+        for c, r, x, y in cibles:
+            pire["radar"] = max(pire["radar"], metres(radar.lonlat(c - win[0], r - win[1]), (x, y)))
+        for nom, fn in (("tps", w.warp_tps), ("polynome", ai2_warp.warp)):
+            out = os.path.join(racine, "merc_" + nom + ".tif")
+            fn(_Image(), dst, out, "epsg:3857")
+            m = gdal.Open(out)
+            a = m.GetRasterBand(1).ReadAsArray()
+            vers_px = gdal.Transformer(m, None, ["DST_SRS=WGS84"])
+            for c, r, x, y in cibles:
+                ok, (pc, pr, _z) = vers_px.TransformPoint(1, x, y, 0)
+                r0, c0 = int(pr), int(pc)
+                bloc = a[max(0, r0 - 40):r0 + 41, max(0, c0 - 40):c0 + 41]
+                if bloc.size == 0 or bloc.max() < 100:
+                    print(f"ÉCHEC   {nom} : cible du point ({c:.0f}, {r:.0f}) absente à 40 pixels de sa position")
+                    return 1
+                br, bc = np.unravel_index(np.argmax(bloc), bloc.shape)
+                ok, (lon, lat, _z) = vers_px.TransformPoint(0, float(max(0, c0 - 40) + bc), float(max(0, r0 - 40) + br), 0)
+                pire[nom] = max(pire[nom], metres((lon, lat), (x, y)))
+        print(f"        emprise décalée de ({dx_km}, {dy_km}) km : fenêtre {win}, {len(cibles)} points d'appui dedans")
+    print(f"        écart au plus : AI2 avec warp_tps {pire['tps']:.0f} m ; AI2 d'origine (polynôme) "
+          f"{pire['polynome']:.0f} m ; vignettes et contraste (Radar) {pire['radar']:.1f} m")
+    if pire["tps"] > 50 or pire["radar"] > 50:
+        print("ÉCHEC   géolocalisation au delà de 50 m sur la vraie géométrie")
+        return 1
+    print(f"OK      géolocalisation sur la vraie géométrie d'un GRD : {pire['tps']:.0f} m au plus")
+    return 0
+
+
 if __name__ == "__main__":
     w = worker()
+    if "--geolocalisation" in sys.argv:
+        sys.path.insert(0, w.AI2)
+        sys.exit(geolocalisation(w))
     sys.exit(complet(w) if "--complet" in sys.argv else lecture(w))

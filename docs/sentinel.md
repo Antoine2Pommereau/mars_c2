@@ -12,6 +12,10 @@
 >   le 19/10), d'où son retrait. POP2-8C-32G jamais lancé.
 > * Coût unitaire mesuré : **0,19 € HT par session GP1-S** (heure entamée) ; budget de 8 € par mois partagé avec
 >   Sentinel 2 et tip and cue.
+> * **Analyse 103 du 23/10/2026** (passage 779, S1D, baie de Weymouth) : SMYRTOS manqué, une détection sur le brise
+>   lames de Portland. Enquête du 24/10/2026 (section « Enquête sur l'analyse 103 ») : géolocalisation juste à 80 m près
+>   (corrigée à 20 m), navire vu par le modèle à 0,879 sous le seuil de 0,9 ; cause : **le modèle est appelé sans les
+>   deux passages antérieurs qu'il attend**. Avec eux, SMYRTOS monte à 0,966 et le brise lames tombe à 0,282.
 > * Ce qui manque : une série d'analyses réelles (100 analyses sur 101 en échec, dont 82 essais du 12/10), la
 >   recalibration des tolérances d'IDENTITY_MISMATCH.
 > * Travailleurs (création, types, destruction, sécurité, facturation, diagnostic) : `docs/travailleurs.md`. Les
@@ -613,6 +617,9 @@ sessions de fin de mois. Pour deux passages par jour tout le mois, il faut 12 �
 
 ## Limites
 
+* **Modèle appelé sans historique** : le détecteur d'AI2 attend l'image et deux passages antérieurs de la même orbite ;
+  sans eux, les structures fixes (brise lames, quais) obtiennent des scores de navire, et un pétrolier de 250 m au
+  mouillage reste sous le seuil de 0,9 (enquête sur l'analyse 103, ci dessous).
 * Aucune analyse aboutie sur une vraie instance GPU au 24/10/2026 (essai 20 : GPU vu, import corrigé depuis) ; la
   lecture par fenêtres, éprouvée d'abord contre un faux S3, a fonctionné contre Copernicus sur le GP1-S le 19/10/2026
   (analyse 97, seule analyse aboutie) ; le POP2-8C-32G jamais encore essayé.
@@ -639,3 +646,63 @@ Alertes déjà émises : sur le serveur, au 21/10/2026, **aucune** (0 AIS_UNCONF
 ponctuelle `sentinel-non-confirmees` les recherchait (lecture seule ; avec `--appliquer`, une alerte encore nouvelle
 était classée « faux positif » avec le motif, une alerte déjà décidée gardait son statut) ; retirée au lot Z4, la
 correction faite à la source (`sentinel.dans_coeur`). Rien n'a été supprimé.
+
+## Enquête sur l'analyse 103 (24/10/2026)
+
+Analyse 103, passage 779, S1D du 23/10/2026 à 17:57 UTC (orbite ascendante, orbite relative 30), une fenêtre de 24 km
+`[-2.53648, 50.45449, -2.19708, 50.67153]` centrée sur SMYRTOS (vessel_id 2458) au mouillage en baie de Weymouth.
+Résultat en production : une seule détection (3), 0,91, 101 m, masquée « terre », à 5,08 km au nord ouest de SMYRTOS ;
+SMYRTOS non détecté. Deux hypothèses : A, erreur de géolocalisation de la fenêtre ; B, détection manquée.
+
+**Méthode, sans aucun coût.** La scène est publique chez Planetary Computer (copie des GRD de l'ESA, lisible avec un
+jeton anonyme). La fenêtre y a été lue (30 Mo par requêtes partielles), puis analysée sur le Mac dans l'image d'AI2
+épinglée, avec le vrai code du travailleur, au seuil de 0,01 et sans aucun filtre. La fenêtre découpée est la même
+qu'en production (srcwin `[9872, 2394, 2796, 2762]`) et la détection 3 revient **au chiffre près** (0,909, 101 m,
+même position) : copie publique et chaîne locale reproduisent le travailleur.
+
+**A, géolocalisation : écartée pour l'erreur de 5 km, une erreur de 80 m trouvée et corrigée.**
+* L'image de la fenêtre (VV en décibels, géométrie de l'image radar, nord en bas pour un passage ascendant) avec le trait
+  de côte GSHHG projeté par les points d'appui : la côte de Portland, le brise lames et la côte de Weymouth tombent
+  exactement sur la côte du radar ; SMYRTOS est un écho brillant à sa position AIS. La détection 3 est sur le brise
+  lames nord est du port de Portland, une structure fixe (d'où le masque « terre » de GSHHG, qui dessine les brise
+  lames).
+* En revanche, GDAL ajuste par défaut un polynôme d'ordre 2 sur les 210 points d'appui de la scène : il s'écarte de la
+  grille de l'ESA de 54 m en médiane et de **544 m au plus** (bord de la fauchée), de 75 à 100 m en baie de Weymouth.
+  Le travailleur (fenêtre, vignettes, contraste) et `gdalwarp` dans la chaîne d'AI2 l'utilisaient : détections
+  décalées d'environ 80 m ici, davantage au bord d'une scène. Correction : spline en plaque mince (`METHOD=GCP_TPS`
+  pour les transformations du travailleur, `-tps` pour la reprojection d'AI2, par `warp_tps` qui remplace sa fonction
+  sans modifier l'image). Mesure dans l'image d'AI2 sur trois fenêtres décentrées : **20 m au plus** au lieu de 80 m.
+* Tests : `tests/test_geolocalisation_s1.py` (vrais points d'appui du produit, fenêtres décentrées, reprojection comme
+  AI2, moins de 50 m exigés) et `scripts/verifier_images.sh geolocalisation` (vrai code du travailleur et vrai GDAL
+  3.4.3 de l'image d'AI2).
+
+**B, détection manquée : confirmée, scores bruts.**
+
+| Écho | Sans historique (production) | Sans historique, spline | Avec deux passages antérieurs |
+|---|---|---|---|
+| SMYRTOS (à 68 à 142 m de sa position AIS, 252 à 261 m estimés) | **0,879** | 0,866 | **0,966** |
+| Brise lames, détection 3 | **0,909** | 0,904 | 0,282 |
+| Autres échos du brise lames et des quais | 0,58 à 0,88 | 0,58 à 0,89 | 0,29 au plus |
+| Détections brutes au dessus de 0,01 | 185 | 190 | 32 |
+| Au dessus du seuil de 0,9 | 1 (le brise lames) | 1 (le brise lames) | 1 (SMYRTOS) |
+
+Cause : le détecteur `frcnn_cmp2` d'AI2 a six canaux, VH et VV de l'image puis de deux passages antérieurs
+(`vh_overlap0`, `vv_overlap0`, `vh_overlap1`, `vv_overlap1`) ; il compare l'image à son historique pour éteindre ce qui
+ne bouge pas. Le travailleur l'appelle sans historique (`prepare_scenes(…, None, None, …)`) : le modèle reçoit un
+historique vide, les structures fixes ressemblent à des navires et les vrais navires perdent quelques centièmes. Le
+seuil de 0,9 vient de la documentation d'AI2, établie avec l'historique. Baisser le seuil sans historique ferait entrer
+les échos du brise lames (0,88, 0,83) avec SMYRTOS : ce n'est pas la bonne correction. Historique utilisé dans l'essai :
+S1C du 17/10/2026 et S1D du 11/10/2026, même orbite relative, même fenêtre ; recalage d'AI2 nul (0, 0).
+
+Les huit navires AIS immobiles dans le port, à quai, ne ressortent pas : collés aux quais, ils se confondent avec eux
+(échos à 0,58 à 0,83 sans historique, sous 0,3 avec).
+
+**Diagnostic réutilisable** : `travailleurs/essai_diagnostic_s1.py` (dans l'image d'AI2, sur le Mac, gratuit) lit une
+fenêtre de n'importe quelle scène présente chez Planetary Computer, l'analyse avec et sans historique et dessine
+l'image de la fenêtre entière avec la côte GSHHG, les positions AIS données et les détections brutes. Environ 17 min
+par mode en émulation sur le Mac. Une scène absente de Planetary Computer ne peut pas être diagnostiquée ainsi.
+
+**Suite proposée** (non faite) : remettre l'historique au travailleur. Le serveur choisit les deux derniers passages de
+la même orbite relative couvrant la fenêtre (catalogue STAC de Copernicus) ; le travailleur lit la même fenêtre dans
+les trois scènes. Coût : trois lectures partielles au lieu d'une (environ 60 Mo par fenêtre au lieu de 20) et une
+inférence un peu plus longue (le tronc du modèle passe sur les trois images) ; à mesurer sur la session GP1-S suivante.

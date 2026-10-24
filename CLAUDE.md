@@ -212,9 +212,9 @@ http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulemen
 `docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).
 
 Tests : `python -m pytest tests` (chaque test borné à 60 s) ; avec la base de test
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 43) : **478 réussis**
-(24/10/2026, lot Z6 phase 1) ; sans base, 352 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
-`scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `s2`, `s2-s3` selon le
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 43) : **483 réussis**
+(24/10/2026, enquête sur l'analyse 103) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
+`scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `geolocalisation`, `s2`, `s2-s3` selon le
 travail). Décomptes passés : `docs/journal.md`.
 
 ## 10. Déployer et exploiter
@@ -279,6 +279,10 @@ Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : 
 * Plafond compté sur les instances créées ; facturation à l'heure entamée, même pour un échec au démarrage.
 * Image d'AI2 Sentinel 1 : Python 3.8, imports `src.*`, `nms_thresh` entier, fenêtre d'au moins 2 300 pixels ;
   bibliothèque standard seulement dans le script ; travailleur sans scène aboutie en « echec ».
+* Points d'appui d'un GRD : jamais le polynôme par défaut de GDAL (54 m en médiane, 544 m au plus sur une vraie
+  scène) : `METHOD=GCP_TPS` et `gdalwarp -tps` (`warp_tps`). Le détecteur d'AI2 attend deux passages antérieurs :
+  sans eux, brise lames et quais sortent comme des navires (analyse 103, `docs/sentinel.md`). Diagnostic gratuit d'une
+  fenêtre : `travailleurs/essai_diagnostic_s1.py` sur la copie publique de Planetary Computer.
 
 **Supervision et traces**
 * Grafana 12 : pas de variables d'environnement dans les règles provisionnées (seuils dans `parametres_supervision`),

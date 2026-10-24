@@ -28,7 +28,7 @@ Les chemins de documents cités sont ceux de l'époque : plusieurs sont depuis r
   premier essai réel, seau des modèles)
 * 21/10/2026 : lot P, panneau de contrôle ; lot U, phases 1 et 2 ; lot A ; séjour hors port ; Coulisses
 * 22/10/2026 : lot T (trajectoire, cercle appris, garde de probabilité, table de l'archive) ; lots Z1 et Z2
-* 24/10/2026 : lot Z3 (documentation) ; lot Z4 (code mort)
+* 24/10/2026 : lot Z3 (documentation) ; lot Z4 (code mort) ; lot Z6 phase 1 ; enquête sur l'analyse 103
 * Points ouverts France ; décomptes de tests par lot
 
 ---
@@ -1204,3 +1204,17 @@ Règles 2026.10.50 (section `essai_reel`, budget des essais de 8 € HT), aucune
 * Bilan VIIRS depuis le 24/10 : non lu, le tunnel vers le serveur était fermé pendant la préparation ;
   `viirs-bilan --du 2026-10-24` le donne.
 
+
+## 24/10/2026, lot Z6, phase 2 : enquête sur l'analyse Sentinel 1 réelle 103
+
+Aucune migration, aucune règle changée, aucun essai payant : la scène du 23/10/2026 (S1D, 17:57 UTC) est publique chez
+Planetary Computer et l'analyse a été reproduite sur le Mac au chiffre près (détection 3 à 0,909, 101 m).
+* Géolocalisation : pas d'erreur de 5 km (côte GSHHG sur la côte du radar, SMYRTOS à sa position AIS) ; en revanche le
+  polynôme d'ordre 2 de GDAL sur les points d'appui s'écartait de la grille de l'ESA de 54 m en médiane, 544 m au plus,
+  80 m à Weymouth. Travailleur passé à la spline en plaque mince (`GCP_TPS`, `warp_tps`) : 20 m au plus. Tests :
+  `tests/test_geolocalisation_s1.py`, `verifier_images.sh geolocalisation`.
+* Détection manquée : SMYRTOS à 0,879 sous le seuil de 0,9, le brise lames de Portland à 0,909 ; le modèle d'AI2 est
+  appelé sans les deux passages antérieurs qu'il attend. Avec eux : SMYRTOS 0,966, brise lames 0,282, 32 détections
+  brutes au lieu de 185. Remettre l'historique au travailleur : proposé, non fait.
+* Outil : `travailleurs/essai_diagnostic_s1.py` (fenêtre, détections brutes, image avec côte et AIS, gratuit).
+* Tests : 483 réussis avec la base.

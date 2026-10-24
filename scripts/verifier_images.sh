@@ -43,7 +43,7 @@
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres] [s2] [s2-s3] [controle] [sante] [traces]   (sans argument : les trois premiers)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres|geolocalisation] [s2] [s2-s3] [controle] [sante] [traces]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -147,8 +147,8 @@ verifier_ai2() {
   # Lancé comme sur le travailleur (travailleurs/demarrage.sh) : script monté en lecture seule dans /mars
   local sortie code=0
   sortie=$(mktemp)
-  docker run --rm --platform "$PLATEFORME" --shm-size=2g -v "$PWD/travailleurs:/mars:ro" --entrypoint python3 \
-    "$image" "/mars/$script" $mode >"$sortie" 2>&1 || code=$?
+  docker run --rm --platform "$PLATEFORME" --shm-size=2g -v "$PWD/travailleurs:/mars:ro" \
+    -v "$PWD/tests/donnees:/donnees:ro" --entrypoint python3 "$image" "/mars/$script" $mode >"$sortie" 2>&1 || code=$?
   grep -E '^(OK|ÉCHEC|        )' "$sortie" || true
   if [ "$code" -ne 0 ]; then
     grep -vE 'Warning|warn\(' "$sortie" | tail -30
@@ -420,12 +420,13 @@ for cible in "${CIBLES[@]}"; do
     ai2-complet) verifier_ai2 "" ;;
     fenetres) verifier_ai2 --lecture essai_fenetres.py ;;
     ai2-fenetres) verifier_ai2 --complet essai_fenetres.py ;;
+    geolocalisation) verifier_ai2 --geolocalisation essai_fenetres.py ;;
     s2)      verifier_s2 ;;
     s2-s3)   verifier_s2 --s3 ;;
     controle) verifier_controle ;;
     sante)   verifier_sante ;;
     traces)  verifier_traces ;;
-    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, s2, s2-s3, controle, sante ou traces)" ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, geolocalisation, s2, s2-s3, controle, sante ou traces)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."

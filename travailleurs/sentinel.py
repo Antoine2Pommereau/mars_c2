@@ -59,6 +59,10 @@ ATTRIBUTS = f"{SRC}/model_artifacts/attr/c34aa37"
 TIFF = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")        # TIFF et BigTIFF, petit ou grand boutiste
 TAILLE_MIN = 50_000_000                                           # une image VV ou VH d'une scène fait 0,4 à 0,9 Go
 POIDS_MIN = 1_000_000                                             # un pointeur Git LFS fait 134 octets
+# Géolocalisation par les points d'appui : spline en plaque mince, exacte aux points de la grille de l'ESA. Le polynôme
+# d'ordre 2 que GDAL choisit par défaut s'en écarte de 54 m en médiane et jusqu'à 544 m sur une vraie scène (S1D du
+# 23/10/2026, 210 points ; 75 à 100 m en baie de Weymouth) : enquête sur l'analyse 103, tests/test_geolocalisation_s1.py
+GCP_TPS = ["METHOD=GCP_TPS"]
 
 
 class Arret(Exception):
@@ -199,7 +203,7 @@ class Radar:
         from osgeo import gdal
         self.ds = gdal.Open(path)
         self.band = self.ds.GetRasterBand(1)
-        self.tr = gdal.Transformer(self.ds, None, [])                # points d'appui (GCP) vers longitude, latitude
+        self.tr = gdal.Transformer(self.ds, None, GCP_TPS)           # points d'appui (GCP) vers longitude, latitude
 
     def pixel(self, lon: float, lat: float) -> tuple[float, float]:
         ok, (x, y, _) = self.tr.TransformPoint(1, lon, lat, 0)      # 1 : de la géographie vers l'image
@@ -290,14 +294,40 @@ def vignette(radar: Radar, lon: float, lat: float, km: float, legend: dict) -> t
     return buf.getvalue(), geo
 
 
+def warp_tps(image, in_path: str, out_path: str, projection: str | None = None):
+    """src.data.warp.warp d'AI2 (Web Mercator, pas du premier niveau plus fin que 1,1 fois le pixel, bilinéaire),
+    avec la spline en plaque mince des points d'appui (« -tps ») au lieu du polynôme d'ordre 2 de gdalwarp."""
+    import subprocess
+    from osgeo import gdal
+    from src.data import warp as w
+    if projection != "epsg:3857":
+        return w.warp(image, in_path, out_path, projection)
+    pas, zoom = None, None
+    for zoom in range(20):
+        pas = w.web_mercator_m / 512 / (2 ** zoom)
+        if pas < (image.pixel_size or 10) * 1.1:
+            break
+    subprocess.check_output(["gdalwarp", "-tps", "-r", "bilinear", "-t_srs", projection, "-tr", str(pas), str(pas),
+                             in_path, out_path, "-overwrite"])
+    raster = gdal.Open(out_path)
+    gt = raster.GetGeoTransform()
+    return w.ImageInfo(width=raster.RasterXSize, height=raster.RasterYSize, bounds=w.get_wgs84_bounds(raster),
+                       column=int((gt[0] + w.web_mercator_m / 2) / pas),
+                       row=int((w.web_mercator_m - (gt[3] + w.web_mercator_m / 2)) / pas), zoom=zoom,
+                       projection=projection)
+
+
 def ai2():
     """Chaîne d'AI2 (prepare_scenes, detect_vessels), importée sous la forme src.*. Un import en échec est une cause
-    commune à toutes les scènes : arrêt avant tout téléchargement."""
+    commune à toutes les scènes : arrêt avant tout téléchargement. Sa reprojection passe par warp_tps (remplacée dans
+    le module, héritée par les processus du Pool d'AI2, créés par fork)."""
     try:
+        import src.data.image as image
         from src.data.image import prepare_scenes
         from src.inference.pipeline import detect_vessels
     except Exception as e:
         raise Arret(f"chaîne d'AI2 non importable ({type(e).__name__}: {e})")
+    image.warp = warp_tps
     return prepare_scenes, detect_vessels
 
 
@@ -438,7 +468,7 @@ def fenetre_pixels(ds, bbox: list) -> list:
     (les GRD ne sont pas géoréférencés par une transformation affine). Agrandie au côté minimal dans l'image si besoin ;
     FenetreInvalide si l'image est trop petite ou ne la couvre pas."""
     from osgeo import gdal
-    tr = gdal.Transformer(ds, None, [])
+    tr = gdal.Transformer(ds, None, GCP_TPS)
     x0g, y0g, x1g, y1g = bbox
     xs, ys = [], []
     for k in range(5):
