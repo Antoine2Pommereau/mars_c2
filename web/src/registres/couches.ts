@@ -2,7 +2,7 @@
 // son état par défaut, les couches MapLibre qu'elle commande et sa légende. Le panneau des couches et la carte s'en
 // déduisent ; une couche nouvelle s'ajoute par une entrée.
 
-export type Legende = "navires" | "trait" | "surface" | "cercles" | "passages" | "viirs" | null;
+type Legende = "navires" | "trait" | "surface" | "cercles" | "passages" | "viirs" | null;
 
 export interface Couche {
   id: string;

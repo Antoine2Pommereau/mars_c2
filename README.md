@@ -88,7 +88,7 @@ pytest tests
 ## Phase 2, flux AIS et simulation
 
 La phase 2 met le trafic en mouvement. Le rejeu repose sur une horloge simulée stockée en base (table `sim_clock`,
-fonction `sim_now()`) : l'API, l'interface et, plus tard, les règles raisonnent toutes sur le même « maintenant ».
+fonction `sim_now()`, retirées au lot Z4 le 24/10/2026 : l'instant est désormais tenu par le navigateur) : l'API, l'interface et, plus tard, les règles raisonnent toutes sur le même « maintenant ».
 Les positions importées constituent l'archive ; le rejeu révèle celles dont l'horodatage est dépassé par l'horloge.
 L'interface reçoit le trafic par SSE une fois par seconde, avec la traînée récente de chaque navire.
 

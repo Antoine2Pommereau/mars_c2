@@ -137,66 +137,6 @@ def aoi_wkt(b):
     return f"SRID=4326;POLYGON(({b[0]} {b[1]},{b[2]} {b[1]},{b[2]} {b[3]},{b[0]} {b[3]},{b[0]} {b[1]}))"
 
 
-# Horloge : en direct par défaut (heure réelle), rejeu d'une période passée sinon
-
-async def read_clock(c) -> dict:
-    """En direct, la vitesse vaut toujours 1 : la vitesse enregistrée est celle du rejeu."""
-    r = await c.fetchrow("SELECT sim_now() AS now, clock_timestamp() AS real, speed, paused, live FROM sim_clock WHERE id = 1")
-    if not r["live"] and not r["paused"] and r["now"] >= r["real"]:
-        # Le rejeu a rattrapé l'heure réelle : retour au direct
-        await c.execute("UPDATE sim_clock SET live = true, speed = 1 WHERE id = 1")
-        return {"now": r["real"], "speed": 1.0, "paused": False, "live": True}
-    if r["live"]:
-        return {"now": r["now"], "speed": 1.0, "paused": False, "live": True}
-    return {"now": r["now"], "speed": r["speed"], "paused": r["paused"], "live": False}
-
-
-def clock_json(clock: dict) -> dict:
-    return {"now": clock["now"].isoformat(), "speed": clock["speed"], "paused": clock["paused"], "live": clock["live"]}
-
-
-class ClockCommand(BaseModel):
-    action: Literal["play", "pause", "speed", "seek", "live"]
-    speed: float | None = None
-    time: datetime | None = None
-
-
-@app.get("/api/clock")
-async def get_clock():
-    async with app.state.pool.acquire() as c:
-        return clock_json(await read_clock(c))
-
-
-@app.post("/api/clock")
-async def set_clock(cmd: ClockCommand, _op: str = Depends(exiger_operateur)):
-    rebase = "sim_anchor = sim_now(), real_anchor = clock_timestamp()"
-    async with app.state.pool.acquire() as c:
-        live = await c.fetchval("SELECT live FROM sim_clock WHERE id = 1")
-        if cmd.action == "live":
-            # Retour au direct : le prochain rejeu repartira à vitesse 1
-            await c.execute("UPDATE sim_clock SET live = true, speed = 1 WHERE id = 1")
-        elif cmd.action == "play":
-            if not live:
-                await c.execute(f"UPDATE sim_clock SET {rebase}, paused = false WHERE id = 1")
-        elif cmd.action == "pause":
-            # En direct, la pause fige l'instant courant et bascule en rejeu
-            await c.execute(f"UPDATE sim_clock SET {rebase}, paused = true, live = false WHERE id = 1")
-        elif cmd.action == "speed":
-            if cmd.speed is None or not 0 < cmd.speed <= 3600:
-                raise HTTPException(422, "Vitesse attendue entre 0 et 3600")
-            if live:
-                raise HTTPException(409, "La vitesse ne se règle qu'en rejeu")
-            await c.execute(f"UPDATE sim_clock SET {rebase}, speed = $1 WHERE id = 1", cmd.speed)
-        elif cmd.action == "seek":
-            if cmd.time is None:
-                raise HTTPException(422, "Instant attendu")
-            # Un instant futur ramène au direct ; depuis le direct, le rejeu démarre en pause
-            await c.execute(
-                "UPDATE sim_clock SET live = $1::timestamptz >= clock_timestamp(), sim_anchor = $1::timestamptz, "
-                "real_anchor = clock_timestamp(), paused = CASE WHEN live THEN true ELSE paused END WHERE id = 1",
-                cmd.time)
-        return clock_json(await read_clock(c))
-
 
 # Trafic AIS rejoué
 
@@ -260,11 +200,11 @@ async def traffic(at: datetime | None = None, region: str | None = None):
 
 @app.get("/api/traffic/trails")
 async def trails(minutes: int = TRAIL_MIN, at: datetime | None = None, region: str | None = None):
-    """Traînées des `minutes` précédant `at` (sans `at` : l'horloge partagée, comportement d'origine)."""
+    """Traînées des `minutes` précédant `at` (sans `at` : l'heure réelle ; l'instant est tenu par l'interface)."""
     async with app.state.pool.acquire() as c:
-        clock = {"now": at} if at else await read_clock(c)
+        now = at or await c.fetchval("SELECT clock_timestamp()")
         with traces.span("trafic.trainees", **{"trafic.minutes": minutes}) as sp:
-            rows = await _trails(c, clock["now"], minutes, await region_ewkt(c, region))
+            rows = await _trails(c, now, minutes, await region_ewkt(c, region))
             sp.set_attribute("trafic.navires", len(rows))
     return collection([feature(r["geometry"], {"vessel_id": r["vessel_id"]}) for r in rows])
 
@@ -306,24 +246,6 @@ async def vessel(vessel_id: int):
                ORDER BY al.event_time DESC LIMIT 20""", vessel_id)
     return {**clean(v), "identities": [clean(r) for r in history], "watch": clean(watch) if watch else None,
             "alerts": [feature(r["geometry"], clean(r)) for r in alerts]}
-
-
-@app.get("/api/watchlist")
-async def watchlist_seen(hours: int = 24):
-    """Navires des listes de surveillance vus dans les dernières heures (avant l'instant de l'horloge), du signal
-    le plus fort au plus faible."""
-    async with app.state.pool.acquire() as c:
-        clock = await read_clock(c)
-        rows = await c.fetch(
-            """SELECT w.vessel_id, w.level, w.matched_by, w.entries, v.mmsi, v.imo, v.name, v.flag, v.ship_type,
-                      v.last_seen, ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat, p.ts
-               FROM vessel_watch w JOIN vessels v ON v.id = w.vessel_id
-               JOIN LATERAL (SELECT geom, ts FROM positions WHERE vessel_id = w.vessel_id
-                               AND ts <= $1::timestamptz AND ts > $1::timestamptz - make_interval(hours => $2::int)
-                             ORDER BY ts DESC LIMIT 1) p ON true
-               ORDER BY w.rank, p.ts DESC""", clock["now"], hours)
-    return collection([feature({"type": "Point", "coordinates": [r["lon"], r["lat"]]}, clean(r, drop=("lon", "lat")))
-                       for r in rows])
 
 
 @app.get("/api/ingestion")
@@ -394,11 +316,12 @@ STREAM_TRAFFIC_MAX_S = 30   # trafic renvoyé au plus tard toutes les 30 s, et d
 
 @app.get("/api/stream")
 async def stream(request: Request, direct: bool = False, region: str | None = None):
-    """Flux SSE, une fois par seconde : horloge et progression des analyses ; trafic seulement quand il a changé.
+    """Flux SSE du mode direct, une fois par seconde : progression des analyses ; trafic à l'heure réelle seulement
+    quand il a changé.
 
     Les positions arrivent par fichiers (une écriture par minute, une ingestion toutes les 15 s) : renvoyer chaque
-    seconde 2 000 navires coûtait 680 Ko par client et par seconde pour rien. `direct` : l'horloge est l'heure
-    réelle, quel que soit l'état de l'horloge partagée (l'instant des autres modes est tenu par l'interface)."""
+    seconde 2 000 navires coûtait 680 Ko par client et par seconde pour rien. `direct` : gardé pour les anciens
+    clients ; l'horloge partagée a disparu (lot Z4), l'instant des autres modes est tenu par l'interface."""
     async with app.state.pool.acquire() as c:
         reg = await region_ewkt(c, region)
     graine = demo.graine_valide(request.cookies.get(demo.COOKIE))     # mode démonstration : flux masqué aussi
@@ -408,15 +331,11 @@ async def stream(request: Request, direct: bool = False, region: str | None = No
         loop = asyncio.get_running_loop()
         while not await request.is_disconnected():
             async with app.state.pool.acquire() as c:
-                if direct:
-                    now = await c.fetchval("SELECT clock_timestamp()")
-                    clock = {"now": now, "speed": 1.0, "paused": False, "live": True}
-                else:
-                    clock = await read_clock(c)
-                payload = {"clock": clock_json(clock), "analyses": await read_active_analyses(c)}
+                now = await c.fetchval("SELECT clock_timestamp()")
+                payload = {"analyses": await read_active_analyses(c)}
                 ingest = await c.fetchval("SELECT max(ingested_at) FROM ingested_files")
-                if not direct or ingest != last_ingest or loop.time() - last_sent >= STREAM_TRAFFIC_MAX_S:
-                    payload["navires"] = await read_traffic(c, clock["now"], reg)
+                if ingest != last_ingest or loop.time() - last_sent >= STREAM_TRAFFIC_MAX_S:
+                    payload["navires"] = await read_traffic(c, now, reg)
                     last_ingest, last_sent = ingest, loop.time()
             if graine:
                 payload = demo.Masque(graine).masquer(json.loads(json.dumps(payload, default=str)))
@@ -425,13 +344,6 @@ async def stream(request: Request, direct: bool = False, region: str | None = No
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
-@app.get("/api/ais/days")
-async def ais_days():
-    async with app.state.pool.acquire() as c:
-        rows = await c.fetch("SELECT day, messages, vessels FROM ais_days ORDER BY day")
-    return [clean(r) for r in rows]
 
 
 # Passages Sentinel 1

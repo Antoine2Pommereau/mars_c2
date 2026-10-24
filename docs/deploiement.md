@@ -395,7 +395,7 @@ localhost:8000/api/preuves/<id>.png` (200, environ 5 Ko ; identifiants dans `/ap
 | 4. Réseau | dans les 2 à 3 minutes : `taches.py journal-travailleur` | lignes « interface privée ens… : 172.16.8.x/22 », « serveur joint sur le réseau privé », « système : Ubuntu 24.04 », « installation de Docker » ; depuis le serveur, `ping -c 2 172.16.8.x` répond ; si rien au bout de 5 minutes : console série (ci dessus) |
 | 5. Image et analyse | `taches.py journal-travailleur`, quelques minutes plus tard | « téléchargement de l'image », puis les lignes du script VIIRS (une par granule, avec `telecharge_s`, `detection_s`, `rss_max_mo` et `n` détections) ; en cas de données inaccessibles, une seule ligne de granule, le motif, puis « arrêt du travailleur » |
 | 6. Résultat | terminal 2 | `travailleurs : {"traites": 1, ...}` puis `{"detruits": 1, ...}` ; console : l'instance disparaît |
-| 7. Bilan | `curl -s localhost:8000/api/ingestion \| python3 -m json.tool \| grep -A12 '"viirs"'` et `curl -s localhost:8000/api/metrics \| grep travailleurs` | dernière nuit traitée, travailleur `termine`, `cout_eur` 0,0202 ; dans l'interface, indicateur Satellites vert, couche VIIRS et piste des nuits remplies |
+| 7. Bilan | `curl -s localhost:8000/api/ingestion \| python3 -m json.tool \| grep -A12 '"viirs"'` | dernière nuit traitée, travailleur `termine`, `cout_eur` 0,0202 ; dans l'interface, indicateur Satellites vert, couche VIIRS et piste des nuits remplies |
 
 En cas d'échec à n'importe quelle étape : l'instance est détruite par le serveur (aussitôt, ou au plus tard 10 minutes
 après la création) ; le motif est dans `taches.py travailleurs`, l'indicateur Satellites passe à l'orange.
@@ -406,9 +406,8 @@ image (chaque lundi, et à la demande dans l'onglet Actions). Une fois par paque
 `mars_c2`, rôle **Admin**. Les images portent l'étiquette `org.opencontainers.image.source`, qui relie le paquet au
 dépôt à la publication suivante.
 
-**Mesures au format Prometheus** : `curl -s localhost:8000/api/metrics` (format texte de Prometheus : exécutions et
-durée de chaque tâche, travailleurs, minutes et coût, détections VIIRS, passages, alertes), lisible par un agent
-Prometheus ; les tableaux de Grafana lisent, eux, la base (rôle `grafana_lecture`, section « Supervision »).
+**Mesures** : les tableaux de Grafana lisent la base (rôle `grafana_lecture`, section « Supervision ») ; la route
+`/api/metrics` (format Prometheus), sans client, a été retirée au lot Z4.
 
 ## Masques France (trait de côte, mouillages, réception)
 
@@ -520,7 +519,6 @@ docker compose logs --tail 5 collector              # une ligne par minute : mes
 docker compose logs --tail 5 ingest                 # une ligne par cycle : positions lues, conservées, allégées
 docker compose logs --tail 20 taches                # tâches de la nuit, alertes disque
 curl -s localhost:8000/api/ingestion                # retard, disque, dernière exécution de chaque tâche
-curl -s localhost:8000/api/clock                    # "live": true, "speed": 1.0
 ```
 
 Ce qu'on doit lire :

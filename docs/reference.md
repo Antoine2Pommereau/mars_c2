@@ -90,7 +90,7 @@ mars_c2/
   grafana/generer.py, provisioning/  tableaux (produits en JSON), source, règles, canal ntfy ; config/supervision.env : seuils
   backend/app.py                     API ; backend/contenu.py : recherche, fiches, notes, navires suivis, photo ;
                                      backend/regions.py : région affichée ; backend/satellites.py : passages ;
-                                     backend/travailleurs.py : retour des travailleurs, VIIRS, /api/metrics ;
+                                     backend/travailleurs.py : retour des travailleurs, VIIRS ;
                                      backend/sentinel.py : détections Sentinel 1, vérification satellite
   inference/app.py                   service d'inférence
   scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar,
@@ -105,7 +105,7 @@ mars_c2/
 Tables principales : `positions` (30 jours), `vessels`, `vessel_identities` (vue `imo_history`), `watchlist` (vue
 `vessel_watch`), `alerts`, `alert_evidence`, `alert_actions`, `sar_passes` (passages des analyses radar et calendrier Sentinel 1 et 2, colonne `mission`), `stats_10min_region`, `analyses`, `detections`,
 `fixed_echoes`, `land`, `stationary_zones`, `reception_cells`, `regions`, `infrastructure`, `ais_days`,
-`ingested_files`, `archives`, `task_runs`, `disk_status`, `sim_clock` (direct par défaut). `ais_days.coverage`
+`ingested_files`, `archives`, `task_runs`, `disk_status` (la table `sim_clock` de l'horloge partagée est retirée au lot Z4, migration 43). `ais_days.coverage`
 (union des zones collectées) situe le bord des données pour la coupure AIS ; les régions `Bretagne`, `Manche`,
 `Gascogne`, `Mediterranee` portent les infrastructures EMODnet. `alerts.rule_key` : clé stable d'une alerte
 comportementale (mise à jour en place, décisions des opérateurs conservées). Une migration ne
@@ -115,7 +115,7 @@ s'applique pas seule à une base existante : `bash scripts/deployer.sh <empreint
 API : flux (`/api/stream?direct=1` : horloge chaque seconde, trafic en colonnes seulement quand l'ingestion a
 chargé du nouveau, au plus tard toutes les 30 s), trafic à un instant (`/api/traffic?at=`), traînées
 (`/api/traffic/trails?at=`), navires (`/api/vessels/{id}` avec identités, listes et alertes ; trajectoire allégée
-à `max_points`), listes (`/api/watchlist`), état du direct (`/api/ingestion` : retard, disque, tâches), frise
+à `max_points`), état du direct (`/api/ingestion` : retard, disque, tâches), frise
 (`/api/timeline?start&end&bins` : histogramme des navires et coupures du flux, lus dans `stats_minute` et
 `stats_10min`), alertes d'une plage (`/api/alerts?start&end`, avec `vessel_ids`) et décisions (acquitter,
 confirmer, classer avec motif obligatoire, rouvrir, commenter, champ auteur), radar (`/api/passes`,
@@ -133,12 +133,11 @@ satellites** : `/api/satellites/passes?start&end&region` (emprises en GeoJSON), 
 (fiche : infrastructures et navires des listes couverts, analyses, nuages annoncés pour Sentinel 2), prochain
 passage dans `/api/ingestion`. **VIIRS** : `/api/viirs/detections?start&end&region`, `/api/viirs/detections/{id}`,
 `/api/viirs/nuits`, état dans `/api/ingestion` (`satellites.viirs`) ; retour des travailleurs
-`POST /api/travailleurs/{id}/etat|resultats` (jeton, réseau privé seulement). **Mesures** : `/api/metrics` (texte
-Prometheus ; sans client depuis que Grafana lit PostgreSQL, retrait prévu au lot Z4). Tables du lot B : `travailleurs`, `viirs_granules`, `viirs_detections`,
+`POST /api/travailleurs/{id}/etat|resultats` (jeton, réseau privé seulement). **Mesures** : `/api/metrics` retirée au lot Z4 (Grafana lit la base). Tables du lot B : `travailleurs`, `viirs_granules`, `viirs_detections`,
 `viirs_lumieres_fixes` (migration 20). **Sentinel 1** : `/api/sentinel/detections?start&end&region`,
 `/api/sentinel/detections/{id}` (fiche : mesures, vignette, AIS à 2 km, navire apparié), `/api/vessels/{id}/satellite`
 (vérification satellite), `satellites.sentinel` dans `/api/ingestion` ; analyses `source = 'sentinel1'` dans `analyses`
-et `detections` (migration 25), alerte IDENTITY_MISMATCH. L'horloge partagée (`/api/clock`, `sim_clock`) n'est plus utilisée
+et `detections` (migration 25), alerte IDENTITY_MISMATCH. L'horloge partagée (`/api/clock`, `sim_clock`), qui n'était plus utilisée, est retirée au lot Z4
 par l'interface : l'instant est tenu par chaque navigateur et inscrit dans l'adresse de la page.
 
 ### 7. Interface

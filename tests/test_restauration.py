@@ -60,6 +60,9 @@ def _copie(conn, tables):
                 cols = conn.execute("SELECT string_agg(quote_ident(column_name) || ' text', ', ' ORDER BY ordinal_position) "
                                     "FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s",
                                     (t,)).fetchone()[0]
+                if cols is None:                    # table retirée depuis de la base de test (sim_clock) : vide
+                    rc.execute(f"CREATE TABLE {t} (x int)")
+                    continue
                 rc.execute(f"CREATE TABLE {t} ({cols})")
                 n = conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
                 if n:
@@ -106,3 +109,10 @@ def test_backup_with_its_registry_expects_the_tables_of_its_migrations(conn):
     out = R.essai(conn, FauxR2(["sauvegardes/mars_20261025T023000.dump"]), URL, libre_octets=10**10, restaurer=restaurer)
     assert out["migrations_de_la_sauvegarde"] == len(noms) and out["tables_creees_depuis"] == []
     assert out["comptes"]["schema_migrations"][0] == len(noms)
+
+
+def test_a_table_dropped_by_a_later_migration_is_not_expected():
+    """La migration 43 retire sim_clock, créée par la 02 : une sauvegarde postérieure ne la contient plus."""
+    toutes = sorted(p.name for p in R.DB_INIT.glob("*.sql"))
+    assert "sim_clock" in R.tables_des_migrations([n for n in toutes if int(n[:2]) < 43])
+    assert "sim_clock" not in R.tables_des_migrations(toutes)

@@ -27,10 +27,10 @@ import json
 import math
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from mars import traces
-from mars.evaluation import GARDE_VERIFICATION, MOTIF_COUPURE, critere, motif_non_evaluable
+from mars.evaluation import GARDE_VERIFICATION, critere, motif_non_evaluable
 
 STAC = "https://stac.dataspace.copernicus.eu/v1/search"
 S3_HOST = "eodata.dataspace.copernicus.eu"
@@ -46,16 +46,6 @@ def track_heading(lat: float, ascending: bool) -> float:
     Vers 47° N : 348° en orbite ascendante, 192° en descendante (valeurs de config/rules.yaml, fusion)."""
     az = math.degrees(math.asin(max(-1.0, min(1.0, math.cos(math.radians(INCLINAISON_DEG)) / math.cos(math.radians(lat))))))
     return (360 + az) % 360 if ascending else (180 - az) % 360
-
-
-def heading_from_buckets(probs: list[float]) -> tuple[float | None, float | None]:
-    """Cap de l'écho et sa probabilité à partir des 16 classes du modèle d'AI2 (22,5° chacune, depuis le nord, sens des
-    aiguilles d'une montre) : centre de la classe la plus probable (incertitude d'une demi classe)."""
-    vals = [p for p in probs if p is not None and p == p]
-    if len(vals) != 16:
-        return None, None
-    j = max(range(16), key=lambda k: vals[k])
-    return round((j + 0.5) * 22.5, 1), round(vals[j], 3)
 
 
 def angle_diff(a: float, b: float) -> float:
@@ -82,12 +72,6 @@ def mismatches(det: dict, ais: dict, s: dict) -> list[str]:
         if s["cap_ecart_min_deg"] <= d <= s["cap_ecart_max_deg"]:
             out.append(f"Écho orienté à {h:.0f}° contre une route déclarée de {cog:.0f}° ({d:.0f}° d'écart)")
     return out
-
-
-def cost_estimate(n_scenes: int, s: dict, t: dict) -> float:
-    """Coût estimé hors taxes d'une session GPU : partie fixe (démarrage, image) et part par scène, à la minute."""
-    minutes = s["minutes_fixes"] + n_scenes * s["minutes_par_scene"]
-    return round(minutes / 60 * t["prix_heure"], 3)
 
 
 def guard(n_scenes: int, scenes_today: int, spent_month: float, estimate: float, s: dict) -> str | None:
@@ -1108,47 +1092,6 @@ MOTIF_HORS_FENETRE = ("Navire hors des fenêtres lues de la scène radar : son a
                       "à tort avant la correction du 21/10/2026)")
 
 
-def non_confirmees_hors_fenetres(conn, appliquer: bool = False) -> dict:
-    """Alertes AIS_UNCONFIRMED de Sentinel 1 émises hors des fenêtres lues (défaut corrigé le 21/10/2026). Lecture
-    seule par défaut ; `appliquer` : une alerte encore « nouvelle » est classée avec son motif (action « classer »
-    signée MARS C2, comme une décision d'opérateur) ; une alerte déjà traitée garde son statut et ses décisions, seul le
-    motif est ajouté à ses détails. Rien n'est supprimé."""
-    out = {"examinees": 0, "hors_fenetres": [], "classees": 0, "annotees": 0}
-    rows = conn.execute(
-        """SELECT a.id, a.status, ST_X(a.geom::geometry), ST_Y(a.geom::geometry), a.details->>'scene',
-                  (a.details->>'analysis_id')::bigint,
-                  EXISTS (SELECT 1 FROM alert_actions x WHERE x.alert_id = a.id) AS decisions
-           FROM alerts a WHERE a.type = 'AIS_UNCONFIRMED' AND coalesce(a.details->>'source', 'sentinel1') = 'sentinel1'
-             AND NOT (a.details ? 'reclassement') ORDER BY a.id""").fetchall()
-    for aid, statut, lon, lat, scene, analyse, decisions in rows:
-        out["examinees"] += 1
-        an = conn.execute("SELECT scenes, timings FROM analyses WHERE id = %s", (analyse,)).fetchone()
-        if not an:
-            continue
-        sc = next((x for x in an[0] or [] if x.get("id") == scene), None)
-        if not sc or not sc.get("fenetres"):
-            continue                                   # scène entière : l'emprise était bien lue
-        mesures = ((an[1] if isinstance(an[1], dict) else {}).get(scene) or {}).get("fenetres")
-        if dans_coeur(fenetres_lues(sc, mesures), lon, lat):
-            continue
-        out["hors_fenetres"].append({"alerte": aid, "statut": statut, "decisions": decisions, "analyse": analyse})
-        if not appliquer:
-            continue
-        conn.execute("UPDATE alerts SET details = details || jsonb_build_object('reclassement', %s::text) WHERE id = %s",
-                     (MOTIF_HORS_FENETRE, aid))
-        if statut == "nouvelle" and not decisions:
-            conn.execute("UPDATE alerts SET status = 'classee' WHERE id = %s", (aid,))
-            conn.execute("INSERT INTO alert_actions (alert_id, action, note, motif, author) VALUES (%s, 'classer', %s, "
-                         "'faux_positif', 'MARS C2 (correction du 21/10/2026)')", (aid, MOTIF_HORS_FENETRE))
-            out["classees"] += 1
-        else:
-            out["annotees"] += 1                        # décision d'opérateur conservée telle quelle
-    traces.attributs(**{"sentinel.non_confirmees_examinees": out["examinees"],
-                        "sentinel.non_confirmees_hors_fenetres": len(out["hors_fenetres"]),
-                        "sentinel.non_confirmees_classees": out["classees"]})
-    return out
-
-
 def flux_coupe(conn, t0: datetime, rules: dict) -> bool:
     """Flux AIS coupé à l'instant du passage, lu dans stats_minute (3 h avant, 1 h après) : même définition que VIIRS
     (mars/viirs.py, feed_cut). Une minute absente de stats_minute compte pour zéro : un trou des statistiques (18/10/2026)
@@ -1157,38 +1100,6 @@ def flux_coupe(conn, t0: datetime, rules: dict) -> bool:
     counts = dict(conn.execute("SELECT minute, positions FROM stats_minute WHERE minute BETWEEN %s AND %s",
                                (t0 - timedelta(hours=3), t0 + timedelta(hours=1))).fetchall())
     return feed_cut(counts, t0, rules["continu"]["flux_min_ratio"], rules["viirs"]["coupure_marge_min"])
-
-
-def recalculer_flux(conn, aid: int, rules: dict) -> dict:
-    """Après une reconstruction des statistiques : drapeau flux_coupe de chaque scène recalculé, et détections jugées
-    non évaluables pour la seule coupure du flux réévaluées. Une détection redevenue évaluable n'a pas d'alerte : elle
-    est comptée et signalée (relancer la fusion de l'analyse pour la créer)."""
-    row = conn.execute("SELECT summary FROM analyses WHERE id = %s AND source = 'sentinel1'", (aid,)).fetchone()
-    if row is None:
-        raise ValueError(f"analyse Sentinel 1 {aid} introuvable")
-    summary = row[0] or {}
-    v, out = rules["viirs"], {"analyse": aid, "scenes": {}, "detections_reevaluees": 0, "redevenues_evaluables": []}
-    cells = conn.execute("SELECT EXISTS (SELECT 1 FROM reception_cells)").fetchone()[0]
-    for scene, t0 in conn.execute("SELECT scene, min(ts) FROM detections WHERE analysis_id = %s AND scene IS NOT NULL "
-                                  "GROUP BY 1", (aid,)).fetchall():
-        cut = flux_coupe(conn, t0, rules)
-        avant = (summary.get("scenes") or {}).get(scene, {}).get("flux_coupe")
-        out["scenes"][scene] = {"avant": avant, "apres": cut}
-        summary.setdefault("scenes", {}).setdefault(scene, {})["flux_coupe"] = cut
-        for did, inside, around in conn.execute(
-                """SELECT d.id, EXISTS (SELECT 1 FROM reception_cells c WHERE ST_Intersects(c.geom, d.geom)),
-                          d.ais_navires_rayon FROM detections d
-                   WHERE d.analysis_id = %s AND d.scene = %s AND d.non_evaluable = %s""",
-                (aid, scene, MOTIF_COUPURE)).fetchall():
-            motif = motif_non_evaluable(cut, cells, inside, around, v)
-            out["detections_reevaluees"] += 1
-            conn.execute("UPDATE detections SET non_evaluable = %s, mask_reason = %s WHERE id = %s",
-                         (motif, "non_evaluable" if motif else None, did))
-            if motif is None:
-                out["redevenues_evaluables"].append(did)
-    summary["flux_recalcule_le"] = datetime.now(timezone.utc).isoformat()
-    conn.execute("UPDATE analyses SET summary = %s WHERE id = %s", (json.dumps(summary, default=str), aid))
-    return out
 
 
 def _fixed_points(conn, bbox, t0, rules):
@@ -1420,14 +1331,3 @@ def _alert(conn, kind, sev, t0, lon, lat, details, rules, key, evidence):
     return aid
 
 
-def passes_status(conn, now: datetime | None = None) -> dict:
-    """État pour la barre d'état et /api/metrics : dernier passage analysé, analyses du mois, coût engagé."""
-    now = now or datetime.now(timezone.utc)
-    last = conn.execute(
-        """SELECT a.id, a.status, a.completed_at, p.satellite, p.acquired_at, a.summary
-           FROM analyses a JOIN sar_passes p ON p.id = a.pass_id WHERE a.source = 'sentinel1'
-           ORDER BY a.requested_at DESC LIMIT 1""").fetchone()
-    scenes, spent = usage(conn, now)
-    return {"dernier": None if not last else {"analyse": last[0], "statut": last[1], "fini_le": last[2],
-                                               "satellite": last[3], "acquis_le": last[4]},
-            "scenes_aujourd_hui": scenes, "euros_mois": round(spent, 2)}

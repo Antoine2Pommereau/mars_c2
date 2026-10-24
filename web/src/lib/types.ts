@@ -8,12 +8,6 @@ export interface FC<P = Props> {
   type: "FeatureCollection";
   features: Feature<P>[];
 }
-export interface Clock {
-  now: string;
-  speed: number;
-  paused: boolean;
-  live: boolean;
-}
 export interface ProgressStep {
   step: "extraction" | "inference" | "fusion";
   state: "start" | "done";
@@ -28,7 +22,6 @@ export interface ActiveAnalysis {
   error?: string | null;
 }
 export interface StreamPayload {
-  clock: Clock;
   analyses: ActiveAnalysis[];
 }
 export type Selection =

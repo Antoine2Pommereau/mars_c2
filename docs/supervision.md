@@ -209,7 +209,7 @@ copie réelle (159 000 positions sur 27 h) : 1 020 minutes reconstruites en 2,7 
 écriture, garde de 24 h en 0,05 s.
 
 **Effets du trou à réparer après reconstruction** :
-* Sentinel : `taches.py sentinel-flux 97` recalcule `flux_coupe` de chaque scène (même définition que VIIRS : au
+* Sentinel (fait le 22/10/2026 ; commande ponctuelle `sentinel-flux` retirée au lot Z4) : `flux_coupe` recalculé de chaque scène (même définition que VIIRS : au
   moins 3 minutes sous 20 % de la médiane, à 10 minutes près du passage, lue dans `stats_minute`) et réévalue les
   détections non évaluables pour cette seule raison.
 * VIIRS : `taches.py viirs-reevaluer 2026-10-17T22:00 2026-10-19T07:00` réévalue les détections de la période et

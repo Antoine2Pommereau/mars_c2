@@ -58,7 +58,7 @@ leçon, encore utile si le cas revient. Les pièges vivants sont dans CLAUDE.md,
 * Tracé d'emprise au trackpad en deux clics, zoom par sélection désactivé (outil « Nouvelle analyse » de la chaîne du
   Mac, retrait au lot Z4).
 * **Horloge partagée** (`sim_clock`) commune à tous les utilisateurs : un rejeu chez l'un changeait l'écran de tous.
-  L'instant est tenu par le navigateur (routes `?at=`) ; `/api/clock` et `sim_clock` restent à retirer (lot Z4).
+  L'instant est tenu par le navigateur (routes `?at=`) ; `/api/clock` et `sim_clock` retirés au lot Z4 (migration 43).
 * **Trafic vide hors du direct** (lot A, 21/10/2026) : `decodeTraffic` n'acceptait que la forme du flux ; leçon gardée.
 * **Ligne MARS_OPERATEURS abîmée** (21/10/2026) : copiée avec son suffixe « trace_id=… span_id=… », empreinte de 131
   caractères au lieu de 64, connexion impossible ; depuis, `traces.ligne_brute`, refus d'une entrée abîmée en le disant

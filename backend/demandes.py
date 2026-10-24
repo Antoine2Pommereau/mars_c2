@@ -101,15 +101,6 @@ async def observations(request: Request, start: datetime | None = None, end: dat
     return {"actives": actives, "demandes": demandes}
 
 
-@router.get("/api/demandes/{did}")
-async def demande(request: Request, did: int):
-    async with request.app.state.pool.acquire() as c:
-        r = await c.fetchrow(f"SELECT {COLS} {FROM} WHERE d.id = $1", did)
-    if r is None:
-        raise HTTPException(404, "Demande inconnue")
-    return _row(r)
-
-
 class NouvelleDemande(BaseModel):
     vessel_id: int | None = None
     alerte_id: int | None = None

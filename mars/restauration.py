@@ -60,13 +60,15 @@ def migrations_de_la_sauvegarde(rc) -> list[str]:
 
 
 def tables_des_migrations(noms) -> set[str]:
-    """Tables créées par ces fichiers de migration (CREATE TABLE, hors tables temporaires)."""
+    """Tables laissées par ces fichiers de migration, dans l'ordre : créées (CREATE TABLE, hors tables temporaires),
+    moins celles qu'une migration suivante retire (DROP TABLE, par exemple sim_clock, migration 43)."""
     out = set()
-    for n in noms:
+    for n in sorted(noms):
         p = DB_INIT / n
         if p.exists():
             texte = re.sub(r"--[^\n]*", "", p.read_text())
             out |= {m.lower() for m in re.findall(r"CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-z_][a-z0-9_]*)", texte, re.I)}
+            out -= {m.lower() for m in re.findall(r"DROP\s+TABLE(?:\s+IF\s+EXISTS)?\s+([a-z_][a-z0-9_]*)", texte, re.I)}
     return out
 
 

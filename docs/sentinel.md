@@ -142,8 +142,7 @@ cible retrouvée au pixel près, contraste de 32,6 dB (valeur attendue), 10,02 m
   déclarée).
 * Frise : un passage analysé est plus haut et cerclé ; son état d'analyse est dans l'infobulle.
 * Indicateur « Satellites » : dernier passage analysé, dernier travailleur (processeur ou GPU), coût du mois, dernier refus.
-* `/api/metrics` : `mars_sentinel_analyses_total`, `mars_sentinel_scenes_total`, durées de téléchargement et d'analyse
-  et mémoire GPU de la dernière scène, `mars_sentinel_cout_mois_euros`, `mars_sentinel_detections_total` par statut.
+* Grafana, tableau Satellites : analyses, scènes, durées, coût du mois et détections (`/api/metrics` retirée au lot Z4).
 
 ## Coûts (hors taxes)
 
@@ -520,7 +519,7 @@ La seconde détection était masquée « terre ». Le navire des listes qui avai
 (4058), était à quai dans les bassins nord du Grand Port de Marseille : invisible au radar, l'analyse ne pouvait rien
 en dire (d'où la sélection en mer ci dessous). L'analyse portait `flux_coupe: true` à cause du trou de `stats_minute`
 du 17/10 22:46 au 19/10 06:00 (`docs/supervision.md`, « Statistiques de la frise ») : après reconstruction,
-`taches.py sentinel-flux 97` recalcule le drapeau.
+la commande ponctuelle `sentinel-flux` a recalculé le drapeau (retirée au lot Z4, son travail fait).
 
 **Recalibration** (règles 2026.10.29) : `minutes_par_fenetre_cpu` de 12 à 3 (119 s mesurés, plus marge),
 `minutes_fixes_cpu` de 10 à 5. La durée de vie d'un travailleur sur processeur n'est plus fixe (150 min) : elle est
@@ -625,6 +624,6 @@ fenêtres, seul un navire dans le cœur d'une fenêtre lue sans erreur peut êtr
 
 Alertes déjà émises : sur le serveur, au 21/10/2026, **aucune** (0 AIS_UNCONFIRMED parmi les 156 alertes ; l'analyse
 97, seule analyse Sentinel 1 réussie avec des détections, n'en avait produit aucune). La commande
-`taches.py sentinel-non-confirmees` les recherche (lecture seule) ; avec `--appliquer`, une alerte encore nouvelle est
-classée « faux positif » avec le motif, par une action signée MARS C2, et une alerte déjà décidée par un opérateur garde
-son statut et sa décision (motif ajouté à ses détails seulement). Rien n'est supprimé.
+ponctuelle `sentinel-non-confirmees` les recherchait (lecture seule ; avec `--appliquer`, une alerte encore nouvelle
+était classée « faux positif » avec le motif, une alerte déjà décidée gardait son statut) ; retirée au lot Z4, la
+correction faite à la source (`sentinel.dans_coeur`). Rien n'a été supprimé.

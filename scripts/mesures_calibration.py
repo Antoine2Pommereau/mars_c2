@@ -613,7 +613,7 @@ def proposals(m: Mesures, x: dict, rules: dict, grid: dict) -> list[list]:
 
     # Réception
     s_cur, p_cur, c_cur = z["max_interval_s"], z["min_pairs"], z["min_coverage"]
-    n_cur, km_cur = grid.get((s_cur, p_cur, c_cur), (0, 0)) if s_cur in INTERVALS_GRID else (None, None)
+    _n_cur, km_cur = grid.get((s_cur, p_cur, c_cur), (0, 0)) if s_cur in INTERVALS_GRID else (None, None)
     p90 = quantile(hA, 0.9)
     s_prop = next((s for s in INTERVALS_GRID if p90 is not None and s >= p90), INTERVALS_GRID[-1])
     out.append(["reception.max_interval_s", f"{s_cur} s",

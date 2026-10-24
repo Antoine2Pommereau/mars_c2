@@ -116,7 +116,7 @@ le lot P (21/10/2026), la pause se règle plutôt dans le panneau de contrôle, 
   l'alerte d'origine pour un tip sans navire) et dessine la position prédite et son cercle d'incertitude. Compteur des
   demandes actives de la région sur l'icône.
 * API : `GET /api/observations?start&end&region&etat` (panneau : navire, alerte d'origine et son type, passage,
-  résultat, position prédite, rayon, ordre et compteur `actives`), `GET /api/demandes?alerte_id=|vessel_id=`, `GET /api/demandes/{id}`, `POST /api/demandes` (navire, alerte ou
+  résultat, position prédite, rayon, ordre et compteur `actives`), `GET /api/demandes?alerte_id=|vessel_id=`, `POST /api/demandes` (navire, alerte ou
   point ; refus 409 tant que tip and cue est coupé), `POST /api/demandes/{id}/annuler` ; `satellites.tip_and_cue` dans
   `/api/ingestion` ; `demandes` (nombre) dans les passages de `/api/satellites/passes`.
 * Traces : spans `tip_and_cue.demande` (lien vers la trace de l'alerte d'origine), `tip_and_cue.planification` (lien

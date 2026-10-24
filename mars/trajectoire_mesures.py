@@ -24,7 +24,6 @@ from mars import traces
 from mars import trajectoire as T
 
 ARTICLE_TRAJETS = 10_605         # trajets d'entraînement du jeu publié de TrAISformer (DMA, cargos et pétroliers)
-ARTICLE_JOURS = 69               # 01/01/2019 au 10/03/2019
 
 
 def _jour(key: str) -> date | None:

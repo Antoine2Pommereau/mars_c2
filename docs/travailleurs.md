@@ -276,7 +276,7 @@ caractères) et erreur.
 | `satellites-pause on\|off [source]` | pause ou reprise (aussi dans Coulisses, Sources et capteurs) ; les commandes manuelles sont refusées en pause sauf `--malgre-pause` |
 
 Ailleurs : indicateur « Satellites » et Coulisses (Activité satellite, Budget) ; Grafana, tableau Satellites
-(travailleurs : durée, mémoire, coût, motif ; ruptures de stock ; coût du mois) ; `/api/metrics` ; notifications ntfy
+(travailleurs : durée, mémoire, coût, motif ; ruptures de stock ; coût du mois) ; notifications ntfy
 de la catégorie « travailleurs » (nuit VIIRS absente, GPU, pauses et reprises). Chaque lancement est une trace de bout
 en bout, du serveur au travailleur et retour (`docs/opentelemetry.md`). Après un essai, vérifier dans la console
 Scaleway (Instances en fr-par-1 et fr-par-2, Block Storage) qu'aucune instance `mars-travailleur-*` ni aucun volume

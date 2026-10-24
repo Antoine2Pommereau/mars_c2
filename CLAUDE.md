@@ -183,7 +183,7 @@ API par familles (liste à jour : `curl -s localhost:8000/openapi.json`) : flux 
 (`?region=`), satellites (`/api/satellites/passes`, `/api/viirs/*`, `/api/sentinel/*`, `/api/vessels/{id}/satellite`),
 demandes d'observation (`/api/demandes`, `/api/observations`), panneau (`/api/controle/*`), état (`/api/ingestion`,
 `/api/controle/systeme` avec les échéances), retour des travailleurs (`/api/travailleurs/{id}/etat|resultats|journal`).
-L'instant est tenu par le navigateur (routes `?at=`), jamais par `/api/clock`.
+L'instant est tenu par le navigateur (routes `?at=`) ; l'horloge partagée a été retirée (migration 43).
 
 ## 8. Interface (lot U, `docs/ux_refonte.md`)
 

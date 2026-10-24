@@ -534,31 +534,3 @@ def test_polling_requests_are_not_traced_one_by_one(spans):
     assert noms.count("essai.sondage") == 1 and noms.count("GET") == 1
 
 
-def test_feed_cut_flag_follows_rebuilt_statistics(conn):
-    """Analyse 97 (19/10/2026) : flux_coupe vrai à cause du seul trou de stats_minute. Une fois les statistiques
-    reconstruites, le drapeau est recalculé et une détection jugée non évaluable pour cette seule raison est réévaluée."""
-    from mars.evaluation import MOTIF_COUPURE
-    pid, t0, _stac = _passage(conn)
-    tm = t0 + timedelta(seconds=12)
-    aid = conn.execute(
-        "INSERT INTO analyses (pass_id, aoi, mode, status, model_version, source, summary) VALUES (%s, "
-        "ST_MakeEnvelope(-6.5, 47.8, -5.5, 48.4, 4326)::geography, 'full', 'done', 'essai', 'sentinel1', %s) "
-        "RETURNING id", (pid, json.dumps({"scenes": {"SC": {"flux_coupe": True}}}))).fetchone()[0]
-    did = conn.execute("INSERT INTO detections (analysis_id, geom, scene, ts, mask_reason, non_evaluable, "
-                       "ais_navires_rayon) VALUES (%s, ST_SetSRID(ST_MakePoint(-6.0, 48.3), 4326)::geography, 'SC', %s, "
-                       "'non_evaluable', %s, 3) RETURNING id", (aid, tm, MOTIF_COUPURE)).fetchone()[0]
-    # Trou : aucune minute autour du passage, des minutes ordinaires ailleurs dans la fenêtre
-    conn.execute("DELETE FROM stats_minute WHERE minute BETWEEN %s AND %s", (tm - timedelta(hours=4), tm + timedelta(hours=2)))
-    conn.execute("INSERT INTO stats_minute (minute, positions) SELECT g, 200 FROM generate_series("
-                 "date_trunc('minute', %s::timestamptz) - interval '3 hours', date_trunc('minute', %s::timestamptz) - "
-                 "interval '30 minutes', interval '1 minute') g", (tm, tm))
-    assert sentinel.flux_coupe(conn, tm, RULES) is True
-    # Statistiques reconstruites : plus de coupure, la détection redevient évaluable (zone de réception du passage)
-    conn.execute("INSERT INTO stats_minute (minute, positions) SELECT g, 190 FROM generate_series("
-                 "date_trunc('minute', %s::timestamptz) - interval '29 minutes', date_trunc('minute', %s::timestamptz) + "
-                 "interval '1 hour', interval '1 minute') g", (tm, tm))
-    r = sentinel.recalculer_flux(conn, aid, RULES)
-    assert r["scenes"]["SC"] == {"avant": True, "apres": False} and r["redevenues_evaluables"] == [did]
-    summary = conn.execute("SELECT summary FROM analyses WHERE id = %s", (aid,)).fetchone()[0]
-    assert summary["scenes"]["SC"]["flux_coupe"] is False and "flux_recalcule_le" in summary
-    assert conn.execute("SELECT mask_reason, non_evaluable FROM detections WHERE id = %s", (did,)).fetchone() == (None, None)

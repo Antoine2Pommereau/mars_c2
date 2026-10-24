@@ -15,7 +15,6 @@ from mars import traces
 
 ACTIFS = ("en_attente", "planifiee")
 SEVERITES = ["faible", "moyenne", "elevee", "critique"]
-TIPS = ("operateur", "coupure_ais", "viirs", "rendezvous", "watchlist", "identite")
 MASQUES_IGNORES = ("terre", "eolienne probable", "echo fixe", "nuages")
 TERRE_M = 6371000.0
 

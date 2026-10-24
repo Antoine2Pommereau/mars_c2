@@ -42,7 +42,6 @@ Usage :
     python scripts/taches.py operateur-hacher [NOM]   # lot P : ligne MARS_OPERATEURS du .env (connexion au panneau)
     python scripts/taches.py controle-diagnostic      # lignes MARS_OPERATEURS lues par taches et par l'API (lecture seule)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
-    python scripts/taches.py sentinel-non-confirmees [--appliquer]   # AIS_UNCONFIRMED hors des fenêtres lues
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
     SENTINEL_PLAFOND_ESSAI=1 python scripts/taches.py sentinel2-analyser ID   # essai réel Sentinel 2 (coupé sinon)
     python scripts/taches.py sentinel2-poids [--nettoyer] # poids Sentinel 2 dans le seau des modèles (une fois)
@@ -883,20 +882,6 @@ def _viirs_reevaluer(conn, a):
     print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
 
 
-@commande("sentinel-flux")                           # drapeau flux_coupe d'une analyse recalculé (statistiques réparées)
-def _sentinel_flux(conn, a):
-    from mars import sentinel
-    if not a.args:
-        raise SystemExit("Préciser l'analyse : taches.py sentinel-flux 97")
-    for aid in a.args:
-        r = sentinel.recalculer_flux(conn, int(aid), load_rules())
-        traces.attributs(**{"sentinel.analyse": int(aid), "sentinel.redevenues_evaluables": len(r["redevenues_evaluables"])})
-        print(json.dumps(r, ensure_ascii=False, indent=2, default=str))
-        if r["redevenues_evaluables"]:
-            print(f"{len(r['redevenues_evaluables'])} détection(s) redevenue(s) évaluable(s), sans alerte : examiner "
-                  "leur fiche, ou relancer l'analyse du passage")
-
-
 @commande("sentinel-diagnostic")                     # Copernicus, puis Scaleway ; seule écriture : groupe de sécurité
 def _sentinel_diagnostic(conn, _a):
     import requests
@@ -1050,20 +1035,6 @@ def _controle_diagnostic(_conn, _a):
 
 commande("sentinel")(_sentinel(False))
 commande("sentinel-analyser")(_sentinel(True))
-
-
-@commande("sentinel-non-confirmees")                 # alertes AIS_UNCONFIRMED hors des fenêtres lues (21/10/2026)
-def _sentinel_non_confirmees(conn, a):
-    """Lecture seule par défaut ; --appliquer : classe avec motif les alertes encore nouvelles, annote les autres."""
-    from mars import sentinel
-    r = sentinel.non_confirmees_hors_fenetres(conn, appliquer="--appliquer" in a.args)
-    print(f"{r['examinees']} alerte(s) AIS_UNCONFIRMED de Sentinel 1 examinée(s), {len(r['hors_fenetres'])} hors des "
-          f"fenêtres lues" + (f" : {r['classees']} classée(s) avec motif, {r['annotees']} annotée(s) (décision "
-                               "d'opérateur conservée)" if "--appliquer" in a.args else " (lecture seule, --appliquer pour "
-                                                                                       "corriger)"))
-    for x in r["hors_fenetres"]:
-        print(f"  alerte {x['alerte']} (analyse {x['analyse']}), statut {x['statut']}"
-              + (", décision d'opérateur" if x["decisions"] else ""))
 
 
 @commande("sentinel2-analyser")                      # essai réel : SENTINEL_PLAFOND_ESSAI=1 (Sentinel 2 coupé)

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { StreamPayload } from "./types";
 
-/** Flux SSE de l'API en mode direct : horloge chaque seconde, trafic quand il a changé, progression des analyses.
+/** Flux SSE de l'API en mode direct : trafic quand il a changé, progression des analyses.
  *  Le trafic reçu est conservé entre deux envois (le flux ne le renvoie que s'il a changé). */
 export function useStream(enabled: boolean, region: string | null) {
   const [data, setData] = useState<StreamPayload | null>(null);

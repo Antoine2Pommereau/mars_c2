@@ -148,16 +148,6 @@ def reglages(conn) -> dict:
     return {k: v for k, v in conn.execute("SELECT cle, valeur FROM reglages_controle").fetchall()}
 
 
-def regler(conn, cle: str, valeur, auteur: str, motif: str | None, action: str, cible: str | None) -> dict:
-    """Écrit un réglage (psycopg) et le journalise avec sa valeur précédente."""
-    row = conn.execute("SELECT valeur FROM reglages_controle WHERE cle = %s FOR UPDATE", (cle,)).fetchone()
-    conn.execute("INSERT INTO reglages_controle (cle, valeur, auteur) VALUES (%s, %s, %s) ON CONFLICT (cle) DO UPDATE "
-                 "SET valeur = EXCLUDED.valeur, auteur = EXCLUDED.auteur, mis_a_jour_le = now()",
-                 (cle, json.dumps(valeur), auteur))
-    journaliser(conn, auteur, action, cible, {"valeur": row[0] if row else None}, {"valeur": valeur}, motif)
-    return {"cle": cle, "valeur": valeur}
-
-
 def appliquer_reglages(rules: dict, regl: dict, pauses_: dict, zones: list | None = None) -> dict:
     """Règles appliquées (calcul pur) : plafonds du panneau dans leurs bornes, pauses, modes des règles, zones de
     vigilance actives (profil connu du fichier), priorité aux navires suivis, et empreinte de l'état qui influence les
@@ -319,7 +309,6 @@ def appliquer(conn, rules: dict) -> dict:
 COLS_ZONE = ("id", "nom", "profil", "geometrie")
 ZONES_ACTIVES_SQL = """SELECT id, nom, profil, ST_AsGeoJSON(geom, 6)::json FROM zones_vigilance
 WHERE retiree_le IS NULL AND (fin_le IS NULL OR fin_le > now()) ORDER BY id"""
-SEUILS_ZONE = ("rendezvous.min_duration_min", "ais_gap.min_gap_min")
 
 
 def profils_zones(rules: dict) -> dict:

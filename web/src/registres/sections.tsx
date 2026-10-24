@@ -17,7 +17,7 @@ import { COULEUR_LISTE, naviresAlerte, typeAlerte } from "./alertes";
 // d'affichage et son étape. La fiche les empile dans l'ordre ; une section sans donnée ne s'affiche pas, une
 // section d'une étape future non plus, tant qu'elle n'est pas branchée.
 
-export type Objet = "alerte" | "navire" | "detection" | "infrastructure" | "zone" | "passage";
+type Objet = "alerte" | "navire" | "detection" | "infrastructure" | "zone" | "passage";
 
 export interface Contexte {
   objet: Objet;

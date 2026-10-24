@@ -28,6 +28,7 @@ Les chemins de documents cités sont ceux de l'époque : plusieurs sont depuis r
   premier essai réel, seau des modèles)
 * 21/10/2026 : lot P, panneau de contrôle ; lot U, phases 1 et 2 ; lot A ; séjour hors port ; Coulisses
 * 22/10/2026 : lot T (trajectoire, cercle appris, garde de probabilité, table de l'archive) ; lots Z1 et Z2
+* 24/10/2026 : lot Z3 (documentation) ; lot Z4 (code mort)
 * Points ouverts France ; décomptes de tests par lot
 
 ---
@@ -1132,3 +1133,14 @@ filtre des données sensibles, script de démarrage bash (avec `gdate` sur le Ma
 pour l'interface ; `npm test` (node --test, `web/tests/` : trafic, preuve, clavier, état dégradé, cadrage, largeur,
 recherche des réglages ; 22 réussis) ; en développement, `MARS_API=http://localhost:8765 npm run dev` relaie une autre
 API que le port 8000.
+
+## 24/10/2026, lot Z4, étape 1 : retraits sûrs
+
+Migration 43 (`sim_clock` et `sim_now()` retirées, aucune autre table touchée). Retirés : horloge partagée
+(`GET` et `POST /api/clock`, champ `clock` du flux SSE, que l'interface ne lisait plus), routes sans client
+(`/api/ais/days`, `/api/watchlist`, `GET /api/demandes/{id}`, `/api/metrics` : Grafana lit la base), commandes
+ponctuelles finies (`sentinel-flux`, `sentinel-non-confirmees`), six objets morts et quatre servant seulement à leur
+test (`docs/bilan.md`, section 2.1), 25 libellés orphelins, types exportés pour rien (`Clock`, `Legende`, `Objet`).
+Le flux SSE prend toujours l'heure réelle ; son paramètre `direct` reste accepté pour les anciens onglets.
+L'essai de restauration soustrait désormais les tables retirées par une migration (DROP TABLE) de celles qu'il attend.
+

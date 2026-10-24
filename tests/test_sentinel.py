@@ -32,11 +32,7 @@ def test_track_heading_matches_the_configured_values():
     assert RULES["fusion"]["flight_heading_deg"] == {"ascending": 348, "descending": 192}
 
 
-def test_heading_buckets_and_angles():
-    probs = [0.01] * 16
-    probs[4] = 0.85
-    assert S.heading_from_buckets(probs) == (101.2, 0.85)            # centre de la classe 4 : 4,5 × 22,5°
-    assert S.heading_from_buckets([0.1] * 15) == (None, None)
+def test_angles():
     assert S.angle_diff(350, 10) == 20 and S.angle_diff(90, 270) == 180
 
 
@@ -55,9 +51,7 @@ def test_length_and_heading_mismatches_follow_the_tolerances():
 
 
 def test_daily_cap_and_monthly_budget():
-    t = RULES["travailleurs"]["types"]["sentinel"]
-    est = S.cost_estimate(2, SR, t)
-    assert est == round((SR["minutes_fixes"] + 2 * SR["minutes_par_scene"]) / 60 * t["prix_heure"], 3)
+    est = 0.19                                        # une session GP1-S, heure entamée
     assert S.guard(2, 0, 0.0, est, SR) is None
     assert S.guard(1, 2, 0.0, est, SR).startswith("plafond de 2 scènes par jour")
     assert S.guard(1, 0, SR["budget_mensuel_eur"] - 0.05, est, SR).startswith("budget mensuel de 8,00 €")
@@ -643,39 +637,3 @@ def test_worker_imports_the_ai2_chain_as_src_modules():
     assert "int(round(float(task.get(\"nms_m\"" in src                  # seuil entier pour la grille d'AI2
 
 
-def test_unconfirmed_alerts_outside_read_windows_are_classed_without_losing_decisions(conn):
-    """Défaut du 21/10/2026 : AIS_UNCONFIRMED émise sur un navire de la scène hors des fenêtres lues. Lecture seule,
-    puis correction : une alerte nouvelle est classée avec motif, une alerte déjà décidée garde son statut et sa
-    décision ; une alerte dans une fenêtre lue n'est pas touchée."""
-    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
-    pid, ids, t0 = _setup(conn, now)
-    fen = [{"id": 0, "bbox": [-6.26, 47.90, -5.94, 48.12], "marge_m": 2000, "points": 1}]
-    aid = conn.execute(
-        "INSERT INTO analyses (pass_id, aoi, mode, status, source, scenes, requested_at, timings) VALUES (%s, "
-        "ST_MakeEnvelope(-6.5, 47.8, -5.5, 48.4, 4326)::geography, 'full', 'done', 'sentinel1', %s, %s, %s) RETURNING id",
-        (pid, json.dumps([{"id": "SC", "fenetres": fen}]), now, json.dumps({"SC": {"fenetres": [{"index": 0}]}}))).fetchone()[0]
-
-    def alerte(cle, lon, lat, statut="nouvelle"):
-        return conn.execute(
-            "INSERT INTO alerts (type, severity, status, event_time, geom, details, rule_version, rule_key) VALUES "
-            "('AIS_UNCONFIRMED', 'moyenne', %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, 'essai', %s) "
-            "RETURNING id", (statut, t0, lon, lat, json.dumps({"source": "sentinel1", "analysis_id": aid, "scene": "SC"}),
-                             cle)).fetchone()[0]
-    dedans = alerte("s1u:SC:1", -6.1, 48.0)
-    dehors = alerte("s1u:SC:2", -5.75, 48.25)
-    decidee = alerte("s1u:SC:3", -5.70, 48.30, "confirmee")
-    conn.execute("INSERT INTO alert_actions (alert_id, action, note, author) VALUES (%s, 'confirmer', 'vu', 'Antoine')",
-                 (decidee,))
-    lecture = S.non_confirmees_hors_fenetres(conn)
-    assert sorted(x["alerte"] for x in lecture["hors_fenetres"]) == [dehors, decidee] and lecture["classees"] == 0
-    assert conn.execute("SELECT status FROM alerts WHERE id = %s", (dehors,)).fetchone()[0] == "nouvelle"
-    r = S.non_confirmees_hors_fenetres(conn, appliquer=True)
-    assert (r["classees"], r["annotees"]) == (1, 1)
-    etats = dict(conn.execute("SELECT id, status FROM alerts WHERE id = ANY(%s)", ([dedans, dehors, decidee],)).fetchall())
-    assert etats == {dedans: "nouvelle", dehors: "classee", decidee: "confirmee"}
-    actions = conn.execute("SELECT alert_id, action, author FROM alert_actions WHERE alert_id = ANY(%s) ORDER BY id",
-                           ([dehors, decidee],)).fetchall()
-    assert actions == [(decidee, "confirmer", "Antoine"), (dehors, "classer", "MARS C2 (correction du 21/10/2026)")]
-    assert conn.execute("SELECT details->>'reclassement' FROM alerts WHERE id = %s", (decidee,)).fetchone()[0] \
-        == S.MOTIF_HORS_FENETRE
-    assert S.non_confirmees_hors_fenetres(conn)["hors_fenetres"] == []                # déjà corrigées, plus revues

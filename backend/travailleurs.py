@@ -3,7 +3,6 @@
 * Retour des travailleurs (réseau privé seulement, port 8090 de nginx) : état et résultats, protégés par le jeton de
   l'exécution (seule son empreinte est en base). Le traitement est fait par le conteneur taches (mars/viirs.py).
 * Lecture : détections VIIRS d'une plage et d'une région, fiche d'une détection, nuits traitées (frise).
-* /api/metrics : compteurs, durées et états au format texte de Prometheus, prêt à être lu par un agent Grafana.
 """
 import hashlib
 import hmac
@@ -12,14 +11,13 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import Response
 
 from preuves import ais_near, proof_of
 from regions import dans_region, region_ewkt
 from mars import traces
 from mars.config import load_rules
 from mars.r2_signature import MODELES, modeles_manquantes, r2_modeles_get_url
-from sentinel import sentinel_metrics
 
 router = APIRouter()
 
@@ -316,46 +314,4 @@ async def viirs_status(c) -> dict:
             "lancement": _row(launch) if launch else None}
 
 
-# Mesures (Prometheus, format texte)
-
-def _line(name: str, value, labels: dict | None = None) -> str:
-    lab = ",".join(f'{k}="{str(v).replace(chr(34), "")}"' for k, v in (labels or {}).items())
-    return f"{name}{{{lab}}} {float(value or 0)}" if lab else f"{name} {float(value or 0)}"
-
-
-@router.get("/api/metrics", response_class=PlainTextResponse)
-async def metrics(request: Request):
-    """Mesures de la plateforme, sans outil installé : un agent Grafana (Alloy) ou Prometheus pourra les lire telles
-    quelles plus tard. Par tâche : exécutions par état, durée de la dernière, âge de la dernière réussite ; par
-    travailleur : nombre, minutes, coût estimé ; détections VIIRS ; passages satellites."""
-    out = []
-    async with request.app.state.pool.acquire() as c:
-        for r in await c.fetch("SELECT task, status, count(*) AS n FROM task_runs GROUP BY 1, 2"):
-            out.append(_line("mars_tache_executions_total", r["n"], {"tache": r["task"], "etat": r["status"]}))
-        for r in await c.fetch(
-                """SELECT DISTINCT ON (task) task, status, (details->>'duree_s')::float8 AS duree,
-                          extract(epoch FROM now() - started_at) AS age
-                   FROM task_runs ORDER BY task, started_at DESC"""):
-            out.append(_line("mars_tache_derniere_duree_secondes", r["duree"], {"tache": r["task"]}))
-            out.append(_line("mars_tache_derniere_reussie", r["status"] == "ok", {"tache": r["task"]}))
-            out.append(_line("mars_tache_age_secondes", r["age"], {"tache": r["task"]}))
-        for r in await c.fetch(
-                """SELECT tache, etat, count(*) AS n,
-                          sum(extract(epoch FROM coalesce(detruit_le, now()) - cree_le)) / 60 AS minutes,
-                          sum((mesures->>'cout_estime_eur')::float8) AS euros
-                   FROM travailleurs GROUP BY 1, 2"""):
-            lab = {"tache": r["tache"], "etat": r["etat"]}
-            out += [_line("mars_travailleurs_total", r["n"], lab), _line("mars_travailleurs_minutes_total", r["minutes"], lab),
-                    _line("mars_travailleurs_cout_euros_total", r["euros"], lab)]
-        out.append(_line("mars_travailleurs_actifs", await c.fetchval("SELECT count(*) FROM travailleurs WHERE detruit_le IS NULL")))
-        for r in await c.fetch(
-                f"SELECT {STATUT} AS statut, count(*) AS n FROM viirs_detections d GROUP BY 1"):
-            out.append(_line("mars_viirs_detections_total", r["n"], {"statut": r["statut"]}))
-        out.append(_line("mars_viirs_granules_total", await c.fetchval("SELECT count(*) FROM viirs_granules")))
-        for r in await c.fetch("SELECT mission, statut, count(*) AS n FROM sar_passes WHERE mission IS NOT NULL GROUP BY 1, 2"):
-            out.append(_line("mars_passages_total", r["n"], {"mission": r["mission"], "etat": r["statut"]}))
-        out += await sentinel_metrics(c, _line)
-        for r in await c.fetch("SELECT type, status, count(*) AS n FROM alerts GROUP BY 1, 2"):
-            out.append(_line("mars_alertes_total", r["n"], {"type": r["type"], "etat": r["status"]}))
-    return "\n".join(out) + "\n"
 
