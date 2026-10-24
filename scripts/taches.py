@@ -43,6 +43,9 @@ Usage :
     python scripts/taches.py controle-diagnostic      # lignes MARS_OPERATEURS lues par taches et par l'API (lecture seule)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
+    python scripts/taches.py essai-reel               # lot Z6 : prêt pour un essai réel ? candidats (lecture seule)
+    python scripts/taches.py essai-reel --lancer ID   # un essai réel sur le passage ID, types éprouvés seulement
+    python scripts/taches.py viirs-bilan [--du AAAA-MM-JJ]   # nuits VIIRS depuis une date (lecture seule)
     SENTINEL_PLAFOND_ESSAI=1 python scripts/taches.py sentinel2-analyser ID   # essai réel Sentinel 2 (coupé sinon)
     python scripts/taches.py sentinel2-poids [--nettoyer] # poids Sentinel 2 dans le seau des modèles (une fois)
     python scripts/taches.py sentinel2-diagnostic     # seau des modèles, variables des conteneurs, poids (lecture seule)
@@ -1031,6 +1034,81 @@ def _sentinel2_analyser(conn, a):
         sys.exit(1)
 
 
+@commande("essai-reel")                              # lot Z6 : préparation (lecture seule), --lancer ID : un essai
+def _essai_reel(conn, a):
+    """Sans option : état avant un essai réel et passages candidats, rien n'est lancé (code de sortie 1 s'il manque
+    quelque chose). --lancer ID : un essai sur le passage ID (Sentinel 1 ou 2), malgré la pause, plafond du jour en
+    vigueur et au moins une scène, types éprouvés seulement, consigné dans task_runs (essai_reel)."""
+    import requests
+    from mars import essai_reel, sentinel, sentinel2, travailleurs
+    rules = regles(conn)
+    now = datetime.now(timezone.utc)
+    if a.lancer is None:
+        lignes = essai_reel.preparation(conn, rules, now)
+        print(essai_reel.rapport(lignes))
+        session = requests.Session()
+        print("\nPassages Sentinel 1 candidats (36 h) :")
+        for r in sentinel.candidats_essai(conn, session, rules, now, 36):
+            cout = f"{r['cout_estime_eur']:.2f} €".replace(".", ",") if r["cout_estime_eur"] is not None else "·"
+            print(f"  passage {r['passage']:>6}  {r['acquis_le']:%d/%m/%Y %H:%M} UTC  {r['satellite']}  "
+                  f"{r['points']} point(s), {r['scenes']} scène(s), {r['fenetres']} fenêtre(s), {r['calcul_prevu']}, "
+                  f"environ {cout}")
+        print("Passages Sentinel 2 candidats (72 h) :")
+        for r in sentinel2.candidats_essai(conn, session, rules, now, 72):
+            print(f"  passage {r['passage']:>6}  " + (f"rien à analyser : {r['rien']}" if "rien" in r else
+                  f"{r['acquis_le']:%d/%m/%Y %H:%M} UTC, {r['points']} point(s), {r['fenetres']} fenêtre(s), "
+                  f"environ {r['cout_estime_eur']:.2f} €".replace(".", ",")))
+        print(f"\nVérification, avant et après un essai (aucune ligne attendue) :\n  {essai_reel.VERIFICATION_SQL}")
+        sys.exit(1 if any(s == essai_reel.MANQUE for s, _r, _d in lignes) else 0)
+    pid = a.lancer
+    mission, refus = essai_reel.verifier_lancement(conn, rules, pid)
+    traces.attributs(**{"essai.passage": pid, "essai.mission": mission or ""})
+    if refus:
+        traces.attributs(**{"essai.refus": refus[:300]})
+        raise SystemExit(f"REFUS : {refus}")
+    # Plafond de scènes du jour : celui en vigueur (panneau, sinon fichier), au moins 1 (Sentinel 2 est coupé au
+    # fichier) ; pour cette commande seulement
+    section = essai_reel.MISSIONS[mission][1]
+    os.environ.setdefault("SENTINEL_PLAFOND_ESSAI", str(max(1, int(rules[section]["scenes_max_par_jour"]))))
+    travailleurs.ESSAI_EPROUVES_SEULS = True
+    motif = a.motif or f"essai réel du lot Z6, passage {pid} (taches.py essai-reel --lancer)"
+
+    def lancer():
+        if mission == "S1":
+            r = launch_sentinel(conn, pid, malgre_pause=True, motif_pause=motif)
+        else:
+            r = launch_sentinel2(conn, pid, malgre_pause=True, motif_pause=motif)
+        return {"passage": pid, "mission": mission, **r}
+    r = run(conn, "essai_reel", lancer, parent=traces.traceparent())
+    if r is None:
+        sys.exit(1)
+    print(f"Essai lancé : travailleur {r.get('travailleur')}, {r.get('type')} en {r.get('zone') or 'fr-par-2'}, "
+          f"environ {r.get('cout_estime_eur') or 0:.2f} € ; trace {traces.trace_id()}".replace(".", ","))
+    print(f"Suivre : taches.py travailleurs ; à la fin, aucune ligne attendue :\n  {essai_reel.VERIFICATION_SQL}")
+
+
+@commande("viirs-bilan")                             # lot Z6 : nuits VIIRS depuis --du (lecture seule)
+def _viirs_bilan(conn, a):
+    from mars import viirs
+    du = a.du or (datetime.now(timezone.utc).date() - timedelta(days=7))
+    b = viirs.bilan(conn, du)
+    traces.attributs(**{"viirs.bilan_nuits": b["total"]["nuits"], "viirs.bilan_traitees": b["total"]["nuits_traitees"]})
+    print(f"Nuits VIIRS depuis le {du:%d/%m/%Y} :")
+    for n in b["nuits"]:
+        if not n["granules"]:
+            print(f"  {n['nuit']:%d/%m}  aucune granule traitée")
+            continue
+        print(f"  {n['nuit']:%d/%m}  {n['granules']} granules ({n['en_erreur']} en erreur), {n['detections']} détections : "
+              f"{n['avec_ais']} avec AIS, {n['sans_ais']} sans AIS, {n['non_evaluables']} non évaluables, "
+              f"{n['ecartees']} écartées ; {n['alertes']} alertes ({n['alertes_hautes']} élevées ou critiques) ; "
+              f"travailleurs : {n['travailleurs'] or '·'}")
+    t = b["total"]
+    print(f"Total : {t['nuits_traitees']} nuit(s) traitée(s) sur {t['nuits']}, {t['detections']} détections, "
+          f"{t['alertes']} alertes, {t['cout_eur']:.2f} € HT".replace(".", ","))
+    for j in b["journal"]:
+        print(f"  journal {j['jour']} : {j['statut']} {j['motif']}")
+
+
 @commande("sentinel2-candidats")                     # lecture seule : passages Sentinel 2 récents utilisables
 def _sentinel2_candidats(conn, a):
     import requests
@@ -1229,6 +1307,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--malgre-pause", action="store_true",
                     help="viirs, sentinel-analyser, sentinel2-analyser : lancer malgré la pause (consigné)")
     ap.add_argument("--motif", help="satellites-pause, --malgre-pause : motif consigné dans journal_controle")
+    ap.add_argument("--lancer", type=int, metavar="ID",
+                    help="essai-reel : lance l'essai réel sur le passage ID (sar_passes), types éprouvés seulement")
     ap.add_argument("--jusqua", help="satellites-pause on : reprise automatique (17/06/2024 08:00, heure de Paris)")
     return ap
 

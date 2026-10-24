@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.49"
+version: "2026.10.50"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -656,3 +656,8 @@ dossiers:
 # secrets. Notification à chaque palier (jours avant l'échéance), puis à l'expiration ; une seule fois par palier et par date.
 echeances:
   paliers_jours: [14, 3]
+
+# Essais réels des satellites (lot Z6, taches.py essai-reel, mars/essai_reel.py). Budget des essais, compté sur le coût
+# des travailleurs lancés par essai-reel (réel une fois détruits) ; le budget Sentinel du mois s'applique aussi.
+essai_reel:
+  budget_eur: 8.0

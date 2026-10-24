@@ -1189,3 +1189,18 @@ Listé pour plus tard (réécriture risquée sans essai réel des travailleurs, 
   attente, lancement, ingestion) ;
 * renommer l'état `attente_gpu` (migration et requêtes de Grafana).
 
+## 24/10/2026, lot Z6, phase 1 : préparation des essais réels
+
+Règles 2026.10.50 (section `essai_reel`, budget des essais de 8 € HT), aucune migration, aucun essai payant.
+* Coût par résultat dans Coulisses, Budget (`cout_par_resultat` de `/api/controle/etat`) : par source, sur le mois ou
+  depuis le début, dépense des travailleurs détruits, échecs compris, divisée par les nuits VIIRS traitées, analyses
+  Sentinel terminées, demandes d'observation analysées.
+* `taches.py essai-reel` (préparation, lecture seule) et `essai-reel --lancer ID` (un essai, malgré la pause,
+  consigné, plafond du jour et au moins une scène, aucun travailleur en vie, budget des essais, types jamais éprouvés
+  refusés par `travailleurs.ESSAI_EPROUVES_SEULS`).
+* `taches.py viirs-bilan` : nuits VIIRS depuis une date, nuits manquées comprises.
+* Revue des échecs Sentinel 2 du 20/10 : tests sur le vrai chemin (`tests/test_echecs_sentinel2.py`), cible
+  `s2-s3` rejouée et réussie ; ce qui reste à prouver en réel : `docs/sentinel2.md`, section 13.
+* Bilan VIIRS depuis le 24/10 : non lu, le tunnel vers le serveur était fermé pendant la préparation ;
+  `viirs-bilan --du 2026-10-24` le donne.
+

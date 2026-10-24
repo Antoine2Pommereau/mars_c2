@@ -99,8 +99,10 @@ indice, jamais une excuse).
 
 ## 4. État actuel (24/10/2026)
 
-`main` à f029baa (lots Z1 à Z3) ; branche `consolidation-z4` (code mort, 24/10/2026) : règles 2026.10.49,
-migrations 01 à 43 (43 retire l'horloge partagée `sim_clock`). État des sources : en base (panneau), pas
+`main` à 123d66a (lots Z1 à Z4) ; branche `consolidation-z6` (phase 1 des essais réels, 24/10/2026) : règles
+2026.10.50, migrations 01 à 43 (43 retire l'horloge partagée `sim_clock`). Essais réels : `taches.py essai-reel`
+(préparation), `essai-reel --lancer ID` (un essai, types éprouvés seulement), `viirs-bilan` ; procédure dans
+`docs/travailleurs.md`, section 11. État des sources : en base (panneau), pas
 dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibration : `docs/calibration.md`.
 
 | Capteur ou fonction | État | Dernier essai réel | Coût unitaire mesuré |
@@ -210,9 +212,8 @@ http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulemen
 `docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).
 
 Tests : `python -m pytest tests` (chaque test borné à 60 s) ; avec la base de test
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 43) : **464 réussis**
-(24/10/2026, lot Z4 : tests de la chaîne du Mac et de la voie GPU retirés avec elles) ; sans base, 344 réussis,
-120 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 43) : **478 réussis**
+(24/10/2026, lot Z6 phase 1) ; sans base, 352 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
 `scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `s2`, `s2-s3` selon le
 travail). Décomptes passés : `docs/journal.md`.
 

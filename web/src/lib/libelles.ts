@@ -162,6 +162,13 @@ export const L = {
     plafond: "Scènes par jour", moins: "Une scène de moins", plus: "Une scène de plus", plafondDefaut: (n: number) => `fichier : ${n}`, appliquer: "Appliquer",
     budget: "Budget Sentinel du mois", depense: "dépensé", reserve: "réservé", restant: "restant",
     hors: "hors budget", derniers: "Derniers travailleurs", coutEstime: "estimé",
+    coutResultat: {
+      titre: "Coût par résultat", mois: "Ce mois", total: "Depuis le début", resultats: "résultats", parResultat: "par résultat",
+      aucun: "aucun résultat", echecs: (e: string) => `dont ${e} d'échecs`,
+      inclus: "coût des analyses qui ont porté les demandes, déjà compté dans Sentinel 1 et 2",
+      sources: { viirs: "VIIRS", sentinel1: "Sentinel 1", sentinel2: "Sentinel 2", tip_and_cue: "Tip and cue" } as Record<string, string>,
+      unites: { "nuit traitée": "nuits traitées", "analyse terminée": "analyses terminées", "demande analysée": "demandes analysées" } as Record<string, string>,
+    },
     lon: "Longitude", lat: "Latitude", rayon: "Rayon (m)", demander: "Demander",
     demandeFaite: (id: number) => `Demande ${id} en attente`,
     journalVide: "Aucune action", actions: {

@@ -645,13 +645,49 @@ export function RubriqueSources({ status, now }: { status: unknown; now: number 
   );
 }
 
-/** Budget : dépenses du mois par source et budget mensuel, coût des derniers travailleurs */
+/** Coût par résultat (lot Z6) : dépense de chaque source (échecs compris) rapportée à ses résultats utiles */
+function CoutParResultat({ c }: { c: EtatControle["cout_par_resultat"] }) {
+  const R = C.coutResultat;
+  const [periode, setPeriode] = useState<"mois" | "total">("total");
+  return (
+    <div className="mt-4">
+      <div className="mb-1 flex items-center justify-between text-[11.5px] text-muted">
+        <span>{R.titre}</span>
+        <span className="flex gap-1" role="group">
+          {(["mois", "total"] as const).map((p) => (
+            <button key={p} onClick={() => setPeriode(p)} aria-pressed={p === periode}
+              className={`rounded px-1.5 ${p === periode ? "bg-raised text-ink" : "text-faint hover:text-ink"}`}>{R[p]}</button>
+          ))}
+        </span>
+      </div>
+      <table className="w-full text-[11.5px] tabular-nums" data-cout-resultat>
+        <tbody>
+          {(["viirs", "sentinel1", "sentinel2", "tip_and_cue"] as const).map((s) => {
+            const x = c[periode][s];
+            if (!x) return null;
+            return (
+              <tr key={s} className="align-top text-muted" title={s === "tip_and_cue" ? R.inclus : undefined}>
+                <td className="py-0.5">{R.sources[s]}</td>
+                <td className="text-right">{x.resultats} {R.unites[x.unite] ?? R.resultats}</td>
+                <td className="text-right text-ink">{x.cout_par_resultat != null ? euros(x.cout_par_resultat) : R.aucun}</td>
+                <td className="pl-2 text-right text-faint">{x.depense_echecs > 0 ? R.echecs(euros(x.depense_echecs)) : ""}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Budget : dépenses du mois par source et budget mensuel, coût par résultat, coût des derniers travailleurs */
 export function RubriqueBudget() {
   const e = useEtatControle().data;
   if (!e) return <p className="text-muted">{L.commun.chargement}</p>;
   return (
     <>
       <Jauge b={e.budget} />
+      {e.cout_par_resultat && <CoutParResultat c={e.cout_par_resultat} />}
       <p className="mb-1 mt-4 text-[11.5px] text-muted">{C.derniers}</p>
       <ul className="space-y-0.5 text-[11.5px] tabular-nums">
         {e.travailleurs.map((t) => (

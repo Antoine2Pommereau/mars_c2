@@ -224,8 +224,8 @@ async def interrupteurs(c) -> list[dict]:
 
 @router.get("/api/controle/etat")
 async def etat(request: Request):
-    """Interrupteurs, plafonds (valeur, défaut du fichier, bornes), budget du mois, coût réel des derniers
-    travailleurs, version des règles."""
+    """Interrupteurs, plafonds (valeur, défaut du fichier, bornes), budget du mois, coût par résultat (mois et depuis
+    le début, lot Z6), coût réel des derniers travailleurs, version des règles."""
     rules = load_rules()
     now = datetime.now(timezone.utc)
     async with request.app.state.pool.acquire() as c:
@@ -233,6 +233,10 @@ async def etat(request: Request):
         mois = controle.debut_mois(now)
         bud = controle.budget_calcul([tuple(r) for r in await c.fetch(controle.BUDGET_SQL.format(p="$1"), mois)],
                                      rules, mois)
+        cpr = controle.cout_par_resultat(
+            [tuple(r) for r in await c.fetch(controle.COUT_TRAVAILLEURS_SQL.format(p="$1"), mois)],
+            [tuple(r) for r in await c.fetch(controle.COUT_RESULTATS_SQL.format(p="$1"), mois)],
+            [tuple(r) for r in await c.fetch(controle.COUT_TIP_SQL.format(p="$1"), mois)])
         derniers = await c.fetch(
             """SELECT id, tache, etat, commercial_type, cree_le, detruit_le, cout_reel_eur,
                       (mesures->>'cout_estime_eur')::float8 AS cout_estime_eur, trace_id
@@ -246,7 +250,7 @@ async def etat(request: Request):
         plafonds[source] = {"valeur": max(lo, min(hi, int(v))) if v is not None else defaut, "defaut": defaut,
                             "min": lo, "max": hi, "regle_par_le_panneau": v is not None}
     return {"version_regles": rules["version"], "interrupteurs": inter, "plafonds": plafonds, "budget": bud,
-            "travailleurs": [dict(r) for r in derniers],
+            "cout_par_resultat": cpr, "travailleurs": [dict(r) for r in derniers],
             "rayon_demande_m": (rules.get("controle") or {}).get("rayon_demande_m")}
 
 

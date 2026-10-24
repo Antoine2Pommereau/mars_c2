@@ -44,8 +44,15 @@ export interface EtatControle {
     total: { depense: number; reserve: number };
     budget_sentinel: { plafond: number; engage: number; restant: number };
   };
+  /** Lot Z6 : coût par résultat utile, sur le mois et depuis le début (échecs compris) */
+  cout_par_resultat: Record<"mois" | "total", Record<string, CoutResultat>>;
   travailleurs: Props[];
   rayon_demande_m: { min: number; max: number; defaut: number } | null;
+}
+
+interface CoutResultat {
+  depense: number; depense_echecs: number; travailleurs: number; aboutis: number; resultats: number; unite: string;
+  cout_par_resultat: number | null;
 }
 
 /** Échéance d'un secret (lot Z1) : la date seule, relevée chaque jour par taches */

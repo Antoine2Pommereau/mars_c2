@@ -417,6 +417,63 @@ def budget_calcul(rows, rules: dict, mois: datetime) -> dict:
                                 "restant": round(max(plafond - partage, 0.0), 2)}}
 
 
+# Coût par résultat (lot Z6) : ce qu'a coûté chaque résultat utile, sur le mois et depuis le début. Un résultat est
+# une nuit VIIRS traitée sans erreur, une analyse Sentinel 1 ou 2 terminée, une demande d'observation analysée. Le
+# coût d'une source est celui de ses travailleurs détruits (réel, estimé à défaut), échecs compris : un résultat porte
+# aussi le prix des essais ratés. Tip and cue n'a pas de travailleur à lui : son coût est celui des analyses qui ont
+# porté ses demandes (déjà compté dans Sentinel 1 et 2, jamais ajouté au total).
+
+COUT_TRAVAILLEURS_SQL = """SELECT tache, cree_le >= {p} AS ce_mois, count(*), count(*) FILTER (WHERE etat = 'termine'),
+       coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8, 0)), 0),
+       coalesce(sum(coalesce(cout_reel_eur, (mesures->>'cout_estime_eur')::float8, 0))
+                FILTER (WHERE etat <> 'termine'), 0)
+FROM travailleurs WHERE detruit_le IS NOT NULL GROUP BY 1, 2"""
+
+COUT_RESULTATS_SQL = """SELECT 'viirs', nuit >= ({p})::timestamptz::date, count(DISTINCT nuit) FROM viirs_granules
+  WHERE erreur IS NULL GROUP BY 1, 2
+UNION ALL
+SELECT source, completed_at >= {p}, count(*) FROM analyses
+  WHERE status = 'done' AND source IN ('sentinel1', 'sentinel2') GROUP BY 1, 2
+UNION ALL
+SELECT 'tip_and_cue', mis_a_jour_le >= {p}, count(*) FROM demandes_observation WHERE etat = 'analysee' GROUP BY 1, 2"""
+
+COUT_TIP_SQL = """SELECT d.mis_a_jour_le >= {p}, coalesce(sum(a.cout_estime_eur), 0)
+FROM (SELECT DISTINCT ON (analysis_id) analysis_id, mis_a_jour_le FROM demandes_observation
+      WHERE etat = 'analysee' AND analysis_id IS NOT NULL) d JOIN analyses a ON a.id = d.analysis_id GROUP BY 1"""
+
+UNITES = {"viirs": "nuit traitée", "sentinel1": "analyse terminée", "sentinel2": "analyse terminée",
+          "tip_and_cue": "demande analysée"}
+
+
+def cout_par_resultat(travailleurs: list, resultats: list, tip: list) -> dict:
+    """Lignes de COUT_TRAVAILLEURS_SQL, COUT_RESULTATS_SQL et COUT_TIP_SQL vers {"mois", "total"} : par source,
+    dépense, dont échecs, travailleurs, aboutis, résultats, unité et coût par résultat (None sans résultat)."""
+    out = {}
+    for periode, garder in (("mois", lambda m: bool(m)), ("total", lambda _m: True)):
+        par = {s: {"depense": 0.0, "depense_echecs": 0.0, "travailleurs": 0, "aboutis": 0, "resultats": 0}
+               for s in UNITES}
+        for tache, ce_mois, n, ok, cout, echecs in travailleurs:
+            source = next((s for s, t in TACHE.items() if t == tache), None)
+            if source and garder(ce_mois):
+                p = par[source]
+                p["travailleurs"] += int(n)
+                p["aboutis"] += int(ok)
+                p["depense"] += float(cout or 0)
+                p["depense_echecs"] += float(echecs or 0)
+        for source, ce_mois, n in resultats:
+            if source in par and garder(ce_mois):
+                par[source]["resultats"] += int(n)
+        for ce_mois, cout in tip:
+            if garder(ce_mois):
+                par["tip_and_cue"]["depense"] += float(cout or 0)
+        for s, p in par.items():
+            p["depense"], p["depense_echecs"] = round(p["depense"], 2), round(p["depense_echecs"], 2)
+            p["unite"] = UNITES[s]
+            p["cout_par_resultat"] = round(p["depense"] / p["resultats"], 2) if p["resultats"] else None
+        out[periode] = par
+    return out
+
+
 # Notifications (phase D) : préférences, heures calmes, résumé au réveil
 
 CATEGORIES = ("pannes", "disque", "collecte", "travailleurs")

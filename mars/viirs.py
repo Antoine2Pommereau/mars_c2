@@ -557,6 +557,61 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
     return n
 
 
+# Bilan des nuits (lot Z6) : lecture seule, une ligne par nuit depuis une date, nuits absentes comprises
+
+BILAN_SQL = """
+WITH nuits AS (SELECT d::date AS nuit FROM generate_series(%(du)s::date, (now() AT TIME ZONE 'UTC')::date - 1,
+                                                          interval '1 day') d),
+g AS (SELECT nuit, count(*) AS granules, count(*) FILTER (WHERE erreur IS NOT NULL) AS en_erreur,
+             array_agg(DISTINCT travailleur_id) FILTER (WHERE travailleur_id IS NOT NULL) AS travailleurs,
+             max(traite_le) AS traitee_le
+      FROM viirs_granules WHERE nuit >= %(du)s GROUP BY 1),
+d AS (SELECT g.nuit, count(*) AS detections,
+             count(*) FILTER (WHERE d.mask_reason IS NOT NULL) AS ecartees,
+             count(*) FILTER (WHERE d.mask_reason IS NULL AND d.matched_vessel_id IS NOT NULL) AS avec_ais,
+             count(*) FILTER (WHERE d.mask_reason IS NULL AND d.matched_vessel_id IS NULL
+                              AND d.non_evaluable IS NOT NULL) AS non_evaluables,
+             count(*) FILTER (WHERE d.mask_reason IS NULL AND d.matched_vessel_id IS NULL
+                              AND d.non_evaluable IS NULL) AS sans_ais
+      FROM viirs_detections d JOIN viirs_granules g ON g.id = d.granule_id WHERE g.nuit >= %(du)s GROUP BY 1),
+a AS (SELECT (details->>'nuit')::date AS nuit, count(*) AS alertes,
+             count(*) FILTER (WHERE severity IN ('elevee', 'critique')) AS alertes_hautes
+      FROM alerts WHERE type = 'DARK_SHIP' AND details->>'source' = 'viirs' AND details ? 'nuit'
+        AND (details->>'nuit')::date >= %(du)s GROUP BY 1),
+w AS (SELECT g.nuit, string_agg(t.id || ' ' || t.etat || ' ' || coalesce(round(extract(epoch FROM t.detruit_le - t.cree_le)
+                                 / 60)::text || ' min', 'en vie') || ' ' || coalesce(
+                                 round(coalesce(t.mesures->>'rss_max_mo', t.mesures->'mesures_travailleur'->>'rss_max_mo')::numeric)::text || ' Mo', '')
+                                 || ' ' || coalesce(to_char(coalesce(t.cout_reel_eur,
+                                 (t.mesures->>'cout_estime_eur')::float8), 'FM0D00') || ' €', ''), ' ; ' ORDER BY t.id)
+                                 AS travailleurs,
+             sum(coalesce(t.cout_reel_eur, (t.mesures->>'cout_estime_eur')::float8, 0)) AS cout
+      FROM g JOIN travailleurs t ON t.id = ANY(g.travailleurs) GROUP BY 1)
+SELECT n.nuit, coalesce(g.granules, 0), coalesce(g.en_erreur, 0), coalesce(d.detections, 0), coalesce(d.avec_ais, 0),
+       coalesce(d.sans_ais, 0), coalesce(d.non_evaluables, 0), coalesce(d.ecartees, 0), coalesce(a.alertes, 0),
+       coalesce(a.alertes_hautes, 0), w.travailleurs, coalesce(w.cout, 0), g.traitee_le
+FROM nuits n LEFT JOIN g USING (nuit) LEFT JOIN d USING (nuit) LEFT JOIN a USING (nuit) LEFT JOIN w USING (nuit)
+ORDER BY n.nuit"""
+
+BILAN_COLS = ("nuit", "granules", "en_erreur", "detections", "avec_ais", "sans_ais", "non_evaluables", "ecartees",
+              "alertes", "alertes_hautes", "travailleurs", "cout_eur", "traitee_le")
+
+
+def bilan(conn, du) -> dict:
+    """Nuits VIIRS depuis `du` (jusqu'à la veille) : granules et erreurs, détections par statut, alertes DARK_SHIP de
+    source VIIRS, travailleurs (état, durée, mémoire, coût), plus les tâches viirs du journal (pause, refus, échec).
+    Une nuit sans granule est une nuit manquée ou pas encore traitée (la nuit se traite vers 06:30 UTC)."""
+    nuits = [dict(zip(BILAN_COLS, r)) for r in conn.execute(BILAN_SQL, {"du": du}).fetchall()]
+    taches = conn.execute(
+        "SELECT run_day, status, coalesce(details->>'en_pause', details->>'erreur', '') FROM task_runs "
+        "WHERE task = 'viirs' AND run_day >= %s AND (status <> 'ok' OR details ? 'en_pause') ORDER BY started_at",
+        (du,)).fetchall()
+    tot = {k: sum(n[k] for n in nuits) for k in BILAN_COLS[1:10]}
+    tot["cout_eur"] = round(sum(float(n["cout_eur"]) for n in nuits), 2)
+    tot["nuits"], tot["nuits_traitees"] = len(nuits), sum(1 for n in nuits if n["granules"])
+    return {"du": str(du), "nuits": nuits, "total": tot,
+            "journal": [{"jour": str(j), "statut": s, "motif": m[:200]} for j, s, m in taches]}
+
+
 def regions_boxes() -> list[list[float]]:
     """Emprises des régions pour le travailleur : [lon_min, lat_min, lon_max, lat_max]."""
     return [[b, a, d, c] for a, b, c, d in ZONES.values()]

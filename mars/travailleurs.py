@@ -622,6 +622,16 @@ def launch(conn, scw: Scaleway, rules: dict, tache: str, parametres: dict, env: 
         return r
 
 
+# Lot Z6 : vrai pendant `taches.py essai-reel --lancer` seulement ; tout type jamais éprouvé est alors refusé
+ESSAI_EPROUVES_SEULS = False
+
+
+def eprouves(conn) -> set:
+    """Types (commercial_type, zone) sur lesquels au moins un travailleur a abouti, toutes tâches confondues."""
+    return {tuple(r) for r in conn.execute(
+        "SELECT DISTINCT commercial_type, zone FROM travailleurs WHERE etat = 'termine'").fetchall()}
+
+
 def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante=None) -> dict:
     now = now or datetime.now(timezone.utc)
     p, t = rules["travailleurs"], type_params(rules, tache, variante)
@@ -634,6 +644,12 @@ def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante=
     refus = quota(rules, today, now, tache)
     if refus:
         return {"refus": refus}
+    if ESSAI_EPROUVES_SEULS:
+        zone_essai = t.get("zone", p["zone"])
+        if (t["commercial_type"], zone_essai) not in eprouves(conn):
+            traces.attributs(**{"travailleur.refus_non_eprouve": True})
+            return {"refus": f"essai réel : {t['commercial_type']} en {zone_essai} jamais éprouvé (aucun travailleur "
+                             "abouti sur ce type), lancement refusé"}
     ip, pn = os.environ.get("MARS_IP_PRIVEE"), os.environ.get("SCW_PRIVATE_NETWORK_ID")
     if not ip or not pn:
         return {"refus": "réseau privé non configuré (MARS_IP_PRIVEE, SCW_PRIVATE_NETWORK_ID)"}

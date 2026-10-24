@@ -387,3 +387,20 @@ l'essai passe par la commande manuelle, le plafond d'essai et `--malgre-pause` (
 * Les octets lus sur eodata ne sont pas encore mesurés (essai réel) ; le comptage ajoute 16 Ko par fichier ouvert,
   lecture d'ouverture que GDAL ne journalise pas.
 * Le rejeu du tip and cue (`tip-rejeu`) ne compte encore que les passages Sentinel 1.
+
+## 13. Revue des échecs du 20/10/2026 (lot Z6)
+
+| Essai | Cause | Correctif | Test sur le vrai chemin | Résultat (24/10/2026) |
+|---|---|---|---|---|
+| Analyse 98, travailleur 29 | 403 AccessDenied au téléchargement des poids : adresse présignée par le jeton R2 principal, filtré sur l'IP du serveur | seau `mars-c2-modeles` et son jeton, seuls à présigner pour un travailleur ; un octet lu de chaque adresse avant Docker (`controle_r2`) | `tests/test_echecs_sentinel2.py` : faux R2 local qui vérifie la signature des adresses présignées et refuse le jeton principal comme le filtre IP ; vraie présignature du serveur, vrai téléchargement du travailleur (`poids`, empreinte vérifiée), vrai `demarrage.sh` avec le vrai `curl` (arrêt avant Docker sur l'ancienne adresse, analyse lancée sur la nouvelle) | 4 tests réussis |
+| Analyse 99, travailleur 30 (et l'essai qui l'a précédé) | EnvError de rasterio : clés AWS refusées en options GDAL, 0 octet lu | clés par une AWSSession si boto3 est présent, sinon par l'environnement le temps de la lecture | `scripts/verifier_images.sh s2-s3` : vraie image rslearn, vrais rasterio et GDAL, faux S3 qui vérifie chaque signature AWS version 4 ; plus `env_gdal` exécuté avec un rasterio simulé qui lève la même EnvError que le vrai | s2-s3 réussie : SCL et 13 bandes (34,3 Mo, 204 requêtes signées, 0 refusée), 4 navires, voie sans boto3 et signature fausse refusée ; 2 tests réussis |
+
+Ce qu'aucun essai sans travailleur ne prouve, et que l'essai a) mesurera :
+* que R2 accepte le jeton des modèles depuis une IP de Scaleway (le jeton n'a pas de filtre IP, mais seul R2 en
+  décide) ;
+* que eodata accepte les lectures signées par le travailleur avec la vraie paire dédiée (même algorithme que le faux S3,
+  mais région, hôte et droits propres à Copernicus) ;
+* les octets lus sur eodata, les durées (image, poids, inférence) et la mémoire sur un vrai GP1-S, donc le coût réel
+  (une heure entamée si tout tient sous l'heure) ;
+* le stock du GP1-S au moment de l'essai (un refus du POP2 jamais éprouvé laisse l'analyse en échec, sans dépense).
+

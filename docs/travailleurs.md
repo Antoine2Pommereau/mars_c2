@@ -263,10 +263,15 @@ caractères) et erreur.
 | `detruire-travailleurs` | arrêt d'urgence : détruit toute instance étiquetée |
 | `sentinel-diagnostic` | lecture seule hormis le groupe de sécurité : paires Copernicus (lecture réelle de 16 octets, expiration), clés Scaleway et réseau privé, image du type de base et sa fiche brute, disponibilité et prix de chaque type, stockage bloc, droits, volumes bloc des 30 derniers jours ; PRÊT, MANQUE ou À VÉRIFIER par ligne, code de sortie non nul s'il manque quelque chose |
 | `sentinel2-diagnostic` | seau des modèles, variables dans taches et backend, poids, un octet lu par adresse présignée |
+| `essai-reel` | lot Z6, lecture seule : travailleurs en vie, budget des essais (8 € HT) et du mois, pauses, clés, types éprouvés ou non, passages candidats Sentinel 1 et 2, requête de vérification ; code de sortie non nul s'il manque quelque chose |
+| `essai-reel --lancer ID` | lot Z6 : un essai réel sur le passage ID (Sentinel 1 ou 2), malgré la pause (consigné), plafond du jour en vigueur et au moins une scène ; refusé si un travailleur vit encore ou si le budget des essais est épuisé ; **tout type jamais éprouvé est refusé** (POP2 compris) ; consigné dans `task_runs` (`essai_reel`) |
+| `viirs-bilan [--du AAAA-MM-JJ]` | lot Z6, lecture seule : une ligne par nuit (nuits manquées comprises) : granules et erreurs, détections avec AIS, sans AIS, non évaluables, écartées, alertes DARK_SHIP, travailleurs (état, durée, mémoire, coût) |
 | `echeances` | échéances des secrets, relevées et notifiées |
 | `satellites-pause on\|off [source]` | pause ou reprise (aussi dans Coulisses, Sources et capteurs) ; les commandes manuelles sont refusées en pause sauf `--malgre-pause` |
 
-Ailleurs : indicateur « Satellites » et Coulisses (Activité satellite, Budget) ; Grafana, tableau Satellites
+Ailleurs : indicateur « Satellites » et Coulisses (Activité satellite, Budget, avec le coût par résultat depuis le
+lot Z6 : dépense de chaque source, échecs compris, rapportée à ses nuits traitées, analyses terminées ou demandes
+analysées) ; Grafana, tableau Satellites
 (travailleurs : durée, mémoire, coût, motif ; ruptures de stock ; coût du mois) ; notifications ntfy
 de la catégorie « travailleurs » (nuit VIIRS absente, analyse abandonnée, pauses et reprises). Chaque lancement est une trace de bout
 en bout, du serveur au travailleur et retour (`docs/opentelemetry.md`). Après un essai, vérifier dans la console
@@ -394,3 +399,34 @@ les 10 Go gratuits de R2.
 | après le 22/10/2026 | VIIRS repris au déploiement de 29bcfff ; Sentinel 1, Sentinel 2 et tip and cue toujours en pause |
 
 Récits détaillés des essais Sentinel : `docs/sentinel.md` et `docs/sentinel2.md`.
+
+## 11. Essais réels (lot Z6)
+
+Objectif : la boucle complète tourne au moins une fois en réel et la Veille montre de vraies preuves. Budget des
+essais : 8 € HT (`essai_reel.budget_eur`), compté sur les travailleurs lancés par `essai-reel`. Un essai à la fois,
+dans l'ordre : a) Sentinel 2 sur le passage 325 ; b) Sentinel 1 sur processeur, deux passages ; c) tip and cue repris
+une semaine. Règles : tout est tracé ; aucune reprise automatique sans décision (`essai-reel --lancer` passe malgré la
+pause, consigné, sans rien reprendre) ; aucun type facturé à l'heure jamais éprouvé (le POP2 est refusé pendant un
+essai : un GP1-S en rupture laisse l'analyse en échec, avec son motif).
+
+Avant et après chaque essai :
+
+```bash
+docker compose exec -T taches python scripts/taches.py essai-reel        # « Prêt pour un essai : rien ne manque. »
+docker compose exec -T db psql -U mars -d mars -c "SELECT id, tache, etat, commercial_type, zone, cree_le FROM travailleurs WHERE detruit_le IS NULL ORDER BY id"
+```
+
+La requête ne doit rendre aucune ligne avant un essai, ni après sa fin (destruction au plus tard à la durée de vie du
+travailleur) ; la console Scaleway (Instances en fr-par-1 et fr-par-2, Block Storage) le confirme.
+
+| Essai | Commande | Durée attendue | Coût attendu |
+|---|---|---|---|
+| a) Sentinel 2, passage 325 | `essai-reel --lancer 325` | 15 à 30 min (image de 7,2 Go en 4 min 23 s mesurées, poids de 2,7 Go, inférence d'une fenêtre sur 8 processeurs) | 0,19 € (une heure entamée de GP1-S), 0,38 € au delà d'une heure |
+| b) Sentinel 1, deux passages | `essai-reel --lancer <ID>` deux fois, le second après la destruction du premier | 6 à 15 min chacun (6 min 15 s pour une fenêtre à l'analyse 97) | 0,19 € chacun |
+| c) Tip and cue, une semaine | `satellites-pause off tip_and_cue` et `satellites-pause off sentinel1` (décision), puis `on` sept jours après | une semaine | 0,6 € attendus (2,45 € par mois au rejeu), 2,66 € au plus (2 sessions par jour) |
+
+Tip and cue ne demande qu'aux capteurs en service (`missions_retenues`) : repris seul, Sentinel 1 restant en pause,
+il ne produirait aucune observation. Le reprendre avec Sentinel 1 remet aussi en route la sélection automatique de
+Sentinel 1 (corridors et navires des listes), dans son plafond de 2 scènes par jour et le budget de 8 € du mois.
+`--jusqua` ne sert pas ici : il programme une reprise, pas une fin ; la remise en pause se fait à la main.
+

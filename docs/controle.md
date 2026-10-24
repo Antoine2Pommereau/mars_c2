@@ -11,6 +11,10 @@
 > * Accès : depuis les lots Z1 et Z2, **toutes** les routes d'écriture de l'API exigent une session d'opérateur, pas
 >   seulement celles du panneau ; l'auteur est tiré de la session.
 > * Budget Sentinel : 8 € par mois, partagé entre Sentinel 1, Sentinel 2 et tip and cue ; VIIRS hors budget.
+> * Coût par résultat (lot Z6, rubrique Budget) : sur le mois ou depuis le début, dépense de chaque source (coût réel
+>   des travailleurs détruits, échecs compris) divisée par ses résultats utiles (nuit VIIRS traitée sans erreur,
+>   analyse Sentinel terminée, demande d'observation analysée). Tip and cue n'a pas de travailleur : son coût est celui
+>   des analyses qui ont porté ses demandes, déjà compté dans Sentinel 1 et 2.
 
 Piloter sans terminal les capteurs, les dépenses, les règles, les notifications, les zones de vigilance et un mode
 démonstration, avec un état du système en lecture seule. Raison première : maîtriser les coûts (Sentinel 1 et 2 sont
