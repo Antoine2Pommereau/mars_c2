@@ -99,7 +99,8 @@ indice, jamais une excuse).
 
 ## 4. État actuel (24/10/2026)
 
-`main` à 29bcfff (lots Z1 et Z2), règles 2026.10.47, migrations 01 à 42. État des sources : en base (panneau), pas
+`main` à f029baa (lots Z1 à Z3) ; branche `consolidation-z4` (code mort, 24/10/2026) : règles 2026.10.49,
+migrations 01 à 43 (43 retire l'horloge partagée `sim_clock`). État des sources : en base (panneau), pas
 dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibration : `docs/calibration.md`.
 
 | Capteur ou fonction | État | Dernier essai réel | Coût unitaire mesuré |
@@ -109,7 +110,7 @@ dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibr
 | Règles WATCHLIST, IDENTITY_CHANGE, RENDEZVOUS | en service | cycle de 5 min, 18,8 s (22/10) | inclus |
 | Règle AIS_GAP | observation (fichier) | 84 épisodes observés en 7 jours (22/10), aucune alerte | inclus |
 | VIIRS (travailleur DEV1-M) | en pause depuis le 21/10 ; reprise au déploiement de 29bcfff | 21/10, 12 granules | environ 0,02 € la nuit |
-| Sentinel 1 sur processeur (GP1-S, POP2 en secours) | en pause depuis le 21/10 | 19/10, analyse 97, 1,7 % de la scène lue | 0,19 € l'analyse |
+| Sentinel 1 sur processeur seul (GP1-S, POP2 en secours, lots de 4 fenêtres) | en pause depuis le 21/10 | 19/10, analyse 97, 1,7 % de la scène lue | 0,19 € l'analyse |
 | Sentinel 2 (GP1-S, rslearn) | en pause depuis le 21/10 | 20/10 : 3 échecs, correctif livré non rejoué | 0,19 € la session |
 | Tip and cue, vérification satellite | en pause depuis le 21/10 | 20 demandes réelles, aucune observation | selon le capteur |
 | Alertes radar (DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH) | jamais éprouvées | aucune alerte réelle | inclus |
@@ -119,9 +120,9 @@ dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibr
 | Interface (Veille, Enquête, Coulisses, démonstration) | en service | lot U du 21/10 | inclus |
 
 Coût mesuré (facture Scaleway du 1er au 23/10) : environ 19 € par mois hors taxes en régime permanent (serveur DEV1-M
-0,0202 € l'heure, réseau et stockage environ 4 € par mois). Prochaines étapes : déployer 29bcfff, mesure des coupures
-AIS le 29/10 (`docs/calibration.md`), lot Z4 (code mort), Z6 (satellites en réel), Z7 (calibration), trajectoire
-étape 2 et TrAISformer.
+0,0202 € l'heure, réseau et stockage environ 4 € par mois). Prochaines étapes : déployer Z3 puis Z4, mesure des coupures
+AIS le 29/10 (`docs/calibration.md`), Z6 (satellites en réel), Z7 (calibration), trajectoire étape 2 et TrAISformer.
+Mises en commun listées pour plus tard (travailleurs, évaluation, squelette Sentinel) : `docs/journal.md`, lot Z4.
 
 ## 5. Architecture
 
@@ -147,7 +148,7 @@ sélection (navire des listes sur corridor, alerte VIIRS, tip and cue), travaill
 
 ```
 config/rules.yaml, config/supervision.env   seuils versionnés, seuils de supervision
-db/init/01 à 42                              schéma et migrations (registre schema_migrations depuis 39)
+db/init/01 à 43                              schéma et migrations (registre schema_migrations depuis 39)
 mars/ais/          live.py (zones, collecte), ingest.py, mid.py (pavillon)
 mars/rules.py      règles en continu ; watchlist.py, archive.py, r2.py, r2_signature.py
 mars/satellites.py calendrier des passages ; viirs.py ; sentinel.py ; sentinel2.py ; evaluation.py ; fusion/
@@ -209,8 +210,9 @@ http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulemen
 `docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).
 
 Tests : `python -m pytest tests` (chaque test borné à 60 s) ; avec la base de test
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 42) : **484 réussis, 1 ignoré**
-(24/10/2026) ; sans base, 360 réussis, 125 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 43) : **464 réussis**
+(24/10/2026, lot Z4 : tests de la chaîne du Mac et de la voie GPU retirés avec elles) ; sans base, 344 réussis,
+120 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
 `scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `s2`, `s2-s3` selon le
 travail). Décomptes passés : `docs/journal.md`.
 
