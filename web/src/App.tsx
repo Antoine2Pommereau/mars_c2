@@ -17,7 +17,6 @@ import Garde from "./components/Garde";
 import LayersPanel from "./components/LayersPanel";
 import MapView from "./components/MapView";
 import MenuCarte from "./components/MenuCarte";
-import NewAnalysis from "./components/NewAnalysis";
 import Rail, { type PanelId } from "./components/Rail";
 import Recherche, { type Resultat } from "./components/Recherche";
 import SuivisPanel from "./components/SuivisPanel";
@@ -27,7 +26,7 @@ import { emprise, preuveGeoJSON } from "./lib/preuve";
 import { cadreDossiers } from "./lib/cadre";
 import type { Dossier } from "./lib/api";
 import type { Vue } from "./components/MapView";
-import { api, type Pass } from "./lib/api";
+import { api } from "./lib/api";
 import { FILTRES_DEFAUT, dansPlage, filtrer, naviresEnAlerte, statutDe, trier, type Filtres } from "./lib/fil";
 import { cercle, nearInfra } from "./lib/geo";
 import { L } from "./lib/libelles";
@@ -130,10 +129,8 @@ export default function App() {
   const [pendingSel, setPendingSel] = useState<string | null>(INITIAL.sel);
   const [highlight, setHighlight] = useState<FC>(EMPTY);
   const [focus, setFocus] = useState<Focus | null>(null);
-  const [drawing, setDrawing] = useState(false);
   // Clic droit sur la carte : menu de demande d'observation satellite (lot T1)
   const [menu, setMenu] = useState<{ lon: number; lat: number; x: number; y: number } | null>(null);
-  const [draft, setDraft] = useState<number[] | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
   const [searching, setSearching] = useState(false);
 
@@ -162,7 +159,7 @@ export default function App() {
   const aLInstant = rejeuFidele && !direct ? iso(Math.floor(instant / 60_000) * 60_000) : null;
 
   // Trafic : flux temps réel en direct ; instant choisi en plage et en rejeu
-  const { data: stream, traffic: streamTraffic, connected } = useStream(direct, region);
+  const { traffic: streamTraffic, connected } = useStream(direct, region);
   const trafficQ = useQuery({ queryKey: ["traffic", Math.round(instant / 1000), region], queryFn: () => api.traffic(iso(instant), region),
     enabled: !direct, placeholderData: keepPreviousData, retry: 2 });
   // Dossiers (lot U) : à l'instant affiché, à la minute ; rejeu tel qu'il était si demandé
@@ -214,20 +211,14 @@ export default function App() {
   const vessels = useMemo(() => new Map<number, Props>(traffic.features.map((f) => [f.properties.vessel_id, {
     ...f.properties, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] }])), [traffic]);
 
-  // Analyses radar (étape 3, panneau existant)
-  const [pinnedWaiting, setPinnedWaiting] = useState(false);
-  const analysesQ = useQuery({ queryKey: ["analyses"], queryFn: api.analyses, refetchInterval: pinnedWaiting ? 2000 : false });
+  // Analyses radar passées (lecture seule : la chaîne du Mac qui les lançait est retirée au lot Z4)
+  const analysesQ = useQuery({ queryKey: ["analyses"], queryFn: api.analyses });
   const done = analysesQ.data?.features.filter((f) => f.properties.status === "done") ?? [];
-  useEffect(() => setPinnedWaiting(pinned !== null && !done.some((f) => f.properties.id === pinned)), [pinned, done.length]);
   const analysis = done.find((f) => f.properties.id === pinned) ?? done[0] ?? null;
   const analysisId = analysis?.properties.id as number | undefined;
   const showDet = actives.includes("detections");
   const detQ = useQuery({ queryKey: ["det", analysisId], queryFn: () => api.detections(analysisId!), enabled: !!analysisId && showDet });
   const analysisAlertsQ = useQuery({ queryKey: ["alerts", analysisId], queryFn: () => api.alerts(analysisId!), enabled: !!analysisId && showDet });
-  useEffect(() => {
-    const ids = (stream?.analyses ?? []).filter((a) => a.status === "done").map((a) => a.id);
-    if (ids.length && (!analysisId || Math.max(...ids) > analysisId)) qc.invalidateQueries({ queryKey: ["analyses"] });
-  }, [stream, analysisId, qc]);
 
   // Couches de fond, chargées à la première activation
   const zonesQ = useQuery({ queryKey: ["zones", region], queryFn: () => api.zones(region), enabled: actives.includes("mouillages"), staleTime: Infinity });
@@ -493,30 +484,24 @@ export default function App() {
     return [...ids];
   }, [concernees, filtered, selection, vessels, infraQ.data]);
 
-  // Nouvelle analyse radar : tracé puis lancement ; la plage se place autour du passage choisi
-  const startDraw = useCallback(() => { ouvrirRubrique("activite", "analyses"); setSelection(null); setDraft(null); setDrawing(true); }, [ouvrirRubrique]);
-  const cancelDraw = useCallback(() => { setDraft(null); setDrawing(false); }, []);
+  // Analyse passée choisie : la plage se place autour de son passage
   const autourDe = useCallback((t: string) => {
     const ms = Date.parse(t);
     setTemps((x) => ({ ...avecPlage(x, ms - 6 * 3600_000, ms + 6 * 3600_000, Date.now()), instant: ms - 600_000 }));
   }, []);
-  const onLaunched = useCallback((id: number, pass: Pass) => {
-    setDraft(null); setPinned(id); autourDe(pass.acquired_at); qc.invalidateQueries({ queryKey: ["analyses"] });
-  }, [autourDe, qc]);
   const pickAnalysis = useCallback((f: Feature) => { setPinned(f.properties.id); autourDe(f.properties.acquired_at); }, [autourDe]);
 
-  // Clavier : Cmd + K ouvre la recherche ; Échap ferme la recherche, le tracé ou la fiche
+  // Clavier : Cmd + K ouvre la recherche ; Échap ferme la recherche ou la fiche
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setSearching((v) => !v); return; }
       if (e.key !== "Escape") return;
-      if (searching) setSearching(false); else if (drawing || draft) cancelDraw(); else setSelection(null);
+      if (searching) setSearching(false); else setSelection(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [searching, drawing, draft, cancelDraw]);
+  }, [searching]);
 
-  const jobs = (stream?.analyses ?? []).filter((a) => a.status !== "done" || a.id !== analysisId);
   const selectedId = selection?.kind === "alert" ? selection.feature.properties.id : null;
   const analysisIds = new Set((analysisAlertsQ.data?.features ?? []).map((f) => f.properties.id));
   const mapAlerts = useMemo<FC>(() => ({ type: "FeatureCollection", features: filtered.filter((a) => !analysisIds.has(a.properties.id))
@@ -529,7 +514,6 @@ export default function App() {
         region={region} regions={regionsQ.data ?? null} onRegion={choisirRegion} />
       <div className="flex min-h-0 flex-1">
         <Rail active={panel} onSelect={setPanel} onSearch={() => setSearching(true)} alertCount={aExaminer}
-          running={jobs.some((a) => a.status === "pending" || a.status === "running")}
           observationCount={observationsQ.data?.actives ?? 0} />
         {panel && (
           <aside style={{ width: borne(espaceLargeur, largeurs[espaceLargeur]) }}
@@ -557,9 +541,8 @@ export default function App() {
                       selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} /></div>
                   </Partie>
                   <Partie id="analyses" titre={L.controle.sections.analyses}>
-                    <AnalysesPanel titre={false} jobs={jobs} analysis={analysis} nDetections={detQ.data?.features.length ?? 0}
-                      history={done.slice(0, 8)} onPick={pickAnalysis} launcher={<NewAnalysis drawing={drawing} draft={draft}
-                        onStartDraw={startDraw} onCancel={cancelDraw} onLaunched={onLaunched} />} />
+                    <AnalysesPanel titre={false} analysis={analysis} nDetections={detQ.data?.features.length ?? 0}
+                      history={done.slice(0, 8)} onPick={pickAnalysis} />
                   </Partie>
                   <PartieDemande />
                 </>,
@@ -587,7 +570,7 @@ export default function App() {
             analysisAlerts={analysisAlertsQ.data ?? EMPTY} liveAlerts={mapAlerts} zones={zonesQ.data ?? null}
             reception={receptionQ.data ?? null} infrastructure={infraQ.data ?? null} highlight={highlight} actives={actives}
             byType={byType} region={region} passages={passagesQ.data ?? EMPTY} viirs={viirsQ.data ?? EMPTY} sentinel={sentinelQ.data ?? EMPTY} concernedInfra={concernedInfra} focus={focus} onSelect={onSelect}
-            drawing={drawing} draft={draft} onDraw={(b) => { setDraft(b); setDrawing(false); }} spotlight={spotlight} focusGeom={focusGeom}
+            spotlight={spotlight} focusGeom={focusGeom}
             vigilance={(vigilanceQ.data as FC | undefined) ?? EMPTY} trace={trace} onTracePoint={(c) => setTrace((t) => (t ? [...t, c] : t))}
             vue={vue} infraProches={dossiersQ.data?.infrastructures_proches ?? []} dossiersPoints={dossiersPoints} preuve={preuveCarte}
             onContexte={setMenu} />
@@ -609,12 +592,7 @@ export default function App() {
                 viirsCount={viirsQ.data?.features.length ?? 0} />
             </div>
           )}
-          <button onClick={drawing || draft ? cancelDraw : startDraw}
-            className={`absolute left-[372px] top-4 z-10 rounded-md border px-3 py-1.5 text-[12.5px] backdrop-blur
-              ${drawing ? "border-signal bg-panel/95 text-ink" : "border-hair bg-panel/90 text-ink hover:border-signal"}`}>
-            {drawing ? L.analyses.tracerCarte : draft ? L.analyses.annulerTrace : L.analyses.nouvelle}
-          </button>
-          <DetailPanel selection={selection} onClose={() => setSelection(null)} passTime={analysis?.properties.acquired_at ?? null}
+          <DetailPanel selection={selection} onClose={() => setSelection(null)}
             plage={{ debut: qDebut, fin: qFin }} suivis={suivis} vessels={vessels} alerts={filtered} onStatus={onStatus}
             onPickAlert={pickAlert} onPickVessel={pickVessel} onPickInfra={(id) => pickInfra(id)}
             onSuivre={(id, on) => suivre.mutate({ id, on })} onRejeu={onRejeu}

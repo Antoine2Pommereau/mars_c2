@@ -14,11 +14,10 @@ interface Props {
   onSelect: (id: PanelId | null) => void;
   onSearch: () => void;
   alertCount: number;
-  running: boolean;
   observationCount: number;          // demandes d'observation actives (tip and cue)
 }
 
-export default function Rail({ active, onSelect, onSearch, alertCount, running, observationCount }: Props) {
+export default function Rail({ active, onSelect, onSearch, alertCount, observationCount }: Props) {
   return (
     <nav className="flex h-full w-14 shrink-0 flex-col items-center border-r border-hair bg-panel py-2">
       {ITEMS.map(({ id, label, Icon, aVenir }) => {
@@ -40,7 +39,6 @@ export default function Rail({ active, onSelect, onSearch, alertCount, running, 
                 {observationCount}
               </span>
             )}
-            {id === "coulisses" && running && !observationCount && <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-signal" />}
             {on && <span className="absolute -left-2 top-2 h-6 w-0.5 rounded bg-signal" />}
           </button>
         );

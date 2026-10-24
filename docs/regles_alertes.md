@@ -349,11 +349,10 @@ pause. Ajoutée par la migration 25 à la contrainte `alerts_type_check`.
 
 ## 10. Autres types
 
-* **DARK_SHIP de la chaîne radar du Mac** (`backend/app.py`, `_run_analysis`, CircleNet) : gravité critique au delà de
-  `dark_ship.critical_length_m` (50 m) et `critical_contrast_db` (20 dB), élevée sinon ; seuils danois (phase 4), aucune
-  évaluation commune. Chaîne jugée morte ou remplacée, retrait à décider (`docs/bilan.md`, section 2.4) ; dernier usage
-  le 06/10/2026, en échec. Les seuils `model.thresholds` (0,20, 0,338, 0,35) et `contrast.min_vv_db` (10 dB) ne servent
-  qu'à elle ; `model.thresholds.fishing` n'est jamais lu.
+* **DARK_SHIP de la chaîne radar du Mac** (CircleNet) : retirée au lot Z4 avec la chaîne ; ses alertes passées restent
+  en base et lisibles. La fusion commune garde `dark_ship.critical_length_m` (50 m), `critical_contrast_db` (20 dB),
+  `model.thresholds.vessel` (0,338) et `contrast.min_vv_db` (10 dB) ; `model.thresholds.objectness` et `fishing` sont
+  retirés (règles 2026.10.48).
 * **Types à venir** du registre de l'interface (`web/src/registres/alertes.tsx`, `actif: false`), absents de la
   contrainte `alerts_type_check` : `INFRA_THREAT` (menace sur une infrastructure), `TRAJECTOIRE_ANORMALE` (pilote),
   `PASSAGE_PREVU` (étape 4). Aucun code ne les produit.
@@ -375,7 +374,7 @@ WATCHLIST, IDENTITY_CHANGE, IDENTITY_MISMATCH.
 | DARK_SHIP Sentinel 2 | `sentinel2.dark_ship` | actif, plafond 0 | en pause | comme VIIRS, à confirmer sans masque | 300 m, nuages 50 % et 20 % | française mesurée et capteur | 0 |
 | AIS_UNCONFIRMED | `sentinel1` et `sentinel2.ais_unconfirmed` | actif | en pause | moyenne à 150 m, sinon faible | 50 m, facteur 1,5 | danoise | 0 |
 | IDENTITY_MISMATCH | `sentinel1` et `sentinel2.identity_mismatch` | actif | en pause | listes moyenne, sinon faible | 40 m et 40 %, 67,5 à 112,5° | provisoire | 0 |
-| DARK_SHIP chaîne du Mac | aucune | actif | hors service | longueur et contraste critique, sinon élevée | 50 m, 20 dB | danoise | 0 connue |
+| DARK_SHIP chaîne du Mac | aucune | retiré (lot Z4) | hors service | longueur et contraste critique, sinon élevée | 50 m, 20 dB | danoise | 0 connue |
 
 Le mode et l'état réels se lisent en base (panneau), pas dans ce document : à vérifier par `GET /api/controle/regles`
 avant toute conclusion.

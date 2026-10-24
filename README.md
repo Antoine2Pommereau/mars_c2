@@ -4,6 +4,10 @@ Maritime Autonomous Reconnaissance and Surveillance, Command and Control.
 Surveillance maritime par fusion des données AIS et de l'imagerie radar Sentinel 1.
 La spécification complète décrit la vision, l'architecture et la feuille de route.
 
+Journal historique des premières phases (Danemark). La chaîne radar du Mac qu'il décrit (service d'inférence,
+CircleNet, Sentinel Hub, `scripts/run_rules.py`, `scripts/analyze_zone.py`) est retirée au lot Z4 (24/10/2026) ;
+l'état actuel est dans `CLAUDE.md` et `docs/README.md`.
+
 ## État : phase 4 en cours, masques, rendez vous suspects et coupures AIS
 
 **Coupures AIS** (`backend/rules.py`) : navire de classe A faisant route (au moins 1 nœud) qui cesse d'émettre

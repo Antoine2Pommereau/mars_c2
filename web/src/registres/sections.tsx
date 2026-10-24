@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import AlertActions from "../components/AlertActions";
-import Chip from "../components/Chip";
 import PreuveImage from "../components/PreuveImage";
 import { Row, Sejour, Sources, Tag } from "../components/Elements";
 import { Comportement, DemandesObservation, EnTeteAlerteNavire, EnTeteNavire, RadarAlertes, RadarMesures, RadarNavire, VerificationSatellite, IdentitesFrise, InfraAlertes, InfraIdentite, InfraNavires, ListeAlertes, Notes,
@@ -28,7 +27,6 @@ export interface Contexte {
   infra?: Props;                // { id, … } de l'infrastructure sélectionnée
   zone?: string;
   passage?: number;             // identifiant du passage satellite sélectionné
-  passTime?: string | null;
   plage: { debut: string; fin: string };
   suivis: Set<number>;
   vessels: Map<number, Props>;  // navires affichés à l'instant
@@ -78,13 +76,6 @@ const SECTIONS: Section[] = [
   { id: "motif", objet: "alerte", ordre: 10, etape: null, titre: false,
     condition: (c) => !!c.alerte?.properties.details?.motif,
     rendu: (c) => <p className="text-ink/90">{c.alerte!.properties.details.motif}</p> },
-  { id: "vignette", objet: "alerte", ordre: 20, etape: null, titre: false,
-    condition: (c) => !!typeAlerte(c.alerte!.properties.type).vignette && !!c.alerte!.properties.event_time
-      && !SATELLITES.includes(c.alerte!.properties.details?.source),       // VIIRS, Sentinel 1 et 2 : vignette du travailleur
-    rendu: (c) => {
-      const [lon, lat] = c.alerte!.geometry.coordinates as [number, number];
-      return <Chip lon={lon} lat={lat} time={c.alerte!.properties.event_time} />;
-    } },
   { id: "preuves", objet: "alerte", ordre: 30, etape: null, titre: true, condition: toujours,
     rendu: (c) => typeAlerte(c.alerte!.properties.type).preuves(c.alerte!.properties) },
   { id: "navires", objet: "alerte", ordre: 40, etape: null, titre: true,
@@ -214,9 +205,6 @@ const SECTIONS: Section[] = [
         </>
       );
     } },
-  { id: "vignette", objet: "detection", ordre: 20, etape: null, titre: false,
-    condition: (c) => !!c.passTime && c.detection?.lon != null && !SATELLITES.includes(c.detection?.source),
-    rendu: (c) => <Chip lon={c.detection!.lon} lat={c.detection!.lat} time={c.passTime!} /> },
 ];
 
 /** Sections à afficher pour un contexte, dans l'ordre. */

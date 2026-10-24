@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
-import type { StreamPayload } from "./types";
 
-/** Flux SSE de l'API en mode direct : trafic quand il a changé, progression des analyses.
+/** Flux SSE de l'API en mode direct : trafic quand il a changé.
  *  Le trafic reçu est conservé entre deux envois (le flux ne le renvoie que s'il a changé). */
 export function useStream(enabled: boolean, region: string | null) {
-  const [data, setData] = useState<StreamPayload | null>(null);
   const [traffic, setTraffic] = useState<any>(null);
   const [connected, setConnected] = useState(false);
 
@@ -14,7 +12,6 @@ export function useStream(enabled: boolean, region: string | null) {
     setTraffic(null);
     es.addEventListener("traffic", (e) => {
       const payload = JSON.parse((e as MessageEvent).data);
-      setData(payload);
       if (payload.navires || payload.traffic) setTraffic(payload);
       setConnected(true);
     });
@@ -22,5 +19,5 @@ export function useStream(enabled: boolean, region: string | null) {
     return () => es.close();
   }, [enabled, region]);
 
-  return { data, traffic, connected };
+  return { traffic, connected };
 }

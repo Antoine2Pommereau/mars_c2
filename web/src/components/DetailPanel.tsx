@@ -63,7 +63,6 @@ function FicheVigilance({ id, onPickAlert }: { id: number; onPickAlert: (f: Feat
 interface PanelProps {
   selection: Selection | null;
   onClose: () => void;
-  passTime: string | null;
   plage: { debut: string; fin: string };
   suivis: Set<number>;
   vessels: Map<number, Props>;
@@ -95,7 +94,7 @@ export default function DetailPanel(p: PanelProps) {
   const replier = selection.kind === "vessel" || !!p.recit;
 
   let title = "", color = "#4fb6c8", badge: string | null = null, footer: string | null = null, trace: string | null = null;
-  const ctx: Contexte = { objet: "detection", passTime: p.passTime, plage: p.plage, suivis: p.suivis, vessels: p.vessels,
+  const ctx: Contexte = { objet: "detection", plage: p.plage, suivis: p.suivis, vessels: p.vessels,
     alerts: p.alerts, onStatus: p.onStatus, onPickAlert: p.onPickAlert, onPickVessel: p.onPickVessel,
     onPickInfra: p.onPickInfra, onSuivre: p.onSuivre, onRejeu: p.onRejeu, onPickDetection: p.onPickDetection };
   if (selection.kind === "alert") {

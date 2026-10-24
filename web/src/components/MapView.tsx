@@ -1,7 +1,6 @@
 import maplibregl, { type GeoJSONSource, type Map as MLMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
-import { bboxPolygon } from "../lib/geo";
 import { EMPTY, type FC, type Feature, type Selection } from "../lib/types";
 import { zonesGeoJSON } from "../lib/zones";
 import { COULEUR_LISTE, COULEUR_SUIVI, STROKE_ALERTE } from "../registres/alertes";
@@ -90,9 +89,6 @@ interface Props {
   concernedInfra: number[] | null;       // mode « concernées seulement » : identifiants à montrer
   focus: { center: [number, number]; zoom: number } | { bounds: [number, number, number, number] } | null;
   onSelect: (s: Selection) => void;
-  drawing: boolean;
-  draft: number[] | null;
-  onDraw: (bbox: number[]) => void;
   spotlight: { alertId: number | null; vesselIds: number[]; infraId?: number; zone?: string } | null;
   focusGeom: FC;                         // géométrie de l'objet sélectionné, surlignée (infrastructure, zone)
   onContexte?: (pt: { lon: number; lat: number; x: number; y: number }) => void;   // clic droit (lot T1)
@@ -116,15 +112,13 @@ export default function MapView(p: Props) {
   const onSelect = useRef(p.onSelect);
   onSelect.current = p.onSelect;
   const alertIndex = useRef(new Map<number, Feature>());
-  const drawing = useRef(p.drawing);
   // Tracé d'une zone de vigilance : les clics ajoutent des sommets, rien d'autre ne se sélectionne
-  drawing.current = p.drawing || p.trace != null;
+  const drawing = useRef(p.trace != null);
+  drawing.current = p.trace != null;
   const traceRef = useRef(p.trace);
   traceRef.current = p.trace;
   const onTracePoint = useRef(p.onTracePoint);
   onTracePoint.current = p.onTracePoint;
-  const onDraw = useRef(p.onDraw);
-  onDraw.current = p.onDraw;
   const onContexte = useRef(p.onContexte);
   onContexte.current = p.onContexte;
 
@@ -136,7 +130,7 @@ export default function MapView(p: Props) {
 
     map.on("load", () => {
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
-      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "draft", "passages", "viirs", "s1",
+      ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "passages", "viirs", "s1",
         "vigilance", "trace", "dossiers", "preuve"].forEach(src);
       // Infrastructures : simplification plus forte aux échelles larges (tolérance en pixels par niveau de zoom)
       map.addSource("infra", { type: "geojson", data: EMPTY as any, tolerance: 1.5 });
@@ -273,11 +267,6 @@ export default function MapView(p: Props) {
       map.addLayer({ id: "trace-ligne", type: "line", source: "trace", paint: { "line-color": "#4fb6c8", "line-width": 1.5 } });
       map.addLayer({ id: "trace-points", type: "circle", source: "trace", filter: ["==", ["geometry-type"], "Point"],
         paint: { "circle-radius": 3.5, "circle-color": "#4fb6c8" } });
-      // Zone en cours de tracé : rouge si elle dépasse la taille maximale
-      map.addLayer({ id: "draft-fill", type: "fill", source: "draft",
-        paint: { "fill-color": ["case", ["get", "tooBig"], "#ef6461", "#4fb6c8"], "fill-opacity": 0.1 } });
-      map.addLayer({ id: "draft-line", type: "line", source: "draft",
-        paint: { "line-color": ["case", ["get", "tooBig"], "#ef6461", "#4fb6c8"], "line-width": 1.5 } });
 
       // Preuve du dossier ouvert (lot U) : route, silence en tirets jusqu'à l'écho, cercle d'incertitude autour de la
       // position estimée, écart estimée vers écho avec sa distance ; mêmes couleurs que la légende du récit
@@ -303,25 +292,12 @@ export default function MapView(p: Props) {
       map.addLayer({ id: "preuve-echo", type: "circle", source: "preuve", filter: role("echo"),
         paint: { "circle-radius": 7, "circle-color": "rgba(0,0,0,0)", "circle-stroke-width": 2.5, "circle-stroke-color": CP.echo } });
 
-      // Tracé d'une zone en deux clics : un coin, puis le coin opposé (fiable au trackpad comme à la souris)
-      let start: maplibregl.LngLat | null = null;
-      const box = (a: maplibregl.LngLat, b: maplibregl.LngLat) =>
-        [Math.min(a.lng, b.lng), Math.min(a.lat, b.lat), Math.max(a.lng, b.lng), Math.max(a.lat, b.lat)];
       map.on("click", (e) => {
-        if (traceRef.current) { onTracePoint.current([e.lngLat.lng, e.lngLat.lat]); return; }
-        if (!drawing.current) { start = null; return; }
-        if (!start) { start = e.lngLat; return; }
-        const b = box(start, e.lngLat);
-        start = null;
-        if (b[2] - b[0] > 0.005 && b[3] - b[1] > 0.005) onDraw.current(b);
-        else (map.getSource("draft") as GeoJSONSource).setData(EMPTY as any);
+        if (traceRef.current) onTracePoint.current([e.lngLat.lng, e.lngLat.lat]);
       });
       // Clic droit : menu de la carte (demande d'observation satellite sur le point)
       map.on("contextmenu", (e) => {
         if (!drawing.current) onContexte.current?.({ lon: e.lngLat.lng, lat: e.lngLat.lat, x: e.point.x, y: e.point.y });
-      });
-      map.on("mousemove", (e) => {
-        if (drawing.current && start) (map.getSource("draft") as GeoJSONSource).setData(bboxPolygon(box(start, e.lngLat)) as any);
       });
 
       map.on("click", "traffic", (e) => { if (!drawing.current) onSelect.current({ kind: "vessel", properties: e.features![0].properties as any }); });
@@ -480,15 +456,6 @@ export default function MapView(p: Props) {
     } else mapRef.current!.flyTo({ center: p.focus.center, zoom: p.focus.zoom });
   }, [ready, p.focus]);
 
-  // Mode tracé : la carte ne se déplace plus au glisser, le curseur devient une croix
-  useEffect(() => {
-    if (!ready || !mapRef.current) return;
-    const map = mapRef.current;
-    if (p.drawing) map.doubleClickZoom.disable(); else map.doubleClickZoom.enable();
-    map.getCanvas().style.cursor = p.drawing ? "crosshair" : "";
-  }, [ready, p.drawing]);
-
-  useEffect(() => setData("draft", p.draft ? (bboxPolygon(p.draft) as FC) : null), [ready, p.draft]);
 
   // Mode focus sur la sélection
   const spotKey = (p.spotlight ? `${p.spotlight.alertId}:${p.spotlight.vesselIds.join(",")}:${p.spotlight.infraId}:${p.spotlight.zone}` : "")

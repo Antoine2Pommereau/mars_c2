@@ -2,8 +2,9 @@
 
 Anciennes sections 3 à 8 de CLAUDE.md (démarrage, architecture, arborescence, base et API, interface, modèle radar),
 gardées le 24/10/2026 (lot Z3) avec leurs détails ; contradictions corrigées (migrations 01 à 42, travailleurs sur
-processeur d'abord, disposition du lot U). L'état actuel et le résumé sont dans CLAUDE.md. Ce qui concerne la chaîne
-radar du Mac (inférence, CircleNet, Sentinel Hub) est appelé à disparaître au lot Z4.
+processeur d'abord, disposition du lot U). L'état actuel et le résumé sont dans CLAUDE.md. La chaîne radar du Mac
+(inférence, CircleNet, Sentinel Hub) est retirée au lot Z4 (24/10/2026) : `docs/journal.md` donne le commit où la
+retrouver.
 ### 3. Démarrer
 
 **Serveur** (Scaleway DEV1-M, `/opt/mars_c2`) : tout est décrit dans `docs/deploiement.md` (installation, R2,
@@ -13,12 +14,11 @@ GitHub (`ghcr.io/antoine2pommereau/mars_c2-backend`, `mars_c2-web`, `mars_c2-scr
 `docker compose up -d --no-build`. Le serveur ne construit rien (ni la place ni la mémoire) ; les gros transferts par
 SSH échouent depuis le Mac. Le `.env` du serveur active la surcouche `docker-compose.serveur.yml` et le profil `direct`.
 
-**Mac** (développement, radar) :
+**Mac** (développement) :
 
 ```bash
-./start.sh                                     # base, API, interface (Docker), inférence et Vite en arrière plan
+./start.sh                                     # base, API, interface (Docker), Vite en arrière plan
 docker compose up -d db backend web            # ou à la main
-uvicorn inference.app:app --port 8001          # inférence sur le GPU Apple, terminal dédié
 cd web && npm run dev                          # interface de développement
 ```
 
@@ -27,12 +27,11 @@ cd web && npm run dev                          # interface de développement
 | http://localhost:8080 | Interface construite (nginx) ; sur le serveur, par tunnel SSH |
 | http://localhost:5173 | Interface de développement (Vite) |
 | http://localhost:8000/api | API FastAPI |
-| http://localhost:8001/v1 | Service d'inférence (Mac seulement) |
 | http://localhost:3000 | Grafana (serveur seulement, par tunnel : `ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 root@IP`) |
 | localhost:5432 | PostgreSQL (`mars` / `mars`), fermé sur le serveur |
 
 Après une modification : `backend/`, `docker compose up -d --build backend` (attendre quelques secondes) ;
-`inference/` ou `mars/sar/`, redémarrer l'inférence ; `web/`, rien en développement, `--build web` pour le port 8080 ;
+`web/`, rien en développement, `--build web` pour le port 8080 ;
 `config/rules.yaml`, rien (relu à chaque exécution). Une collecte par clé AISStream : le profil `direct` ne tourne
 que sur le serveur.
 
@@ -50,7 +49,6 @@ que sur le serveur.
 | `tempo` | Docker, serveur seulement | Grafana Tempo 3.1.0, binaire unique, stockage local, traces gardées 72 h, 320 Mo ; lu par Grafana (source « Tempo ») |
 | `taches` | Docker, serveur seulement | Règles toutes les 5 min ; chaque nuit : archivage R2, purge à 30 jours, sauvegarde, liste OpenSanctions (le GUR chaque semaine), calendrier des passages satellites ; 06:30 : nuits VIIRS confiées à un travailleur éphémère ; chaque minute : surveillance des travailleurs ; disque toutes les 10 min ; à la demande : masques (`build_masks.py`), mesures de calibration (`taches.py mesures`) |
 | Travailleurs | Instances Scaleway éphémères (API Scaleway, `mars/travailleurs.py`) | Analyse satellite hors du serveur : créées à la demande, script et tâche par cloud-init, résultat renvoyé par le réseau privé (nginx, port 8090, jeton), détruites par le serveur ; DEV1-M pour VIIRS (fr-par-1) ; Sentinel 1 sur GP1-S puis POP2-8C-32G (fr-par-2), GPU L4 ou L40S seulement au delà de 4 fenêtres ; Sentinel 2 sur GP1-S ; tâche et secrets remis par le réseau privé (`docs/travailleurs.md`) |
-| Inférence | Mac, hors Docker (GPU Apple) | Extraction Sentinel Hub, CircleNet, vignettes ; repli conteneur sur CPU (profil `conteneur`) |
 
 **Chaîne du direct** : AISStream, Parquet local, ingestion toutes les 15 s (un point par minute en route, un toutes
 les dix minutes à l'arrêt), base, flux SSE une fois par seconde. Chaque nuit, les journées terminées partent sur
@@ -82,7 +80,6 @@ mars_c2/
   travailleurs/sentinel.py           script du travailleur Sentinel 1, sur processeur d'abord (image publique d'AI2, Python 3.8)
   .github/workflows/                 nettoyage du registre GitHub (trois dernières versions par image)
     fusion/                          positions à l'instant du passage, tolérance Doppler, appariement, persistance
-    sar/                             passages, extraction Sentinel Hub, CircleNet
     regions/provision.py             infrastructures EMODnet
   mars/rules.py                      moteur de règles, partagé par l'API et le conteneur taches
   mars/supervision.py                signes de vie, mesures du disque, ntfy, alertes de secours, durée des requêtes
@@ -92,8 +89,7 @@ mars_c2/
                                      backend/regions.py : région affichée ; backend/satellites.py : passages ;
                                      backend/travailleurs.py : retour des travailleurs, VIIRS ;
                                      backend/sentinel.py : détections Sentinel 1, vérification satellite
-  inference/app.py                   service d'inférence
-  scripts/                           collecte, ingestion, tâches, listes, régions, masques, règles, radar,
+  scripts/                           collecte, ingestion, tâches, listes, régions, masques,
                                      mesures de calibration (mesures_calibration.py)
   tests/                             pytest (base de test facultative) ; web/tests (node --test)
   web/                               interface React
@@ -118,9 +114,11 @@ chargé du nouveau, au plus tard toutes les 30 s), trafic à un instant (`/api/t
 à `max_points`), état du direct (`/api/ingestion` : retard, disque, tâches), frise
 (`/api/timeline?start&end&bins` : histogramme des navires et coupures du flux, lus dans `stats_minute` et
 `stats_10min`), alertes d'une plage (`/api/alerts?start&end`, avec `vessel_ids`) et décisions (acquitter,
-confirmer, classer avec motif obligatoire, rouvrir, commenter, champ auteur), radar (`/api/passes`,
-`/api/analyses`, détections, `/api/chip`), masques (`?jours=N`), infrastructures (`?tolerance=` pour simplifier),
-règles et test par injection (`/api/rules/...`). Contenu (`backend/contenu.py`) : recherche (`/api/search?q=` :
+confirmer, classer avec motif obligatoire, rouvrir, commenter, champ auteur), analyses radar passées en
+lecture (`/api/analyses`, détections), masques (`?jours=N`), infrastructures (`?tolerance=` pour simplifier). Les
+routes de la chaîne du Mac (`/api/passes`, lancement d'une analyse, `/api/chip`, `/api/inference/health`) et les
+règles à la demande (`/api/rules/...`, remplacées par `taches.py regles` et `coupures-injection`) sont retirées au lot
+Z4. Contenu (`backend/contenu.py`) : recherche (`/api/search?q=` :
 navires par nom actuel ou ancien, MMSI, OMI via `imo_history` ; infrastructures ; alertes par numéro), alerte par
 numéro (`/api/alerts/{id}`), comportement d'un navire sur la plage (`/api/vessels/{id}/comportement` : silences,
 arrêts au large, passages à moins de 2 milles d'une infrastructure), trajectoire GPX, notes, photo (relayée depuis
@@ -225,11 +223,11 @@ Couches), **fiche** à droite, **frise** en bas.
 
 ### 8. Modèle radar et configuration
 
-**CircleNet V2S** (xView3, membre 4, TorchScript `models/xview3_membre4_v2s.jit`, couvert par
-`tests/test_contract.py`) : canaux **VH puis VV**, sigma0 en dB, normalisation sigmoïde de ((x + 20) × 0,18) ;
-tuiles de 2048 pixels au pas de 1536 ; Sentinel Hub **SIGMA0_ELLIPSOID en BILINEAR** (le plus proche voisin fait
-tomber le F1 de 0,96 à 0,89) ; précision mixte coupée sur le GPU Apple ; seuils présence 0,20, navire 0,338,
-pêche 0,35.
+**CircleNet V2S** (xView3, chaîne du Mac, retirée au lot Z4) : canaux VH puis VV, sigma0 en dB, normalisation
+sigmoïde de ((x + 20) × 0,18), tuiles de 2048 pixels au pas de 1536, Sentinel Hub SIGMA0_ELLIPSOID en BILINEAR (le plus
+proche voisin faisait tomber le F1 de 0,96 à 0,89). De sa configuration ne restent que les seuils lus par la fusion :
+`model.thresholds.vessel` (0,338) et `contrast.min_vv_db` (10 dB). Les détections du serveur viennent des modèles
+d'AI2 (`docs/sentinel.md`).
 
 `config/rules.yaml` : toutes les règles et l'ingestion. **Monter la version à chaque changement**, chaque alerte
 l'enregistre. Les valeurs des règles viennent de la calibration danoise et sont **à recalibrer pour la France**

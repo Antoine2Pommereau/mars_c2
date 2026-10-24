@@ -1,7 +1,7 @@
 """API de MARS C2.
 
-Horloge simulée et trafic AIS rejoué (phase 2), analyses radar à la demande (phase 3) : recherche des passages,
-orchestration du service d'inférence, moteur de fusion, alertes et suivi de progression diffusé en SSE.
+Trafic AIS à un instant et en direct (flux SSE), navires, état du direct, masques, infrastructures, alertes et
+décisions, frise ; lecture des analyses radar passées. Les autres routes sont dans les routeurs importés ci dessous.
 """
 import asyncio
 import json
@@ -9,14 +9,12 @@ import math
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Literal
 
 import asyncpg
-import httpx
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from contenu import router as contenu_router
 from regions import dans_region, region_ewkt, regions_list
@@ -31,18 +29,11 @@ import demo
 from mars import traces
 from mars.config import load_rules
 from mars.frise import timeline
-from mars.fusion.pipeline import fuse
-from mars.geo import bbox_size_km
-from mars.sar.catalog import get_token, search_passes
-from mars.rules import (ais_gap_injection, build_reception_cells, build_stationary_zones, run_ais_gap,
-                        run_rendezvous)
+from mars.rules import build_reception_cells, build_stationary_zones
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://mars:mars@localhost:5432/mars")
-INFERENCE_URL = os.environ.get("INFERENCE_URL", "http://host.docker.internal:8001")
 TRAFFIC_WINDOW_MIN = 30   # un navire reste affiché 30 minutes simulées après son dernier message
 TRAIL_MIN = 10            # longueur de la traînée, en minutes simulées
-MAX_ZONE_KM = 50          # taille maximale d'une zone analysée
-TASKS: set = set()
 
 # Traces (étape D2) : FastAPI, asyncpg, httpx et requests instrumentés ; spans métier sur les routes lourdes. Ni le flux
 # SSE (une réponse par seconde), ni /api/health, ni la vérification du jeton des travailleurs par nginx ne sont tracés.
@@ -133,11 +124,6 @@ def clean(record, drop=("geometry",)):
     return out
 
 
-def aoi_wkt(b):
-    return f"SRID=4326;POLYGON(({b[0]} {b[1]},{b[2]} {b[1]},{b[2]} {b[3]},{b[0]} {b[3]},{b[0]} {b[1]}))"
-
-
-
 # Trafic AIS rejoué
 
 TRAFFIC_COLS = ["vessel_id", "lon", "lat", "sog_kn", "cog_deg", "t", "mmsi", "name", "ship_type", "length_m", "flag",
@@ -173,14 +159,6 @@ async def _read_traffic(c, now: datetime, region: str | None) -> dict:
         WHERE """ + dans_region("ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)", 3), now, TRAFFIC_WINDOW_MIN, region)
     return {"at": now.isoformat(), "cols": TRAFFIC_COLS,
             "rows": [[finite(r[k]) for k in TRAFFIC_COLS] for r in rows]}
-
-
-async def read_active_analyses(c) -> list:
-    rows = await c.fetch(
-        """SELECT id, status, progress, summary, error, completed_at FROM analyses
-           WHERE status IN ('pending', 'running') OR completed_at > now() - interval '20 seconds'
-           ORDER BY id""")
-    return [clean(r) for r in rows]
 
 
 @app.get("/api/regions")
@@ -316,8 +294,8 @@ STREAM_TRAFFIC_MAX_S = 30   # trafic renvoyé au plus tard toutes les 30 s, et d
 
 @app.get("/api/stream")
 async def stream(request: Request, direct: bool = False, region: str | None = None):
-    """Flux SSE du mode direct, une fois par seconde : progression des analyses ; trafic à l'heure réelle seulement
-    quand il a changé.
+    """Flux SSE du mode direct, une fois par seconde (message vide qui tient la connexion) ; trafic à l'heure réelle
+    seulement quand il a changé.
 
     Les positions arrivent par fichiers (une écriture par minute, une ingestion toutes les 15 s) : renvoyer chaque
     seconde 2 000 navires coûtait 680 Ko par client et par seconde pour rien. `direct` : gardé pour les anciens
@@ -332,7 +310,7 @@ async def stream(request: Request, direct: bool = False, region: str | None = No
         while not await request.is_disconnected():
             async with app.state.pool.acquire() as c:
                 now = await c.fetchval("SELECT clock_timestamp()")
-                payload = {"analyses": await read_active_analyses(c)}
+                payload = {}
                 ingest = await c.fetchval("SELECT max(ingested_at) FROM ingested_files")
                 if ingest != last_ingest or loop.time() - last_sent >= STREAM_TRAFFIC_MAX_S:
                     payload["navires"] = await read_traffic(c, now, reg)
@@ -346,324 +324,7 @@ async def stream(request: Request, direct: bool = False, region: str | None = No
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-# Passages Sentinel 1
-
-def parse_bbox(bbox: str) -> list[float]:
-    try:
-        b = [float(v) for v in bbox.split(",")]
-        assert len(b) == 4 and b[0] < b[2] and b[1] < b[3]
-        return b
-    except Exception:
-        raise HTTPException(422, "Emprise attendue : lon_min,lat_min,lon_max,lat_max")
-
-
-@app.get("/api/passes")
-async def passes(bbox: str, start: datetime | None = None, end: datetime | None = None):
-    """Passages Sentinel 1 couvrant la zone, avec le taux de recouvrement et la disponibilité de l'AIS."""
-    b = parse_bbox(bbox)
-    async with app.state.pool.acquire() as c:
-        if start is None or end is None:
-            span = await c.fetchrow("SELECT min(day) AS d0, max(day) AS d1 FROM ais_days")
-            if span["d0"] is None:
-                raise HTTPException(422, "Aucune journée AIS chargée")
-            start = start or pd.Timestamp(span["d0"], tz="UTC").to_pydatetime()
-            end = end or (pd.Timestamp(span["d1"], tz="UTC") + pd.Timedelta(days=1)).to_pydatetime()
-
-    token = await asyncio.to_thread(get_token, os.environ.get("SH_CLIENT_ID"), os.environ.get("SH_CLIENT_SECRET"))
-    found = await asyncio.to_thread(search_passes, token, b, pd.Timestamp(start), pd.Timestamp(end))
-
-    async with app.state.pool.acquire() as c:
-        for p in found:
-            await c.execute(
-                "INSERT INTO sar_passes (product_name, platform, acquired_at, orbit_direction, footprint) "
-                "VALUES ($1, $2, $3, $4, ST_GeomFromGeoJSON($5)::geography) "
-                "ON CONFLICT (product_name) DO UPDATE SET footprint = EXCLUDED.footprint",
-                p["product_name"], p["platform"], p["acquired_at"].to_pydatetime(), p["orbit_direction"],
-                json.dumps(p["footprint"]) if p["footprint"] else None)
-        rows = await c.fetch(
-            """
-            WITH env AS (SELECT ST_MakeEnvelope($2, $3, $4, $5, 4326) AS g)
-            SELECT s.product_name, s.acquired_at, s.platform, s.orbit_direction,
-                   CASE WHEN s.footprint IS NULL THEN NULL
-                        ELSE round((ST_Area(ST_Intersection(s.footprint::geometry, env.g)::geography)
-                                    / ST_Area(env.g::geography))::numeric, 3)::float8 END AS coverage,
-                   EXISTS (SELECT 1 FROM ais_days d WHERE d.day = (s.acquired_at AT TIME ZONE 'UTC')::date) AS ais_available
-            FROM sar_passes s, env
-            WHERE s.product_name = ANY($1::text[])
-            ORDER BY s.acquired_at
-            """, [p["product_name"] for p in found], *b)
-    return [clean(r) for r in rows]
-
-
-# Analyses radar à la demande
-
-class AnalysisRequest(BaseModel):
-    bbox: list[float] = Field(min_length=4, max_length=4)
-    product_name: str
-    mode: Literal["fast", "full"] = "fast"
-
-
-async def add_progress(c, analysis_id: int, item: dict):
-    await c.execute("UPDATE analyses SET progress = progress || $2::jsonb WHERE id = $1", analysis_id, [item])
-
-
-async def run_analysis(analysis_id: int, bbox: list[float], t0: datetime, product_name: str, mode: str):
-    """Analyse radar sur le Mac : un span de bout en bout (inférence, fusion, alertes), rattaché à la requête."""
-    with traces.span("analyse.radar", **{"analyse.id": analysis_id, "analyse.mode": mode}):
-        await _run_analysis(analysis_id, bbox, t0, product_name, mode)
-
-
-async def _run_analysis(analysis_id: int, bbox: list[float], t0: datetime, product_name: str, mode: str):
-    pool = app.state.pool
-    rules = load_rules()
-    started = asyncio.get_running_loop().time()
-    try:
-        async with pool.acquire() as c:
-            await c.execute("UPDATE analyses SET status = 'running' WHERE id = $1", analysis_id)
-
-        # 1. Service d'inférence : extrait radar et détections, avec progression ligne par ligne
-        result = None
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(900, connect=5)) as client:
-                async with client.stream("POST", f"{INFERENCE_URL}/v1/analyze",
-                                         json={"bbox": bbox, "acquired_at": t0.isoformat(), "mode": mode}) as r:
-                    r.raise_for_status()
-                    async for line in r.aiter_lines():
-                        if not line.strip():
-                            continue
-                        msg = json.loads(line)
-                        if msg["type"] == "progress":
-                            async with pool.acquire() as c:
-                                await add_progress(c, analysis_id, msg)
-                        elif msg["type"] == "error":
-                            raise RuntimeError(f"Service d'inférence : {msg['message']}")
-                        elif msg["type"] == "result":
-                            result = msg
-        except httpx.ConnectError:
-            raise RuntimeError(f"Service d'inférence injoignable ({INFERENCE_URL}). "
-                               "Lancer : uvicorn inference.app:app --port 8001")
-        if result is None:
-            raise RuntimeError("Le service d'inférence n'a pas renvoyé de résultat")
-
-        # 2. Fusion avec l'AIS
-        async with pool.acquire() as c:
-            await add_progress(c, analysis_id, {"type": "progress", "step": "fusion", "state": "start"})
-        t_fusion = asyncio.get_running_loop().time()
-        f = rules["fusion"]
-        async with pool.acquire() as c:
-            rows = await c.fetch(
-                "SELECT p.vessel_id, v.mmsi, v.name, v.length_m, p.ts, ST_Y(p.geom::geometry) AS lat, "
-                "ST_X(p.geom::geometry) AS lon, p.sog_kn AS sog, p.cog_deg AS cog "
-                "FROM positions p JOIN vessels v ON v.id = p.vessel_id "
-                "WHERE ST_DWithin(p.geom, $1::geography, 5000) AND p.ts BETWEEN $2 AND $3",
-                aoi_wkt(bbox), t0 - pd.Timedelta(minutes=f["ais_window_min"]),
-                t0 + pd.Timedelta(minutes=f["ais_window_min"]))
-        pos = pd.DataFrame([dict(r) for r in rows],
-                           columns=["vessel_id", "mmsi", "name", "length_m", "ts", "lat", "lon", "sog", "cog"])
-        if len(pos):
-            pos["ts"] = pd.to_datetime(pos.ts, utc=True)
-            for col in ["lat", "lon", "sog", "cog", "length_m"]:
-                pos[col] = pd.to_numeric(pos[col], errors="coerce")
-        det = pd.DataFrame(result["detections"],
-                           columns=["lon", "lat", "objectness", "vessel_score", "fishing_score", "length_m", "contrast_vv_db"])
-        det["contrast_vv_db"] = pd.to_numeric(det.contrast_vv_db, errors="coerce")
-        det["on_land"] = False
-        if len(det):
-            async with pool.acquire() as c:
-                land_idx = await c.fetch(
-                    "SELECT i FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(lon, lat, i) "
-                    "WHERE EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, "
-                    "ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)::geography, $3::float8))",
-                    det.lon.astype(float).tolist(), det.lat.astype(float).tolist(), float(rules["masks"]["land_buffer_m"]))
-            det.loc[[r["i"] - 1 for r in land_idx], "on_land"] = True
-        async with pool.acquire() as c:
-            orbit = await c.fetchval("SELECT lower(orbit_direction) FROM sar_passes WHERE product_name = $1", product_name)
-        heading = rules["fusion"]["flight_heading_deg"].get(orbit) if orbit else None
-
-        # Persistance : échos fixes connus, et échos sans AIS observés à une autre date sur la zone
-        async with pool.acquire() as c:
-            fixed_rows = await c.fetch(
-                """SELECT 'registre' AS source, f.id AS ref, ST_X(f.geom::geometry) AS lon, ST_Y(f.geom::geometry) AS lat
-                   FROM fixed_echoes f WHERE ST_DWithin(f.geom, $1::geography, 1000)
-                   UNION ALL
-                   SELECT 'detection', d.id, ST_X(d.geom::geometry), ST_Y(d.geom::geometry)
-                   FROM detections d JOIN analyses a ON a.id = d.analysis_id JOIN sar_passes p ON p.id = a.pass_id
-                   WHERE d.matched_vessel_id IS NULL AND coalesce(d.mask_reason, '') <> 'terre'
-                     AND abs(extract(epoch FROM p.acquired_at - $2::timestamptz)) >= $3::float8 * 86400
-                     AND ST_DWithin(d.geom, $1::geography, 1000)""",
-                aoi_wkt(bbox), t0, float(rules["persistence"]["min_days_apart"]))
-        fixed_points = pd.DataFrame([dict(r) for r in fixed_rows], columns=["source", "ref", "lon", "lat"])
-        det, alerts, n_ais, extras = await asyncio.to_thread(fuse, det, pos, pd.Timestamp(t0), bbox, rules, heading,
-                                                             fixed_points)
-
-        # Positions AIS non confirmées : on écarte les navires près de la terre (ports, quais) et hors de l'emprise
-        # du passage satellite, où l'absence d'écho ne prouve rien
-        unconfirmed = []
-        if extras["unconfirmed"]:
-            u = extras["unconfirmed"]
-            async with pool.acquire() as c:
-                ok = await c.fetch(
-                    "SELECT i FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(lon, lat, i) "
-                    "WHERE NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, "
-                    "      ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)::geography, $3::float8)) "
-                    "  AND EXISTS (SELECT 1 FROM sar_passes s WHERE s.product_name = $4 AND (s.footprint IS NULL OR "
-                    "      ST_Covers(s.footprint, ST_SetSRID(ST_MakePoint(t.lon, t.lat), 4326)::geography)))",
-                    [x["lon"] for x in u], [x["lat"] for x in u], float(rules["masks"]["land_buffer_m"]) * 2,
-                    product_name)
-            unconfirmed = [u[r["i"] - 1] for r in ok]
-
-        # 3. Enregistrement des détections, des alertes et de leurs preuves
-        async with pool.acquire() as c, c.transaction():
-            det_ids = {}
-            for i, d in det.iterrows():
-                det_ids[i] = await c.fetchval(
-                    "INSERT INTO detections (analysis_id, geom, objectness, vessel_score, fishing_score, length_m, "
-                    "contrast_vv_db, mask_reason, matched_vessel_id, match_cost) "
-                    "VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography, $4, $5, $6, $7, $8, $9, $10, $11) "
-                    "RETURNING id",
-                    analysis_id, float(d.lon), float(d.lat), float(d.objectness), float(d.vessel_score),
-                    float(d.fishing_score), float(d.length_m), finite(float(d.contrast_vv_db)),
-                    None if pd.isna(d.mask_reason) else d.mask_reason,
-                    None if pd.isna(d.matched_vessel_id) else int(d.matched_vessel_id),
-                    finite(float(d.match_cost)) if pd.notna(d.match_cost) else None)
-            for a in alerts:
-                d = det.loc[a["det_index"]]
-                details = {"analysis_id": analysis_id, "pass": product_name, **a["details"],
-                           "trace_id": traces.trace_id()}
-                alert_id = await c.fetchval(
-                    "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
-                    "VALUES ('DARK_SHIP', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) RETURNING id",
-                    a["severity"], t0, float(d.lon), float(d.lat), details, rules["version"])
-                evidence = [("analysis", analysis_id), ("detection", det_ids[a["det_index"]])]
-                evidence += [("vessel", v) for v in a["vessel_ids"]]
-                await c.executemany("INSERT INTO alert_evidence VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                                    [(alert_id, et, eid) for et, eid in evidence])
-
-            # Registre des échos fixes, et reclassement des alertes « navire sombre » levées sur ces échos à d'autres dates
-            n_fixed = 0
-            for hit in extras["fixed_hits"]:
-                d = det.loc[hit["det_index"]]
-                prior = [r["ref"] for r in hit["refs"] if r["source"] == "detection"]
-                registry = [r["ref"] for r in hit["refs"] if r["source"] == "registre"]
-                if registry:
-                    await c.execute("UPDATE fixed_echoes SET observations = observations + 1, "
-                                    "last_seen = greatest(last_seen, $2::timestamptz), first_seen = least(first_seen, $2::timestamptz), "
-                                    "detection_ids = detection_ids || $3::bigint[] WHERE id = $1",
-                                    registry[0], t0, [det_ids[hit["det_index"]]])
-                else:
-                    first = await c.fetchval(
-                        "SELECT min(p.acquired_at) FROM detections d JOIN analyses a ON a.id = d.analysis_id "
-                        "JOIN sar_passes p ON p.id = a.pass_id WHERE d.id = ANY($1::bigint[])", prior)
-                    await c.execute(
-                        "INSERT INTO fixed_echoes (geom, first_seen, last_seen, observations, detection_ids) "
-                        "VALUES (ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, "
-                        "least($3::timestamptz, $4::timestamptz), greatest($3::timestamptz, $4::timestamptz), $5::int, $6::bigint[])",
-                        float(d.lon), float(d.lat), first or t0, t0, 1 + len(prior), prior + [det_ids[hit["det_index"]]])
-                if prior:
-                    await c.execute("UPDATE detections SET mask_reason = 'echo fixe' "
-                                    "WHERE id = ANY($1::bigint[]) AND mask_reason IS NULL", prior)
-                    await c.execute(
-                        "UPDATE alerts SET status = 'classee', details = details || jsonb_build_object("
-                        "'reclassement', 'Écho revu au même endroit le ' || to_char($2::timestamptz, 'DD/MM/YYYY') || "
-                        "' sans AIS : écho fixe (éolienne, plateforme, bouée), pas un navire') "
-                        "WHERE type = 'DARK_SHIP' AND id IN (SELECT alert_id FROM alert_evidence "
-                        "WHERE evidence_type = 'detection' AND evidence_id = ANY($1::bigint[]))", prior, t0)
-                n_fixed += 1
-
-            for x in unconfirmed:
-                big = x["length_m"] >= rules["unconfirmed"]["high_length_m"]
-                details = {"analysis_id": analysis_id, "pass": product_name,
-                           "navire": {k: x[k] for k in ("vessel_id", "mmsi", "name", "length_m", "sog_kn")},
-                           "methode_position": x["methode_position"],
-                           "echo_le_plus_proche_m": x["echo_le_plus_proche_m"],
-                           "tolerance_le_long_m": x["tolerance_le_long_m"],
-                           "tolerance_en_travers_m": x["tolerance_en_travers_m"],
-                           "motif": "Grand navire déclaré par l'AIS dans la zone analysée, sans aucun écho radar "
-                                    "compatible à l'instant du passage : position possiblement falsifiée",
-                           "contexte": ["Le détecteur manque environ un navire sur dix : indice à recouper, pas une preuve"],
-                           "parametres": dict(rules["unconfirmed"]), "trace_id": traces.trace_id()}
-                alert_id = await c.fetchval(
-                    "INSERT INTO alerts (type, severity, event_time, geom, details, rule_version) "
-                    "VALUES ('AIS_UNCONFIRMED', $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6) "
-                    "RETURNING id",
-                    "moyenne" if big else "faible", t0, x["lon"], x["lat"], details, rules["version"])
-                await c.executemany("INSERT INTO alert_evidence VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                                    [(alert_id, "analysis", analysis_id), (alert_id, "vessel", x["vessel_id"])])
-
-            fusion_s = round(asyncio.get_running_loop().time() - t_fusion, 2)
-            timings = {**result["timings"], "fusion_s": fusion_s,
-                       "total_s": round(asyncio.get_running_loop().time() - started, 2)}
-            summary = {"detections": len(det), "retenues": int(det.mask_reason.isna().sum()) if len(det) else 0,
-                       "appariees": int(det.matched_vessel_id.notna().sum()) if len(det) else 0,
-                       "alertes": len(alerts), "positions_non_confirmees": len(unconfirmed), "echos_fixes": n_fixed,
-                       "decalages": extras["offsets"], "direction_de_vol_deg": heading,
-                       "navires_ais": n_ais, "tuiles": result["n_tiles"],
-                       "accelerateur": result["device"], "precision_mixte": result["amp"]}
-            await add_progress(c, analysis_id, {"type": "progress", "step": "fusion", "state": "done",
-                                                "seconds": fusion_s,
-                                                "detail": f"{summary['appariees']} appariées, {len(alerts)} alerte(s)"})
-            await c.execute("UPDATE analyses SET status = 'done', completed_at = now(), timings = $2, summary = $3 "
-                            "WHERE id = $1", analysis_id, timings, summary)
-    except Exception as e:
-        async with pool.acquire() as c:
-            await c.execute("UPDATE analyses SET status = 'failed', completed_at = now(), error = $2 WHERE id = $1",
-                            analysis_id, str(e)[:1000])
-
-
-@app.post("/api/analyses", status_code=202)
-async def create_analysis(req: AnalysisRequest, _op: str = Depends(exiger_operateur)):
-    b = req.bbox
-    if not (b[0] < b[2] and b[1] < b[3]):
-        raise HTTPException(422, "Emprise invalide")
-    w, h = bbox_size_km(b)
-    if w > MAX_ZONE_KM or h > MAX_ZONE_KM:
-        raise HTTPException(422, f"Zone trop grande ({w:.0f} x {h:.0f} km), maximum {MAX_ZONE_KM} km de côté")
-    rules = load_rules()
-    async with app.state.pool.acquire() as c:
-        p = await c.fetchrow("SELECT id, acquired_at FROM sar_passes WHERE product_name = $1", req.product_name)
-        if p is None:
-            raise HTTPException(404, "Passage inconnu : le rechercher d'abord via /api/passes")
-        ais_ok = await c.fetchval("SELECT EXISTS (SELECT 1 FROM ais_days WHERE day = ($1::timestamptz AT TIME ZONE 'UTC')::date)",
-                                  p["acquired_at"])
-        if not ais_ok:
-            raise HTTPException(422, "Pas de données AIS chargées pour la date de ce passage")
-        analysis_id = await c.fetchval(
-            "INSERT INTO analyses (pass_id, aoi, mode, status, model_version, trace_id) "
-            "VALUES ($1, $2::geography, $3, 'pending', $4, $5) RETURNING id",
-            p["id"], aoi_wkt(b), req.mode, rules["model"]["version"], traces.trace_id())
-    task = asyncio.create_task(run_analysis(analysis_id, b, p["acquired_at"], req.product_name, req.mode))
-    TASKS.add(task)
-    task.add_done_callback(TASKS.discard)
-    return {"id": analysis_id, "status": "pending"}
-
-
-@app.get("/api/analyses/{analysis_id}")
-async def get_analysis(analysis_id: int):
-    async with app.state.pool.acquire() as c:
-        r = await c.fetchrow(
-            "SELECT a.id, a.mode, a.status, a.progress, a.timings, a.summary, a.error, a.model_version, "
-            "a.requested_at, a.completed_at, p.product_name, p.acquired_at "
-            "FROM analyses a JOIN sar_passes p ON p.id = a.pass_id WHERE a.id = $1", analysis_id)
-    if r is None:
-        raise HTTPException(404)
-    return clean(r)
-
-
-@app.get("/api/inference/health")
-async def inference_health():
-    try:
-        async with httpx.AsyncClient(timeout=3) as client:
-            return (await client.get(f"{INFERENCE_URL}/v1/health")).json()
-    except Exception:
-        return {"status": "injoignable", "url": INFERENCE_URL}
-
-
-# Masques et règles comportementales
-
-class RuleRun(BaseModel):
-    day: str | None = None   # AAAA-MM-JJ ; toutes les journées chargées si absent
-    essais: int = 5          # test par injection : navires essayés par heure de coupure (50 au plus)
-    heures: list[int] | None = None   # test par injection : heures UTC du début des coupures (11 h par défaut)
+# Masques (zones de mouillage, réception)
 
 
 @app.post("/api/masks/stationary")
@@ -734,72 +395,6 @@ async def reception_cells(region: str | None = None):
         rows = await c.fetch("SELECT messages, vessels, hours, coverage, ST_AsGeoJSON(geom)::json AS geometry "
                              "FROM reception_cells WHERE " + dans_region("geom::geometry", 1), await region_ewkt(c, region))
     return collection([feature(r["geometry"], clean(r)) for r in rows])
-
-
-async def _rule_days(c, day: str | None):
-    if day:
-        return [datetime.fromisoformat(day).date()]
-    days = [r["day"] for r in await c.fetch("SELECT day FROM ais_days ORDER BY day")]
-    if not days:
-        raise HTTPException(422, "Aucune journée AIS chargée")
-    return days
-
-
-@app.post("/api/rules/ais_gap/run")
-async def ais_gap_run(req: RuleRun, _op: str = Depends(exiger_operateur)):
-    rules = load_rules()
-    async with app.state.pool.acquire() as c:
-        if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM reception_cells)"):
-            raise HTTPException(422, "Zone de réception absente : lancer scripts/build_masks.py")
-        results = {}
-        for d in await _rule_days(c, req.day):
-            start = pd.Timestamp(d, tz="UTC").to_pydatetime()
-            results[d.isoformat()] = await run_ais_gap(c, start, start + pd.Timedelta(days=1), rules)
-    return results
-
-
-@app.post("/api/rules/ais_gap/selftest")
-async def ais_gap_selftest(req: RuleRun, _op: str = Depends(exiger_operateur)):
-    """Test par injection (mars/rules.py, ais_gap_injection) : coupures de trois heures simulées sur des navires réels,
-    dans des transactions annulées ; la base n'est pas modifiée."""
-    rules = load_rules()
-    async with app.state.pool.acquire() as c:
-        day = (await _rule_days(c, req.day))[0]
-        start = pd.Timestamp(day, tz="UTC").to_pydatetime()
-        return await ais_gap_injection(c, start, rules, essais=req.essais, heures=req.heures or [11])
-
-
-@app.post("/api/rules/rendezvous/run")
-async def rendezvous_run(req: RuleRun, _op: str = Depends(exiger_operateur)):
-    rules = load_rules()
-    async with app.state.pool.acquire() as c:
-        if req.day:
-            days = [datetime.fromisoformat(req.day).date()]
-        else:
-            days = [r["day"] for r in await c.fetch("SELECT day FROM ais_days ORDER BY day")]
-        if not days:
-            raise HTTPException(422, "Aucune journée AIS chargée")
-        if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM land)"):
-            raise HTTPException(422, "Masque de terre absent : lancer scripts/build_masks.py")
-        results = {}
-        for d in days:
-            start = pd.Timestamp(d, tz="UTC").to_pydatetime()
-            results[d.isoformat()] = await run_rendezvous(c, start, start + pd.Timedelta(days=1), rules)
-    return results
-
-
-@app.get("/api/chip")
-async def chip(lon: float, lat: float, time: str, size_m: float = 800):
-    """Vignette radar autour d'un point, produite par le service d'inférence qui détient les extraits."""
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(f"{INFERENCE_URL}/v1/chip",
-                                 params={"lon": lon, "lat": lat, "acquired_at": time, "size_m": size_m})
-    except httpx.ConnectError:
-        raise HTTPException(503, "Service d'inférence injoignable")
-    if r.status_code != 200:
-        raise HTTPException(404, "Vignette indisponible pour ce passage")
-    return Response(r.content, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
 
 class AlertAction(BaseModel):

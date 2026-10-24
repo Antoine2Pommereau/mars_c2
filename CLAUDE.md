@@ -25,7 +25,7 @@ non commercial, aucune redistribution (`docs/trajectoire.md`).
 
 **Modèles.** AI2 `vessel-detection-sentinels` (Sentinel 1), rslearn `sentinel2-vessel-detection` (Sentinel 2),
 `vessel-detection-viirs` ; cercle appris et routes en plusieurs hypothèses (lot T) ; TrAISformer à venir ; CircleNet
-(xView3, chaîne du Mac) en comparaison, retrait prévu au lot Z4.
+(xView3, chaîne du Mac) retiré au lot Z4, retrouvable dans l'historique Git (`docs/journal.md`).
 
 **Zones collectées** (`mars/ais/live.py`, lat_min, lon_min, lat_max, lon_max) : `bretagne` (rail d'Ouessant) 47.3,
 -6.8, 49.6, -3.0 ; `manche` 48.4, -5.0, 51.2, 2.6 ; `gascogne` 43.3, -6.0, 47.4, -1.0 ; `mediterranee` (golfe du Lion,
@@ -136,7 +136,6 @@ AIS le 29/10 (`docs/calibration.md`), lot Z4 (code mort), Z6 (satellites en rée
 | `taches` | serveur | règles toutes les 5 min ; chaque nuit : archive R2, purge, sauvegarde, listes, passages, échéances ; VIIRS à 06:30 ; Sentinel toutes les 30 min ; tip and cue ; surveillance des travailleurs chaque minute ; disque ; essai de restauration chaque mois |
 | `grafana`, `otel`, `tempo` | serveur, 127.0.0.1 | tableaux et alertes ntfy (Grafana sur PostgreSQL, rôle `grafana_lecture`), collecteur OpenTelemetry, traces gardées 72 h |
 | Travailleurs | instances Scaleway éphémères | VIIRS sur DEV1-M (fr-par-1) ; Sentinel 1 sur GP1-S puis POP2 (fr-par-2), GPU au delà de 4 fenêtres ; Sentinel 2 sur GP1-S ; tâche et secrets remis une fois par le réseau privé ; groupe de sécurité `mars-travailleurs` ; résultats validés (`mars/validation.py`) |
-| Inférence | Mac (GPU Apple) | chaîne radar du Mac (CircleNet, Sentinel Hub), comparaison, retrait au lot Z4 |
 
 Serveur Scaleway DEV1-M (4 Go de mémoire, 20 Go de disque), `/opt/mars_c2`, aucun port public hormis SSH ; interface
 et Grafana par tunnel SSH. Chaîne du direct : AISStream, Parquet, ingestion, base, flux SSE. Chaîne satellite :
@@ -163,7 +162,6 @@ scripts/           taches.py, ais_live.py, ais_ingest.py, sante.py, build_masks.
                    publier.sh, deployer.sh, essai_restauration.sh, verifier_images.sh, essai_traces/
 web/src/           components/, lib/ (api, libelles, urgence, clavier, temps, url, session…), registres/
 grafana/generer.py, grafana/provisioning/, otel/   supervision en code
-inference/, mars/sar/, models/                     chaîne radar du Mac (lot Z4)
 tests/                                             pytest (base de test facultative), web/tests (node --test)
 ```
 
@@ -206,7 +204,7 @@ L'instant est tenu par le navigateur (routes `?at=`) ; l'horloge partagée a ét
 
 ## 9. Démarrer et tester
 
-Mac : `./start.sh` (base, API, interface, inférence, Vite) ; interface de développement http://localhost:5173
+Mac : `./start.sh` (base, API, interface, Vite) ; interface de développement http://localhost:5173
 (`MARS_API=http://localhost:8765 npm run dev` pour une autre API) ; construite http://localhost:8080 ; API
 http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulement. Après une modification : `backend/`,
 `docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).

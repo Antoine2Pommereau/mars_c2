@@ -94,15 +94,6 @@ export interface ListeDossiers {
   infrastructures_proches: number[]; dossiers: Dossier[];
 }
 
-export interface Pass {
-  product_name: string;
-  acquired_at: string;
-  platform: string;
-  orbit_direction: string | null;
-  coverage: number | null;
-  ais_available: boolean;
-}
-
 interface VesselIdentity {
   mmsi: number; name: string | null; imo: number | null; callsign: string | null; flag: string | null;
   first_seen: string; last_seen: string; messages: number;
@@ -137,8 +128,6 @@ export const gpxUrl = (id: number, start: string, end: string) =>
   `/api/vessels/${id}/track.gpx?start=${enc(start)}&end=${enc(end)}`;
 export const photoUrl = (id: number) => `/api/vessels/${id}/photo`;
 
-export const chipUrl = (lon: number, lat: number, time: string, sizeM = 800) =>
-  `/api/chip?lon=${lon}&lat=${lat}&time=${encodeURIComponent(time)}&size_m=${sizeM}`;
 
 export const api = {
   alertActions: (id: number) => get<AlertActionRow[]>(`/alerts/${id}/actions`),
@@ -163,8 +152,6 @@ export const api = {
   nePlusSuivre: (id: number) => ecrire<Props>(`/suivis/${id}`, {}, "DELETE"),
   infraCard: (id: number, start: string, end: string) => get<Props>(`/infrastructure/${id}?start=${enc(start)}&end=${enc(end)}`),
   zoneCard: (key: string) => get<Props>(`/zones/${key}`),
-  passes: (bbox: number[]) => get<Pass[]>(`/passes?bbox=${bbox.join(",")}`),
-  launch: (bbox: number[], product_name: string) => post<{ id: number }>("/analyses", { bbox, product_name, mode: "fast" }),
   analyses: () => get<FC>("/analyses"),
   detections: (id: number) => get<FC>(`/analyses/${id}/detections`),
   alerts: (id: number) => get<FC>(`/alerts?analysis_id=${id}`),

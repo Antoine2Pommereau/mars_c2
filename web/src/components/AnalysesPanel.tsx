@@ -1,51 +1,16 @@
-import { Check, Loader2, X } from "lucide-react";
-import type { ReactNode } from "react";
-import type { ActiveAnalysis, Feature } from "../lib/types";
+import type { Feature } from "../lib/types";
 import { num, utc } from "../lib/format";
 import { L } from "../lib/libelles";
-
-const STEPS = ["extraction", "inference", "fusion"];
-
-function Job({ a }: { a: ActiveAnalysis }) {
-  const steps: Record<string, any> = {};
-  (a.progress ?? []).forEach((s) => (steps[s.step] = s));
-  return (
-    <div className="border-b border-hair px-4 py-3">
-      <div className="mb-2 font-medium">
-        {L.analyses.numero(a.id, a.status === "failed" ? L.analyses.enEchec : a.status === "done" ? L.analyses.terminee : L.analyses.enCours)}
-      </div>
-      {STEPS.map((k) => {
-        const label = L.analyses.etapes[k];
-        const s = steps[k];
-        const Icon = !s ? null : s.state === "done" ? Check : Loader2;
-        return (
-          <div key={k} className="flex items-center justify-between py-0.5 text-[12.5px]">
-            <span className={`flex items-center gap-2 ${s ? "text-ink" : "text-faint"}`}>
-              <span className="flex w-4 justify-center">
-                {Icon && <Icon size={13} className={s.state === "done" ? "text-signal" : "animate-spin text-muted"} />}
-              </span>
-              {label}
-            </span>
-            <span className="text-muted">{s?.state === "done" ? `${num(s.seconds)} s` : s ? L.analyses.enCours : ""}</span>
-          </div>
-        );
-      })}
-      {a.error && <p className="mt-2 flex gap-2 text-[12.5px] text-gap"><X size={14} className="mt-0.5 shrink-0" />{a.error}</p>}
-    </div>
-  );
-}
 
 interface Props {
   history: Feature[];
   onPick: (f: Feature) => void;
-  launcher: ReactNode;
-  jobs: ActiveAnalysis[];
   analysis: Feature | null;
   nDetections: number;
   titre?: boolean;
 }
 
-export default function AnalysesPanel({ history, onPick, launcher, jobs, analysis, nDetections, titre = true }: Props) {
+export default function AnalysesPanel({ history, onPick, analysis, nDetections, titre = true }: Props) {
   const s = analysis?.properties.summary ?? {};
   const t = analysis?.properties.timings ?? {};
   return (
@@ -53,8 +18,6 @@ export default function AnalysesPanel({ history, onPick, launcher, jobs, analysi
       {titre && <header className="border-b border-hair px-4 pb-3 pt-4">
         <h2 className="text-[15px] font-semibold">{L.analyses.titre}</h2>
       </header>}
-      {launcher}
-      {jobs.map((a) => <Job key={a.id} a={a} />)}
       {analysis ? (
         <section className="px-4 py-4">
           <div className="text-[15px] font-medium">{L.analyses.passageDu(utc(analysis.properties.acquired_at))}</div>

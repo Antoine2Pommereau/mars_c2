@@ -1,7 +1,7 @@
 [project]
 name = "mars_c2"
 version = "0.1.0"
-description = "MARS C2, surveillance maritime par fusion AIS et radar satellite"
+description = "MARS C2, surveillance maritime par fusion AIS et satellites"
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
@@ -12,7 +12,6 @@ dependencies = [
     "pyproj",
     "pyyaml",
     "psycopg[binary]",
-    "torch",
     "fastapi",
     "uvicorn",
     "httpx",
@@ -32,7 +31,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["mars", "mars.sar", "mars.ais", "mars.fusion", "inference"]
+packages = ["mars", "mars.ais", "mars.fusion"]
 
 # Lot Z2 : un test bloqué (verrou en base, réseau) échoue au bout de 60 s au lieu de geler toute la suite
 # (un bloc de plus de 10 minutes vu une fois). pytest-timeout : pip install -e ".[test]"

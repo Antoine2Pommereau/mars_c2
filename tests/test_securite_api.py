@@ -62,7 +62,7 @@ def test_every_write_route_is_protected_or_whitelisted(api):
         elif (m, r.path) not in controle.ECRITURES_LIBRES:
             nues.append(f"{m} {r.path}")
     assert not nues, f"routes d'écriture sans session ni place dans ECRITURES_LIBRES : {nues}"
-    assert protegees >= 18       # plancher : 24 au lot Z4, étape 1 (horloge partagée retirée)
+    assert protegees >= 18       # plancher : 20 au lot Z4 (horloge partagée, chaîne du Mac et règles à la demande retirées)
 
 
 def test_whitelist_is_short_and_points_to_real_routes(api):

@@ -28,8 +28,6 @@ interface TypeAlerte {
   preuves: (p: Props) => ReactNode;
   /** Infrastructures concernées (mode « concernées seulement » des couches) */
   infrastructures?: (d: Props) => number[];
-  /** Vignette radar dans la fiche */
-  vignette?: boolean;
 }
 
 const P = L.preuves;
@@ -148,7 +146,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     preuves: aVenir, infrastructures: (d) => (d.infrastructure?.id != null ? [d.infrastructure.id] : []),
   },
   {
-    type: "DARK_SHIP", Icone: EyeOff, couleur: "#e85bc7", piste: "deux", etape: "3", actif: true, vignette: true,
+    type: "DARK_SHIP", Icone: EyeOff, couleur: "#e85bc7", piste: "deux", etape: "3", actif: true,
     // Trois sources : écho radar sans AIS (Sentinel 1), navire vu en optique sans AIS (Sentinel 2) ou lumière nocturne
     // sans AIS (VIIRS, details.source)
     navires: (d) => [...(d.navire_liste ? [d.navire_liste] : []), ...(d.candidats_ais ?? [])],
@@ -239,7 +237,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     },
   },
   {
-    type: "AIS_UNCONFIRMED", Icone: CircleHelp, couleur: "#e8d45a", piste: "deux", etape: "3", actif: true, vignette: true,
+    type: "AIS_UNCONFIRMED", Icone: CircleHelp, couleur: "#e8d45a", piste: "deux", etape: "3", actif: true,
     navires: (d) => [d.navire], titre: (d) => nom(d.navire),
     signe: (d) => <Tag>{P.sansEcho(num(d.navire?.length_m, 0))}</Tag>,
     preuves: (p) => {

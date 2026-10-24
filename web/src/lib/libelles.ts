@@ -493,26 +493,11 @@ export const L = {
 
   // Analyses radar (panneau existant)
   analyses: {
-    titre: "Analyses radar", etapes: { extraction: "Extrait radar", inference: "Détection", fusion: "Fusion avec l'AIS" } as Record<string, string>,
-    numero: (id: number, etat: string) => `Analyse n° ${id} ${etat}`, enEchec: "en échec", terminee: "terminée", enCours: "en cours",
+    titre: "Analyses radar",
     passageDu: (t: string) => `Passage du ${t}`, detections: "Détections", retenues: "Retenues après filtres",
     appariees: "Appariées à l'AIS", sombres: "Navires sombres", nonConfirmees: "Positions non confirmées",
     echosFixes: "Échos fixes reconnus", traiteeEn: (s: string) => `Traitée en ${s} s`, aucune: "Aucune analyse.",
     precedentes: "Analyses précédentes", ligne: (id: number, d: string) => `n° ${id}, ${d}`,
     nAlertes: (n: number) => `${n} alerte${n > 1 ? "s" : ""}`,
-    nouvelle: "Nouvelle analyse", tracer: "Cliquez un premier coin de la zone sur la carte, puis le coin opposé.",
-    tracerCarte: "Cliquez deux coins opposés, Échap pour annuler", annulerTrace: "Annuler le tracé",
-    zoneDe: (w: string, h: string) => `Zone de ${w} × ${h} km`, retracer: "Retracer",
-    tropGrande: (km: number) => `Au delà de ${km} km de côté, retracez une zone plus petite.`,
-    recherche: "Recherche des passages Sentinel 1…", impossible: (e: string) => `Recherche impossible : ${e}`,
-    aucunPassage: "Aucun passage sur cette zone.", sansAisJournee: "Pas d'AIS chargé pour cette journée",
-    orbite: { ascending: "ascendant", descending: "descendant" } as Record<string, string>, orbiteInconnue: "orbite inconnue",
-    aisCharge: "AIS chargé", sansAis: "sans AIS", lancer: "Lancer l'analyse", lancement: "Lancement…",
-  },
-
-  vignette: {
-    alt: "Vignette radar autour de l'écho", chargement: "Chargement de l'image radar…",
-    indisponible: "Image radar indisponible (service d'inférence arrêté ?)",
-    legende: (m: number) => `Sentinel 1, polarisation VV, ${m} m de côté`,
   },
 };

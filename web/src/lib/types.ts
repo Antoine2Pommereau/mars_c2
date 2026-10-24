@@ -8,22 +8,6 @@ export interface FC<P = Props> {
   type: "FeatureCollection";
   features: Feature<P>[];
 }
-export interface ProgressStep {
-  step: "extraction" | "inference" | "fusion";
-  state: "start" | "done";
-  seconds?: number;
-  detail?: string;
-}
-export interface ActiveAnalysis {
-  id: number;
-  status: "pending" | "running" | "done" | "failed";
-  progress: ProgressStep[];
-  summary?: Props;
-  error?: string | null;
-}
-export interface StreamPayload {
-  analyses: ActiveAnalysis[];
-}
 export type Selection =
   | { kind: "alert"; feature: Feature }
   | { kind: "vessel"; properties: Props }

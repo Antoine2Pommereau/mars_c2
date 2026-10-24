@@ -1144,3 +1144,16 @@ test (`docs/bilan.md`, section 2.1), 25 libellés orphelins, types exportés pou
 Le flux SSE prend toujours l'heure réelle ; son paramètre `direct` reste accepté pour les anciens onglets.
 L'essai de restauration soustrait désormais les tables retirées par une migration (DROP TABLE) de celles qu'il attend.
 
+## 24/10/2026, lot Z4, étape 2 : chaîne radar du Mac retirée
+
+Règles 2026.10.48. **Pour la retrouver : commit `331298b97ea87d0236fcf40b6d2747557af424e2`**, le dernier qui la contient
+(`git show 331298b:inference/app.py`, `git checkout 331298b -- inference mars/sar scripts/analyze_zone.py`). Retirés :
+service d'inférence (`inference/`, profil Compose `conteneur`), extraction Sentinel Hub et CircleNet (`mars/sar/`),
+`models/`, scripts `analyze_zone`, `sweep_threshold`, `run_rules`, `list_passes`, `tests/test_contract.py`, le paquet
+`torch` ; dans l'API, la recherche des passages, le lancement et le suivi d'une analyse, la vignette `/api/chip`, l'état
+de l'inférence et les règles à la demande (`/api/rules/...`, remplacées par `taches.py regles` et `coupures-injection`) ;
+le champ `analyses` du flux SSE ; dans l'interface, l'outil de tracé, le lancement, la vignette Sentinel Hub et leurs
+libellés ; les clés `model` et `contrast` propres à CircleNet (restent `model.thresholds.vessel` et
+`contrast.min_vv_db`, lus par la fusion). Variables `INFERENCE_URL`, `SH_CLIENT_ID`, `SH_CLIENT_SECRET` retirées de
+Compose et de `.env.example`. Les analyses passées restent lisibles (`/api/analyses`, détections, alertes).
+
