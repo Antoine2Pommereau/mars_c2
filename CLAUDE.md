@@ -281,7 +281,9 @@ Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : 
   bibliothèque standard seulement dans le script ; travailleur sans scène aboutie en « echec ».
 * Points d'appui d'un GRD : jamais le polynôme par défaut de GDAL (54 m en médiane, 544 m au plus sur une vraie
   scène) : `METHOD=GCP_TPS` et `gdalwarp -tps` (`warp_tps`). Le détecteur d'AI2 attend deux passages antérieurs :
-  sans eux, brise lames et quais sortent comme des navires (analyse 103, `docs/sentinel.md`). Diagnostic gratuit d'une
+  sans eux, brise lames et quais sortent comme des navires (analyse 103) ; lot historique (`docs/sentinel.md`).
+* VIIRS : notre travailleur ne donne pas le masque des nuages (CLDMSK) au modèle d'allenai ; au dessus de 80 % de
+  lune, il éteint alors toute la scène (0 détection les nuits du 22 et du 23/10/2026). `docs/contrats_modeles.md`. Diagnostic gratuit d'une
   fenêtre : `travailleurs/essai_diagnostic_s1.py` sur la copie publique de Planetary Computer.
 
 **Supervision et traces**

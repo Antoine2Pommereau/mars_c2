@@ -411,6 +411,10 @@ export const L = {
       titre: "Détection radar Sentinel 1", heure: "Heure de la scène", capteur: "Capteur", score: "Score du modèle",
       longueur: "Longueur mesurée", largeur: "Largeur mesurée", cap: "Orientation de l'écho", vitesse: "Vitesse estimée",
       contraste: "Contraste local VV", statut: "Statut", cote: "Distance à la côte",
+      historique: "Historique du modèle",
+      historiqueDe: (n: number | null, seuil: string) => n ? `${n} passage${n > 1 ? "s" : ""} antérieur${n > 1 ? "s" : ""}, seuil ${seuil}`
+        : `sans historique, seuil prudent ${seuil}`,
+      historiqueAncien: "sans historique (analyse antérieure au 25/10/2026)",
       motifNonEvaluable: "Non évaluable", capDe: (deg: string, p: string) => `${deg}°, probabilité ${p}`,
       motifs: { terre: "sur la terre", "echo fixe": "écho fixe (revu ailleurs dans le temps)",
                 "eolienne probable": "éolienne probable", "contraste faible": "contraste faible",

@@ -77,7 +77,23 @@ async def detection(request: Request, did: int):
     out = {k: v for k, v in _row(r).items() if k != "timings"}
     if r["source"] == "sentinel2":
         out["fenetre"] = fenetre_de(r["timings"], r["scene"], r["lon"], r["lat"])
+    else:
+        out["historique"] = historique_de(r["timings"], r["scene"])
     return {**out, "alertes": [_row(a) for a in alerts], "preuve": preuve, "contexte": contexte, "ais_proches": ais}
+
+
+def historique_de(timings, scene: str | None) -> dict | None:
+    """Sentinel 1 : passages antérieurs donnés au détecteur d'AI2 (le moins bien servi des fenêtres de la scène) et
+    seuil appliqué ; None pour une analyse antérieure à l'historique (25/10/2026), toujours faite sans."""
+    import json
+    t = json.loads(timings) if isinstance(timings, str) else (timings or {})
+    m = t.get(scene or "") or {}
+    h = m.get("historique")
+    if not isinstance(h, dict):
+        return None
+    seuils = [f.get("confiance") for f in m.get("fenetres") or [] if f.get("confiance") is not None]
+    return {"passages": h.get("passages_min"), "prevus": len(h.get("prevus") or []),
+            "seuil": max(seuils) if seuils else None}
 
 
 def fenetre_de(timings, scene: str | None, lon: float, lat: float) -> dict | None:

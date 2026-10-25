@@ -17,6 +17,8 @@ diagnostic.json : {"produit": "S1D_IW_GRDH_1SDV_…", "bbox": [lon_min, lat_min,
                    "ais": [{"nom": "SMYRTOS", "lon": …, "lat": …, "evidence": true}, …] (facultatif),
                    "reperes": [{"nom": "détection 3", "lon": …, "lat": …}] (facultatif)}
 Sortie dans le même dossier : brutes_sans.json, brutes_historique.json, diagnostic_sans.png, diagnostic_historique.png.
+Avec « --dessin » en second argument : images seules, redessinées depuis les détections brutes et la fenêtre déjà
+écrites (quelques secondes, sans analyse).
 """
 from __future__ import annotations
 
@@ -137,8 +139,10 @@ def dessiner(w, vv: str, brutes: list, cfg: dict, titre: str, chemin: str):
     for v in cfg.get("ais", []):
         x, y = px(v["lon"], v["lat"])
         coul = (232, 91, 199) if v.get("evidence") else (95, 211, 165)
-        d.ellipse([x - 12, y - 12, x + 12, y + 12], outline=coul, width=3 if v.get("evidence") else 1)
-        d.text((x + 15, y - 14), v.get("nom", "AIS"), fill=coul)
+        r = 12 if v.get("evidence") else 7
+        d.ellipse([x - r, y - r, x + r, y + r], outline=coul, width=3 if v.get("evidence") else 1)
+        if v.get("evidence") or (v.get("longueur") or 0) >= 100:
+            d.text((x + r + 3, y - r - 2), v.get("nom", "AIS"), fill=coul)
     for v in cfg.get("reperes", []):
         x, y = px(v["lon"], v["lat"])
         d.line([x - 14, y, x + 14, y], fill=(255, 255, 255), width=1)
@@ -169,10 +173,14 @@ def main():
     gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
     w = worker()
     sys.path.insert(0, w.AI2)
-    jeton = json.load(urllib.request.urlopen(JETON, timeout=60))["token"]
+    jeton = None if "--dessin" in sys.argv else json.load(urllib.request.urlopen(JETON, timeout=60))["token"]
     modes = ["sans"] + (["historique"] if cfg.get("historique") else [])
     for mode in modes:
-        win, hist, brutes, vv = analyser(w, cfg, jeton, mode, sortie)
+        if "--dessin" in sys.argv:
+            brutes, vv = json.load(open(os.path.join(sortie, "brutes_%s.json" % mode))), os.path.join(sortie, "fenetre_vv.tiff")
+            win, hist = "relue", cfg.get("historique", []) if mode == "historique" else []
+        else:
+            win, hist, brutes, vv = analyser(w, cfg, jeton, mode, sortie)
         json.dump(brutes, open(os.path.join(sortie, "brutes_%s.json" % mode), "w"), indent=1)
         titre = ("%s, VV, fenetre %s, %s ; cote GSHHG en cyan ; carres : detections brutes (jaune >= 0,9 ; orange "
                  ">= 0,5)" % (cfg["produit"][:32], win, "avec 2 passages anterieurs" if hist else "sans historique"))

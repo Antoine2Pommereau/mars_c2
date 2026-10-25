@@ -160,6 +160,7 @@ def scene_from_item(f: dict) -> dict | None:
         return None
     return {"id": f["id"], "debut": p.get("start_datetime") or p["datetime"], "fin": p.get("end_datetime") or p["datetime"],
             "orbite": p.get("sat:orbit_state"), "satellite": (p.get("platform") or "").upper().replace("SENTINEL-", "S"),
+            "orbite_relative": p.get("sat:relative_orbit"),
             "emprise": f["geometry"], "vv": a["vv"]["href"], "vh": a["vh"]["href"],
             "octets": int(a["vv"].get("file:size") or 0) + int(a["vh"].get("file:size") or 0)}
 
@@ -534,17 +535,71 @@ def part_de_scene(fen: list[dict], emprise: dict) -> float:
 
 # Coût et choix du calcul (lot C3 ; processeur seul depuis le lot Z4)
 
+def minutes_fenetre(s: dict) -> float:
+    """Minutes de calcul par fenêtre : 3 mesurées le 19/10/2026, plus la lecture et l'inférence des passages
+    antérieurs quand l'historique est demandé."""
+    h = s.get("historique") or {}
+    return s["minutes_par_fenetre_cpu"] + (h.get("minutes_par_fenetre_cpu", 0) if h.get("passages") else 0)
+
+
 def cout_calcul(n_fenetres: int, s: dict, t: dict) -> float:
     """Coût estimé d'une session sur processeur : partie fixe (démarrage, Docker, image d'analyse), puis par fenêtre,
     selon le prix et la facturation du type réellement lancé."""
     from mars.travailleurs import cost, granularite_min
-    return cost(s["minutes_fixes_cpu"] + n_fenetres * s["minutes_par_fenetre_cpu"], t["prix_heure"], granularite_min(t))
+    return cost(s["minutes_fixes_cpu"] + n_fenetres * minutes_fenetre(s), t["prix_heure"], granularite_min(t))
 
 
 def duree_cpu(n_fenetres: int, s: dict) -> int:
     """Durée de vie d'un travailleur sur processeur, d'après l'essai réel du 19/10/2026 : démarrage, Docker et image,
-    3 min par fenêtre, plus marge (au lieu de 150 min fixes)."""
-    return int(s["minutes_fixes_cpu"] + n_fenetres * s["minutes_par_fenetre_cpu"] + s["cpu_marge_min"])
+    3 min par fenêtre (plus l'historique), plus marge (au lieu de 150 min fixes)."""
+    return int(s["minutes_fixes_cpu"] + n_fenetres * minutes_fenetre(s) + s["cpu_marge_min"])
+
+
+def _couvre_fenetres(emprise: dict, fens: list[dict]) -> bool:
+    """Le passage couvre entièrement chaque fenêtre (quatre coins dans son emprise)."""
+    return all(covers(emprise, x, y, 0) for f in fens for x in (f["bbox"][0], f["bbox"][2])
+               for y in (f["bbox"][1], f["bbox"][3]))
+
+
+def historique(session, sc: dict, s: dict) -> tuple[list[dict], str]:
+    """Passages antérieurs d'une scène pour le détecteur d'AI2 : même orbite relative et même sens, dans les
+    `jours_max` jours, couvrant toutes ses fenêtres, les plus récents d'abord, un par date et satellite, `passages`
+    au plus. Retourne la liste (identifiant, début, satellite, adresses VV et VH) et le motif lisible."""
+    h = s.get("historique") or {}
+    n_max, jours = int(h.get("passages", 0)), int(h.get("jours_max", 24))
+    if n_max <= 0:
+        return [], "historique coupé (sentinel.historique.passages à 0)"
+    if sc.get("orbite_relative") is None or not sc.get("fenetres"):
+        return [], "orbite relative inconnue : sans historique"
+    t0 = datetime.fromisoformat(sc["debut"].replace("Z", "+00:00"))
+    xs = [v for f in sc["fenetres"] for v in (f["bbox"][0], f["bbox"][2])]
+    ys = [v for f in sc["fenetres"] for v in (f["bbox"][1], f["bbox"][3])]
+    body = {"collections": ["sentinel-1-grd"], "bbox": [min(xs), min(ys), max(xs), max(ys)], "limit": 100,
+            "datetime": f"{t0 - timedelta(days=jours):%Y-%m-%dT%H:%M:%SZ}/{t0 - timedelta(minutes=30):%Y-%m-%dT%H:%M:%SZ}"}
+    r = session.post(STAC, json=body, headers=HEADERS, timeout=60)
+    r.raise_for_status()
+    cands = [c for c in (scene_from_item(f) for f in r.json().get("features", [])) if c
+             and c.get("orbite_relative") == sc["orbite_relative"] and c.get("orbite") == sc.get("orbite")
+             and f"{t0 - timedelta(days=jours):%Y-%m-%dT%H:%M:%S}" <= c["debut"] < sc["debut"]
+             and _couvre_fenetres(c["emprise"], sc["fenetres"])]
+    out, vus = [], set()
+    for c in sorted(cands, key=lambda c: c["debut"], reverse=True):
+        cle = (c["debut"][:10], c["satellite"])
+        if cle in vus:
+            continue
+        vus.add(cle)
+        out.append({k: c[k] for k in ("id", "debut", "satellite", "vv", "vh")})
+        if len(out) == n_max:
+            break
+    dates = ", ".join(f"{c['debut'][8:10]}/{c['debut'][5:7]}/{c['debut'][:4]} {c['satellite']}" for c in out)
+    if len(out) >= 2:
+        motif = f"{len(out)} passages antérieurs ({dates})"
+    elif out:
+        motif = f"un seul passage antérieur dans les {jours} jours ({dates})"
+    else:
+        motif = (f"aucun passage antérieur de l'orbite {sc['orbite_relative']} dans les {jours} jours : sans "
+                 f"historique, seuil prudent de {h.get('confiance_sans_historique', s['confiance'])}")
+    return out, motif.replace(".", ",") if not out else motif
 
 
 # Motifs du calcul : un passage de fenetres_max_cpu fenêtres au plus part en une session, au delà par lots
@@ -670,6 +725,21 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
         sp.set_attributes({"sentinel.fenetres": n_fen, "sentinel.scenes_entieres": n_full,
                            "sentinel.fenetres_km2": sum(f["km2"] for ps in selected for sc in ps["scenes"]
                                                         for f in sc["fenetres"])})
+    # Passages antérieurs de chaque scène (enquête sur l'analyse 103) : un catalogue injoignable n'empêche pas
+    # l'analyse, qui part alors sans historique avec le seuil prudent, et le dit
+    with traces.span("sentinel.historique") as sp:
+        n_hist = []
+        for ps in selected:
+            for sc in ps["scenes"]:
+                if not sc["fenetres"]:
+                    continue
+                try:
+                    sc["historique"], sc["historique_motif"] = historique(session, sc, s)
+                except Exception as e:
+                    sc["historique"], sc["historique_motif"] = [], f"catalogue injoignable ({type(e).__name__}) : sans historique"
+                n_hist.append(len(sc["historique"]))
+        sp.set_attributes({"sentinel.historique_min": min(n_hist, default=0),
+                           "sentinel.historique_max": max(n_hist, default=0)})
     if n_full:
         return {"refus": f"passage {pass_id} : {MOTIF_SCENE_ENTIERE}" if pass_id is not None else MOTIF_SCENE_ENTIERE}
     estimate = estimation(rules, s, n_fen)
@@ -696,8 +766,10 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                        VALUES (%s, ST_MakeEnvelope(%s, %s, %s, %s, 4326)::geography, 'full', 'pending', %s, 'sentinel1',
                                %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                     (ps["pass_id"], *env, "allenai/vessel-detection-sentinels fafc6c3",
-                     json.dumps([{k: sc[k] for k in ("id", "debut", "fin", "orbite", "satellite", "emprise", "octets",
-                                                     "vv", "vh", "fenetres")} for sc in ps["scenes"]]),
+                     json.dumps([{**{k: sc[k] for k in ("id", "debut", "fin", "orbite", "satellite", "emprise", "octets",
+                                                        "vv", "vh", "fenetres")},
+                                  **{k: sc.get(k) for k in ("orbite_relative", "historique", "historique_motif")}}
+                                 for sc in ps["scenes"]]),
                      json.dumps({"motifs": motifs, "points": ps["points"]}, default=str),
                      round(estimate * len(ps["scenes"]) / n, 3), now, traces.trace_id(),
                      json.dumps({sc["id"]: sc["fenetres"] for sc in ps["scenes"]}), now)).fetchone()[0]
@@ -741,7 +813,8 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
     from mars.viirs import regions_boxes
     ids = [a for a, _ in analyses]
     faites = dict(conn.execute("SELECT id, fenetres_faites FROM analyses WHERE id = ANY(%s)", (ids,)).fetchall())
-    tasks = [{"analyse": aid, **{k: sc.get(k) for k in ("id", "debut", "fin", "orbite", "satellite", "vv", "vh")},
+    tasks = [{"analyse": aid, **{k: sc.get(k) for k in ("id", "debut", "fin", "orbite", "satellite", "vv", "vh",
+                                                         "historique")},
               "fenetres": restantes(sc.get("fenetres") or [], (faites.get(aid) or {}).get(sc.get("id")))}
              for aid, scs in analyses for sc in scs]
     tasks = [t for t in tasks if t["fenetres"]]
@@ -769,7 +842,9 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
                 continue
             variante = {**v, "cout_prevu_eur": est, "duree_max_min": duree_cpu(n_lot, s)}
             params = {"scenes": lot, "regions": regions_boxes(), "confiance": s["confiance"], "nms_m": s["nms_m"],
-                      "vignette_km": s["vignette_km"]}
+                      "vignette_km": s["vignette_km"],
+                      "confiance_sans_historique": (s.get("historique") or {}).get("confiance_sans_historique",
+                                                                                   s["confiance"])}
             with traces.span("sentinel.essai_type", **{"sentinel.type": t["commercial_type"], "scaleway.zone": zone,
                                                        "sentinel.calcul": "cpu", "sentinel.cout_estime": est,
                                                        "sentinel.fenetres_lot": n_lot}) as se:
@@ -881,11 +956,13 @@ def ingest(conn, w: dict, rules: dict) -> dict:
         mes = dict((prev[2] or {}) if prev and isinstance(prev[2], dict) else {})
         for sc in scenes:                             # fenêtres : taille, octets, durées, détections, motif d'échec
             m = {k: sc.get(k) for k in ("telecharge_s", "telecharge_mo", "analyse_s", "erreur",
-                                         "octets_lus", "ecartees_marge", "image_px")}
+                                         "octets_lus", "ecartees_marge", "image_px", "historique")}
             if sc.get("fenetres"):
                 m["fenetres"] = (mes.get(sc["id"]) or {}).get("fenetres", []) + [
                     {k: f.get(k) for k in ("index", "srcwin", "octets", "lecture_s", "analyse_s", "detections",
-                                           "ecartees_marge", "erreur")} for f in sc["fenetres"]]
+                                           "ecartees_marge", "erreur", "historique", "octets_historique",
+                                           "lecture_historique_s", "historique_erreurs", "confiance")}
+                    for f in sc["fenetres"]]
             mes[sc["id"]] = m
         octets = (sum(int(sc.get("octets_lus") or 0) for sc in scenes) + int((prev[3] or 0) if prev else 0)) or None
         if reste and not errors:

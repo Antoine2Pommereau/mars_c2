@@ -28,7 +28,7 @@ Les chemins de documents cités sont ceux de l'époque : plusieurs sont depuis r
   premier essai réel, seau des modèles)
 * 21/10/2026 : lot P, panneau de contrôle ; lot U, phases 1 et 2 ; lot A ; séjour hors port ; Coulisses
 * 22/10/2026 : lot T (trajectoire, cercle appris, garde de probabilité, table de l'archive) ; lots Z1 et Z2
-* 24/10/2026 : lot Z3 (documentation) ; lot Z4 (code mort) ; lot Z6 phase 1 ; enquête sur l'analyse 103
+* 24/10/2026 : lot Z3 (documentation) ; lot Z4 (code mort) ; lot Z6 phase 1 ; enquête sur l'analyse 103 ; audit des modèles et lot historique (25/10)
 * Points ouverts France ; décomptes de tests par lot
 
 ---
@@ -1218,3 +1218,14 @@ Planetary Computer et l'analyse a été reproduite sur le Mac au chiffre près (
   brutes au lieu de 185. Remettre l'historique au travailleur : proposé, non fait.
 * Outil : `travailleurs/essai_diagnostic_s1.py` (fenêtre, détections brutes, image avec côte et AIS, gratuit).
 * Tests : 483 réussis avec la base.
+
+## 25/10/2026 : analyse 97 retraitée, audit des contrats des modèles, lot historique Sentinel 1
+
+Règles 2026.10.51 (section `sentinel.historique`), aucune migration, aucun essai payant.
+* Analyse 97 retraitée gratuitement (copie publique, vrai travailleur) : sans historique, MSC MERAVIGLIA à 0,879 et
+  des rochers à 0,925 ; avec, 0,962 et 0,541 ; navires à quai sous 0,5 dans les deux cas.
+* Audit des contrats d'entrée (`docs/contrats_modeles.md`) : Sentinel 1, historique manquant (corrigé) ;
+  Sentinel 2 conforme ; VIIRS, masque des nuages jamais donné, d'où 0 détection sous une lune au dessus de 80 %
+  (nuits du 22 et du 23/10), prouvé par `travailleurs/essai_viirs_lune.py`.
+* Lot historique : deux passages antérieurs de la même orbite relative dans les 24 jours, repli à 0,95 sans eux,
+  signalé dans la fiche, tracé ; 2,8 fois plus d'octets lus par fenêtre. Branche `historique-s1`, non fusionnée.

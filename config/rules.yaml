@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.50"
+version: "2026.10.51"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -244,6 +244,16 @@ sentinel:
   # Modèle d'AI2 (paramètres de sa chaîne)
   confiance: 0.9
   nms_m: 10
+  # Historique (enquête sur l'analyse 103, 25/10/2026) : le détecteur d'AI2 compare l'image à deux passages antérieurs
+  # de la même orbite pour éteindre ce qui ne bouge pas. Sans eux, le brise lames de Portland sortait à 0,909 et
+  # SMYRTOS restait à 0,879 ; avec eux, 0,282 et 0,966. Les plus récents de la même orbite relative et du même sens,
+  # dans les jours_max jours, couvrant toutes les fenêtres de la scène ; sinon un seul ; sinon aucun, et le seuil
+  # devient confiance_sans_historique. passages: 0 coupe l'historique.
+  historique:
+    passages: 2
+    jours_max: 24
+    confiance_sans_historique: 0.95
+    minutes_par_fenetre_cpu: 2  # en plus des 3 min : deux lectures et le tronc du modèle sur trois images (à mesurer)
   # Vignette radar : environ 3 km de côté autour de la détection, VV en décibels
   vignette_km: 3
   # Contraste local mesuré par le travailleur sur l'image VV d'origine (intensité, pic sur 5 × 5 pixels contre la

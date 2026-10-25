@@ -617,9 +617,9 @@ sessions de fin de mois. Pour deux passages par jour tout le mois, il faut 12 �
 
 ## Limites
 
-* **Modèle appelé sans historique** : le détecteur d'AI2 attend l'image et deux passages antérieurs de la même orbite ;
-  sans eux, les structures fixes (brise lames, quais) obtiennent des scores de navire, et un pétrolier de 250 m au
-  mouillage reste sous le seuil de 0,9 (enquête sur l'analyse 103, ci dessous).
+* **Sans historique** (aucun passage antérieur de la même orbite dans les 24 jours, ou catalogue injoignable) : le
+  détecteur prend les structures fixes pour des navires ; le seuil passe alors à 0,95, au prix de navires manqués.
+  Les analyses d'avant le 25/10/2026 ont toutes été faites sans historique.
 * Aucune analyse aboutie sur une vraie instance GPU au 24/10/2026 (essai 20 : GPU vu, import corrigé depuis) ; la
   lecture par fenêtres, éprouvée d'abord contre un faux S3, a fonctionné contre Copernicus sur le GP1-S le 19/10/2026
   (analyse 97, seule analyse aboutie) ; le POP2-8C-32G jamais encore essayé.
@@ -702,7 +702,62 @@ fenêtre de n'importe quelle scène présente chez Planetary Computer, l'analyse
 l'image de la fenêtre entière avec la côte GSHHG, les positions AIS données et les détections brutes. Environ 17 min
 par mode en émulation sur le Mac. Une scène absente de Planetary Computer ne peut pas être diagnostiquée ainsi.
 
-**Suite proposée** (non faite) : remettre l'historique au travailleur. Le serveur choisit les deux derniers passages de
+**Suite** : faite au lot historique (25/10/2026, section suivante). Proposition d'origine : remettre l'historique au travailleur. Le serveur choisit les deux derniers passages de
 la même orbite relative couvrant la fenêtre (catalogue STAC de Copernicus) ; le travailleur lit la même fenêtre dans
 les trois scènes. Coût : trois lectures partielles au lieu d'une (environ 60 Mo par fenêtre au lieu de 20) et une
 inférence un peu plus longue (le tronc du modèle passe sur les trois images) ; à mesurer sur la session GP1-S suivante.
+
+## Lot historique (25/10/2026, règles 2026.10.51)
+
+Le détecteur d'AI2 reçoit désormais ses deux passages antérieurs (contrat d'entrée : `docs/contrats_modeles.md`).
+
+**Choix des passages** (serveur, `sentinel.historique`, span `sentinel.historique`) : catalogue STAC de Copernicus sur
+l'emprise des fenêtres de la scène, même orbite relative (`sat:relative_orbit`) et même sens, dans les `jours_max` (24)
+jours qui précèdent, couvrant entièrement chaque fenêtre, un par date et par satellite, les plus récents d'abord, deux
+au plus. Le motif est enregistré avec la scène de l'analyse (`historique_motif`) : « 2 passages antérieurs (17/10/2026
+S1C, 11/10/2026 S1D) », « un seul passage antérieur dans les 24 jours (…) », ou « aucun passage antérieur de
+l'orbite 30 dans les 24 jours : sans historique, seuil prudent de 0,95 ». Un catalogue injoignable ne bloque pas
+l'analyse, qui part sans historique et le dit.
+
+**Travailleur** : pour chaque fenêtre, la même emprise est découpée dans chaque passage antérieur avec sa propre
+géolocalisation (`lire_historique`, spans « GET S3 eodata VV fenêtre historique »), puis donnée à `prepare_scenes`
+(`historical1`, `historical2`), qui l'aligne comme AI2 le prévoit (géoréférence, puis recalage de 32 pixels au
+plus). Un passage illisible ou qui ne couvre pas la fenêtre est écarté avec son motif (`historique_erreurs`) et
+l'analyse se fait avec ce qui reste. Seuil : `confiance` (0,9) avec au moins un passage, `confiance_sans_historique`
+(0,95) sans aucun. Par fenêtre, en base (`analyses.timings`) : passages lus, octets et durée de leur lecture, seuil.
+
+**Fiche** de la détection radar : ligne « Historique du modèle » (« 2 passages antérieurs, seuil 0,90 », « sans
+historique, seuil prudent 0,95 », ou « sans historique (analyse antérieure au 25/10/2026) »).
+
+**Coût** : mesuré par le vrai travailleur sur la copie publique. Fenêtre de 97 : image 20,0 Mo (exactement ce que la
+production lisait chez Copernicus), deux passages 39,8 Mo, **59,8 Mo en tout** au lieu de 20 ; fenêtre de 103 : 33,7
+plus 61,9 Mo. Lecture des passages : 3 à 4 s. Analyse de la fenêtre de 97 avec historique : 369 s sur le Mac en
+émulation (119 s sans historique sur le GP1-S le 19/10) : les durées du Mac ne se transposent pas ; l'inférence
+passe le tronc du modèle sur trois images au lieu d'une. Estimation retenue en attendant la mesure réelle : 2 min de plus par
+fenêtre (`historique.minutes_par_fenetre_cpu`), soit 25 min de vie pour une fenêtre et 40 pour quatre ; une session
+GP1-S reste dans sa première heure entamée (0,19 € HT).
+
+**Essais** : `tests/test_historique_s1.py` (choix des passages, repli, seuil, fiche) ; `scripts/verifier_images.sh
+ai2-historique` (vrai travailleur dans l'image d'AI2 sur les scènes publiques de 103 et 97 : SMYRTOS seul au dessus du
+seuil à Weymouth, brise lames et quai en dessous ; à Marseille, aucune détection sans navire AIS à moins de 300 m, à
+l'estime près).
+
+### Analyse 97 retraitée (19/10/2026, S1D 05:43 UTC, approches de Marseille)
+
+Fenêtre `[5.194, 43.22397, 5.4904, 43.44101]`, 45 navires AIS à 10 min, presque tous à quai. Historique : S1C du
+13/10/2026 et S1D du 07/10/2026 (orbite relative 139). Détections brutes de 0,5 et plus :
+
+| Écho | Sans historique | Avec historique |
+|---|---|---|
+| FRAUKE, en route à 8,3 nœuds (marge de la fenêtre) | 0,968 | 0,993 |
+| MSC MERAVIGLIA, en route à 10,2 nœuds, 325 m estimés | 0,879 | **0,962** |
+| rochers de la côte sud de Marseille, aucun AIS à 2 km | **0,925** | 0,541 |
+| VICTOR ANDRYUKHIN à quai (36 m de son AIS) | 0,665 | moins de 0,5 |
+| CHEMICAL HUNTER à quai (25 m de son AIS) | 0,645 | moins de 0,5 |
+| autres échos de quai et de côte | 0,52 à 0,74 | moins de 0,56 |
+
+Ce que l'absence d'historique y a changé : la production avait gardé deux détections, MSC MERAVIGLIA (au dessus de 0,9
+avec le polynôme, 0,879 avec la spline : un score à quelques centièmes du seuil) et un écho des rochers, masqué
+« terre ». Avec l'historique, le navire en route monte nettement (0,962), les rochers et les quais tombent à 0,54 au
+plus. Les navires à quai ne sortent ni avec ni sans historique au seuil de 0,9 : le modèle ne sait pas les séparer
+du quai, et notre sélection en mer écarte déjà ces points de déclenchement (lot C5).

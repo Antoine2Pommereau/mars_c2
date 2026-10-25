@@ -344,10 +344,21 @@ def preflight():
     return torch.device("cpu"), {"torch": torch.__version__}
 
 
-def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, device, tmp: str, tr, coeur=None) -> dict:
+def seuil(task: dict, n_historique: int) -> float:
+    """Seuil de détection : celui d'AI2 avec au moins un passage antérieur, un seuil plus prudent sans historique
+    (le modèle prend alors les structures fixes pour des navires : brise lames de Portland à 0,909, analyse 103)."""
+    if n_historique:
+        return float(task.get("confiance", 0.9))
+    return float(task.get("confiance_sans_historique", task.get("confiance", 0.9)))
+
+
+def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, device, tmp: str, tr, coeur=None,
+              historiques: list | None = None) -> dict:
     """Chaîne d'AI2 sur une image (scène entière ou fenêtre, rangée en SAFE sous `raw`), puis mesures et vignettes
     sur l'image VV d'origine. `coeur` (lon_min, lat_min, lon_max, lat_max) : seules les détections dedans sont gardées
-    (fenêtre : les objets coupés au bord sont écartés)."""
+    (fenêtre : les objets coupés au bord sont écartés). `historiques` : noms SAFE, sous `raw`, des passages antérieurs
+    de la même fenêtre (deux au plus), que le détecteur d'AI2 compare à l'image pour éteindre ce qui ne bouge pas ;
+    AI2 les aligne sur l'image (géoréférence, puis recalage de 32 pixels au plus)."""
     prepare_scenes, detect_vessels = ai2()
     r = {}
     t = time.time()
@@ -356,15 +367,19 @@ def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, dev
     os.makedirs(scratch, exist_ok=True)
     os.makedirs(out, exist_ok=True)
     cat_path, base_path = os.path.join(scratch, scene_id + "_cat.npy"), os.path.join(scratch, scene_id + "_base.tif")
-    with tr.span("sentinel.preparation_scene"):
-        prepare_scenes(raw, scratch, scene_id, None, None, "sentinel1", cat_path, base_path, device, DETECTEUR, ATTRIBUTS)
+    hist = list(historiques or [])[:2]
+    conf = seuil(task, len(hist))
+    with tr.span("sentinel.preparation_scene", **{"sentinel.historique": len(hist)}):
+        prepare_scenes(raw, scratch, scene_id, hist[0] if hist else None, hist[1] if len(hist) > 1 else None,
+                       "sentinel1", cat_path, base_path, device, DETECTEUR, ATTRIBUTS)
     # nms_thresh : annoncé float mais utilisé en division entière par la grille de la chaîne d'AI2 (range) ; un décimal
     # la fait échouer (« 'float' object cannot be interpreted as an integer », essai dans l'image du 15/10/2026)
-    with tr.span("sentinel.inference", **{"sentinel.appareil": device.type}):
+    with tr.span("sentinel.inference", **{"sentinel.appareil": device.type, "sentinel.historique": len(hist),
+                                          "sentinel.seuil": conf}):
         detect_vessels(DETECTEUR, ATTRIBUTS, raw, scene_id, cat_path, base_path, out, 2048, 400, 20,
-                       float(task.get("confiance", 0.9)), int(round(float(task.get("nms_m", 10)))), False, device,
-                       "sentinel1", None)
+                       conf, int(round(float(task.get("nms_m", 10)))), False, device, "sentinel1", None)
     r["analyse_s"] = round(time.time() - t, 1)
+    r["confiance"] = conf
     with tr.span("sentinel.mesures_et_vignettes") as ms:
         radar = Radar(files["vv"])
         dets, hors, bord = [], 0, 0
@@ -395,6 +410,35 @@ def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, dev
         ms.set(**{"sentinel.detections": len(dets), "sentinel.hors_regions": hors, "sentinel.marge": bord})
     r.update({"detections": dets, "hors_regions": hors, "ecartees_marge": bord})
     return r
+
+
+def nom_local(pol: str) -> str:
+    """Nom d'une image découpée : la chaîne d'AI2 lit la polarisation dans le quatrième champ (séparé par « - ») ;
+    nommer soi même la copie rend la lecture indépendante du nom chez la source (Copernicus, Planetary Computer)."""
+    return f"s1-iw-grd-{pol}-fenetre-cog.tiff"
+
+
+def lire_historique(tmp: str, k: int, j: int, h: dict, bbox: list, local: bool, ouverts: dict, tr) -> tuple:
+    """Même emprise découpée dans le passage antérieur `j` (VV et VH), sa propre géolocalisation : nom SAFE sous la
+    racine de la fenêtre, octets lus. FenetreInvalide si le passage ne couvre pas la fenêtre."""
+    from osgeo import gdal
+    srcs = {pol: (h[f"{pol}_path"] if local else source_image(h[pol])) for pol in ("vv", "vh")}
+    if j not in ouverts:
+        ouverts[j] = gdal.Open(srcs["vv"])
+    if ouverts[j] is None:
+        raise FenetreInvalide(f"passage antérieur illisible : {gdal.GetLastErrorMsg()[:200]}")
+    win = fenetre_pixels(ouverts[j], bbox)
+    sid = f"HIST{j}_F{k}.SAFE"
+    mdir = os.path.join(tmp, "raw_f" + str(k), sid, "measurement")
+    os.makedirs(mdir, exist_ok=True)
+    n = 0
+    for pol in ("vv", "vh"):
+        with tr.span("GET S3 eodata " + pol.upper() + " fenêtre historique",
+                     **{"peer.service": "Copernicus", "sentinel.polarisation": pol, "sentinel.historique": j}) as sd:
+            m = decouper(srcs[pol], win, os.path.join(mdir, nom_local(pol)))
+            sd.set(**{"sentinel.octets": m})
+            n += m
+    return sid, win, n
 
 
 def analyse(scene: dict, task: dict, device, tmp: str, local: bool, tr=None) -> dict:
@@ -533,6 +577,9 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
     if vv is None:
         raise Arret(f"image VV illisible chez Copernicus : {gdal.GetLastErrorMsg()[:200]}")
     r["image_px"] = [vv.RasterXSize, vv.RasterYSize]
+    passes = list(scene.get("historique") or [])[:2]
+    ouverts: dict = {}
+    r["historique"] = {"prevus": [h.get("id") for h in passes], "passages_min": None}
     dets, octets, t_lecture, t_analyse, ecartees = [], 0, 0.0, 0.0, 0
     for j, f in enumerate(scene["fenetres"]):
         k = f.get("id", j)              # identifiant donné par le serveur (lots sur processeur, lot C5)
@@ -549,8 +596,7 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
                 t = time.time()
                 files = {}
                 for pol in ("vv", "vh"):
-                    name = os.path.basename(srcs[pol].split("?", 1)[0])
-                    files[pol] = os.path.join(mdir, name)
+                    files[pol] = os.path.join(mdir, nom_local(pol))
                     with tr.span("GET S3 eodata " + pol.upper() + " fenêtre",
                                  **{"peer.service": "Copernicus", "sentinel.polarisation": pol}) as sd:
                         n = decouper(srcs[pol], win, files[pol])
@@ -559,14 +605,34 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
                         rf["octets"] = rf.get("octets", 0) + n
                 rf["lecture_s"] = round(time.time() - t, 1)
                 t_lecture += time.time() - t
+                # Passages antérieurs de la même orbite, même emprise ; un passage illisible ou qui ne couvre pas la
+                # fenêtre est écarté avec son motif, l'analyse se fait avec ce qui reste
+                th, hist, rf["historique"], rf["octets_historique"] = time.time(), [], [], 0
+                for j, h in enumerate(passes):
+                    try:
+                        hs, _w, n = lire_historique(tmp, k, j, h, f["bbox"], local, ouverts, tr)
+                        hist.append(hs)
+                        rf["historique"].append(h.get("id"))
+                        rf["octets_historique"] += n
+                        octets += n
+                    except Exception as e:
+                        rf.setdefault("historique_erreurs", []).append(f"{h.get('id')}: {type(e).__name__}: {e}"[:200])
+                rf["lecture_historique_s"] = round(time.time() - th, 1)
+                t_lecture += time.time() - th
+                n_h = len(hist)
+                r["historique"]["passages_min"] = (n_h if r["historique"]["passages_min"] is None
+                                                   else min(n_h, r["historique"]["passages_min"]))
                 d = _detecter(os.path.dirname(os.path.dirname(mdir)), sid, files, scene, task, device, tmp, tr,
-                              coeur(f["bbox"], f.get("marge_m", 2000)))
+                              coeur(f["bbox"], f.get("marge_m", 2000)), hist)
+                rf["confiance"] = d["confiance"]
                 t_analyse += d["analyse_s"]
                 ecartees += d["ecartees_marge"]
                 dets += d["detections"]
                 rf.update({"analyse_s": d["analyse_s"], "detections": len(d["detections"]),
                            "ecartees_marge": d["ecartees_marge"]})
-                sf.set(**{"sentinel.detections": len(d["detections"]), "sentinel.octets": rf["octets"]})
+                sf.set(**{"sentinel.detections": len(d["detections"]), "sentinel.octets": rf["octets"],
+                          "sentinel.historique": n_h, "sentinel.octets_historique": rf["octets_historique"],
+                          "sentinel.seuil": d["confiance"]})
             except FenetreInvalide as e:
                 rf["erreur"] = str(e)[:300]
                 sf.erreur(rf["erreur"])

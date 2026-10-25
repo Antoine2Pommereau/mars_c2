@@ -43,7 +43,7 @@
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres|geolocalisation] [s2] [s2-s3] [controle] [sante] [traces]   (sans argument : les trois premiers)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres|geolocalisation|ai2-historique] [s2] [s2-s3] [controle] [sante] [traces]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -421,12 +421,13 @@ for cible in "${CIBLES[@]}"; do
     fenetres) verifier_ai2 --lecture essai_fenetres.py ;;
     ai2-fenetres) verifier_ai2 --complet essai_fenetres.py ;;
     geolocalisation) verifier_ai2 --geolocalisation essai_fenetres.py ;;
+    ai2-historique) verifier_ai2 "" essai_historique_s1.py ;;
     s2)      verifier_s2 ;;
     s2-s3)   verifier_s2 --s3 ;;
     controle) verifier_controle ;;
     sante)   verifier_sante ;;
     traces)  verifier_traces ;;
-    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, geolocalisation, s2, s2-s3, controle, sante ou traces)" ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, geolocalisation, ai2-historique, s2, s2-s3, controle, sante ou traces)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."

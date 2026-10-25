@@ -56,8 +56,11 @@ def test_cost_depends_on_the_launched_type_and_the_windows():
     # Toutes les sessions d'un passage : lots de fenetres_max_cpu fenêtres
     assert sentinel.sessions(9, S) == [4, 4, 1] and sentinel.sessions(4, S) == [4] and sentinel.sessions(0, S) == []
     assert sentinel.estimation(RULES, S, 9) == round(3 * gp1["prix_heure"], 4)
-    # Lot C5 : durée de vie sur processeur d'après l'essai réel (5 + 3 par fenêtre + 15), au lieu de 150 min fixes
-    assert sentinel.duree_cpu(1, S) == 23 and sentinel.duree_cpu(4, S) == 32
+    # Lot C5 : durée de vie sur processeur d'après l'essai réel (5 + 3 par fenêtre + 15), au lieu de 150 min fixes ;
+    # historique (25/10/2026) : 2 min de plus par fenêtre, et 3 min de moins sans lui
+    assert sentinel.duree_cpu(1, S) == 25 and sentinel.duree_cpu(4, S) == 40
+    sans = {**S, "historique": {**S["historique"], "passages": 0}}
+    assert sentinel.duree_cpu(1, sans) == 23 and sentinel.duree_cpu(4, sans) == 32
 
 
 def test_motive_says_one_session_or_lots():
