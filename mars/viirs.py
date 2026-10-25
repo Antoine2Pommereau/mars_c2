@@ -5,7 +5,9 @@ détections pour les apparier à l'AIS, écarter les lumières fixes et les côt
 Sources : bande Day/Night de Suomi NPP (VNP02DNB), NOAA 20 (VJ102DNB) et NOAA 21 (VJ202DNB), avec leur
 géolocalisation (VNP03DNB, VJ103DNB, VJ203DNB), cherchées dans le catalogue CMR de la NASA (public) : produits en
 temps quasi réel (« _NRT », environ 2 à 3 heures après le passage) d'abord, produits standard ensuite pour une nuit
-rattrapée. Le serveur ne lit que les métadonnées ; le travailleur télécharge avec le jeton Earthdata.
+rattrapée. Le serveur ne lit que les métadonnées ; le travailleur télécharge avec le jeton Earthdata. Masque des
+nuages CLDMSK_L2 de la même minute (lot viirs-masque) : temps quasi réel de SIPS, puis produit standard de LAADS ; un
+granule sans masque sous une lune forte est « non évaluable » (`granule_non_evaluable`).
 
 Les fonctions de calcul (nuit d'un instant, paires de granules, instant d'une détection, appariement, gravité) sont
 pures et couvertes par tests/test_viirs.py.
@@ -83,24 +85,68 @@ def cmr_search(session, short_name: str, start: datetime, end: datetime) -> list
 CMR_SIMULTANES = 4
 
 
+def mask_urls(session, sat: str, start: datetime, end: datetime, rules: dict) -> tuple[dict[str, list[str]], list[str]]:
+    """Adresses des masques des nuages d'un satellite sur la nuit, par clé de granule (jour julien et heure), dans
+    l'ordre des produits des règles (temps quasi réel d'abord). Un catalogue injoignable n'empêche rien : le granule
+    part sans masque, le motif est rendu. Retourne (adresses par clé, erreurs)."""
+    out: dict[str, list[str]] = {}
+    erreurs = []
+    for prod in rules["viirs"].get("masque_nuages", {}).get("produits", {}).get(sat, []):
+        try:
+            found = cmr_search(session, prod, start, end)
+        except Exception as e:
+            erreurs.append(f"{prod} : {type(e).__name__}: {e}"[:200])
+            continue
+        for g in found:
+            k = granule_key(g["name"])
+            if k:
+                out.setdefault(k, []).append(g["url"])
+    return out, erreurs
+
+
 def sat_granules(session, d: date, sat: str, products: tuple, rules: dict) -> list[dict]:
-    """Granules d'un satellite pour une nuit : temps quasi réel, sinon produits standard (rattrapage)."""
+    """Granules d'un satellite pour une nuit : temps quasi réel, sinon produits standard (rattrapage) ; avec, pour
+    chacune, les adresses de son masque des nuages (`masque_urls`, vide s'il n'est pas publié)."""
     start, end = night_window(d, rules)
     dnb, geo = products
     for suffix in ("_NRT", ""):
         pairs = pair_granules(sat, cmr_search(session, dnb + suffix, start, end), cmr_search(session, geo + suffix, start, end))
         if pairs:
+            masks, erreurs = mask_urls(session, sat, start, end, rules)
+            for g in pairs:
+                g["masque_urls"] = masks.get(g["nom"].split(".", 1)[1], [])
+                if erreurs and not g["masque_urls"]:
+                    g["masque_recherche"] = "; ".join(erreurs)
             return pairs
     return []
 
 
+def granule_non_evaluable(g: dict, rules: dict) -> str | None:
+    """Motif quand un granule traité ne permet aucune conclusion : sans masque des nuages, au dessus de
+    `lune_max_sans_masque` % de lune moyenne, le modèle d'allenai tient tout le ciel pour couvert et éteint la scène
+    (essai du 25/10/2026 : 0 bateau sur 4 à 90 % sans masque, 4 sur 4 avec). Sous ce seuil, le masque ne sert pas au
+    modèle : son absence est notée, la conclusion reste valable."""
+    lune = g.get("lune_moyenne")
+    seuil = rules["viirs"].get("masque_nuages", {}).get("lune_max_sans_masque", 80)
+    if (g.get("masque") or {}).get("etat") == "fourni" or lune is None or lune <= seuil:
+        return None
+    return (f"masque des nuages absent, lune à {lune:.0f} % : le modèle éteint toute la scène au dessus de {seuil} %, "
+            "aucune conclusion sur ce granule")
 
-def plan(conn, session, rules: dict, now: datetime) -> dict:
+
+
+def plan(conn, session, rules: dict, now: datetime, nuits: list[date] | None = None) -> dict:
     """Granules à traiter : celles des dernières nuits terminées, ni traitées ni en cours (une granule en échec est
-    retentée une fois). Une nuit manquée est ainsi rattrapée au passage suivant."""
-    nights = [n - timedelta(days=k) for n in [last_night(now, rules)] for k in range(rules["viirs"]["rattrapage_nuits"])]
-    done = {r[0] for r in conn.execute(
-        "SELECT nom FROM viirs_granules WHERE nuit = ANY(%s) AND (erreur IS NULL OR tentatives >= 2)", (nights,)).fetchall()}
+    retentée une fois). Une nuit manquée est ainsi rattrapée au passage suivant. Avec `nuits` (retraitement demandé,
+    par exemple après le lot du masque des nuages) : toutes les granules de ces nuits, même déjà traitées."""
+    if nuits:
+        nights = sorted(set(nuits), reverse=True)
+        done = set()
+    else:
+        nights = [n - timedelta(days=k) for n in [last_night(now, rules)] for k in range(rules["viirs"]["rattrapage_nuits"])]
+        done = {r[0] for r in conn.execute(
+            "SELECT nom FROM viirs_granules WHERE nuit = ANY(%s) AND (erreur IS NULL OR tentatives >= 2)",
+            (nights,)).fetchall()}
     busy = set()
     for (p,) in conn.execute("SELECT parametres FROM travailleurs WHERE tache = 'viirs' AND detruit_le IS NULL").fetchall():
         busy |= {g["nom"] for g in (p or {}).get("granules", [])}
@@ -347,21 +393,36 @@ def ingest(conn, w: dict, rules: dict) -> dict:
         end = datetime.fromisoformat(g["fin"].replace("Z", "+00:00")) if g.get("fin") else start + timedelta(minutes=6)
         frame = [c for c in (g.get("emprise") or []) if None not in c]
         ewkt = ("SRID=4326;POLYGON((" + ",".join(f"{x} {y}" for x, y in frame) + "))") if len(frame) >= 4 else None
+        m = g.get("masque") or {}
+        etat = None if err else (m.get("etat") or "absent")
+        motif_masque = m.get("motif") or (f"{m.get('source')} : {m.get('fichier')}" if m.get("etat") == "fourni" else None)
+        if etat == "absent" and not motif_masque:
+            motif_masque = "masque des nuages absent : " + (p.get("masque_recherche") or "non transmis par le travailleur")
+        nev = None if err else granule_non_evaluable(g, rules)
         gid = conn.execute(
-            """INSERT INTO viirs_granules (nom, satellite, nuit, debut, fin, emprise, lune, statut, erreur, travailleur_id)
-               VALUES (%s, %s, %s, %s, %s, ST_GeogFromText(%s), %s, %s, %s, %s)
+            """INSERT INTO viirs_granules (nom, satellite, nuit, debut, fin, emprise, lune, statut, erreur, travailleur_id,
+                                           masque, masque_motif, ciel_clair_part, non_evaluable)
+               VALUES (%s, %s, %s, %s, %s, ST_GeogFromText(%s), %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (nom) DO UPDATE SET debut = EXCLUDED.debut, fin = EXCLUDED.fin, emprise = EXCLUDED.emprise,
                  lune = EXCLUDED.lune, statut = EXCLUDED.statut, erreur = EXCLUDED.erreur,
                  travailleur_id = EXCLUDED.travailleur_id, traite_le = now(),
-                 tentatives = viirs_granules.tentatives + 1
+                 tentatives = viirs_granules.tentatives + 1, masque = EXCLUDED.masque,
+                 masque_motif = EXCLUDED.masque_motif, ciel_clair_part = EXCLUDED.ciel_clair_part,
+                 non_evaluable = EXCLUDED.non_evaluable
                RETURNING id""",
             (p["nom"], p["satellite"], p["nuit"], start, end, ewkt, g.get("lune_moyenne"),
-             ",".join(g.get("statut") or []) or None, err, w["id"])).fetchone()[0]
+             ",".join(g.get("statut") or []) or None, err, w["id"], etat, motif_masque, m.get("ciel_clair_part"),
+             nev)).fetchone()[0]
         out["granules"] += 1
         if err:
             out["granules_en_echec"] += 1
             continue
-        with traces.span("viirs.granule", **{"viirs.granule": gid, "viirs.satellite": p["satellite"]}) as sp:
+        out["masques_fournis"] = out.get("masques_fournis", 0) + (etat == "fourni")
+        if nev:
+            out["granules_non_evaluables"] = out.get("granules_non_evaluables", 0) + 1
+        with traces.span("viirs.granule", **{"viirs.granule": gid, "viirs.satellite": p["satellite"],
+                                             "viirs.lune": g.get("lune_moyenne"), "viirs.masque": etat,
+                                             "viirs.non_evaluable": nev is not None}) as sp:
             n = _ingest_granule(conn, gid, g, start, end, frame, p, rules, v, new_ids, images, out)
             sp.set_attribute("viirs.detections", n)
     if new_ids:
@@ -563,6 +624,8 @@ BILAN_SQL = """
 WITH nuits AS (SELECT d::date AS nuit FROM generate_series(%(du)s::date, (now() AT TIME ZONE 'UTC')::date - 1,
                                                           interval '1 day') d),
 g AS (SELECT nuit, count(*) AS granules, count(*) FILTER (WHERE erreur IS NOT NULL) AS en_erreur,
+             round(avg(lune)::numeric) AS lune, count(*) FILTER (WHERE masque = 'fourni') AS masques,
+             count(*) FILTER (WHERE erreur IS NULL AND non_evaluable IS NOT NULL) AS granules_non_evaluables,
              array_agg(DISTINCT travailleur_id) FILTER (WHERE travailleur_id IS NOT NULL) AS travailleurs,
              max(traite_le) AS traitee_le
       FROM viirs_granules WHERE nuit >= %(du)s GROUP BY 1),
@@ -588,12 +651,25 @@ w AS (SELECT g.nuit, string_agg(t.id || ' ' || t.etat || ' ' || coalesce(round(e
       FROM g JOIN travailleurs t ON t.id = ANY(g.travailleurs) GROUP BY 1)
 SELECT n.nuit, coalesce(g.granules, 0), coalesce(g.en_erreur, 0), coalesce(d.detections, 0), coalesce(d.avec_ais, 0),
        coalesce(d.sans_ais, 0), coalesce(d.non_evaluables, 0), coalesce(d.ecartees, 0), coalesce(a.alertes, 0),
-       coalesce(a.alertes_hautes, 0), w.travailleurs, coalesce(w.cout, 0), g.traitee_le
+       coalesce(a.alertes_hautes, 0), w.travailleurs, coalesce(w.cout, 0), g.traitee_le, g.lune,
+       coalesce(g.masques, 0), coalesce(g.granules_non_evaluables, 0)
 FROM nuits n LEFT JOIN g USING (nuit) LEFT JOIN d USING (nuit) LEFT JOIN a USING (nuit) LEFT JOIN w USING (nuit)
 ORDER BY n.nuit"""
 
 BILAN_COLS = ("nuit", "granules", "en_erreur", "detections", "avec_ais", "sans_ais", "non_evaluables", "ecartees",
-              "alertes", "alertes_hautes", "travailleurs", "cout_eur", "traitee_le")
+              "alertes", "alertes_hautes", "travailleurs", "cout_eur", "traitee_le", "lune", "masques",
+              "granules_non_evaluables")
+
+
+def etat_nuit(n: dict) -> str:
+    """« non évaluable » quand aucun granule traité sans erreur ne permet de conclure (lune forte sans masque des
+    nuages) : jamais « 0 détection » ; « partielle » quand une partie seulement l'est ; « évaluable » sinon."""
+    traites = n["granules"] - n["en_erreur"]
+    if traites <= 0:
+        return "aucune granule exploitable"
+    if n["granules_non_evaluables"] >= traites:
+        return "non évaluable"
+    return "partielle" if n["granules_non_evaluables"] else "évaluable"
 
 
 def bilan(conn, du) -> dict:
@@ -601,6 +677,8 @@ def bilan(conn, du) -> dict:
     source VIIRS, travailleurs (état, durée, mémoire, coût), plus les tâches viirs du journal (pause, refus, échec).
     Une nuit sans granule est une nuit manquée ou pas encore traitée (la nuit se traite vers 06:30 UTC)."""
     nuits = [dict(zip(BILAN_COLS, r)) for r in conn.execute(BILAN_SQL, {"du": du}).fetchall()]
+    for n in nuits:
+        n["etat"] = etat_nuit(n) if n["granules"] else None
     taches = conn.execute(
         "SELECT run_day, status, coalesce(details->>'en_pause', details->>'erreur', '') FROM task_runs "
         "WHERE task = 'viirs' AND run_day >= %s AND (status <> 'ok' OR details ? 'en_pause') ORDER BY started_at",
@@ -608,6 +686,7 @@ def bilan(conn, du) -> dict:
     tot = {k: sum(n[k] for n in nuits) for k in BILAN_COLS[1:10]}
     tot["cout_eur"] = round(sum(float(n["cout_eur"]) for n in nuits), 2)
     tot["nuits"], tot["nuits_traitees"] = len(nuits), sum(1 for n in nuits if n["granules"])
+    tot["nuits_non_evaluables"] = sum(1 for n in nuits if n["etat"] == "non évaluable")
     return {"du": str(du), "nuits": nuits, "total": tot,
             "journal": [{"jour": str(j), "statut": s, "motif": m[:200]} for j, s, m in taches]}
 

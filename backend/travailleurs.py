@@ -282,7 +282,8 @@ async def viirs_detection(request: Request, did: int):
 
 @router.get("/api/viirs/nuits")
 async def viirs_nights(request: Request, start: datetime | None = None, end: datetime | None = None):
-    """Nuits traitées qui chevauchent la plage (piste de la frise) : heures des granules, détections par statut."""
+    """Nuits traitées qui chevauchent la plage (piste de la frise) : heures des granules, détections par statut, lune,
+    masques des nuages reçus et granules non évaluables (lune forte sans masque : aucune conclusion)."""
     start, end = _range(start, end)
     async with request.app.state.pool.acquire() as c:
         rows = await c.fetch(
@@ -291,7 +292,10 @@ async def viirs_nights(request: Request, start: datetime | None = None, end: dat
                       array_agg(DISTINCT g.satellite) AS satellites, count(d.id) AS detections,
                       count(d.id) FILTER (WHERE d.mask_reason IS NULL AND d.matched_vessel_id IS NULL) AS sans_ais,
                       count(d.id) FILTER (WHERE d.mask_reason = 'non_evaluable') AS non_evaluables,
-                      round(avg(g.lune)::numeric)::int AS lune
+                      round(avg(g.lune)::numeric)::int AS lune,
+                      count(DISTINCT g.id) FILTER (WHERE g.masque = 'fourni') AS masques,
+                      count(DISTINCT g.id) FILTER (WHERE g.erreur IS NULL AND g.non_evaluable IS NOT NULL)
+                        AS granules_non_evaluables
                FROM viirs_granules g LEFT JOIN viirs_detections d ON d.granule_id = g.id
                GROUP BY g.nuit HAVING max(g.fin) >= $1 AND min(g.debut) <= $2 ORDER BY g.nuit""", start, end)
     return [_row(r) for r in rows]
@@ -301,7 +305,8 @@ async def viirs_status(c) -> dict:
     """Barre d'état : dernière nuit traitée et dernier travailleur."""
     night = await c.fetchrow(
         """SELECT g.nuit, max(g.traite_le) AS traite_le, count(*) AS granules,
-                  count(*) FILTER (WHERE g.erreur IS NOT NULL) AS en_echec, sum(g.detections) AS detections
+                  count(*) FILTER (WHERE g.erreur IS NOT NULL) AS en_echec, sum(g.detections) AS detections,
+                  count(*) FILTER (WHERE g.erreur IS NULL AND g.non_evaluable IS NOT NULL) AS non_evaluables
            FROM viirs_granules g GROUP BY g.nuit ORDER BY g.nuit DESC LIMIT 1""")
     launch = await c.fetchrow(
         """SELECT status AS statut, started_at AS le, details->>'erreur' AS erreur FROM task_runs WHERE task = 'viirs'

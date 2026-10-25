@@ -1228,4 +1228,17 @@ Règles 2026.10.51 (section `sentinel.historique`), aucune migration, aucun essa
   Sentinel 2 conforme ; VIIRS, masque des nuages jamais donné, d'où 0 détection sous une lune au dessus de 80 %
   (nuits du 22 et du 23/10), prouvé par `travailleurs/essai_viirs_lune.py`.
 * Lot historique : deux passages antérieurs de la même orbite relative dans les 24 jours, repli à 0,95 sans eux,
-  signalé dans la fiche, tracé ; 2,8 fois plus d'octets lus par fenêtre. Branche `historique-s1`, non fusionnée.
+  signalé dans la fiche, tracé ; 2,8 fois plus d'octets lus par fenêtre. Branche `historique-s1`, fusionnée le
+  25/10/2026 (343cd97).
+
+## 25/10/2026 : lot viirs-masque, masque des nuages donné au modèle VIIRS
+
+Règles 2026.10.52 (section `viirs.masque_nuages`), migration 44, aucun essai payant.
+* Le masque des nuages CLDMSK_L2 de la même minute est cherché au catalogue CMR (temps quasi réel de SIPS, puis
+  produit standard de LAADS ; aucun en temps quasi réel pour NOAA 21), lu par le travailleur avec le jeton
+  Earthdata, vérifié, passé au modèle (`phys_path`) ; tracé (span de lecture, octets, lune, état du masque).
+* Sans masque au dessus de 80 % de lune : granule « non évaluable », nuit « non évaluable » si tous le sont
+  (`viirs-bilan`, frise, indicateur) ; la migration marque ainsi les granules des nuits du 22 et du 23/10.
+* `taches.py viirs --nuit …` : retraitement de nuits déjà traitées ; les granules du 22 et du 23/10 sont encore
+  servis par LANCE (environ 7 jours de conservation).
+* Essais : `verifier_images.sh viirs-lune` et `viirs-masque` dans l'image d'allenai ; tests : 502 réussis avec la base.

@@ -99,8 +99,8 @@ indice, jamais une excuse).
 
 ## 4. État actuel (24/10/2026)
 
-`main` à 123d66a (lots Z1 à Z4) ; branche `consolidation-z6` (phase 1 des essais réels, 24/10/2026) : règles
-2026.10.50, migrations 01 à 43 (43 retire l'horloge partagée `sim_clock`). Essais réels : `taches.py essai-reel`
+`main` au 25/10/2026 : lots Z1 à Z6, spline des points d'appui Sentinel 1, lot historique Sentinel 1, lot
+viirs-masque ; règles 2026.10.52, migrations 01 à 44 (44 : masque des nuages des granules VIIRS). Essais réels : `taches.py essai-reel`
 (préparation), `essai-reel --lancer ID` (un essai, types éprouvés seulement), `viirs-bilan` ; procédure dans
 `docs/travailleurs.md`, section 11. État des sources : en base (panneau), pas
 dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibration : `docs/calibration.md`.
@@ -212,8 +212,8 @@ http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulemen
 `docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).
 
 Tests : `python -m pytest tests` (chaque test borné à 60 s) ; avec la base de test
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 43) : **483 réussis**
-(24/10/2026, enquête sur l'analyse 103) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 44) : **502 réussis**
+(25/10/2026, lot viirs-masque) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
 `scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `geolocalisation`, `s2`, `s2-s3` selon le
 travail). Décomptes passés : `docs/journal.md`.
 
@@ -282,8 +282,11 @@ Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : 
 * Points d'appui d'un GRD : jamais le polynôme par défaut de GDAL (54 m en médiane, 544 m au plus sur une vraie
   scène) : `METHOD=GCP_TPS` et `gdalwarp -tps` (`warp_tps`). Le détecteur d'AI2 attend deux passages antérieurs :
   sans eux, brise lames et quais sortent comme des navires (analyse 103) ; lot historique (`docs/sentinel.md`).
-* VIIRS : notre travailleur ne donne pas le masque des nuages (CLDMSK) au modèle d'allenai ; au dessus de 80 % de
-  lune, il éteint alors toute la scène (0 détection les nuits du 22 et du 23/10/2026). `docs/contrats_modeles.md`. Diagnostic gratuit d'une
+* VIIRS : sans masque des nuages (CLDMSK), le modèle d'allenai éteint toute la scène au dessus de 80 % de lune
+  (0 détection les nuits du 22 et du 23/10/2026) ; un masque illisible est remplacé en silence par des zéros. Depuis
+  le lot viirs-masque, le travailleur lit et vérifie le masque ; sans lui sous la lune, granule « non évaluable ».
+  Le masque en temps quasi réel vient de SIPS (pas de LANCE), aucun pour NOAA 21 ; standard chez LAADS environ 12 h
+  après. LANCE garde les granules environ 7 jours. `docs/contrats_modeles.md`. Diagnostic gratuit d'une
   fenêtre : `travailleurs/essai_diagnostic_s1.py` sur la copie publique de Planetary Computer.
 
 **Supervision et traces**

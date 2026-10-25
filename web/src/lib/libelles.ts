@@ -214,7 +214,9 @@ export const L = {
     coutParSource: (radar: number, optique: number) =>
       `radar ${radar.toFixed(2).replace(".", ",")} €, optique ${optique.toFixed(2).replace(".", ",")} €`,
     budgetPartage: "Budget partagé du mois",
-    nuitDe: (d: string, g: number, n: number, e: number) => `${d}, ${g} granules${e ? ` dont ${e} en échec` : ""}, ${n} détections`,
+    nuitDe: (d: string, g: number, n: number, e: number, nonEval = 0) => nonEval > 0 && nonEval >= g - e
+      ? `${d}, ${g} granules, non évaluable (lune forte sans masque des nuages)`
+      : `${d}, ${g} granules${e ? ` dont ${e} en échec` : ""}, ${n} détections${nonEval ? `, ${nonEval} granules non évaluables` : ""}`,
     etatsTravailleur: { demande: "demandé", cree: "créé", demarre: "en cours", resultats: "résultats reçus",
       termine: "terminé", echec: "en échec" } as Record<string, string>,
     version: "Version", differente: "version différente de l'interface",
@@ -256,8 +258,11 @@ export const L = {
       `${sat}, ${t}${prevu ? ", prévu" : ""}${nuages != null ? `, ${Math.round(nuages)} % de nuages annoncés` : ""}${
         analyse && analyse !== "non_analyse" ? `, analyse ${analyse}` : ""}${resultat === "nuages" ? ", fenêtres sous les nuages" : ""}${
         demandes ? `, ${demandes} demande${demandes > 1 ? "s" : ""} d'observation` : ""}`,
-    nuit: (d: string, g: number, n: number, sans: number, nonEval: number, lune: number | null) =>
-      `Nuit VIIRS du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} : ${g} granules, ${n} détections dont ${sans} sans AIS et ${nonEval} non évaluables${lune != null ? `, lune ${lune} %` : ""}`,
+    nuit: (d: string, g: number, n: number, sans: number, nonEval: number, lune: number | null, masques = 0, gNonEval = 0) =>
+      `Nuit VIIRS du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} : ${g} granules, ` +
+      (gNonEval > 0 && gNonEval >= g ? "non évaluable, lune forte sans masque des nuages"
+        : `${n} détections dont ${sans} sans AIS et ${nonEval} non évaluables${gNonEval ? `, ${gNonEval} granules non évaluables` : ""}`) +
+      `${lune != null ? `, lune ${lune} %` : ""}, masque des nuages ${masques}/${g}`,
     navires: (n: number) => `${n} navires`, limite: "Au delà de 30 jours : archive R2",
   },
 

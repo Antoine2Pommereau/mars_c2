@@ -5,8 +5,8 @@ au vrai modèle d'allenai (`model.vvd_cv_model`) dans quatre cas : lune à 50 % 
 nuages (produit CLDMSK_L2, `phys_path` de `run_pipeline`). Notre travailleur n'en donne aucun : allenai remplit alors
 le masque de zéros, c'est à dire un ciel couvert partout, et au dessus de 80 % de lune il éteint toute la scène.
 
-    docker run --rm --platform linux/amd64 -v "$PWD/travailleurs:/mars:ro" --entrypoint python <image VIIRS> \\
-      /mars/essai_viirs_lune.py
+    docker run --rm --platform linux/amd64 -w /src -v "$PWD/travailleurs:/mars:ro" --entrypoint python3 <image VIIRS> \\
+      /mars/essai_viirs_lune.py      (ou : bash scripts/verifier_images.sh viirs-lune)
 """
 import sys
 

@@ -126,7 +126,7 @@ const INDICATEURS: Indicateur[] = [
       detail.push([E.dernierAcquis, sat.dernier ? `${sat.dernier.satellite} ${date(sat.dernier.acquired_at)} UTC` : L.commun.nd]);
       detail.push([E.calendrier, maj ? `${date(maj.le)}${maj.statut === "echec" ? `, ${E.echec}` : ""}` : L.commun.nd]);
       const jour = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
-      detail.push([E.nuitViirs, nuit ? E.nuitDe(jour(nuit.nuit), nuit.granules, nuit.detections ?? 0, nuit.en_echec) : L.commun.nd]);
+      detail.push([E.nuitViirs, nuit ? E.nuitDe(jour(nuit.nuit), nuit.granules, nuit.detections ?? 0, nuit.en_echec, nuit.non_evaluables ?? 0) : L.commun.nd]);
       detail.push([E.travailleur, w ? E.travailleurDe(E.etatsTravailleur[w.etat] ?? w.etat, w.commercial_type, date(w.cree_le),
         w.duree_s, w.cout_eur) : L.commun.nd]);
       if (w?.erreur) detail.push([E.motif, w.erreur]);

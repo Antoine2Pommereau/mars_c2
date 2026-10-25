@@ -132,8 +132,11 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
         {pistes.some((p) => p.id === "viirs") && nuits.map((n) => {
           const a = Math.max(debut, Date.parse(n.debut)), b = Math.min(fin, Date.parse(n.fin));
           if (b < a) return null;
-          return <span key={n.nuit} title={F.nuit(n.nuit, n.granules, n.detections, n.sans_ais, n.non_evaluables ?? 0, n.lune)}
-            className="absolute top-[57px] h-[5px] rounded-sm bg-[#8a93c9]/70"
+          // Nuit non évaluable (lune forte sans masque des nuages) : piste estompée, jamais lue comme « aucun navire »
+          const nonEval = (n.granules_non_evaluables ?? 0) > 0 && n.granules_non_evaluables >= n.granules;
+          return <span key={n.nuit} title={F.nuit(n.nuit, n.granules, n.detections, n.sans_ais, n.non_evaluables ?? 0, n.lune,
+              n.masques ?? 0, n.granules_non_evaluables ?? 0)}
+            className={`absolute top-[57px] h-[5px] rounded-sm ${nonEval ? "border border-[#8a93c9]/60 bg-transparent" : "bg-[#8a93c9]/70"}`}
             style={{ left: `${pct(a)}%`, width: `max(4px, ${pct(b) - pct(a)}%)` }} />;
         })}
         {pistes.some((p) => p.id === "passages") && passages.features.map((f) => {

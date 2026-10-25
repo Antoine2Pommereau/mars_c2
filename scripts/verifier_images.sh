@@ -39,11 +39,14 @@
 #                 une minute ; « Origine refusée » sur le serveur le 21/10/2026). Lot Z1 : écriture sans session (401)
 #                 ou sans JSON (415) refusée, en têtes de sécurité, hôte inconnu fermé, tentatives de connexion
 #                 comptées en base (toujours bloquées après un redémarrage de l'API).
+#   viirs-lune  : vrai modèle VIIRS d'allenai sous la lune, avec et sans masque des nuages (4 sur 4 attendus avec).
+#   viirs-masque: vrai script du travailleur VIIRS par le vrai chemin de téléchargement (serveur local qui joue LANCE,
+#                 SIPS et LAADS), masque lu, transmis au modèle, absence nommée sans arrêt (environ 1 minute).
 #   sante       : collecte figée simulée dans l'image des scripts (processus vivant, aucun fichier écrit), lancée comme
 #                 sur le serveur (init, contrôle de santé, restart) : elle doit être détectée et relancée, et une
 #                 collecte qui écrit ne doit pas l'être (environ 2 minutes ; incident du 18/10/2026).
 #
-# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres|geolocalisation|ai2-historique] [s2] [s2-s3] [controle] [sante] [traces]   (sans argument : les trois premiers)
+# Usage : scripts/verifier_images.sh [backend] [scripts] [web] [ai2|ai2-complet|fenetres|ai2-fenetres|geolocalisation|ai2-historique] [viirs-lune|viirs-masque] [s2] [s2-s3] [controle] [sante] [traces]   (sans argument : les trois premiers)
 #         MARS_TAG=<empreinte> scripts/verifier_images.sh scripts   (étiquette vérifiée, latest par défaut)
 # Code de sortie non nul au premier échec ; rien n'est publié par ce script.
 set -euo pipefail
@@ -154,6 +157,27 @@ verifier_ai2() {
     grep -vE 'Warning|warn\(' "$sortie" | tail -30
     rm -f "$sortie"
     echec "ai2 : essai du script du travailleur Sentinel en échec (code $code, trace ci dessus)"
+  fi
+  rm -f "$sortie"
+}
+
+# Lot viirs-masque (docs/contrats_modeles.md) : image VIIRS d'allenai épinglée, vrai script du travailleur
+verifier_viirs() {
+  local script=$1 image sortie code=0
+  image=$(grep -o 'ghcr.io/allenai/vessel-detection-viirs@sha256:[0-9a-f]*' config/rules.yaml | head -1)
+  [ -n "$image" ] || echec "viirs : image VIIRS d'allenai introuvable dans config/rules.yaml"
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    echo "        téléchargement de l'image VIIRS d'allenai (886 Mo) : $image"
+    docker pull -q --platform "$PLATEFORME" "$image" >/dev/null || echec "viirs : image $image non téléchargée"
+  fi
+  sortie=$(mktemp)
+  docker run --rm --platform "$PLATEFORME" -w /src -v "$PWD/travailleurs:/mars:ro" --entrypoint python3 "$image" \
+    "/mars/$script" >"$sortie" 2>&1 || code=$?
+  grep -E '^(OK|ÉCHEC|        )' "$sortie" || true
+  if [ "$code" -ne 0 ]; then
+    grep -vE 'Warning|warn\(|loglevel' "$sortie" | tail -30
+    rm -f "$sortie"
+    echec "viirs : essai $script en échec (code $code, trace ci dessus)"
   fi
   rm -f "$sortie"
 }
@@ -422,12 +446,14 @@ for cible in "${CIBLES[@]}"; do
     ai2-fenetres) verifier_ai2 --complet essai_fenetres.py ;;
     geolocalisation) verifier_ai2 --geolocalisation essai_fenetres.py ;;
     ai2-historique) verifier_ai2 "" essai_historique_s1.py ;;
+    viirs-lune)   verifier_viirs essai_viirs_lune.py ;;
+    viirs-masque) verifier_viirs essai_viirs_masque.py ;;
     s2)      verifier_s2 ;;
     s2-s3)   verifier_s2 --s3 ;;
     controle) verifier_controle ;;
     sante)   verifier_sante ;;
     traces)  verifier_traces ;;
-    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, geolocalisation, ai2-historique, s2, s2-s3, controle, sante ou traces)" ;;
+    *)       echec "cible inconnue : $cible (backend, scripts, web, ai2, ai2-complet, fenetres, ai2-fenetres, geolocalisation, ai2-historique, viirs-lune, viirs-masque, s2, s2-s3, controle, sante ou traces)" ;;
   esac
 done
 echo "Images vérifiées : ${CIBLES[*]} ($TAG). Publication possible."

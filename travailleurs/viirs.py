@@ -4,10 +4,13 @@ Exécuté sur une instance éphémère, dans l'image publique ghcr.io/allenai/ve
 traitement d'allenai, licence Apache 2.0, code dans /src). Le serveur de MARS C2 transmet ce fichier et la tâche par
 cloud-init (mars/travailleurs.py) ; ce script n'utilise que la bibliothèque standard, requests et le code de /src.
 
-Pour chaque granule (fichier DNB et fichier de géolocalisation) : téléchargement avec le jeton Earthdata, fichier
-vérifié (taille et signature HDF5, sinon motif explicite : licence LANCE non acceptée, jeton refusé, ou code HTTP,
+Pour chaque granule (fichier DNB, fichier de géolocalisation et masque des nuages CLDMSK_L2 de la même minute) :
+téléchargement avec le jeton Earthdata, fichier vérifié (taille et signature HDF5, sinon motif explicite : licence LANCE non acceptée, jeton refusé, ou code HTTP,
 type de contenu et premiers octets), détection, détections réduites à nos régions, fichiers effacés aussitôt. Données
-inaccessibles (licence, jeton) ou premier granule en échec : arrêt aussitôt, motif renvoyé au serveur. Pour chaque
+inaccessibles (licence, jeton) ou premier granule en échec : arrêt aussitôt, motif renvoyé au serveur. Le masque des
+nuages (lot viirs-masque, 25/10/2026) n'arrête jamais rien : sans lui, le granule part avec « masque des nuages absent »
+et son motif, et le serveur ne conclut à rien sous une lune forte (au dessus de 80 %, allenai éteint toute la scène
+quand le masque manque). Pour chaque
 détection, une vignette PNG d'environ 30 km de côté, tirée de l'image déjà en mémoire (marqueur, échelle, nord, date,
 satellite, lune, ciel clair), avec sa transformation longitude, latitude vers pixels pour superposer l'AIS ; elle part
 avec les résultats, le serveur la range sur R2. Puis envoi au serveur, par son réseau privé, des
@@ -18,7 +21,8 @@ Tâche et jeton Earthdata remis par le réseau privé, une seule fois, au travai
 exécution (backend/travailleurs.py, lot Z1) : le jeton n'est ni dans le cloud-init, ni dans l'environnement du conteneur,
 ni dans un journal ; il reste en mémoire de ce script. Variables : MARS_TACHE (fichier JSON du lancement : adresse de
 retour et jeton d'exécution), EARTHDATA_TOKEN pour l'essai local seulement. Essai local sur des fichiers déjà présents :
-    python3 viirs.py --local tache.json   (granules avec « dnb_path » et « geo_path », résultat sur la sortie standard)
+    python3 viirs.py --local tache.json   (granules avec « dnb_path », « geo_path » et, facultatif, « masque_path »,
+                                           résultat sur la sortie standard)
 """
 import base64
 import io
@@ -87,6 +91,48 @@ def download(url: str, dest: str, token: str) -> int:
                 n += len(chunk)
     check_download(200, "", [], first, n)
     return n
+
+
+# Masque des nuages : couche lue par allenai (preprocessor.CLOUD_PATH), confiance de ciel clair de 0 à 1 ; au dessus de
+# 0,99 le pixel compte comme clair (utils.clear_sky_mask)
+NUAGES = "/geophysical_data/Clear_Sky_Confidence"
+CIEL_CLAIR = 0.99
+
+
+def verifier_masque(path: str) -> float:
+    """Ouvre le masque comme allenai et lit sa couche de ciel clair. allenai remplace en silence un masque illisible par
+    des zéros (ciel couvert partout) : ici l'échec est nommé. Retourne la part des pixels de ciel clair."""
+    import netCDF4
+    import numpy as np
+    try:
+        with netCDF4.Dataset(path) as ds:
+            a = np.ma.filled(ds[NUAGES][:].astype("float64"), np.nan)
+    except (OSError, IndexError, KeyError) as e:
+        raise FichierInvalide(f"masque des nuages illisible ({NUAGES}) : {type(e).__name__}: {e}"[:300])
+    if a.size == 0 or not np.isfinite(a).any():
+        raise FichierInvalide("masque des nuages vide")
+    return float(np.mean(np.nan_to_num(a, nan=0.0) > CIEL_CLAIR))
+
+
+def lire_masque(urls: list, dest: str, token: str, tr) -> dict:
+    """Premier masque lisible parmi les adresses du serveur (temps quasi réel de SIPS, puis produit standard de LAADS),
+    avec le même jeton Earthdata. Jamais bloquant : sans masque, l'état « absent » et le motif de chaque essai."""
+    essais = []
+    for u in urls:
+        hote = u.split("/")[2] if "//" in u else u
+        with tr.span("GET masque des nuages", **{"peer.service": hote, "viirs.fichier": "masque_nuages"}) as sm:
+            try:
+                n = download(u, dest, token)
+                part = verifier_masque(dest)
+                sm.set(**{"viirs.octets": n, "viirs.ciel_clair_part": round(part, 3)})
+                return {"etat": "fourni", "source": hote, "fichier": u.rsplit("/", 1)[-1], "octets": n,
+                        "ciel_clair_part": round(part, 3), "essais": essais}
+            except Exception as e:                     # licence, jeton, fichier tronqué : le suivant, ou absent
+                motif = str(e)[:300] if isinstance(e, (DonneesInaccessibles, FichierInvalide)) else f"{type(e).__name__}: {e}"[:300]
+                sm.erreur(motif)
+                essais.append(f"{hote} : {motif}")
+    motif = "; ".join(essais) if essais else "aucun masque publié pour ce granule"
+    return {"etat": "absent", "motif": "masque des nuages absent : " + motif, "essais": essais}
 
 
 VIGNETTE_PX = 40           # 40 pixels DNB de 750 m : 30 km de côté
@@ -172,9 +218,10 @@ def finite(v):
     return v if v == v and abs(v) != float("inf") else None
 
 
-def detect(vvd, dnb_path: str, geo_path: str, tmp: str, boxes: list) -> dict:
+def detect(vvd, dnb_path: str, geo_path: str, tmp: str, boxes: list, phys_path: str | None = None) -> dict:
     import utils                                     # code d'allenai (/src)
-    all_det, image, ds, status = vvd.run_pipeline(dnb_path, geo_path, tmp)
+    # phys_path : masque des nuages, que le modèle attend (sans lui, ciel couvert partout pour allenai)
+    all_det, image, ds, status = vvd.run_pipeline(dnb_path, geo_path, tmp, phys_path)
     chips = utils.get_chips(image, all_det["vessel_detections"], ds)
     start, end = utils.get_acquisition_time(ds)
     sat = utils.get_provider_name(ds)
@@ -245,6 +292,13 @@ def run(task: dict, local: bool = False, tr: "otel_mini.Traceur | None" = None, 
                 with tempfile.TemporaryDirectory() as tmp:
                     if local:
                         dnb, geo = g["dnb_path"], g["geo_path"]
+                        if g.get("masque_path"):
+                            masque = {"etat": "fourni", "source": "local", "fichier": os.path.basename(g["masque_path"]),
+                                      "ciel_clair_part": round(verifier_masque(g["masque_path"]), 3), "essais": []}
+                        else:
+                            masque = {"etat": "absent", "motif": "masque des nuages absent : aucun fichier local",
+                                      "essais": []}
+                        phys = g.get("masque_path")
                     else:
                         dnb, geo = os.path.join(tmp, "dnb.nc"), os.path.join(tmp, "geo.nc")
                         for nom, url, dest in (("dnb", g["dnb_url"], dnb), ("geolocalisation", g["geo_url"], geo)):
@@ -253,12 +307,20 @@ def run(task: dict, local: bool = False, tr: "otel_mini.Traceur | None" = None, 
                                 n = download(url, dest, token)
                                 sd.set(**{"viirs.octets": n})
                                 octets += n
+                        phys = os.path.join(tmp, "masque.nc")
+                        masque = lire_masque(g.get("masque_urls") or [], phys, token, tr)
+                        octets += masque.get("octets") or 0
+                        if masque["etat"] != "fourni":
+                            phys = None
+                    r["masque"] = masque
                     r["telecharge_s"] = round(time.time() - t, 1)
                     t1 = time.time()
                     with tr.span("viirs.inference") as si:
-                        r.update(detect(vvd, dnb, geo, tmp, task["regions"]))
+                        r.update(detect(vvd, dnb, geo, tmp, task["regions"], phys))
                         si.set(**{"viirs.detections": len(r.get("detections", []))})
                     r["detection_s"] = round(time.time() - t1, 1)
+                    sg.set(**{"viirs.lune": r.get("lune_moyenne"), "viirs.masque": masque["etat"],
+                              "viirs.ciel_clair_part": masque.get("ciel_clair_part")})
             except (DonneesInaccessibles, FichierInvalide) as e:
                 r["erreur"] = str(e)[:500]
                 sg.erreur(r["erreur"])

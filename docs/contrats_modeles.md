@@ -64,8 +64,8 @@ Code lu au commit `3ccd3d2` : `src/pipeline.py`, `src/preprocessor.py`, `src/mod
 |---|---|---|---|
 | Radiance DNB | VNP02DNB ou VJ102DNB (radiance en W/(cm² sr), multipliée par 1e9, écrêtée à 100 nW, aberrants au dessus de 1 000 nW) | fichiers LANCE NRT d'origine, vérifiés (taille, signature HDF5) | conforme |
 | Géolocalisation | VNP03DNB ou VJ103DNB : latitude, longitude, masque terre et mer (codes 0, 6, 7 gardés), éclairement lunaire en % | fichiers d'origine | conforme |
-| **Masque des nuages** | CLDMSK_L2_VIIRS (`phys_path` de `run_pipeline`) ; absent, allenai le remplit de zéros, « équivalent d'une couverture nuageuse de 100 % » | **jamais fourni** (`run_pipeline(dnb, geo, tmp)`) | **non conforme** |
-| Lune | au dessus de `MOONLIGHT_ILLUMINATION_PERCENT` (80 %) : seuls les pixels de ciel clair (masque au dessus de 0,99) restent | sans masque, aucun pixel clair : **la scène entière est éteinte** | **défaut**, visible seulement sous une lune forte |
+| **Masque des nuages** | CLDMSK_L2_VIIRS (`phys_path` de `run_pipeline`), couche `/geophysical_data/Clear_Sky_Confidence` ; absent ou illisible, allenai le remplit de zéros en silence, « équivalent d'une couverture nuageuse de 100 % » | jamais fourni jusqu'au 25/10/2026 ; depuis le lot viirs-masque, le CLDMSK de la même minute, vérifié par le travailleur (la couche est relue : allenai ne dirait rien d'un fichier illisible) | **corrigé** (lot viirs-masque) |
+| Lune | au dessus de `MOONLIGHT_ILLUMINATION_PERCENT` (80 %, moyenne du granule) : seuls les pixels de ciel clair (masque au dessus de 0,99) restent | avec masque : ciel clair analysé ; sans masque, la scène entière est éteinte : le granule est « non évaluable » | **corrigé** ; sans masque sous la lune, aucune conclusion |
 | Seuils | noyau 3 × 3, seuil 10, constante adaptative 3, côte à 3 000 m, bord de 10 pixels, NMS 0,5 | configuration de l'image, non modifiée | conforme |
 | Filtres | `config["filters"]` par défaut | par défaut | conforme |
 
@@ -87,6 +87,26 @@ nuits. Vérification en base : colonne `viirs_granules.lune` (au dessus de 80 % 
 `viirs_detections.ciel_clair` (toujours nul depuis le début, faute de masque). Les données VIIRS réelles ne se
 rejouent pas sans jeton Earthdata : la preuve est faite sur le vrai code du modèle.
 
-**Correction proposée** (non faite) : lire aussi le granule CLDMSK_L2_VIIRS_SNPP_NRT ou CLDMSK_L2_VIIRS_NOAA20_NRT
-de la même minute (même source LANCE, même jeton) et le passer en `phys_path` ; faute de masque, marquer la nuit
-« non analysable, lune au dessus de 80 % sans masque des nuages » au lieu de compter zéro navire.
+**Correction (lot viirs-masque, 25/10/2026, règles 2026.10.52, migration 44)** :
+* Le serveur cherche au catalogue CMR, pour chaque granule, le masque de la même minute : CLDMSK_L2_VIIRS_SNPP_NRT et
+  CLDMSK_L2_VIIRS_NOAA20_NRT d'abord (temps quasi réel), puis le produit standard CLDMSK_L2_VIIRS_SNPP, NOAA20 ou
+  NOAA21 (`viirs.masque_nuages`). Constat du 25/10/2026 : le masque en temps quasi réel **n'est pas servi par
+  LANCE** mais par SIPS (`sips-data.ssec.wisc.edu`, université du Wisconsin), le produit standard par LAADS
+  (`data.laadsdaac.earthdatacloud.nasa.gov`, publié environ 12 h après) ; **aucun masque en temps quasi réel pour
+  NOAA 21**. Les deux exigent la connexion Earthdata ; le travailleur leur présente le même jeton que pour LANCE.
+* Le travailleur essaie les adresses dans l'ordre (span « GET masque des nuages », hôte, octets, part de ciel
+  clair), relit la couche de ciel clair, puis passe le fichier en `phys_path`. Un échec n'arrête jamais le
+  travailleur : le granule part avec « masque des nuages absent » et le motif de chaque essai.
+* Le serveur écrit l'état du masque dans le granule (`masque`, `masque_motif`, `ciel_clair_part`) et, sans masque
+  au dessus de 80 % de lune, `non_evaluable` : aucune conclusion sur ce granule ; une nuit dont tous les granules
+  sont dans ce cas est « non évaluable » dans `viirs-bilan`, la frise et l'indicateur, jamais « 0 détection ». La
+  migration 44 marque ainsi les granules déjà traités sous une lune forte (nuits du 22 et du 23/10/2026).
+* Essais dans l'image d'allenai : `verifier_images.sh viirs-lune` (modèle seul, 4 sur 4 à 90 % avec masque, 0 sans)
+  et `viirs-masque` (vrai script du travailleur, vrai chemin de téléchargement : serveur local qui joue LANCE, SIPS
+  refusant le jeton et LAADS renvoyant vers un stockage sans jeton ; 4 sur 4 avec masque, 0 sans, masque tronqué
+  nommé sans arrêt, 4 sur 4 à 50 % sans masque). Limite : le classifieur final d'allenai (`feedback_cnn`) écarte sous
+  90 % de lune des bateaux synthétiques de 40 à 70 nW (2 sur 4) et garde ceux de 80 à 100 nW ; l'acceptation du
+  jeton par SIPS et LAADS ne se prouve qu'avec le vrai jeton, au premier travailleur (motif écrit dans le granule).
+* Granules en temps quasi réel conservés par LANCE environ 7 jours (constat du 25/10/2026 : jour 291 en cours de
+  purge, 292 complet) : les nuits du 22 et du 23/10 se retraitent jusqu'au 29/10 environ
+  (`taches.py viirs --nuit 2026-10-22 --nuit 2026-10-23`).

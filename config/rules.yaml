@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.51"
+version: "2026.10.52"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -169,6 +169,17 @@ viirs:
     SNPP: [VNP02DNB, VNP03DNB]
     NOAA20: [VJ102DNB, VJ103DNB]
     NOAA21: [VJ202DNB, VJ203DNB]
+  # Masque des nuages CLDMSK_L2 de la même minute (lot viirs-masque, 25/10/2026), que le modèle attend en phys_path :
+  # temps quasi réel de SIPS (Wisconsin) d'abord, produit standard de LAADS ensuite (publié environ 12 h après, seule
+  # source pour NOAA 21, sans masque en temps quasi réel), même jeton Earthdata. Au dessus de lune_max_sans_masque %
+  # d'éclairement lunaire moyen (MOONLIGHT_ILLUMINATION_PERCENT d'allenai), un granule sans masque est éteint en entier
+  # par le modèle : il est « non évaluable », jamais « 0 détection »
+  masque_nuages:
+    produits:
+      SNPP: [CLDMSK_L2_VIIRS_SNPP_NRT, CLDMSK_L2_VIIRS_SNPP]
+      NOAA20: [CLDMSK_L2_VIIRS_NOAA20_NRT, CLDMSK_L2_VIIRS_NOAA20]
+      NOAA21: [CLDMSK_L2_VIIRS_NOAA21]
+    lune_max_sans_masque: 80
   nuit_debut_h: 18         # une nuit va de 18 h à 6 h UTC (passages sur nos régions vers 0 h à 3 h 30) ;
   nuit_fin_h: 6            # elle porte la date de son début
   rattrapage_nuits: 3      # nuits relues à chaque passage : une nuit manquée est rattrapée

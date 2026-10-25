@@ -46,6 +46,7 @@ Usage :
     python scripts/taches.py essai-reel               # lot Z6 : prêt pour un essai réel ? candidats (lecture seule)
     python scripts/taches.py essai-reel --lancer ID   # un essai réel sur le passage ID, types éprouvés seulement
     python scripts/taches.py viirs-bilan [--du AAAA-MM-JJ]   # nuits VIIRS depuis une date (lecture seule)
+    python scripts/taches.py viirs --nuit 2026-10-22 --nuit 2026-10-23   # retraiter ces nuits (un travailleur DEV1-M)
     SENTINEL_PLAFOND_ESSAI=1 python scripts/taches.py sentinel2-analyser ID   # essai réel Sentinel 2 (coupé sinon)
     python scripts/taches.py sentinel2-poids [--nettoyer] # poids Sentinel 2 dans le seau des modèles (une fois)
     python scripts/taches.py sentinel2-diagnostic     # seau des modèles, variables des conteneurs, poids (lecture seule)
@@ -231,8 +232,10 @@ def purge_proofs(conn) -> dict:
     return preuves.purge(conn, r2(), KEEP_DAYS)
 
 
-def launch_viirs(conn, manuel: bool = False, malgre_pause: bool = False, motif: str | None = None) -> dict:
-    """Granules des dernières nuits pas encore traitées, confiées à un travailleur éphémère (un seul à la fois)."""
+def launch_viirs(conn, manuel: bool = False, malgre_pause: bool = False, motif: str | None = None,
+                 nuits: list | None = None) -> dict:
+    """Granules des dernières nuits pas encore traitées, confiées à un travailleur éphémère (un seul à la fois) ; avec
+    `nuits`, toutes les granules de ces nuits, même déjà traitées (retraitement)."""
     import requests
     from mars import travailleurs, viirs
     rules = regles(conn)
@@ -245,7 +248,9 @@ def launch_viirs(conn, manuel: bool = False, malgre_pause: bool = False, motif: 
     busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'viirs' AND detruit_le IS NULL").fetchone()
     if busy:                     # travailleur actif : ses nuits sont couvertes, rien à lancer (le verrou en base le garantit)
         return {"en_cours": busy[0]}
-    p = viirs.plan(conn, requests.Session(), rules, datetime.now(timezone.utc))
+    p = viirs.plan(conn, requests.Session(), rules, datetime.now(timezone.utc), nuits)
+    traces.attributs(**{"viirs.retraitement": bool(nuits), "viirs.granules_prevues": len(p["granules"]),
+                        "viirs.granules_avec_masque": sum(1 for g in p["granules"] if g.get("masque_urls"))})
     if not p["granules"]:
         return {"nuits": p["nuits"], "granules": 0}
     # Le jeton Earthdata n'est plus dans le cloud-init (lot Z1) : l'API le remet au travailleur avec sa tâche
@@ -703,7 +708,8 @@ def _passages(conn, _a):
 
 @commande("viirs")
 def _viirs(conn, a):
-    if run(conn, "viirs", lambda: launch_viirs(conn, True, a.malgre_pause, a.motif),
+    # --nuit 2026-10-22 --nuit 2026-10-23 : retraitement de ces nuits (granules déjà traitées comprises)
+    if run(conn, "viirs", lambda: launch_viirs(conn, True, a.malgre_pause, a.motif, a.nuit),
            parent=traces.traceparent()) is None:
         sys.exit(1)
 
@@ -1092,18 +1098,29 @@ def _viirs_bilan(conn, a):
     from mars import viirs
     du = a.du or (datetime.now(timezone.utc).date() - timedelta(days=7))
     b = viirs.bilan(conn, du)
-    traces.attributs(**{"viirs.bilan_nuits": b["total"]["nuits"], "viirs.bilan_traitees": b["total"]["nuits_traitees"]})
+    traces.attributs(**{"viirs.bilan_nuits": b["total"]["nuits"], "viirs.bilan_traitees": b["total"]["nuits_traitees"],
+                        "viirs.bilan_non_evaluables": b["total"]["nuits_non_evaluables"]})
     print(f"Nuits VIIRS depuis le {du:%d/%m/%Y} :")
     for n in b["nuits"]:
         if not n["granules"]:
             print(f"  {n['nuit']:%d/%m}  aucune granule traitée")
             continue
-        print(f"  {n['nuit']:%d/%m}  {n['granules']} granules ({n['en_erreur']} en erreur), {n['detections']} détections : "
-              f"{n['avec_ais']} avec AIS, {n['sans_ais']} sans AIS, {n['non_evaluables']} non évaluables, "
-              f"{n['ecartees']} écartées ; {n['alertes']} alertes ({n['alertes_hautes']} élevées ou critiques) ; "
+        lune = f"lune {n['lune']:.0f} %" if n["lune"] is not None else "lune inconnue"
+        masque = f"masque des nuages {n['masques']}/{n['granules'] - n['en_erreur']}"
+        if n["etat"] == "non évaluable":
+            resultat = (f"NON ÉVALUABLE ({n['granules_non_evaluables']} granules sans masque sous la lune : "
+                        "aucune conclusion, pas « 0 détection »)")
+        else:
+            resultat = (f"{n['detections']} détections : {n['avec_ais']} avec AIS, {n['sans_ais']} sans AIS, "
+                        f"{n['non_evaluables']} non évaluables, {n['ecartees']} écartées")
+            if n["granules_non_evaluables"]:
+                resultat += f" ; {n['granules_non_evaluables']} granules non évaluables (sans masque sous la lune)"
+        print(f"  {n['nuit']:%d/%m}  {lune}, {masque} ; {n['granules']} granules ({n['en_erreur']} en erreur), "
+              f"{resultat} ; {n['alertes']} alertes ({n['alertes_hautes']} élevées ou critiques) ; "
               f"travailleurs : {n['travailleurs'] or '·'}")
     t = b["total"]
-    print(f"Total : {t['nuits_traitees']} nuit(s) traitée(s) sur {t['nuits']}, {t['detections']} détections, "
+    print(f"Total : {t['nuits_traitees']} nuit(s) traitée(s) sur {t['nuits']} dont {t['nuits_non_evaluables']} non "
+          f"évaluable(s), {t['detections']} détections, "
           f"{t['alertes']} alertes, {t['cout_eur']:.2f} € HT".replace(".", ","))
     for j in b["journal"]:
         print(f"  journal {j['jour']} : {j['statut']} {j['motif']}")
@@ -1296,6 +1313,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
     ap.add_argument("--au", type=date.fromisoformat)
+    ap.add_argument("--nuit", type=date.fromisoformat, action="append",
+                    help="viirs : nuit à retraiter (AAAA-MM-JJ, date du début de la nuit), répétable")
     ap.add_argument("--jours", type=int, default=14, help="mesures : nombre de jours examinés")
     ap.add_argument("--jour", type=date.fromisoformat, help="coupures-injection : journée (par défaut, la veille)")
     ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")

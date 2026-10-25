@@ -265,7 +265,8 @@ caractères) et erreur.
 | `sentinel2-diagnostic` | seau des modèles, variables dans taches et backend, poids, un octet lu par adresse présignée |
 | `essai-reel` | lot Z6, lecture seule : travailleurs en vie, budget des essais (8 € HT) et du mois, pauses, clés, types éprouvés ou non, passages candidats Sentinel 1 et 2, requête de vérification ; code de sortie non nul s'il manque quelque chose |
 | `essai-reel --lancer ID` | lot Z6 : un essai réel sur le passage ID (Sentinel 1 ou 2), malgré la pause (consigné), plafond du jour en vigueur et au moins une scène ; refusé si un travailleur vit encore ou si le budget des essais est épuisé ; **tout type jamais éprouvé est refusé** (POP2 compris) ; consigné dans `task_runs` (`essai_reel`) |
-| `viirs-bilan [--du AAAA-MM-JJ]` | lot Z6, lecture seule : une ligne par nuit (nuits manquées comprises) : granules et erreurs, détections avec AIS, sans AIS, non évaluables, écartées, alertes DARK_SHIP, travailleurs (état, durée, mémoire, coût) |
+| `viirs-bilan [--du AAAA-MM-JJ]` | lot Z6, lecture seule : une ligne par nuit (nuits manquées comprises) : lune moyenne, masques des nuages reçus sur granules exploitables, granules et erreurs, détections avec AIS, sans AIS, non évaluables, écartées, alertes DARK_SHIP, travailleurs (état, durée, mémoire, coût) ; une nuit sous une lune forte sans masque est « NON ÉVALUABLE », jamais « 0 détection » |
+| `viirs --nuit AAAA-MM-JJ [--nuit …]` | lot viirs-masque : retraitement de ces nuits par un travailleur DEV1-M, granules déjà traitées comprises (environ 0,02 €), tant que LANCE les sert (environ 7 jours) |
 | `echeances` | échéances des secrets, relevées et notifiées |
 | `satellites-pause on\|off [source]` | pause ou reprise (aussi dans Coulisses, Sources et capteurs) ; les commandes manuelles sont refusées en pause sauf `--malgre-pause` |
 
