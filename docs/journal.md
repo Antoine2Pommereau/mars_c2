@@ -1242,3 +1242,16 @@ Règles 2026.10.52 (section `viirs.masque_nuages`), migration 44, aucun essai pa
 * `taches.py viirs --nuit …` : retraitement de nuits déjà traitées ; les granules du 22 et du 23/10 sont encore
   servis par LANCE (environ 7 jours de conservation).
 * Essais : `verifier_images.sh viirs-lune` et `viirs-masque` dans l'image d'allenai ; tests : 502 réussis avec la base.
+
+## 25/10/2026 : réanalyse d'un passage Sentinel 1, seuil de lune VIIRS à 55 %
+
+Règles 2026.10.53 (`viirs.lune_max_absence`), migrations 45 et 46, aucun essai payant.
+* `essai-reel --lancer 779` avait affiché « Essai lancé : travailleur None » après un refus, avec un motif faux
+  (« lancement concurrent » alors que l'analyse 103 était terminée). Tout refus s'affiche désormais « REFUS : motif »,
+  code de sortie non nul ; la garde distingue « analyse en cours » et « passage déjà analysé ». Option `--refaire` :
+  nouvelle analyse liée à la précédente (`analyses.refait`, index unique revu), l'ancienne gardée, les deux dans la
+  fiche du passage, refusée pendant une analyse en cours, tracée (span `sentinel.garde_passage`).
+* VIIRS : la nuit du 20/10 (72 % de lune, 0 détection) n'est pas expliquée par l'extinction du modèle (au dessus de
+  80 % seulement) mais par son classifieur final, qui perd les navires faibles dès 60 %, masque ou pas. Seuil
+  d'absence non concluante à 55 % ; la migration 46 réapplique le marquage aux granules déjà traités.
+* Tests : 521 réussis avec la base ; `verifier_images.sh viirs-lune viirs-masque` verts.

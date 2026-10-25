@@ -133,7 +133,7 @@ def test_never_proven_type_is_refused_during_a_trial_only(conn, monkeypatch):
 
 
 def _args(**kw):
-    a = argparse.Namespace(args=[], lancer=None, motif=None, malgre_pause=False, du=None)
+    a = argparse.Namespace(args=[], lancer=None, motif=None, malgre_pause=False, du=None, refaire=False)
     a.__dict__.update(kw)
     return a
 

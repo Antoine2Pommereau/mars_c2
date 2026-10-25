@@ -6,8 +6,8 @@ Sources : bande Day/Night de Suomi NPP (VNP02DNB), NOAA 20 (VJ102DNB) et NOAA 21
 géolocalisation (VNP03DNB, VJ103DNB, VJ203DNB), cherchées dans le catalogue CMR de la NASA (public) : produits en
 temps quasi réel (« _NRT », environ 2 à 3 heures après le passage) d'abord, produits standard ensuite pour une nuit
 rattrapée. Le serveur ne lit que les métadonnées ; le travailleur télécharge avec le jeton Earthdata. Masque des
-nuages CLDMSK_L2 de la même minute (lot viirs-masque) : temps quasi réel de SIPS, puis produit standard de LAADS ; un
-granule sans masque sous une lune forte est « non évaluable » (`granule_non_evaluable`).
+nuages CLDMSK_L2 de la même minute (lot viirs-masque) : temps quasi réel de SIPS, puis produit standard de LAADS ; sous
+une lune forte, l'absence de détection d'un granule ne prouve rien : « non évaluable » (`granule_non_evaluable`).
 
 Les fonctions de calcul (nuit d'un instant, paires de granules, instant d'une détection, appariement, gravité) sont
 pures et couvertes par tests/test_viirs.py.
@@ -122,16 +122,25 @@ def sat_granules(session, d: date, sat: str, products: tuple, rules: dict) -> li
 
 
 def granule_non_evaluable(g: dict, rules: dict) -> str | None:
-    """Motif quand un granule traité ne permet aucune conclusion : sans masque des nuages, au dessus de
-    `lune_max_sans_masque` % de lune moyenne, le modèle d'allenai tient tout le ciel pour couvert et éteint la scène
-    (essai du 25/10/2026 : 0 bateau sur 4 à 90 % sans masque, 4 sur 4 avec). Sous ce seuil, le masque ne sert pas au
-    modèle : son absence est notée, la conclusion reste valable."""
+    """Motif quand l'absence de détection sur un granule ne prouve rien (ses détections restent valables) :
+    * sans masque des nuages, au dessus de `lune_max_sans_masque` % de lune moyenne (80, seuil d'allenai, la même
+      moyenne que la sienne), le modèle tient tout le ciel pour couvert et éteint la scène entière (essai du
+      25/10/2026 : 4 bateaux sur 4 jusqu'à 80 %, 0 au dessus) ;
+    * au dessus de `lune_max_absence` % (55), masque ou pas, le classifieur final d'allenai écarte les navires faibles
+      (20 à 40 nW : 4 sur 4 jusqu'à 58 %, 3 à 60 %, 1 à 70 %, 0 à 75 %)."""
+    v = rules["viirs"]
     lune = g.get("lune_moyenne")
-    seuil = rules["viirs"].get("masque_nuages", {}).get("lune_max_sans_masque", 80)
-    if (g.get("masque") or {}).get("etat") == "fourni" or lune is None or lune <= seuil:
+    if lune is None:
         return None
-    return (f"masque des nuages absent, lune à {lune:.0f} % : le modèle éteint toute la scène au dessus de {seuil} %, "
-            "aucune conclusion sur ce granule")
+    seuil = v.get("masque_nuages", {}).get("lune_max_sans_masque", 80)
+    if (g.get("masque") or {}).get("etat") != "fourni" and lune > seuil:
+        return (f"masque des nuages absent, lune à {lune:.0f} % : le modèle éteint toute la scène au dessus de "
+                f"{seuil} %, aucune conclusion sur ce granule")
+    absence = v.get("lune_max_absence", seuil)
+    if lune > absence:
+        return (f"lune à {lune:.0f} % : au dessus de {absence} %, le classifieur d'allenai écarte les navires faibles "
+                "(mesuré : 3 sur 4 à 60 %, 1 à 70 %, aucun à 75 %), l'absence de détection ne prouve rien")
+    return None
 
 
 
@@ -662,8 +671,8 @@ BILAN_COLS = ("nuit", "granules", "en_erreur", "detections", "avec_ais", "sans_a
 
 
 def etat_nuit(n: dict) -> str:
-    """« non évaluable » quand aucun granule traité sans erreur ne permet de conclure (lune forte sans masque des
-    nuages) : jamais « 0 détection » ; « partielle » quand une partie seulement l'est ; « évaluable » sinon."""
+    """« non évaluable » quand l'absence de détection ne prouve rien sur aucun granule traité sans erreur (lune
+    forte) : jamais « 0 détection » ; « partielle » quand une partie seulement l'est ; « évaluable » sinon."""
     traites = n["granules"] - n["en_erreur"]
     if traites <= 0:
         return "aucune granule exploitable"

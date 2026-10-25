@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.52"
+version: "2026.10.53"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -180,6 +180,13 @@ viirs:
       NOAA20: [CLDMSK_L2_VIIRS_NOAA20_NRT, CLDMSK_L2_VIIRS_NOAA20]
       NOAA21: [CLDMSK_L2_VIIRS_NOAA21]
     lune_max_sans_masque: 80
+  # Absence de détection non concluante au dessus de 55 % de lune, masque ou pas (essai du 25/10/2026 sur la chaîne
+  # complète d'allenai, travailleurs/essai_viirs_lune.py) : son classifieur final (feedback_cnn, qui reçoit la lune en
+  # canal) écarte les navires faibles, 20 à 40 nW : 4 sur 4 gardés jusqu'à 58 %, 3 à 60 %, 2 à 62 et 65 %, 1 à 70 %,
+  # 0 à 75 % ; ceux de 40 à 70 nW : 4 jusqu'à 70 %, 2 à 80 %. Premières pertes à 60 %, marge de 5 points. Nuits
+  # réelles : 52 détections à 53 %, 11 à 63 %, 0 à 72 %. Les détections de ces granules restent valables ; seule
+  # l'absence ne prouve rien
+  lune_max_absence: 55
   nuit_debut_h: 18         # une nuit va de 18 h à 6 h UTC (passages sur nos régions vers 0 h à 3 h 30) ;
   nuit_fin_h: 6            # elle porte la date de son début
   rattrapage_nuits: 3      # nuits relues à chaque passage : une nuit manquée est rattrapée

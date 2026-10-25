@@ -45,6 +45,7 @@ Usage :
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
     python scripts/taches.py essai-reel               # lot Z6 : prêt pour un essai réel ? candidats (lecture seule)
     python scripts/taches.py essai-reel --lancer ID   # un essai réel sur le passage ID, types éprouvés seulement
+    python scripts/taches.py essai-reel --lancer ID --refaire   # réanalyse d'un passage Sentinel 1 déjà analysé
     python scripts/taches.py viirs-bilan [--du AAAA-MM-JJ]   # nuits VIIRS depuis une date (lecture seule)
     python scripts/taches.py viirs --nuit 2026-10-22 --nuit 2026-10-23   # retraiter ces nuits (un travailleur DEV1-M)
     SENTINEL_PLAFOND_ESSAI=1 python scripts/taches.py sentinel2-analyser ID   # essai réel Sentinel 2 (coupé sinon)
@@ -273,7 +274,7 @@ def sentinel_suspended(conn) -> str | None:
 
 
 def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False, malgre_pause: bool = False,
-                    motif_pause: str | None = None) -> dict:
+                    motif_pause: str | None = None, refaire: bool = False) -> dict:
     """Passages Sentinel 1 à analyser (corridor avec un navire des listes, alerte VIIRS), ou un passage choisi à la
     main : une session sur processeur, dans les limites du plafond de scènes et du budget (mars/sentinel.py). `auto` : appel de
     la boucle, suspendu jusqu'au lendemain après un échec du jour."""
@@ -296,7 +297,8 @@ def launch_sentinel(conn, pass_id: int | None = None, auto: bool = False, malgre
     busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'sentinel' AND detruit_le IS NULL").fetchone()
     if busy:
         return {"en_cours": busy[0]}
-    r = sentinel.launch(conn, scw, rules, datetime.now(timezone.utc), requests.Session(), pass_id, log=log)
+    r = sentinel.launch(conn, scw, rules, datetime.now(timezone.utc), requests.Session(), pass_id, log=log,
+                        refaire=refaire)
     if "refus" in r:
         raise travailleurs.RefusLancement(r["refus"])
     return r
@@ -908,7 +910,8 @@ def _sentinel(manual: bool):
         pid = int(a.args[0]) if manual and a.args else None
         if manual and pid is None:
             raise SystemExit("Préciser l'identifiant du passage : taches.py sentinel-analyser ID (table sar_passes)")
-        if run(conn, "sentinel", lambda: launch_sentinel(conn, pid, malgre_pause=a.malgre_pause, motif_pause=a.motif),
+        if run(conn, "sentinel", lambda: launch_sentinel(conn, pid, malgre_pause=a.malgre_pause, motif_pause=a.motif,
+                                                         refaire=a.refaire),
                parent=traces.traceparent()) is None:
             sys.exit(1)
     return go
@@ -1068,7 +1071,9 @@ def _essai_reel(conn, a):
         sys.exit(1 if any(s == essai_reel.MANQUE for s, _r, _d in lignes) else 0)
     pid = a.lancer
     mission, refus = essai_reel.verifier_lancement(conn, rules, pid)
-    traces.attributs(**{"essai.passage": pid, "essai.mission": mission or ""})
+    traces.attributs(**{"essai.passage": pid, "essai.mission": mission or "", "essai.refaire": a.refaire})
+    if not refus and a.refaire and mission != "S1":
+        refus = f"passage {pid} : --refaire pour Sentinel 1 seulement"
     if refus:
         traces.attributs(**{"essai.refus": refus[:300]})
         raise SystemExit(f"REFUS : {refus}")
@@ -1081,13 +1086,23 @@ def _essai_reel(conn, a):
 
     def lancer():
         if mission == "S1":
-            r = launch_sentinel(conn, pid, malgre_pause=True, motif_pause=motif)
+            r = launch_sentinel(conn, pid, malgre_pause=True, motif_pause=motif, refaire=a.refaire)
         else:
             r = launch_sentinel2(conn, pid, malgre_pause=True, motif_pause=motif)
         return {"passage": pid, "mission": mission, **r}
     r = run(conn, "essai_reel", lancer, parent=traces.traceparent())
     if r is None:
         sys.exit(1)
+    refus = essai_reel.refus_lancement(r)
+    if refus:                     # pause, travailleur occupé, passage en cours ou déjà analysé, rien à analyser
+        traces.attributs(**{"essai.refus": refus[:300]})
+        raise SystemExit(f"REFUS : {refus}")
+    if r.get("refait"):
+        print(f"Réanalyse du passage {pid}, liée à l'analyse {r['refait']} (gardée telle quelle avec ses détections)")
+    if r.get("attente_gpu"):
+        print(f"Analyse(s) {r['attente_gpu']} en attente d'un processeur, aucun travailleur créé, aucun coût : "
+              f"{r.get('motif')} ; nouvel essai par la boucle dans {r.get('prochain_essai_min')} min")
+        return
     print(f"Essai lancé : travailleur {r.get('travailleur')}, {r.get('type')} en {r.get('zone') or 'fr-par-2'}, "
           f"environ {r.get('cout_estime_eur') or 0:.2f} € ; trace {traces.trace_id()}".replace(".", ","))
     print(f"Suivre : taches.py travailleurs ; à la fin, aucune ligne attendue :\n  {essai_reel.VERIFICATION_SQL}")
@@ -1107,14 +1122,12 @@ def _viirs_bilan(conn, a):
             continue
         lune = f"lune {n['lune']:.0f} %" if n["lune"] is not None else "lune inconnue"
         masque = f"masque des nuages {n['masques']}/{n['granules'] - n['en_erreur']}"
+        resultat = (f"{n['detections']} détections : {n['avec_ais']} avec AIS, {n['sans_ais']} sans AIS, "
+                    f"{n['non_evaluables']} non évaluables, {n['ecartees']} écartées")
         if n["etat"] == "non évaluable":
-            resultat = (f"NON ÉVALUABLE ({n['granules_non_evaluables']} granules sans masque sous la lune : "
-                        "aucune conclusion, pas « 0 détection »)")
-        else:
-            resultat = (f"{n['detections']} détections : {n['avec_ais']} avec AIS, {n['sans_ais']} sans AIS, "
-                        f"{n['non_evaluables']} non évaluables, {n['ecartees']} écartées")
-            if n["granules_non_evaluables"]:
-                resultat += f" ; {n['granules_non_evaluables']} granules non évaluables (sans masque sous la lune)"
+            resultat = ("NON ÉVALUABLE (lune forte : une absence ne prouve rien, pas « 0 navire ») ; " + resultat)
+        elif n["granules_non_evaluables"]:
+            resultat += f" ; {n['granules_non_evaluables']} granules non évaluables (lune forte)"
         print(f"  {n['nuit']:%d/%m}  {lune}, {masque} ; {n['granules']} granules ({n['en_erreur']} en erreur), "
               f"{resultat} ; {n['alertes']} alertes ({n['alertes_hautes']} élevées ou critiques) ; "
               f"travailleurs : {n['travailleurs'] or '·'}")
@@ -1313,6 +1326,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
     ap.add_argument("--au", type=date.fromisoformat)
+    ap.add_argument("--refaire", action="store_true",
+                    help="essai-reel --lancer, sentinel-analyser : réanalyser un passage Sentinel 1 déjà analysé "
+                         "(nouvelle analyse liée, l'ancienne gardée)")
     ap.add_argument("--nuit", type=date.fromisoformat, action="append",
                     help="viirs : nuit à retraiter (AAAA-MM-JJ, date du début de la nuit), répétable")
     ap.add_argument("--jours", type=int, default=14, help="mesures : nombre de jours examinés")

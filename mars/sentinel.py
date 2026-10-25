@@ -665,7 +665,30 @@ def _en_attente(conn, now: datetime) -> list[tuple]:
         "AND status = 'attente_gpu' AND (prochain_essai IS NULL OR prochain_essai <= %s) ORDER BY id", (now,)).fetchall()
 
 
-def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None = None, log=print) -> dict:
+ACTIFS = ("pending", "running", "attente_gpu")
+
+
+def garde_passage(conn, pass_id: int, source: str = "sentinel1", refaire: bool = False) -> tuple[str | None, int | None]:
+    """Avant toute sélection d'un passage choisi à la main : (motif du refus, analyse refaite). Une analyse en cours
+    refuse toujours ; un passage déjà analysé refuse sans `refaire` ; avec `refaire`, la nouvelle analyse sera liée à
+    la dernière analyse non échouée (colonne refait), qui reste telle quelle avec ses détections."""
+    rows = conn.execute("SELECT id, status, completed_at FROM analyses WHERE pass_id = %s AND source = %s "
+                        "AND status <> 'failed' ORDER BY id DESC", (pass_id, source)).fetchall()
+    actives = [r for r in rows if r[1] in ACTIFS]
+    if actives:
+        return (f"passage {pass_id} : analyse {actives[0][0]} en cours ({actives[0][1]}), attendre sa fin", None)
+    if not rows:
+        return None, None
+    aid, _st, fin = rows[0]
+    if not refaire:
+        quand = f", terminée le {fin:%d/%m/%Y à %H:%M} UTC" if fin else ""
+        return (f"passage {pass_id} déjà analysé (analyse {aid}{quand}) : --refaire pour une nouvelle analyse liée à "
+                "celle ci, qui reste telle quelle", None)
+    return None, aid
+
+
+def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None = None, log=print,
+           refaire: bool = False) -> dict:
     """Une session de calcul pour les passages à analyser : analyses en attente reprises d'abord (rupture de stock ou
     lot suivant, tant que leur scène reste utile), sinon passages nouveaux. Plafond de scènes et budget vérifiés, une
     analyse par passage (index unique), clés des travailleurs vérifiées, puis le premier type disponible de la liste
@@ -686,6 +709,14 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
         log(f"Sentinel 1 : analyse(s) {abandon} abandonnée(s), processeur indisponible pendant toute la fenêtre utile")
     if attente:
         return {**_reprendre(conn, scw, rules, s, now, attente, log), "abandonnees": abandon}
+    refait = None
+    if pass_id is not None:
+        with traces.span("sentinel.garde_passage", **{"sentinel.passage_demande": pass_id,
+                                                      "sentinel.refaire": refaire}) as sp:
+            motif, refait = garde_passage(conn, pass_id, "sentinel1", refaire)
+            sp.set_attributes({"sentinel.refait": refait or 0, "sentinel.garde_refus": motif or ""})
+        if motif:
+            return {"refus": motif}
     with traces.span("sentinel.selection", **{"sentinel.passage_demande": pass_id}) as sp:
         p = plan(conn, session, rules, now, pass_id)
         sp.set_attribute("sentinel.passages", len(p.get("passages") or []))
@@ -762,9 +793,9 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                 motifs = sorted({pt["motif"] for pt in ps["points"]}) or ["demande"]
                 aid = conn.execute(
                     """INSERT INTO analyses (pass_id, aoi, mode, status, model_version, source, scenes, declenchement,
-                                             cout_estime_eur, requested_at, trace_id, fenetres, attente_depuis)
+                                             cout_estime_eur, requested_at, trace_id, fenetres, attente_depuis, refait)
                        VALUES (%s, ST_MakeEnvelope(%s, %s, %s, %s, 4326)::geography, 'full', 'pending', %s, 'sentinel1',
-                               %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                               %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                     (ps["pass_id"], *env, "allenai/vessel-detection-sentinels fafc6c3",
                      json.dumps([{**{k: sc[k] for k in ("id", "debut", "fin", "orbite", "satellite", "emprise", "octets",
                                                         "vv", "vh", "fenetres")},
@@ -772,13 +803,16 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                                  for sc in ps["scenes"]]),
                      json.dumps({"motifs": motifs, "points": ps["points"]}, default=str),
                      round(estimate * len(ps["scenes"]) / n, 3), now, traces.trace_id(),
-                     json.dumps({sc["id"]: sc["fenetres"] for sc in ps["scenes"]}), now)).fetchone()[0]
+                     json.dumps({sc["id"]: sc["fenetres"] for sc in ps["scenes"]}), now,
+                     refait if ps["pass_id"] == pass_id else None)).fetchone()[0]
                 analyses.append((aid, ps["scenes"]))
                 tip_and_cue.rattacher(conn, ps["pass_id"], aid, gardees.get(ps["pass_id"], []))
     except psycopg.errors.UniqueViolation:
-        return {"en_cours": "passage déjà en analyse (lancement concurrent)"}
+        # Seul cas restant : deux lancements du même passage au même instant (la garde ci dessus a déjà écarté une
+        # analyse en cours ou terminée)
+        return {"en_cours": "passage déjà en analyse (lancement concurrent, au même instant)"}
     r = _calculer(conn, scw, rules, s, now, analyses, now, spent, log)
-    return {**r, "analyses": [a for a, _ in analyses], "scenes": n, "scenes_ecartees_par_le_plafond": dropped,
+    return {**r, "analyses": [a for a, _ in analyses], "refait": refait, "scenes": n, "scenes_ecartees_par_le_plafond": dropped,
             "fenetres": n_fen, "abandonnees": abandon, "en_attente_de_publication": p["en_attente_de_publication"]}
 
 

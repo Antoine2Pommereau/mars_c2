@@ -69,18 +69,22 @@ def test_mask_catalogue_failure_never_blocks_the_granule():
 
 
 @pytest.mark.parametrize("masque, lune, attendu", [
-    ({"etat": "fourni"}, 90.0, False),          # masque donné : la conclusion vaut
-    ({"etat": "absent"}, 90.0, True),           # nuits du 22 et du 23/10 : scène éteinte par le modèle
-    ({"etat": "absent"}, 80.0, False),          # seuil d'allenai : strictement au dessus de 80 %
-    ({"etat": "absent"}, 50.0, False),          # le masque ne sert pas au modèle sous 80 %
-    (None, 90.0, True),                         # ancien travailleur, sans état du masque
-    ({"etat": "absent"}, None, False),
+    ({"etat": "absent"}, 90.0, "éteint toute la scène"),     # nuits du 22 et du 23/10 : scène éteinte par le modèle
+    (None, 90.0, "éteint toute la scène"),                    # ancien travailleur, sans état du masque
+    ({"etat": "fourni"}, 90.0, "navires faibles"),            # masque donné : navires brillants seulement
+    ({"etat": "absent"}, 80.0, "navires faibles"),            # au seuil d'allenai, pas d'extinction, pertes déjà
+    ({"etat": "absent"}, 72.0, "navires faibles"),            # nuit du 20/10 : 14 granules, 0 détection
+    ({"etat": "absent"}, 63.0, "navires faibles"),            # nuit du 19/10 : 11 détections, absence non concluante
+    ({"etat": "fourni"}, 56.0, "navires faibles"),
+    ({"etat": "absent"}, 55.0, None),                         # marge de 5 points sous les premières pertes, à 60 %
+    ({"etat": "absent"}, 53.0, None),                         # nuit du 18/10 : 52 détections
+    ({"etat": "absent"}, None, None),
 ])
-def test_granule_without_mask_under_bright_moon_is_not_evaluable(masque, lune, attendu):
+def test_granule_under_bright_moon_proves_no_absence(masque, lune, attendu):
     motif = viirs.granule_non_evaluable({"masque": masque, "lune_moyenne": lune}, RULES)
-    assert (motif is not None) == attendu
+    assert (motif is None) == (attendu is None)
     if attendu:
-        assert "masque des nuages absent" in motif and "aucune conclusion" in motif
+        assert attendu in motif and f"lune à {lune:.0f} %" in motif
 
 
 def test_night_state_never_reads_as_zero_detections():
@@ -133,7 +137,14 @@ def conn():
     c = psycopg.connect(URL, autocommit=True)
     for t in ("viirs_detections", "viirs_granules"):
         c.execute(f"DELETE FROM {t}")
+    avant = c.execute("SELECT coalesce(max(id), 0) FROM travailleurs").fetchone()[0]
     yield c
+    # Rien ne reste derrière : granules et travailleurs créés ici (sinon d'autres tests ne peuvent plus les effacer)
+    for t in ("viirs_detections", "viirs_granules"):
+        c.execute(f"DELETE FROM {t}")
+    c.execute("DELETE FROM task_runs WHERE details->>'travailleur' IN (SELECT id::text FROM travailleurs WHERE id > %s "
+              "AND tache = 'viirs')", (avant,))
+    c.execute("DELETE FROM travailleurs WHERE id > %s AND tache = 'viirs' AND jeton_hash = 'x'", (avant,))
     c.close()
 
 
@@ -173,7 +184,7 @@ def test_bright_night_without_mask_is_not_evaluable_in_base_and_bilan(conn):
 
 
 def test_masked_granule_concludes_and_the_night_is_partial(conn):
-    viirs.ingest(conn, _travailleur(conn, [("0036", 90.0, "fourni", 2), ("0218", 90.0, "absent", 0),
+    viirs.ingest(conn, _travailleur(conn, [("0036", 50.0, "fourni", 2), ("0218", 90.0, "absent", 0),
                                            ("0130", 50.0, "absent", 1)]), RULES)
     rows = {r[0]: r[1:] for r in conn.execute(
         "SELECT nom, masque, round(ciel_clair_part::numeric, 2)::float8, non_evaluable IS NULL FROM viirs_granules").fetchall()}

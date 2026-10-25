@@ -111,6 +111,24 @@ def verifier_lancement(conn, rules: dict, pass_id: int) -> tuple[str | None, str
     return r[0], None
 
 
+def refus_lancement(r: dict) -> str | None:
+    """Motif quand le lancement n'a créé aucun travailleur : refus, pause, travailleur ou passage occupé, rien à
+    analyser. None quand un travailleur est lancé (ou mis en attente d'un processeur, sans coût)."""
+    if r.get("travailleur") or r.get("attente_gpu"):
+        return None
+    if r.get("occupe"):
+        return f"travailleur {r['occupe']} encore en vie, un seul à la fois"
+    if r.get("refus"):
+        return str(r["refus"])
+    if r.get("en_pause"):
+        return f"source en pause : {r['en_pause']}"
+    if r.get("en_cours") is not None:
+        e = r["en_cours"]
+        return e if isinstance(e, str) else f"travailleur {e} encore en vie, un seul à la fois"
+    return "aucune analyse lancée : " + (", ".join(f"{k} {v}" for k, v in r.items() if k not in ("passage", "mission"))
+                                        or "rien à analyser sur ce passage")
+
+
 def rapport(lignes: list[tuple[str, str, str]]) -> str:
     out = [f"{s:<7} {r} : {d}" for s, r, d in lignes]
     n = sum(1 for s, _r, _d in lignes if s == MANQUE)

@@ -215,7 +215,7 @@ export const L = {
       `radar ${radar.toFixed(2).replace(".", ",")} €, optique ${optique.toFixed(2).replace(".", ",")} €`,
     budgetPartage: "Budget partagé du mois",
     nuitDe: (d: string, g: number, n: number, e: number, nonEval = 0) => nonEval > 0 && nonEval >= g - e
-      ? `${d}, ${g} granules, non évaluable (lune forte sans masque des nuages)`
+      ? `${d}, ${g} granules, ${n} détections, non évaluable (lune forte : une absence ne prouve rien)`
       : `${d}, ${g} granules${e ? ` dont ${e} en échec` : ""}, ${n} détections${nonEval ? `, ${nonEval} granules non évaluables` : ""}`,
     etatsTravailleur: { demande: "demandé", cree: "créé", demarre: "en cours", resultats: "résultats reçus",
       termine: "terminé", echec: "en échec" } as Record<string, string>,
@@ -260,7 +260,7 @@ export const L = {
         demandes ? `, ${demandes} demande${demandes > 1 ? "s" : ""} d'observation` : ""}`,
     nuit: (d: string, g: number, n: number, sans: number, nonEval: number, lune: number | null, masques = 0, gNonEval = 0) =>
       `Nuit VIIRS du ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} : ${g} granules, ` +
-      (gNonEval > 0 && gNonEval >= g ? "non évaluable, lune forte sans masque des nuages"
+      (gNonEval > 0 && gNonEval >= g ? `${n} détections, non évaluable (lune forte : une absence ne prouve rien)`
         : `${n} détections dont ${sans} sans AIS et ${nonEval} non évaluables${gNonEval ? `, ${gNonEval} granules non évaluables` : ""}`) +
       `${lune != null ? `, lune ${lune} %` : ""}, masque des nuages ${masques}/${g}`,
     navires: (n: number) => `${n} navires`, limite: "Au delà de 30 jours : archive R2",
@@ -406,6 +406,9 @@ export const L = {
       nuages: "Nuages annoncés",
       statuts: { acquis: "acquis, au catalogue Copernicus", prevu: "prévu, plan d'acquisition de l'ESA" } as Record<string, string>,
       analyses: { non_analyse: "non analysé", pending: "en attente", running: "en cours", done: "terminée", failed: "en échec" } as Record<string, string>,
+      historiqueAnalyses: "Analyses",
+      analyseDe: (id: number, etat: string, le: string | null, refait: number | null) =>
+        `n° ${id}, ${etat}${le ? ` le ${le}` : ""}${refait ? `, réanalyse du n° ${refait}` : ""}`,
       sens: { ascending: "ascendante", descending: "descendante" } as Record<string, string>,
       mode: (sat: string, mode: string | null) => `${sat}${mode ? `, mode ${mode}` : ""}`,
       orbiteDe: (rel: number | null, abs: number | null, sens: string) => `relative ${rel ?? "?"}, absolue ${abs ?? "?"}, ${sens}`,

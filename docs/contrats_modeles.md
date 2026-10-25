@@ -110,3 +110,24 @@ rejouent pas sans jeton Earthdata : la preuve est faite sur le vrai code du mod�
 * Granules en temps quasi réel conservés par LANCE environ 7 jours (constat du 25/10/2026 : jour 291 en cours de
   purge, 292 complet) : les nuits du 22 et du 23/10 se retraitent jusqu'au 29/10 environ
   (`taches.py viirs --nuit 2026-10-22 --nuit 2026-10-23`).
+
+**Lune sous 80 % (25/10/2026, règles 2026.10.53, migration 46)** : la nuit du 20/10, à 72 % de lune, a donné
+14 granules et 0 détection. Rejoué gratuitement dans l'image d'allenai (`verifier_images.sh viirs-lune`) :
+
+| Lune | Modèle seul, sans masque | Chaîne complète, bateaux de 20 à 40 nW, sans masque |
+|---|---|---|
+| 55 % | 4 sur 4 | 4 sur 4 |
+| 58 % | 4 sur 4 | 4 sur 4 |
+| 60 % | 4 sur 4 | 3 sur 4 |
+| 65 % | 4 sur 4 | 2 sur 4 |
+| 70 % | 4 sur 4 | 1 sur 4 |
+| 75 % | 4 sur 4 | 0 sur 4 |
+| 80 % | 4 sur 4 | 0 sur 4 |
+| 80,5 % | 0 sur 4 | |
+
+Le modèle seul n'éteint la scène qu'au dessus de 80 %, d'un coup. La perte progressive vient du classifieur final
+(`feedback_cnn`, qui reçoit la lune en canal), **masque ou pas** (mesuré à 60, 70, 75 et 80 % : le masque ne change
+presque rien) : les navires de 40 à 70 nW tiennent jusqu'à 70 %, les plus faibles tombent dès 60 %. Nuits réelles
+cohérentes : 52 détections à 53 %, 11 à 63 %, 0 à 72 %. D'où `viirs.lune_max_absence: 55` : au dessus, l'absence de
+détection d'un granule ne prouve rien (« non évaluable »), ses détections restent valables. Coût : environ dix nuits
+par mois deviennent non concluantes pour l'absence ; c'est la limite du modèle, pas de notre chaîne.

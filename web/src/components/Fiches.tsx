@@ -309,6 +309,14 @@ export function PassageResume({ id }: { id: number }) {
       <Row label={P.emprise}>{`${num(d.surface_km2, 0)} km², ${regions}`}</Row>
       {d.nuages != null && <Row label={P.nuages}>{`${num(d.nuages, 0)} %`}</Row>}
       <Row label={P.analyse}>{P.analyses[d.analyse] ?? d.analyse}</Row>
+      {/* Passage réanalysé (--refaire) : chaque analyse, l'ancienne gardée avec ses détections */}
+      {(d.analyses ?? []).length > 1 && (
+        <Row label={P.historiqueAnalyses}>
+          {(d.analyses as Props[]).map((a) => (
+            <div key={a.id}>{P.analyseDe(a.id, P.analyses[a.status] ?? a.status, a.completed_at ? utc(a.completed_at) : null, a.refait ?? null)}</div>
+          ))}
+        </Row>
+      )}
     </div>
   );
 }

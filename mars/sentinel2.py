@@ -358,6 +358,13 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
         _s, spent = usage(conn, now, "sentinel2")
         return {**_calculer(conn, scw, rules, s2, now, [(a, sc or []) for a, sc, _c in attente], spent, log),
                 "reprise": True}
+    if pass_id is not None:
+        from mars.sentinel import garde_passage
+        motif, _r = garde_passage(conn, pass_id, "sentinel2")          # --refaire : Sentinel 1 seulement
+        if motif:
+            traces.attributs(**{"sentinel2.garde_refus": motif})
+            return {"refus": motif.replace(" : --refaire pour une nouvelle analyse liée à celle ci, qui reste telle quelle",
+                                           " (--refaire : Sentinel 1 seulement)")}
     with traces.span("sentinel2.selection", **{"sentinel2.passage_demande": pass_id}) as sp:
         p = plan(conn, session, rules, now, pass_id)
         sp.set_attributes({"sentinel2.passages": len(p.get("passages") or []),
@@ -424,7 +431,7 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                 analyses.append((aid, scenes))
                 tip_and_cue.rattacher(conn, ps["pass_id"], aid, gardees.get(ps["pass_id"], []))
     except psycopg.errors.UniqueViolation:
-        return {"en_cours": "passage déjà en analyse (lancement concurrent)"}
+        return {"en_cours": "passage déjà en analyse (lancement concurrent, au même instant)"}
     r = _calculer(conn, scw, rules, s2, now, analyses, spent, log)
     return {**r, "analyses": [a for a, _ in analyses], "tuiles": n_tuiles, "fenetres": n_fen,
             "en_attente": p["en_attente"]}
