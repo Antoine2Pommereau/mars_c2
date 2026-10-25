@@ -1302,3 +1302,9 @@ Règles 2026.10.56 (`viirs.lumiere_voisine_m`), aucune migration, aucun essai pa
   estime à 385 m de la lumière). Nouvelle méthode : `taches.py viirs-expliquer ALERTE` (lecture seule, code de la
   fusion). Gardée faible à confirmer : une estime de 55 min d'un navire en route n'est pas un appariement.
 * Tests : 551 réussis avec la base.
+
+## 27/10/2026 : lot Z7, mesures de calibration écrites
+
+Aucune règle changée (2026.10.56), aucune migration. `scripts/mesures_z7.py` (lecture seule stricte) et l'exclusion de
+journées dans `scripts/mesures_calibration.py` (`--exclure-jour`) ; bloc de mesures sur le serveur sans image construite
+(`docs/calibration.md`, section 10). Tests : réussis avec la base.

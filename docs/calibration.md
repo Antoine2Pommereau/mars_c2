@@ -218,3 +218,19 @@ Les épisodes décrits un par un (30 plus longs par cycle) sont dans `details->'
 | 20/10/2026 | 2026.10.32 et 2026.10.34 | Délai de 12 h du tip VIIRS ; garde des nuages Sentinel 2 |
 | 21/10/2026 | 2026.10.43 | Séjour hors port des navires des listes |
 | 22/10/2026 | 2026.10.44 à 2026.10.46 | Cercle appris, garde de contenance, table de l'archive |
+
+## 10. Lot Z7 : mesures du 27/10/2026
+
+Deux rapports, en lecture seule, dans un conteneur à part (`TACHES_MEM_LIMIT=1200m docker compose run --rm --no-deps`),
+jamais dans celui en service ; scripts tirés de la branche `calibration-z7` par `git show` et montés dans le conteneur
+(aucune image construite, le dépôt du serveur ne change pas) ; journée du 18/10 exclue (trou du flux) :
+* `scripts/mesures_calibration.py --jours 21 --exclure-jour 2026-10-18` : sections 1 à 6 existantes ;
+* `scripts/mesures_z7.py --jours 21 --exclure-jour 2026-10-18` (connexion en lecture seule stricte) : trous du flux,
+  coupures AIS observées depuis le 11/10 recalculées épisode par épisode (région, durée, type, côte, infrastructure,
+  gravité, points collectifs, sorties de couverture par jour), zone de réception recalculée avec le réglage en service et
+  cinq variantes comparée aux cellules en service, rendez vous au large (500 m et 120 min contre 1 000 m et 120 min, et
+  500 m et 60 min), zones d'arrêt recalculées, VIIRS par nuit sous la lune actuelle ;
+* à part, le test par injection des coupures (`taches.py coupures-injection`), qui efface des positions dans des
+  transactions annulées : rien n'est gardé, mais ce n'est pas une lecture seule.
+VIIRS : seules les nuits sous 55 % de lune concluent sur une absence ; refaire après le 29/10 sur au moins sept nuits
+avec masque des nuages.

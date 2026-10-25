@@ -177,7 +177,7 @@ class Mesures:
         return out
 
 
-def measure(conn, days: int, rules: dict, log) -> tuple[Mesures, dict]:
+def measure(conn, days: int, rules: dict, log, exclus: set | None = None) -> tuple[Mesures, dict]:
     end = conn.execute("SELECT max(ts) FROM positions").fetchone()[0]
     if end is None:
         raise SystemExit("Aucune position en base")
@@ -187,8 +187,13 @@ def measure(conn, days: int, rules: dict, log) -> tuple[Mesures, dict]:
     z = rules["reception"]
     m = Mesures(z["cell_deg_lon"], z["cell_deg_lat"])
     sql = DAY_SQL.format(cat=CATEGORY_SQL, zone=ZONE_SQL)
+    exclus = exclus or set()
     d = first
     while d <= last:
+        if d in exclus:                                   # trou du flux (18/10/2026) : journée hors de la mesure
+            log(f"{d:%d/%m/%Y} exclue")
+            d += timedelta(days=1)
+            continue
         t = time.time()
         d0 = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
         params = {"d0": d0, "d1": d0 + timedelta(days=1)}
@@ -260,7 +265,10 @@ def measure(conn, days: int, rules: dict, log) -> tuple[Mesures, dict]:
            FROM task_runs WHERE task = 'regles' AND status = 'ok' AND run_day BETWEEN %s AND %s
              AND details->'ais_gap' ? 'exclus_route_hors_zone'
            ORDER BY run_day, (details->'ais_gap'->>'silences_detectes')::int DESC""", (first, last)).fetchall()
-    return m, {"first": first, "last": last, "episodes": episodes, "coupures_suite": gaps_extra, "alerts": alerts, "identity": identity,
+    episodes = [e for e in episodes if e[0] not in exclus]
+    alerts = [a for a in alerts if a[1] not in exclus]
+    gaps_extra = [g for g in gaps_extra if g[0] not in exclus]
+    return m, {"first": first, "last": last, "exclus": sorted(exclus), "episodes": episodes, "coupures_suite": gaps_extra, "alerts": alerts, "identity": identity,
                "stationary_zones": zones, "reception_now": reception_now, "viirs": viirs,
                "reception_regions": reception_regions,
                "portee": portee}
@@ -458,13 +466,16 @@ def pct(n, total) -> str:
 def report(m: Mesures, x: dict, rules: dict) -> str:
     z = rules["reception"]
     first, last = x["first"], x["last"]
-    days = (last - first).days + 1
+    exclus = [d for d in x.get("exclus", []) if first <= d <= last]
+    days = (last - first).days + 1 - len(exclus)
     L = ["# Mesures pour la recalibration des règles",
          "",
          f"Rapport produit par `scripts/mesures_calibration.py` le "
          f"{datetime.now(timezone.utc):%d/%m/%Y à %H:%M} UTC, règles version {rules['version']}. Données : "
          f"{num(m.positions)} intervalles entre positions de {num(len(m.vessels))} navires, du {first:%d/%m/%Y} au "
-         f"{last:%d/%m/%Y} ({days} jour{'s' if days > 1 else ''}). Aucun seuil n'est modifié : les propositions "
+         f"{last:%d/%m/%Y} ({days} jour{'s' if days > 1 else ''}"
+         + (f", hors {', '.join(f'{d:%d/%m}' for d in exclus)} exclu{'s' if len(exclus) > 1 else ''}" if exclus else "")
+         + "). Aucun seuil n'est modifié : les propositions "
          "sont à valider une par une, puis à reporter dans `config/rules.yaml` en montant la version.",
          "",
          "Les intervalles sont mesurés sur les positions en base, après allègement (un point par minute en route, "
@@ -607,7 +618,8 @@ def report(m: Mesures, x: dict, rules: dict) -> str:
 def proposals(m: Mesures, x: dict, rules: dict, grid: dict) -> list[list]:
     z, g, rv = rules["reception"], rules["ais_gap"], rules["rendezvous"]
     out = []
-    days = max(1, (x["last"] - x["first"]).days + 1)
+    days = max(1, (x["last"] - x["first"]).days + 1
+               - sum(1 for d in x.get("exclus", []) if x["first"] <= d <= x["last"]))
     hA = [sum(m.by_cat[k][i] for k in m.by_cat if k[1] == "A" and k[2]) for i in range(len(BOUNDS) + 1)]
     nA = sum(hA)
 
@@ -740,7 +752,7 @@ def proposals(m: Mesures, x: dict, rules: dict, grid: dict) -> list[list]:
     return out
 
 
-def main(days: int = 14, out: str | None = None):
+def main(days: int = 14, out: str | None = None, exclus: set | None = None):
     load_env()
     rules = load_rules()
 
@@ -749,7 +761,7 @@ def main(days: int = 14, out: str | None = None):
 
     with psycopg.connect(database_url()) as conn:
         conn.execute("SET statement_timeout = '15min'")
-        m, x = measure(conn, days, rules, log)
+        m, x = measure(conn, days, rules, log, exclus)
     text = report(m, x, rules)
     if out:
         Path(out).write_text(text)
@@ -762,5 +774,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Mesures pour la recalibration des règles")
     ap.add_argument("--jours", type=int, default=14)
     ap.add_argument("--sortie", help="fichier Markdown (par défaut : sortie standard)")
+    ap.add_argument("--exclure-jour", type=date.fromisoformat, action="append", default=[],
+                    help="journée tenue hors des mesures (trou du flux, par exemple 2026-10-18), répétable")
     a = ap.parse_args()
-    main(a.jours, a.sortie)
+    main(a.jours, a.sortie, set(a.exclure_jour))
