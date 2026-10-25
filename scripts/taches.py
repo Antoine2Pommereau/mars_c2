@@ -44,6 +44,7 @@ Usage :
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-refusionner ID   # fusion refaite sur les détections en base (gratuit)
     python scripts/taches.py viirs-refusionner --toutes --simulation   # appariement VIIRS refait (lecture seule)
+    python scripts/taches.py viirs-expliquer ALERTE [ALERTE…]   # pourquoi une alerte VIIRS tient (lecture seule)
     python scripts/taches.py tip-rejeu [JOURS]          # demandes qu'auraient données les jours passés (lecture seule)
     python scripts/taches.py tip-and-cue-bilan [--du AAAA-MM-JJ]   # suivi quotidien de tip and cue (lecture seule)
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
@@ -1231,6 +1232,47 @@ def _rapport_refusion(plan: dict, applique: dict | None = None):
               f"demande(s) annulée(s), {len(applique['demandes_notees'])} notée(s) ; trace {traces.trace_id()}")
     else:
         print(f"\nSIMULATION : rien n'a été écrit (transaction en lecture seule) ; trace {traces.trace_id()}")
+
+
+@commande("viirs-expliquer")                         # lecture seule : pourquoi une alerte VIIRS tient ou non
+def _viirs_expliquer(conn, a):
+    """taches.py viirs-expliquer ALERTE [ALERTE…] : navires AIS autour de la lumière à plus ou moins 120 min, positions
+    brutes, et chaque règle de la fusion appliquée par son propre code. Lecture seule (transaction en lecture seule)."""
+    from mars import viirs
+    if not a.args or not all(x.isdigit() for x in a.args):
+        raise SystemExit("Préciser les alertes : taches.py viirs-expliquer 50275 45567 …")
+    rules = regles(conn)
+    with conn.transaction():
+        conn.execute("SET TRANSACTION READ ONLY")
+        out = [viirs.expliquer(conn, int(x), rules) for x in a.args]
+    traces.attributs(**{"viirs.expliquer_alertes": len(out)})
+    for e in out:
+        if "refus" in e:
+            print(f"REFUS : {e['refus']}")
+            continue
+        vd = e["verdict"] or {}
+        print(f"\nAlerte {e['alerte']} ({e['gravite']}, {e['statut']}) : lumière {e['detection']} du "
+              f"{e['heure'][:19].replace('T', ' ')} UTC, {e['lon']:.5f}, {e['lat']:.5f}, {e['nanowatts']} nW, granule "
+              f"{e['granule']}{', masque ' + e['masque'] if e['masque'] else ''}")
+        print(f"  Verdict des règles en vigueur : {vd.get('action')} ({vd.get('motif')})")
+        for x in e["voisines"]:
+            print(f"  Lumière voisine {x['detection']} à {x['distance_m']} m, appariée à {x['navire'] or 'aucun navire'}")
+        if not e["navires"]:
+            print("  Aucun navire AIS à moins de 10 km de la lumière dans les 120 min avant et après")
+        for n in e["navires"]:
+            pos = " ; ".join(f"{p['ecart_min']:+.0f} min à {p['distance_m']} m, {p['sog']} nœuds" for p in n["positions"])
+            print(f"  {n['name'] or n['vessel_id']} (MMSI {n['mmsi']}, {n['longueur_m'] or '?'} m) : {pos}")
+            pc = n["position_courte"]
+            print("    interpolation ou estime de 20 min au plus : " + (
+                f"à {pc['distance_m']} m, tolérance {pc['tolerance_m']} m, "
+                f"{'dans' if pc['dans_tolerance'] else 'hors de'} la tolérance" if pc else "aucune position assez proche"))
+            print(f"    maintien à l'arrêt : {n['maintien']}")
+            if n["pris_par_detection"]:
+                print(f"    déjà apparié à la lumière {n['pris_par_detection']} du même granule")
+            c = n["prudence"]
+            print("    prudence : " + (f"compatible, {c['distance_m']} m pour un rayon de {c['rayon_m']} m, position "
+                                       f"{'avant' if c['position_avant'] else 'après'} de {c['age_min']:.0f} min, "
+                                       f"{c['vitesse_kn']} nœuds" if c else "non compatible"))
 
 
 @commande("viirs-refusionner")                       # gratuit : appariement VIIRS refait sur les détections en base

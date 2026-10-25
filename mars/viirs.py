@@ -240,10 +240,16 @@ def position_ou_arret(track: list[dict], t: datetime, max_min: float, arret: dic
     return b["lon"], b["lat"], age * 60, arret["derive_m_par_min"] * age
 
 
-def match(dets: list[dict], tracks: dict[int, list[dict]], rules: dict) -> dict[int, tuple[int, float]]:
+def match(dets: list[dict], tracks: dict[int, list[dict]], rules: dict,
+          secondaires: set | None = None) -> dict[int, tuple[int, float]]:
     """Appariement glouton un pour un, par distance croissante : détection (indice) vers (navire, distance). La
     tolérance est celle du capteur (pixel de 750 m), augmentée de la moitié du chemin parcouru pendant l'estime, ou,
-    pour la position ancienne d'un navire à l'arrêt (120 min au plus), de la dérive admise selon son âge."""
+    pour la position ancienne d'un navire à l'arrêt (120 min au plus), de la dérive admise selon son âge.
+
+    Lumière voisine (26/10/2026) : un grand navire éclairé allume souvent deux pixels voisins (deux détections du même
+    granule) ; l'appariement un pour un en donnait une au navire et laissait l'autre « sans AIS » (8 alertes DARK_SHIP
+    à 196 à 479 m de l'AIS). Une détection restée seule, à moins de `lumiere_voisine_m` d'une détection appariée au
+    navire V et dans la tolérance de V, est expliquée par V (indice ajouté à `secondaires`)."""
     v = rules["viirs"]
     arret = arret_viirs(rules) if "fusion" in rules else None
     cands = []
@@ -262,6 +268,16 @@ def match(dets: list[dict], tracks: dict[int, list[dict]], rules: dict) -> dict[
         if i not in out and vid not in used:
             out[i] = (vid, dist)
             used.add(vid)
+    voisin = float(v.get("lumiere_voisine_m", 0))
+    if voisin > 0:
+        for dist, i, vid in sorted(cands):
+            if i in out or vid not in used:
+                continue
+            if any(out[j][0] == vid and j not in (secondaires or ()) and
+                   haversine_m(dets[i]["lon"], dets[i]["lat"], dets[j]["lon"], dets[j]["lat"]) <= voisin for j in out):
+                out[i] = (vid, dist)
+                if secondaires is not None:
+                    secondaires.add(i)
     return out
 
 
@@ -784,14 +800,16 @@ def refusion_plan(conn, rules: dict, du: date | None = None, au: date | None = N
                max(d[4] for d in dets) + 0.2)
         tracks = _tracks(conn, min(d[8] for d in dets), max(d[9] for d in dets), box, marge)
         pistes_granule[gid] = tracks
-        m = match([{"lon": d[3], "lat": d[4], "ts": d[2]} for d in dets], tracks, rules)
+        sec: set = set()
+        m = match([{"lon": d[3], "lat": d[4], "ts": d[2]} for d in dets], tracks, rules, sec)
         for i, d in enumerate(dets):
             vid, dist = m.get(i, (None, None))
             nouveau[d[0]] = (vid, dist)
             if vid is not None:
                 pos = position_ou_arret(tracks[vid], d[2], v["estime_max_min"], arret)
+                methode = "arret" if pos and pos[3] else "interpolation ou estime"
                 appariement[d[0]] = {"vessel_id": vid, "distance_m": round(dist),
-                                     "methode": "arret" if pos and pos[3] else "interpolation ou estime",
+                                     "methode": "lumiere voisine, " + methode if i in sec else methode,
                                      "age_min": round(pos[2] / 60, 1) if pos else None}
     det = {r[0]: r for r in rows}
     alertes = conn.execute(
@@ -813,8 +831,10 @@ def refusion_plan(conn, rules: dict, du: date | None = None, au: date | None = N
             ap = appariement[did]
             noms.setdefault(vid, conn.execute("SELECT name, mmsi FROM vessels WHERE id = %s", (vid,)).fetchone())
             nom, mmsi = noms[vid] or (None, None)
-            quand = (f"position à l'arrêt de {ap['age_min']:.0f} min" if ap["methode"] == "arret"
+            quand = (f"position à l'arrêt de {ap['age_min']:.0f} min" if ap["methode"].endswith("arret")
                      else "position interpolée ou estimée")
+            if ap["methode"].startswith("lumiere voisine"):
+                quand += ", second pixel du même navire (lumière voisine d'une détection qui lui est appariée)"
             motif = (f"Refusion VIIRS (règles {rules['version']}) : lumière appariée à {nom or vid} (MMSI {mmsi}), "
                      f"à {ap['distance_m']} m, {quand} : pas un navire sombre")
             actions.append({**base, "action": "classer", "navire": {"vessel_id": vid, "name": nom, "mmsi": mmsi, **ap},
@@ -914,3 +934,78 @@ def refusion_appliquer(conn, plan: dict, rules: dict) -> dict:
             notees.append(d["demande"])
     return {"appariements_changes": len(plan["appariements_changes"]), "classees": classees,
             "decisions_gardees": gardees, "faibles": faibles, "demandes_annulees": annulees, "demandes_notees": notees}
+
+
+def expliquer(conn, alert_id: int, rules: dict, rayon_m: float = 10_000) -> dict:
+    """Pourquoi une alerte DARK_SHIP VIIRS tient ou non (lecture seule, 26/10/2026) : pour chaque navire AIS vu à moins
+    de `rayon_m` de la lumière dans la durée bornée avant et après, ses positions brutes (écart de temps, distance,
+    vitesse), puis les règles de la fusion appliquées par leur propre code : interpolation ou estime courte, maintien à
+    l'arrêt et son motif de refus, tolérance, navire déjà pris par une autre lumière, prudence. Remplace les
+    vérifications par photographies du trafic (/api/traffic ne montre que les 30 minutes avant un instant)."""
+    from mars.fusion.arret import maintien_arret
+    from mars.fusion.doute import compatible
+    v = rules["viirs"]
+    arret = arret_viirs(rules)
+    r = conn.execute(
+        """SELECT d.id, d.ts, ST_X(d.geom::geometry), ST_Y(d.geom::geometry), d.nanowatts, d.granule_id, g.nom, g.nuit,
+                  a.severity, a.status, d.mask_reason
+           FROM alerts a JOIN alert_evidence e ON e.alert_id = a.id AND e.evidence_type = 'viirs'
+           JOIN viirs_detections d ON d.id = e.evidence_id JOIN viirs_granules g ON g.id = d.granule_id
+           WHERE a.id = %s""", (alert_id,)).fetchone()
+    if r is None:
+        return {"refus": f"alerte {alert_id} : pas une alerte DARK_SHIP de source VIIRS"}
+    did, ts, lon, lat, nw, gid, gnom, nuit, sev, st, mask = r
+    plan = refusion_plan(conn, rules, nuit, nuit)
+    action = next((a for a in plan["alertes"] if a["alerte"] == alert_id), None)
+    meme_granule = {x for (x,) in conn.execute("SELECT id FROM viirs_detections WHERE granule_id = %s", (gid,)).fetchall()}
+    pris = {plan["nouveau"][x][0]: x for x in meme_granule & set(plan["nouveau"])
+            if plan["nouveau"][x][0] is not None and x != did}
+    voisines = conn.execute(
+        """SELECT id, round(ST_Distance(geom, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography)) FROM viirs_detections
+           WHERE granule_id = %s AND id <> %s AND ST_DWithin(geom, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, 3000)
+           ORDER BY 2""", (lon, lat, gid, did, lon, lat)).fetchall()
+    dlat, dlon = rayon_m / 110_574, rayon_m / (111_320 * math.cos(math.radians(lat)))
+    tracks = _tracks(conn, ts, ts, (lon - dlon - 0.3, lat - dlat - 0.2, lon + dlon + 0.3, lat + dlat + 0.2),
+                     int(arret["max_min"]))
+    navires = []
+    for vid, tr in tracks.items():
+        proches = [p for p in tr if haversine_m(lon, lat, p["lon"], p["lat"]) <= rayon_m + 30_000]
+        if not proches:
+            continue
+        est = position_at(tr, ts, v["estime_max_min"])
+        dist_est = haversine_m(lon, lat, est[0], est[1]) if est else None
+        sog = max((p.get("sog") or 0.0) for p in tr)
+        tol = v["tolerance_m"] + (v["estime_marge_ratio"] * sog * KNOT * est[2] if est else 0)
+        m = maintien_arret(tr, ts, arret)
+        avant = [p for p in tr if p["ts"] <= ts]
+        b = avant[-1] if avant else None
+        if m:
+            motif_arret = f"gardée : position à l'arrêt de {m[1]:.0f} min"
+        elif b is None:
+            motif_arret = "aucune position avant la lumière"
+        elif (b.get("sog") or 0) >= arret["kn"]:
+            motif_arret = f"en route ({b.get('sog'):.1f} nœuds à la dernière position avant)"
+        elif (ts - b["ts"]).total_seconds() / 60 > arret["max_min"]:
+            motif_arret = f"trop ancienne ({(ts - b['ts']).total_seconds() / 60:.0f} min)"
+        else:
+            motif_arret = "contredite par une position plus récente (en route ou à plus de 300 m)"
+        c = compatible(lon, lat, ts, {vid: tr}, arret)
+        if dist_est is None and not c and not m:
+            if min(haversine_m(lon, lat, p["lon"], p["lat"]) for p in proches) > rayon_m:
+                continue
+        nom = conn.execute("SELECT name, mmsi, length_m FROM vessels WHERE id = %s", (vid,)).fetchone()
+        navires.append({
+            "vessel_id": vid, "name": nom and nom[0], "mmsi": nom and nom[1], "longueur_m": nom and nom[2],
+            "positions": [{"ecart_min": round((p["ts"] - ts).total_seconds() / 60, 1),
+                           "distance_m": round(haversine_m(lon, lat, p["lon"], p["lat"])), "sog": p.get("sog"),
+                           "cog": p.get("cog")} for p in sorted(tr, key=lambda p: abs((p["ts"] - ts).total_seconds()))[:4]],
+            "position_courte": None if est is None else {"distance_m": round(dist_est), "tolerance_m": round(tol),
+                                                         "dans_tolerance": dist_est <= tol},
+            "maintien": motif_arret, "prudence": c,
+            "pris_par_detection": pris.get(vid)})
+    navires.sort(key=lambda n: min(x["distance_m"] for x in n["positions"]))
+    return {"alerte": alert_id, "detection": did, "heure": ts.isoformat(), "lon": lon, "lat": lat, "nanowatts": nw,
+            "granule": gnom, "nuit": str(nuit), "gravite": sev, "statut": st, "masque": mask,
+            "voisines": [{"detection": x, "distance_m": int(dm), "navire": plan["nouveau"].get(x, (None,))[0]}
+                         for x, dm in voisines],
+            "verdict": action and {k: action.get(k) for k in ("action", "motif")}, "navires": navires[:8]}

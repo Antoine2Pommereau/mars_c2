@@ -1289,3 +1289,16 @@ Règles 2026.10.55 (`travailleurs.types_eprouves_seuls`), aucune migration, aucu
 * Rejeu enrichi (par jour, coût brut et sous le plafond, demandes retenues et navires) ; alertes classées écartées
   du rejeu comme de la collecte en direct ; `taches.py tip-and-cue-bilan --du`.
 * Tests : 547 réussis avec la base.
+
+## 26/10/2026 : lumières voisines d'un même navire, explication d'une alerte VIIRS
+
+Règles 2026.10.56 (`viirs.lumiere_voisine_m`), aucune migration, aucun essai payant.
+* Simulation de la refusion VIIRS sur le serveur : élevées ouvertes de 16 à 8, 1 classée (MISTRAL), 8 abaissées,
+  19 ouvertes. Parmi elles, 8 avaient un AIS à 196 à 479 m, par paires d'identifiants consécutifs : un grand navire
+  allume deux pixels voisins et l'appariement un pour un laissait le second « sans AIS ». Une détection à moins de
+  2 km d'une détection appariée au navire V, et dans la tolérance de V, est désormais expliquée par V.
+* Alerte 50275 : ma vérification par photographies de `/api/traffic` (navires vus dans les 30 min avant chaque
+  instant, de 00:20 à 02:20, rayon de 15 km) ne pouvait pas voir COSTA TOSCANA (position à 55 min, à environ 25 km,
+  estime à 385 m de la lumière). Nouvelle méthode : `taches.py viirs-expliquer ALERTE` (lecture seule, code de la
+  fusion). Gardée faible à confirmer : une estime de 55 min d'un navire en route n'est pas un appariement.
+* Tests : 551 réussis avec la base.

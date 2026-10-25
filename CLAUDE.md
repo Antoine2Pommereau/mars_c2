@@ -100,7 +100,7 @@ indice, jamais une excuse).
 ## 4. État actuel (24/10/2026)
 
 `main` au 25/10/2026 : lots Z1 à Z6, spline des points d'appui Sentinel 1, lot historique Sentinel 1, lot
-viirs-masque, réanalyse par --refaire, fusion d'un navire à l'arrêt, types jamais éprouvés refusés ; règles 2026.10.55, migrations 01 à 46 (44 et 46 : granules VIIRS
+viirs-masque, réanalyse par --refaire, fusion d'un navire à l'arrêt, types jamais éprouvés refusés, lumières voisines VIIRS ; règles 2026.10.56, migrations 01 à 46 (44 et 46 : granules VIIRS
 non évaluables, 45 : analyses refaites). Essais réels : `taches.py essai-reel`
 (préparation), `essai-reel --lancer ID` (un essai, types éprouvés seulement), `viirs-bilan` ; procédure dans
 `docs/travailleurs.md`, section 11. État des sources : en base (panneau), pas
@@ -213,8 +213,8 @@ http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulemen
 `docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).
 
 Tests : `python -m pytest tests` (chaque test borné à 60 s) ; avec la base de test
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 46) : **547 réussis**
-(26/10/2026, préparation de tip and cue) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 46) : **551 réussis**
+(26/10/2026, lumières voisines VIIRS) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
 `scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `geolocalisation`, `s2`, `s2-s3` selon le
 travail). Décomptes passés : `docs/journal.md`.
 
@@ -283,6 +283,9 @@ Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : 
   Dernière position gardée 120 min (`fusion.arret_max_min`) ; dans le doute, DARK_SHIP faible à confirmer, jamais
   élevée. Après un changement de la fusion : `taches.py sentinel-refusionner ID` (analyse 105, SMYRTOS) et
   `viirs-refusionner --toutes --simulation` puis sans `--simulation`.
+* Vérifier qu'aucun navire n'explique une détection : jamais par photographies de `/api/traffic` (30 min avant
+  l'instant seulement) ; `taches.py viirs-expliquer ALERTE` (code de la fusion, plus ou moins 120 min). Un grand navire
+  allume souvent deux pixels VIIRS voisins (`viirs.lumiere_voisine_m`).
 * Sentinel 1 et 2 : tout type de calcul jamais éprouvé est refusé, même hors essai (`travailleurs.types_eprouves_seuls`) ;
   le secours POP2 n'a jamais abouti. Les tests de mécanismes sur une fausse instance lèvent cette garde explicitement.
 * Un lancement manuel qui ne crée aucun travailleur est un refus (`essai_reel.refus_lancement`) : jamais

@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.55"
+version: "2026.10.56"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -205,6 +205,10 @@ viirs:
   # Appariement à l'AIS : pixel de 750 m, géolocalisation à environ un pixel près ; position AIS interpolée (ou
   # estimée sur 20 minutes au plus) à l'instant de la détection, plus une marge pour l'incertitude de l'estime
   tolerance_m: 1500
+  # Lumière voisine (26/10/2026) : un grand navire éclairé allume souvent deux pixels voisins ; une détection seule à
+  # moins de 2 km (moins de 3 pixels) d'une détection appariée au navire V, et dans la tolérance de V, est expliquée
+  # par V. Refusion du 26/10 : 8 alertes DARK_SHIP à 196 à 479 m de l'AIS, par paires d'identifiants consécutifs
+  lumiere_voisine_m: 2000
   estime_max_min: 20
   estime_marge_ratio: 0.5  # marge de plus : la moitié du chemin parcouru pendant l'estime
   cote_km: 5               # détection à moins de 5 km de la terre : écartée (ports, côtes éclairées)

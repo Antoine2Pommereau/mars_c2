@@ -4,6 +4,7 @@ DARK_SHIP fausse. Trois lumières : un navire au mouillage (alerte classée par 
 un navire en route vu 30 min avant (alerte abaissée en faible, à confirmer), un vrai navire sombre (alerte gardée,
 ouverte) ; décisions des opérateurs gardées ; simulation sans aucune écriture. En base : MARS_TEST_DATABASE_URL."""
 import argparse
+import math
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -166,3 +167,75 @@ def test_simulation_writes_nothing_and_lists_the_changes(conn, capsys):
     assert conn.execute("SELECT count(*) FROM alert_actions").fetchone()[0] == 0
     assert conn.execute("SELECT matched_vessel_id FROM viirs_detections WHERE id = %s",
                         (c["dets"]["mouillage"],)).fetchone()[0] is None
+
+
+# Lumières voisines (26/10/2026) : un grand navire éclairé allume deux pixels voisins
+
+def _piste(lon, lat, t, sog=12.0, cog=90.0):
+    return [{"ts": t - timedelta(minutes=5), "lon": lon, "lat": lat, "sog": sog, "cog": cog},
+            {"ts": t + timedelta(minutes=5), "lon": lon + 12 * 0.514444 * 600 / (111_320 * 0.73), "lat": lat,
+             "sog": sog, "cog": cog}]
+
+
+def test_second_pixel_of_the_same_ship_is_explained_by_it():
+    lon, lat = 6.0, 43.0
+    tracks = {9: _piste(lon - 0.01, lat, T)}                       # navire interpolé à t entre deux positions
+    dets = [{"lon": lon + 0.002, "lat": lat, "ts": T},              # deux pixels à 730 m l'un de l'autre
+            {"lon": lon + 0.011, "lat": lat, "ts": T}]
+    sec: set = set()
+    m = viirs.match(dets, tracks, RULES, sec)
+    assert set(m) == {0, 1} and all(v[0] == 9 and v[1] < 1500 for v in m.values()) and len(sec) == 1
+    sans = {**RULES, "viirs": {**RULES["viirs"], "lumiere_voisine_m": 0}}
+    assert len(viirs.match(dets, tracks, sans)) == 1                # avant : le second pixel restait « sans AIS »
+
+
+def test_two_distant_lights_are_not_the_same_ship():
+    """Deux lumières à 2,6 km l'une de l'autre, navire à 1,3 km de chacune : une seule lui revient, l'autre reste."""
+    lon, lat = 6.0, 43.0
+    tracks = {9: _piste(lon - 0.01, lat, T)}
+    dets = [{"lon": lon - 0.016, "lat": lat, "ts": T}, {"lon": lon + 0.016, "lat": lat, "ts": T}]
+    m = viirs.match(dets, tracks, RULES)
+    assert len(m) == 1
+
+
+def test_refusion_classifies_the_second_pixel_and_explains_it(conn, capsys):
+    c = _cas(conn)
+    # Second pixel du navire au mouillage, à 700 m du premier ; levée par les règles d'avant
+    lon2 = MOUILLAGE[0] + 0.0087
+    d2 = conn.execute("INSERT INTO viirs_detections (granule_id, ts, geom, nanowatts, lune, distance_cote_m, "
+                      "ais_navires_rayon) VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, 15.0, 35, "
+                      "30000, 3) RETURNING id", (c["granule"], T, lon2, MOUILLAGE[1])).fetchone()[0]
+    viirs._alerts(conn, [d2], AVANT)
+    a2 = conn.execute("SELECT alert_id FROM alert_evidence WHERE evidence_type = 'viirs' AND evidence_id = %s",
+                      (d2,)).fetchone()[0]
+    p = viirs.refusion_plan(conn, RULES)
+    act = {a["alerte"]: a for a in p["alertes"]}
+    assert act[a2]["action"] == "classer" and act[a2]["navire"]["methode"].startswith("lumiere voisine")
+    assert "second pixel du même navire" in act[a2]["motif"]
+    assert act[c["alertes"]["mouillage"]]["action"] == "classer"
+    # L'explication, en lecture seule, dit pourquoi
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import taches
+    taches._viirs_expliquer(conn, argparse.Namespace(args=[str(c["alertes"]["sombre"]), str(c["alertes"]["doute"])]))
+    out = capsys.readouterr().out
+    assert "Verdict des règles en vigueur : garder" in out and "Verdict des règles en vigueur : faible" in out
+    assert "EN ROUTE ESSAI" in out and "maintien à l'arrêt : en route (10.0 nœuds" in out
+    assert "prudence : compatible" in out
+
+
+def test_explanation_of_a_cruise_ship_seen_55_minutes_before(conn):
+    """Cas de 50275 et COSTA TOSCANA : paquebot à 15 nœuds vu 55 min avant à 25 km, cap sur la lumière. Aucune
+    position à moins de 20 min, pas d'arrêt : prudence seulement (faible, à confirmer), jamais apparié franchement."""
+    c = _cas(conn)
+    pid = conn.execute("INSERT INTO vessels (mmsi, name, length_m, ais_class) VALUES (273999209, 'PAQUEBOT ESSAI', 337, "
+                       "'A') RETURNING id").fetchone()[0]
+    d = 15 * 0.514444 * 55 * 60                                   # 25,5 km
+    lon0 = SOMBRE[0] - (d - 385) / (111_320 * math.cos(math.radians(SOMBRE[1])))
+    conn.execute("INSERT INTO positions (vessel_id, ts, geom, sog_kn, cog_deg) VALUES (%s, %s, "
+                 "ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, 15, 90)", (pid, T - timedelta(minutes=55), lon0,
+                                                                                SOMBRE[1]))
+    e = viirs.expliquer(conn, c["alertes"]["sombre"], RULES)
+    assert e["verdict"]["action"] == "faible"
+    n = next(x for x in e["navires"] if x["name"] == "PAQUEBOT ESSAI")
+    assert n["position_courte"] is None and n["maintien"].startswith("en route")
+    assert n["prudence"]["distance_m"] == pytest.approx(385, abs=20) and n["prudence"]["age_min"] == 55
