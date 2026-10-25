@@ -43,6 +43,7 @@ Usage :
     python scripts/taches.py controle-diagnostic      # lignes MARS_OPERATEURS lues par taches et par l'API (lecture seule)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-refusionner ID   # fusion refaite sur les détections en base (gratuit)
+    python scripts/taches.py viirs-refusionner --toutes --simulation   # appariement VIIRS refait (lecture seule)
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
     python scripts/taches.py essai-reel               # lot Z6 : prêt pour un essai réel ? candidats (lecture seule)
     python scripts/taches.py essai-reel --lancer ID   # un essai réel sur le passage ID, types éprouvés seulement
@@ -1136,6 +1137,97 @@ def _essai_reel(conn, a):
     print(f"Suivre : taches.py travailleurs ; à la fin, aucune ligne attendue :\n  {essai_reel.VERIFICATION_SQL}")
 
 
+def _rapport_refusion(plan: dict, applique: dict | None = None):
+    """Rapport lisible d'une refusion VIIRS (simulation ou réelle)."""
+    g = lambda d: ", ".join(f"{k} {d[k]}" for k in ("critique", "elevee", "moyenne", "faible") if d.get(k)) or "aucune"
+    portee = (f"nuits du {plan['du']} au {plan['au']}" if plan["du"] or plan["au"] else "toutes les nuits en base")
+    print(f"Refusion VIIRS, {portee}, règles {plan['version_regles']} : {plan['nuits']} nuit(s), {plan['detections']} "
+          f"détection(s) ; appariées {plan['appariees_avant']} avant, {plan['appariees_apres']} après "
+          f"({len(plan['appariements_changes'])} appariement(s) changé(s))")
+    print(f"Alertes DARK_SHIP ouvertes (« nouvelle ») par gravité : avant {g(plan['ouvertes_avant'])} ; "
+          f"après {g(plan['ouvertes_apres'])}")
+    par = {}
+    for a in plan["alertes"]:
+        par.setdefault(a["action"], []).append(a)
+    titres = {"classer": "Classées en faux positif (navire qui les explique)",
+              "faible": "Abaissées en faible, à confirmer (navire possiblement compatible)",
+              "garder": "Restent ouvertes, vrais candidats (aucun navire AIS compatible dans les 120 min)",
+              "rien": "Sans changement (détection déjà écartée par un masque)"}
+    for k in ("classer", "faible", "garder", "rien"):
+        lst = par.get(k, [])
+        print(f"\n{titres[k]} : {len(lst)}")
+        for a in lst:
+            decision = "" if a["statut"] == "nouvelle" else f" [décision gardée : {a['statut']}]"
+            if k == "classer":
+                n = a["navire"]
+                print(f"  alerte {a['alerte']:>6}  nuit {a['nuit']}  {a['gravite']:<8} {n['name'] or n['vessel_id']} "
+                      f"(MMSI {n['mmsi']}), {n['distance_m']} m, {n['methode']}"
+                      + (f" de {n['age_min']:.0f} min" if n["methode"] == "arret" else "") + decision)
+            elif k == "faible":
+                c = a["navire_compatible"]
+                print(f"  alerte {a['alerte']:>6}  nuit {a['nuit']}  {a['gravite']:<8} {c.get('name') or c['vessel_id']}, "
+                      f"{c['distance_m']} m, {c['age_min']:.0f} min{decision}")
+            elif k == "garder":
+                infra = (a["infrastructure"] or {}).get("type")
+                print(f"  alerte {a['alerte']:>6}  nuit {a['nuit']}  {a['gravite']:<8} {a['lon']}, {a['lat']}  "
+                      f"{a['nanowatts']} nW, AIS le plus proche {a['ais_proche_m']} m"
+                      + (f", {infra} à {a['infrastructure'].get('distance_m')} m" if infra else "") + decision)
+    print(f"\nDemandes d'observation nées d'une alerte classée : {len(plan['demandes'])}")
+    for d in plan["demandes"]:
+        quoi = "annulée avec le motif" if d["fin"] == "annulee" else "déjà traitée ou à plusieurs origines : motif noté"
+        print(f"  demande {d['demande']:>5}  {d['etat']:<12} analyse {d['analyse'] or '·'}  alertes {d['alertes']} : {quoi}")
+    if applique:
+        print(f"\nAppliqué : {len(applique['classees'])} classée(s), {len(applique['decisions_gardees'])} décision(s) "
+              f"d'opérateur gardée(s), {len(applique['faibles'])} abaissée(s), {len(applique['demandes_annulees'])} "
+              f"demande(s) annulée(s), {len(applique['demandes_notees'])} notée(s) ; trace {traces.trace_id()}")
+    else:
+        print(f"\nSIMULATION : rien n'a été écrit (transaction en lecture seule) ; trace {traces.trace_id()}")
+
+
+@commande("viirs-refusionner")                       # gratuit : appariement VIIRS refait sur les détections en base
+def _viirs_refusionner(conn, a):
+    """taches.py viirs-refusionner (--nuit J | --du J [--au J] | --toutes) [--simulation] : appariement de chaque
+    détection VIIRS refait avec les règles en vigueur (maintien à l'arrêt, prudence), sans travailleur. --simulation :
+    transaction en lecture seule, rapport de ce qui changerait. Sinon : tout ou rien, consigné (viirs_refusion), tracé."""
+    from mars import viirs
+    if a.nuit:
+        du, au = min(a.nuit), max(a.nuit)
+    elif a.du or a.toutes:
+        du, au = a.du, a.au
+    else:
+        raise SystemExit("Préciser la portée : --nuit AAAA-MM-JJ, --du AAAA-MM-JJ [--au AAAA-MM-JJ] ou --toutes")
+    rules = regles(conn)
+    if a.simulation:
+        with traces.span("tache viirs_refusion_simulation",
+                         **{"tache.nom": "viirs_refusion_simulation"}) as sp:
+            with conn.transaction():
+                conn.execute("SET TRANSACTION READ ONLY")            # garantie : aucune écriture possible
+                with traces.span("viirs.refusion_plan"):
+                    plan = viirs.refusion_plan(conn, rules, du, au)
+            sp.set_attributes({"viirs.refusion_detections": plan["detections"],
+                               "viirs.refusion_alertes": len(plan["alertes"]),
+                               "viirs.refusion_a_classer": sum(x["action"] == "classer" for x in plan["alertes"])})
+        _rapport_refusion(plan)
+        return
+    vu = {}
+
+    def refaire():
+        with conn.transaction():
+            with traces.span("viirs.refusion_plan"):
+                plan = viirs.refusion_plan(conn, rules, du, au)
+            with traces.span("viirs.refusion_application") as sp:
+                r = viirs.refusion_appliquer(conn, plan, rules)
+                sp.set_attributes({"viirs.refusion_classees": len(r["classees"]),
+                                   "viirs.refusion_faibles": len(r["faibles"]),
+                                   "viirs.refusion_demandes_annulees": len(r["demandes_annulees"])})
+        vu["plan"], vu["r"] = plan, r
+        return {"du": plan["du"], "au": plan["au"], "detections": plan["detections"],
+                "appariees_avant": plan["appariees_avant"], "appariees_apres": plan["appariees_apres"], **r}
+    if run(conn, "viirs_refusion", refaire, parent=traces.traceparent()) is None:
+        sys.exit(1)
+    _rapport_refusion(vu["plan"], vu["r"])
+
+
 @commande("viirs-bilan")                             # lot Z6 : nuits VIIRS depuis --du (lecture seule)
 def _viirs_bilan(conn, a):
     from mars import viirs
@@ -1354,6 +1446,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("args", nargs="*")
     ap.add_argument("--du", type=date.fromisoformat)
     ap.add_argument("--au", type=date.fromisoformat)
+    ap.add_argument("--simulation", action="store_true",
+                    help="viirs-refusionner : lecture seule, liste ce qui changerait")
+    ap.add_argument("--toutes", action="store_true", help="viirs-refusionner : toutes les nuits en base")
     ap.add_argument("--refaire", action="store_true",
                     help="essai-reel --lancer, sentinel-analyser : réanalyser un passage Sentinel 1 déjà analysé "
                          "(nouvelle analyse liée, l'ancienne gardée)")

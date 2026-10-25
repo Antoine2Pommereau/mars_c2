@@ -1269,3 +1269,14 @@ Règles 2026.10.54 (section `fusion` : `arret_kn`, `arret_max_min`, `arret_deriv
   DARK_SHIP faible à confirmer si un navire connu dans les 120 min peut expliquer l'écho (radar, optique, VIIRS) ;
   `taches.py sentinel-refusionner ID`.
 * Tests : 537 réussis avec la base.
+
+## 26/10/2026 : refusion des alertes VIIRS passées
+
+Aucune règle changée (2026.10.54), aucune migration, aucun essai payant.
+* `taches.py viirs-refusionner` (une nuit, une plage ou toutes, `--simulation` en lecture seule) : appariement VIIRS
+  refait avec le maintien à l'arrêt et la prudence ; alertes mises à jour en place, faux positifs classés par MARS C2
+  avec le navire qui les explique, décisions des opérateurs gardées, demandes d'observation actives annulées.
+* Alerte 50275 (élevée, au large de Hyères, à l'origine de l'analyse Sentinel 2 102) vérifiée en lecture seule : aucun
+  navire AIS à moins de 15 km entre 00:20 et 02:20 ; le seul proche (CIRTA, 13 nœuds) était à 5,8 km 80 min avant. La
+  refusion ne l'explique pas : ce n'est pas un défaut de fusion (petit navire sans AIS possible).
+* Tests : 544 réussis avec la base.

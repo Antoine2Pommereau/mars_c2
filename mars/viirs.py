@@ -754,3 +754,163 @@ def bilan(conn, du) -> dict:
 def regions_boxes() -> list[list[float]]:
     """Emprises des régions pour le travailleur : [lon_min, lat_min, lon_max, lat_max]."""
     return [[b, a, d, c] for a, b, c, d in ZONES.values()]
+
+
+# Refusion (26/10/2026) : appariement refait sur les détections en base avec les règles en vigueur (maintien à l'arrêt,
+# prudence). Jusqu'aux règles 2026.10.54, la fusion VIIRS n'acceptait que 20 min d'estime : des alertes DARK_SHIP
+# passées peuvent être fausses (navire au mouillage dont la dernière position avait plus de 20 min).
+
+def refusion_plan(conn, rules: dict, du: date | None = None, au: date | None = None) -> dict:
+    """Ce que changerait la refusion des nuits [du, au] (toutes si None), sans rien écrire : appariements, et pour
+    chaque alerte DARK_SHIP VIIRS : classer (lumière appariée à un navire), faible (navire possiblement compatible),
+    garder (vrai candidat), ou rien (écartée par un masque)."""
+    from mars.fusion.doute import compatible
+    v = rules["viirs"]
+    arret = arret_viirs(rules)
+    marge = max(v["estime_max_min"], int(arret["max_min"]))
+    rows = conn.execute(
+        """SELECT d.id, d.granule_id, d.ts, ST_X(d.geom::geometry), ST_Y(d.geom::geometry), d.mask_reason,
+                  d.matched_vessel_id, g.nuit, g.debut, g.fin
+           FROM viirs_detections d JOIN viirs_granules g ON g.id = d.granule_id
+           WHERE (%(du)s::date IS NULL OR g.nuit >= %(du)s) AND (%(au)s::date IS NULL OR g.nuit <= %(au)s)
+           ORDER BY d.granule_id, d.id""", {"du": du, "au": au}).fetchall()
+    par_granule: dict[int, list] = {}
+    for r in rows:
+        par_granule.setdefault(r[1], []).append(r)
+    nouveau, appariement = {}, {}
+    pistes_granule: dict[int, dict] = {}
+    for gid, dets in par_granule.items():
+        box = (min(d[3] for d in dets) - 0.2, min(d[4] for d in dets) - 0.2, max(d[3] for d in dets) + 0.2,
+               max(d[4] for d in dets) + 0.2)
+        tracks = _tracks(conn, min(d[8] for d in dets), max(d[9] for d in dets), box, marge)
+        pistes_granule[gid] = tracks
+        m = match([{"lon": d[3], "lat": d[4], "ts": d[2]} for d in dets], tracks, rules)
+        for i, d in enumerate(dets):
+            vid, dist = m.get(i, (None, None))
+            nouveau[d[0]] = (vid, dist)
+            if vid is not None:
+                pos = position_ou_arret(tracks[vid], d[2], v["estime_max_min"], arret)
+                appariement[d[0]] = {"vessel_id": vid, "distance_m": round(dist),
+                                     "methode": "arret" if pos and pos[3] else "interpolation ou estime",
+                                     "age_min": round(pos[2] / 60, 1) if pos else None}
+    det = {r[0]: r for r in rows}
+    alertes = conn.execute(
+        """SELECT a.id, a.status, a.severity, e.evidence_id, a.details->>'nuit',
+                  a.details->'infrastructure', a.details->'navire_liste', a.details->>'ais_proche_m',
+                  a.details->>'nanowatts'
+           FROM alerts a JOIN alert_evidence e ON e.alert_id = a.id AND e.evidence_type = 'viirs'
+           WHERE a.type = 'DARK_SHIP' AND e.evidence_id = ANY(%s) ORDER BY a.id""", (list(det),)).fetchall()
+    noms = {}
+    actions = []
+    for aid, st, sev, did, nuit, infra, liste, ais_m, nw in alertes:
+        r = det[did]
+        base = {"alerte": aid, "statut": st, "gravite": sev, "nuit": nuit, "detection": did,
+                "lon": round(r[3], 5), "lat": round(r[4], 5), "heure": r[2].isoformat(),
+                "nanowatts": None if nw is None else round(float(nw), 1), "infrastructure": infra,
+                "navire_liste": liste, "ais_proche_m": None if ais_m is None else round(float(ais_m))}
+        vid = nouveau[did][0]
+        if vid is not None:
+            ap = appariement[did]
+            noms.setdefault(vid, conn.execute("SELECT name, mmsi FROM vessels WHERE id = %s", (vid,)).fetchone())
+            nom, mmsi = noms[vid] or (None, None)
+            quand = (f"position à l'arrêt de {ap['age_min']:.0f} min" if ap["methode"] == "arret"
+                     else "position interpolée ou estimée")
+            motif = (f"Refusion VIIRS (règles {rules['version']}) : lumière appariée à {nom or vid} (MMSI {mmsi}), "
+                     f"à {ap['distance_m']} m, {quand} : pas un navire sombre")
+            actions.append({**base, "action": "classer", "navire": {"vessel_id": vid, "name": nom, "mmsi": mmsi, **ap},
+                            "motif": motif})
+            continue
+        if r[5] is not None:
+            actions.append({**base, "action": "rien", "motif": f"détection écartée ({r[5]})"})
+            continue
+        exclus = {nouveau[x[0]][0] for x in par_granule[r[1]] if nouveau[x[0]][0] is not None}
+        c = compatible(r[3], r[4], r[2], pistes_granule[r[1]], arret, exclus)
+        if c:
+            noms.setdefault(c["vessel_id"], conn.execute("SELECT name, mmsi FROM vessels WHERE id = %s",
+                                                         (c["vessel_id"],)).fetchone())
+            c["name"] = (noms[c["vessel_id"]] or (None,))[0]
+            actions.append({**base, "action": "faible", "navire_compatible": c, "motif": motif_doute(c, c["name"])})
+        else:
+            actions.append({**base, "action": "garder", "motif": "aucun navire AIS compatible dans les 120 min"})
+    # Demandes d'observation nées d'une alerte qui serait classée
+    classees = [a["alerte"] for a in actions if a["action"] == "classer" and a["statut"] == "nouvelle"]
+    demandes = conn.execute(
+        """SELECT d.id, d.etat, d.analysis_id, array_agg(o.alerte_id) FILTER (WHERE o.alerte_id IS NOT NULL),
+                  count(*) FILTER (WHERE o.alerte_id IS NULL OR NOT (o.alerte_id = ANY(%s))) AS autres
+           FROM demandes_observation d JOIN demandes_origines o ON o.demande_id = d.id
+           WHERE d.id IN (SELECT demande_id FROM demandes_origines WHERE alerte_id = ANY(%s))
+           GROUP BY d.id, d.etat, d.analysis_id ORDER BY d.id""", (classees, classees)).fetchall()
+    dem = [{"demande": i, "etat": e, "analyse": an, "alertes": al,
+            "fin": ("annulee" if e in ("en_attente", "planifiee") and an is None and not autres
+                    else "note" )} for i, e, an, al, autres in demandes]
+    avant = {}
+    apres = {}
+    for a in actions:
+        if a["statut"] != "nouvelle":
+            continue
+        avant[a["gravite"]] = avant.get(a["gravite"], 0) + 1
+        g = {"classer": None, "faible": "faible"}.get(a["action"], a["gravite"])
+        if g:
+            apres[g] = apres.get(g, 0) + 1
+    changes = [k for k, (vid, _d) in nouveau.items() if vid != det[k][6]]
+    return {"du": du and str(du), "au": au and str(au), "nuits": len({r[7] for r in rows}), "detections": len(rows),
+            "appariees_avant": sum(1 for r in rows if r[6] is not None),
+            "appariees_apres": sum(1 for x in nouveau.values() if x[0] is not None),
+            "appariements_changes": changes, "nouveau": nouveau, "alertes": actions,
+            "ouvertes_avant": avant, "ouvertes_apres": apres, "demandes": dem, "version_regles": rules["version"]}
+
+
+def refusion_appliquer(conn, plan: dict, rules: dict) -> dict:
+    """Applique un plan de refusion : détections réappariées, alertes mises à jour en place (jamais effacées) ;
+    classées par « MARS C2 » en faux positif si encore nouvelles, sinon la décision de l'opérateur reste et une note
+    s'ajoute ; demandes d'observation encore actives nées seulement d'alertes classées : annulées avec le même motif."""
+    quand = datetime.now(timezone.utc).isoformat()
+    for did in plan["appariements_changes"]:
+        vid, dist = plan["nouveau"][did]
+        conn.execute("UPDATE viirs_detections SET matched_vessel_id = %s, match_distance_m = %s WHERE id = %s",
+                     (vid, dist, did))
+    classees, gardees, faibles = [], [], []
+    motifs = {}
+    for a in plan["alertes"]:
+        note = {"le": quand, "version_regles": rules["version"], "motif": a["motif"]}
+        if a["action"] == "classer":
+            motifs[a["alerte"]] = a["motif"]
+            if a["statut"] == "nouvelle":
+                conn.execute("UPDATE alerts SET status = 'classee', details = details || jsonb_build_object('refusion', "
+                             "%s::jsonb, 'navire_apparie', %s::jsonb) WHERE id = %s",
+                             (json.dumps(note), json.dumps(a["navire"]), a["alerte"]))
+                conn.execute("INSERT INTO alert_actions (alert_id, action, motif, note, author) VALUES "
+                             "(%s, 'classer', 'faux_positif', %s, 'MARS C2')", (a["alerte"], a["motif"]))
+                classees.append(a["alerte"])
+            else:
+                conn.execute("UPDATE alerts SET details = details || jsonb_build_object('refusion', %s::jsonb) "
+                             "WHERE id = %s", (json.dumps({**note, "decision_gardee": a["statut"]}), a["alerte"]))
+                gardees.append(a["alerte"])
+        elif a["action"] == "faible":
+            # Gravité de l'évaluation du système (pas une décision) : faible, à confirmer ; le statut ne change pas
+            conn.execute(
+                "UPDATE alerts SET severity = coalesce(details->'verification_satellite'->>'gravite_ajustee', 'faible'), "
+                "details = details || jsonb_build_object('a_confirmer', true, 'navire_compatible', %s::jsonb, "
+                "'refusion', %s::jsonb, 'contexte', jsonb_build_array(%s::text) || coalesce(details->'contexte', "
+                "'[]'::jsonb)) WHERE id = %s",
+                (json.dumps(a["navire_compatible"]), json.dumps(note), a["motif"], a["alerte"]))
+            conn.execute("INSERT INTO alert_evidence VALUES (%s, 'vessel', %s) ON CONFLICT DO NOTHING",
+                         (a["alerte"], a["navire_compatible"]["vessel_id"]))
+            faibles.append(a["alerte"])
+    annulees, notees = [], []
+    for d in plan["demandes"]:
+        motif = "; ".join(motifs[x] for x in d["alertes"] if x in motifs)[:500]
+        if d["fin"] == "annulee":
+            n = conn.execute("UPDATE demandes_observation SET etat = 'annulee', motif = %s, fini_le = now(), "
+                             "mis_a_jour_le = now() WHERE id = %s AND etat IN ('en_attente', 'planifiee') "
+                             "AND analysis_id IS NULL", (motif, d["demande"])).rowcount
+            (annulees if n else notees).append(d["demande"])
+            if n:
+                continue
+        conn.execute("UPDATE demandes_observation SET resultat_details = coalesce(resultat_details, '{}'::jsonb) || "
+                     "jsonb_build_object('refusion_viirs', %s::text), mis_a_jour_le = now() WHERE id = %s",
+                     (motif, d["demande"]))
+        if d["demande"] not in notees:
+            notees.append(d["demande"])
+    return {"appariements_changes": len(plan["appariements_changes"]), "classees": classees,
+            "decisions_gardees": gardees, "faibles": faibles, "demandes_annulees": annulees, "demandes_notees": notees}

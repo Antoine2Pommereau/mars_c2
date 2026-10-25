@@ -213,8 +213,8 @@ http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulemen
 `docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).
 
 Tests : `python -m pytest tests` (chaque test borné à 60 s) ; avec la base de test
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 46) : **537 réussis**
-(25/10/2026, fusion d'un navire à l'arrêt) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 46) : **544 réussis**
+(26/10/2026, refusion VIIRS) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
 `scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `geolocalisation`, `s2`, `s2-s3` selon le
 travail). Décomptes passés : `docs/journal.md`.
 
@@ -281,7 +281,8 @@ Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : 
 * Fusion AIS : jamais une fenêtre de temps fixe pour un navire à l'arrêt. À l'arrêt, un point toutes les dix minutes
   par l'allègement, plus la réception partielle : intervalle médian 12 min, 99e centile 60 min (mesure du 25/10/2026).
   Dernière position gardée 120 min (`fusion.arret_max_min`) ; dans le doute, DARK_SHIP faible à confirmer, jamais
-  élevée. Après un changement de la fusion : `taches.py sentinel-refusionner ID` (analyse 105, SMYRTOS).
+  élevée. Après un changement de la fusion : `taches.py sentinel-refusionner ID` (analyse 105, SMYRTOS) et
+  `viirs-refusionner --toutes --simulation` puis sans `--simulation`.
 * Un lancement manuel qui ne crée aucun travailleur est un refus (`essai_reel.refus_lancement`) : jamais
   « Essai lancé » sur un résultat sans travailleur. Réanalyser un passage : `--refaire` (jamais effacer l'ancienne).
 * Image d'AI2 Sentinel 1 : Python 3.8, imports `src.*`, `nms_thresh` entier, fenêtre d'au moins 2 300 pixels ;
