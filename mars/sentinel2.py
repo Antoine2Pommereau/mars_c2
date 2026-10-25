@@ -735,7 +735,9 @@ def fuse_analysis(conn, aid: int, rules: dict, mes: dict | None = None) -> dict:
                FROM positions p JOIN vessels v ON v.id = p.vessel_id
                WHERE p.ts BETWEEN %s AND %s
                  AND ST_Intersects(p.geom::geometry, ST_Expand(ST_MakeEnvelope(%s, %s, %s, %s, 4326), 0.05))""",
-            (t0 - timedelta(minutes=f["ais_window_min"]), t0 + timedelta(minutes=f["ais_window_min"]), *bbox)).fetchall()
+            # Avant le passage, jusqu'à la durée bornée d'un navire à l'arrêt (dernière position encore candidate)
+            (t0 - timedelta(minutes=max(f["ais_window_min"], f.get("arret_max_min", 0))),
+             t0 + timedelta(minutes=f["ais_window_min"]), *bbox)).fetchall()
         pos = pd.DataFrame(pos_rows, columns=["vessel_id", "mmsi", "name", "length_m", "ts", "lat", "lon", "sog", "cog"])
         if len(pos):
             pos["ts"] = pd.to_datetime(pos.ts, utc=True)
@@ -766,6 +768,8 @@ def fuse_analysis(conn, aid: int, rules: dict, mes: dict | None = None) -> dict:
         out["echos_fixes"] += n_fixed
         for k in ("alertes_dark_ship", "alertes_non_confirme", "alertes_incoherence", "non_evaluables"):
             out[k] += r[k]
+        out["alertes_douteuses"] = out.get("alertes_douteuses", 0) + r.get("alertes_douteuses", 0)
+        out.setdefault("alertes_ids", []).extend(r.get("alertes_ids", []))
         out["tuiles"][sid] = {"detections": len(det_f), "navires_ais": n_ais, "heure": t0.isoformat(),
                               "heure_tuile": sc.get("heure_tuile"), "masque": sc.get("masque"),
                               "decalages": extras["offsets"], "flux_coupe": cut}

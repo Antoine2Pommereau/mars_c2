@@ -28,9 +28,12 @@ def tolerance(ais: pd.DataFrame, base_radius_m: float, doppler_s: float, heading
     """Demi axes de l'ellipse de tolérance (le long de la trace, en travers) pour chaque navire AIS,
     et vecteurs unitaires de la trace et de la direction en travers, en coordonnées projetées (x est, y nord)."""
     speed = np.nan_to_num(ais.sog.to_numpy(float), nan=0.0) * 0.514444
+    # Position ancienne d'un navire à l'arrêt (mars/fusion/positions.py) : tolérance accrue avec son âge
+    extra = (np.nan_to_num(ais.tolerance_extra_m.to_numpy(float), nan=0.0) if "tolerance_extra_m" in ais
+             else np.zeros(len(ais)))
     if heading_deg is None:
         # Orientation inconnue : cercle, avec la vitesse totale comme borne du décalage
-        r = base_radius_m + doppler_s * speed
+        r = base_radius_m + doppler_s * speed + extra
         return r, r, None, None
     h = math.radians(heading_deg)
     along = np.array([math.sin(h), math.cos(h)])
@@ -38,8 +41,8 @@ def tolerance(ais: pd.DataFrame, base_radius_m: float, doppler_s: float, heading
     cog = np.radians(np.nan_to_num(ais.cog.to_numpy(float), nan=0.0))
     v = np.stack([np.sin(cog), np.cos(cog)], axis=1) * speed[:, None]
     v_range = np.abs(v @ cross)            # composante de la vitesse dirigée vers le radar
-    semi_along = base_radius_m + doppler_s * v_range
-    semi_cross = np.full(len(ais), base_radius_m)
+    semi_along = base_radius_m + doppler_s * v_range + extra
+    semi_cross = np.full(len(ais), base_radius_m) + extra
     return semi_along, semi_cross, along, cross
 
 
@@ -93,7 +96,10 @@ def match(det: pd.DataFrame, ais: pd.DataFrame, base_radius_m: float, doppler_s:
                  "name": None if pd.isna(ais["name"].iloc[j]) else str(ais["name"].iloc[j]),
                  "distance_m": round(float(dist[i, j])),
                  "tolerance_le_long_m": round(float(semi_along[j])), "tolerance_en_travers_m": round(float(semi_cross[j])),
-                 "distance_normalisee": round(float(nd[i, j]), 2)}
+                 "distance_normalisee": round(float(nd[i, j]), 2),
+                 "methode_position": str(ais["method"].iloc[j]) if "method" in ais else None,
+                 "age_position_min": (None if "age_min" not in ais or pd.isna(ais["age_min"].iloc[j])
+                                      else float(ais["age_min"].iloc[j]))}
                 for j in np.argsort(nd[i])[:3]
             ]
 

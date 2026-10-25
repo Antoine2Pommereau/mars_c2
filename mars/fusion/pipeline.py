@@ -5,6 +5,8 @@ Fonctions pures (tableaux en entrée et en sortie), utilisées par le backend. L
 import numpy as np
 import pandas as pd
 
+from mars.fusion.doute import compatible, pistes
+from mars.fusion.arret import arret_params
 from mars.fusion.positions import positions_at
 from mars.fusion.match import match, normalized_distance, tolerance
 from mars.geo import local_projector
@@ -27,7 +29,8 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
     det["x"], det["y"] = (to_xy(det.lon.to_numpy(), det.lat.to_numpy()) if len(det)
                           else (np.array([]), np.array([])))
 
-    ais = positions_at(pos, t0, pd.Timedelta(minutes=f["max_gap_min"])) if len(pos) else pd.DataFrame()
+    arret = arret_params(rules)
+    ais = positions_at(pos, t0, pd.Timedelta(minutes=f["max_gap_min"]), arret) if len(pos) else pd.DataFrame()
     if len(ais):
         # Navires candidats jusqu'à 3 km au delà du bord : l'écho d'un navire voisin peut tomber dans la zone
         m = rules["fusion"].get("edge_margin_m", 3000)
@@ -58,6 +61,12 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
     det["matched_vessel_id"] = pd.Series(
         [int(ais.vessel_id.iloc[int(m)]) if pd.notna(m) and m >= 0 else None for m in det.matched_idx],
         index=det.index, dtype=object)
+    # Règle de prudence (mars/fusion/doute.py) : un navire AIS connu dans la durée bornée peut il expliquer l'écho ?
+    tracks = pistes(pos) if len(pos) else {}
+    apparies = {int(v) for v in det.matched_vessel_id if v is not None}
+    det["doute"] = pd.Series([compatible(float(d.lon), float(d.lat), t0, tracks, arret, apparies)
+                              if d.matched_vessel_id is None and pd.isna(d.mask_reason) and tracks else None
+                              for d in det.itertuples()], index=det.index, dtype=object)
 
     # Persistance : un écho sans AIS revu au même endroit à une autre date est un écho fixe, pas un navire
     fixed_hits = []
@@ -88,7 +97,7 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
         critical = d.length_m >= dsr["critical_length_m"] and d.contrast_vv_db >= dsr["critical_contrast_db"]
         alerts.append({
             "det_index": i,
-            "severity": "critique" if critical else "elevee",
+            "severity": "faible" if d.doute else ("critique" if critical else "elevee"),
             "vessel_ids": [c["vessel_id"] for c in cands],
             "details": {
                 "objectness": round(float(d.objectness), 3), "vessel_score": round(float(d.vessel_score), 3),

@@ -1255,3 +1255,17 @@ Règles 2026.10.53 (`viirs.lune_max_absence`), migrations 45 et 46, aucun essai 
   80 % seulement) mais par son classifieur final, qui perd les navires faibles dès 60 %, masque ou pas. Seuil
   d'absence non concluante à 55 % ; la migration 46 réapplique le marquage aux granules déjà traités.
 * Tests : 521 réussis avec la base ; `verifier_images.sh viirs-lune viirs-masque` verts.
+
+## 25/10/2026 : fusion d'un navire à l'arrêt, règle de prudence, refusion
+
+Règles 2026.10.54 (section `fusion` : `arret_kn`, `arret_max_min`, `arret_derive_m_par_min`, `arret_contredit_m`,
+`doute_ratio`), aucune migration, aucun essai payant.
+* Essai réel A (analyse 105, réanalyse de 103) : détection réussie (SMYRTOS 0,966, historique S1C du 17/10 et S1D du
+  11/10), fusion ratée : la seule position AIS de SMYRTOS avait 13 min, écartée par `max_gap_min` de 10 min, d'où
+  l'alerte DARK_SHIP élevée 75182, fausse.
+* Mesure en lecture seule sur 300 navires à l'arrêt : intervalle médian 12 min, 99e centile 60 min, 68 % au delà de
+  10 min ; position encore à moins de 300 m dans 96,6 % des cas après 90 à 120 min.
+* Maintien de la dernière position d'un navire à l'arrêt 120 min, tolérance de 2,5 m par minute d'âge ; prudence :
+  DARK_SHIP faible à confirmer si un navire connu dans les 120 min peut expliquer l'écho (radar, optique, VIIRS) ;
+  `taches.py sentinel-refusionner ID`.
+* Tests : 537 réussis avec la base.

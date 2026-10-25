@@ -30,10 +30,11 @@ import json
 import math
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from mars import traces
 from mars.evaluation import GARDE_VERIFICATION, critere, motif_non_evaluable
+from mars.fusion.doute import motif_doute
 from mars.geo import distance_m
 
 STAC = "https://stac.dataspace.copernicus.eu/v1/search"
@@ -1106,7 +1107,9 @@ def fuse_analysis(conn, aid: int, rules: dict) -> dict:
                FROM positions p JOIN vessels v ON v.id = p.vessel_id
                WHERE p.ts BETWEEN %s AND %s
                  AND ST_Intersects(p.geom::geometry, ST_Expand(ST_MakeEnvelope(%s, %s, %s, %s, 4326), 0.05))""",
-            (t0 - timedelta(minutes=f["ais_window_min"]), t0 + timedelta(minutes=f["ais_window_min"]), *bbox)).fetchall()
+            # Avant le passage, jusqu'à la durée bornée d'un navire à l'arrêt (dernière position encore candidate)
+            (t0 - timedelta(minutes=max(f["ais_window_min"], f.get("arret_max_min", 0))),
+             t0 + timedelta(minutes=f["ais_window_min"]), *bbox)).fetchall()
         pos = pd.DataFrame(pos_rows, columns=["vessel_id", "mmsi", "name", "length_m", "ts", "lat", "lon", "sog", "cog"])
         if len(pos):
             pos["ts"] = pd.to_datetime(pos.ts, utc=True)
@@ -1127,10 +1130,94 @@ def fuse_analysis(conn, aid: int, rules: dict) -> dict:
         out["echos_fixes"] += n_fixed
         for k in ("alertes_dark_ship", "alertes_non_confirme", "alertes_incoherence", "non_evaluables"):
             out[k] += r[k]
+        out["alertes_douteuses"] = out.get("alertes_douteuses", 0) + r.get("alertes_douteuses", 0)
+        out.setdefault("alertes_ids", []).extend(r.get("alertes_ids", []))
         out["scenes"][scene] = {"detections": len(det_f), "navires_ais": n_ais, "direction_de_vol_deg": heading,
                                 "decalages": extras["offsets"], "flux_coupe": cut, "emprise": foot is not None}
     out["critere_evaluation"] = critere(cells)
     return out
+
+
+REFUSION_TYPES = ("DARK_SHIP", "AIS_UNCONFIRMED", "IDENTITY_MISMATCH")
+
+
+def refusionner(conn, aid: int, rules: dict) -> dict:
+    """Refait la fusion d'une analyse terminée à partir de ses détections en base, sans travailleur ni coût (après un
+    changement des règles de fusion : analyse 105, SMYRTOS au mouillage). Détections réécrites (navire apparié, masque) ;
+    alertes de l'analyse mises à jour en place, jamais effacées : celles que la nouvelle fusion ne lève plus sont
+    classées automatiquement avec leur motif si personne n'a encore décidé (statut « nouvelle ») ; une décision d'un
+    opérateur reste, la refusion n'ajoute qu'une note dans les détails."""
+    a = conn.execute("SELECT source, status, pass_id FROM analyses WHERE id = %s", (aid,)).fetchone()
+    if a is None:
+        return {"refus": f"analyse {aid} inconnue"}
+    source, status, pass_id = a
+    if source not in ("sentinel1", "sentinel2"):
+        return {"refus": f"analyse {aid} : source {source}, refusion pour Sentinel 1 ou 2 seulement"}
+    if status != "done":
+        return {"refus": f"analyse {aid} : état {status}, refusion d'une analyse terminée seulement"}
+    avant = conn.execute(
+        """SELECT DISTINCT a.id, a.type, a.status, a.severity FROM alerts a
+           JOIN alert_evidence e ON e.alert_id = a.id AND e.evidence_type = 'analysis' AND e.evidence_id = %s
+           WHERE a.type = ANY(%s)""", (aid, list(REFUSION_TYPES))).fetchall()
+    appariees_avant = conn.execute("SELECT count(*) FROM detections WHERE analysis_id = %s AND matched_vessel_id IS NOT NULL",
+                                   (aid,)).fetchone()[0]
+    with traces.span("sentinel.refusion", **{"sentinel.analyse": aid, "sentinel.source": source,
+                                             "sentinel.alertes_avant": len(avant)}) as sp:
+        if source == "sentinel1":
+            summary = fuse_analysis(conn, aid, rules)
+        else:
+            from mars import sentinel2
+            summary = sentinel2.fuse_analysis(conn, aid, rules)
+        levees = set(summary.get("alertes_ids") or [])
+        quand = datetime.now(timezone.utc)
+        classees, gardees = [], []
+        for alert_id, kind, st, _sev in avant:
+            if alert_id in levees:
+                continue
+            motif = _motif_refusion(conn, alert_id, kind, aid)
+            note = {"le": quand.isoformat(), "version_regles": rules["version"], "motif": motif}
+            if st == "nouvelle":
+                conn.execute("UPDATE alerts SET status = 'classee', details = details || jsonb_build_object("
+                             "'refusion', %s::jsonb) WHERE id = %s", (json.dumps(note), alert_id))
+                conn.execute("INSERT INTO alert_actions (alert_id, action, motif, note, author) VALUES "
+                             "(%s, 'classer', 'faux_positif', %s, 'MARS C2')", (alert_id, motif))
+                classees.append(alert_id)
+            else:                                     # décision d'un opérateur : elle reste
+                conn.execute("UPDATE alerts SET details = details || jsonb_build_object('refusion', %s::jsonb) "
+                             "WHERE id = %s", (json.dumps({**note, "decision_gardee": st}), alert_id))
+                gardees.append(alert_id)
+        summary = {**summary, "refusion": {"le": quand.isoformat(), "version_regles": rules["version"],
+                                           "appariees_avant": appariees_avant, "classees": classees,
+                                           "decisions_gardees": gardees}}
+        conn.execute("UPDATE analyses SET summary = %s WHERE id = %s", (json.dumps(summary, default=str), aid))
+        sp.set_attributes({"sentinel.appariees_avant": appariees_avant, "sentinel.appariees": summary.get("appariees", 0),
+                           "sentinel.alertes_classees": len(classees), "sentinel.decisions_gardees": len(gardees),
+                           "sentinel.alertes_douteuses": summary.get("alertes_douteuses", 0)})
+    return {"analyse": aid, "passage": pass_id, "appariees_avant": appariees_avant,
+            "appariees": summary.get("appariees", 0), "alertes_classees": classees, "decisions_gardees": gardees,
+            "alertes_douteuses": summary.get("alertes_douteuses", 0), "alertes_levees": sorted(levees)}
+
+
+def _motif_refusion(conn, alert_id: int, kind: str, aid: int) -> str:
+    """Pourquoi la nouvelle fusion ne lève plus cette alerte : navire apparié à l'écho (avec la méthode de position),
+    ou écho masqué, ou navire désormais confirmé par un écho."""
+    r = conn.execute(
+        """SELECT d.id, d.mask_reason, v.name, v.mmsi, round(ST_Distance(d.geom, p.geom))
+           FROM alert_evidence e JOIN detections d ON d.id = e.evidence_id
+           LEFT JOIN vessels v ON v.id = d.matched_vessel_id
+           LEFT JOIN LATERAL (SELECT geom FROM positions WHERE vessel_id = d.matched_vessel_id
+                              AND ts BETWEEN coalesce(d.ts, now()) - interval '2 hours' AND coalesce(d.ts, now())
+                              ORDER BY ts DESC LIMIT 1) p ON true
+           WHERE e.alert_id = %s AND e.evidence_type = 'detection' LIMIT 1""", (alert_id,)).fetchone()
+    if r and r[2] is not None:
+        dist = f", dernière position AIS à {r[4]:.0f} m" if r[4] is not None else ""
+        return (f"Refusion de l'analyse {aid} : écho apparié à {r[2]} (MMSI {r[3]}){dist}, position d'un navire à "
+                "l'arrêt gardée jusqu'à 120 min : pas un navire sombre")
+    if r and r[1]:
+        return f"Refusion de l'analyse {aid} : écho écarté ({r[1]})"
+    if kind == "AIS_UNCONFIRMED":
+        return f"Refusion de l'analyse {aid} : un écho compatible confirme désormais ce navire"
+    return f"Refusion de l'analyse {aid} : alerte non relevée par les règles de fusion en vigueur"
 
 
 def fenetres_lues(sc: dict, mesures: list | None) -> list[dict]:
@@ -1187,7 +1274,11 @@ def _record_fixed(conn, det, hits, t0) -> int:
         did = int(d.id)
         prior = [r["ref"] for r in hit["refs"] if r["source"] == "detection"]
         registry = [r["ref"] for r in hit["refs"] if r["source"] == "registre"]
-        if registry:
+        deja = conn.execute("SELECT EXISTS (SELECT 1 FROM fixed_echoes WHERE %s = ANY(detection_ids))",
+                            (did,)).fetchone()[0]
+        if deja:
+            pass                                      # refusion : cette détection est déjà comptée
+        elif registry:
             conn.execute("UPDATE fixed_echoes SET observations = observations + 1, last_seen = greatest(last_seen, %s), "
                          "first_seen = least(first_seen, %s), detection_ids = detection_ids || %s::bigint[] WHERE id = %s",
                          (t0, t0, [did], registry[0]))
@@ -1229,7 +1320,8 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
     from mars.viirs import severity
     cap = {**RADAR, **(capteur or {})}
     s, v = rules["sentinel"], rules["viirs"]
-    out = {"alertes_dark_ship": 0, "alertes_non_confirme": 0, "alertes_incoherence": 0, "non_evaluables": 0}
+    out = {"alertes_dark_ship": 0, "alertes_non_confirme": 0, "alertes_incoherence": 0, "non_evaluables": 0,
+           "alertes_ids": []}
     ais = extras["ais"]
     for _, d in det.iterrows():
         did = int(d.id)
@@ -1275,6 +1367,14 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
             sev, to_confirm = severity(bool(infra), bool(liste), coast_km, rules)
             to_confirm = to_confirm or cap["a_confirmer"]
             ctx = list(cap["contexte"])
+            doute = getattr(d, "doute", None)
+            doute = doute if isinstance(doute, dict) else None
+            if doute:
+                # Prudence : un navire AIS connu dans la durée bornée peut expliquer l'écho, jamais une alerte élevée
+                nom = conn.execute("SELECT name FROM vessels WHERE id = %s", (doute["vessel_id"],)).fetchone()
+                doute["name"] = nom and nom[0]
+                sev, to_confirm = "faible", True
+                ctx.append(motif_doute(doute, doute["name"]))
             if to_confirm:
                 ctx.append("À confirmer : l'AIS peut être incomplet (un point par minute, réception partielle) et la "
                            "petite pêche n'a pas l'obligation d'AIS")
@@ -1287,14 +1387,17 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
             details = {**common, **attrs, "distance_cote_km": None if coast_km is None else round(coast_km, 1),
                        "infrastructure": infra, "navire_liste": liste, "candidats_ais": cands, "contexte": ctx,
                        "a_confirmer": to_confirm, "critere_evaluation": critere(cells), "ais_navires_rayon": around,
+                       "navire_compatible": doute,
                        "motif": cap["dark"],
                        "parametres": {"rayon_base_m": rules["fusion"]["base_radius_m"],
                                       "doppler_s": rules["fusion"]["doppler_s"], "confiance": cap.get("confiance",
                                                                                                      s["confiance"])}}
             if _alert(conn, "DARK_SHIP", sev, t0, float(d.lon), float(d.lat), details, rules,
                       f"{cap['cles'][0]}:{scene}:{float(d.lon):.4f}:{float(d.lat):.4f}",
-                      [("detection", did), ("analysis", aid)] + ([("vessel", liste["vessel_id"])] if liste else [])):
+                      [("detection", did), ("analysis", aid)] + ([("vessel", liste["vessel_id"])] if liste else [])
+                      + ([("vessel", doute["vessel_id"])] if doute else []), out):
                 out["alertes_dark_ship"] += 1
+                out["alertes_douteuses"] = out.get("alertes_douteuses", 0) + bool(doute)
         elif vid is not None and len(ais):
             # Écho apparié : longueur et cap mesurés contre la déclaration AIS
             a = ais[ais.vessel_id == vid].iloc[0]
@@ -1316,7 +1419,7 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
                                                             "cap_ecart_min_deg", "cap_ecart_max_deg")}}
                 if _alert(conn, "IDENTITY_MISMATCH", "moyenne" if listed else "faible", t0, float(d.lon),
                           float(d.lat), details, rules, f"{cap['cles'][1]}:{scene}:{vid}",
-                          [("detection", did), ("analysis", aid), ("vessel", vid)]):
+                          [("detection", did), ("analysis", aid), ("vessel", vid)], out):
                     out["alertes_incoherence"] += 1
     # Grands navires AIS sans écho : seulement dans l'emprise réelle de la scène, au large, là où l'AIS est fiable
     for x in extras["unconfirmed"]:
@@ -1341,7 +1444,7 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
                    "contexte": ["Le détecteur manque une partie des navires : indice à recouper, pas une preuve"],
                    "parametres": dict(rules["unconfirmed"])}
         if _alert(conn, "AIS_UNCONFIRMED", "moyenne" if big else "faible", t0, x["lon"], x["lat"], details, rules,
-                  f"{cap['cles'][2]}:{scene}:{x['vessel_id']}", [("analysis", aid), ("vessel", x["vessel_id"])]):
+                  f"{cap['cles'][2]}:{scene}:{x['vessel_id']}", [("analysis", aid), ("vessel", x["vessel_id"])], out):
             out["alertes_non_confirme"] += 1
     return out
 
@@ -1372,9 +1475,9 @@ def _context(conn, did: int, t0: datetime, v: dict):
     return r[0], r[1]
 
 
-def _alert(conn, kind, sev, t0, lon, lat, details, rules, key, evidence):
+def _alert(conn, kind, sev, t0, lon, lat, details, rules, key, evidence, out: dict | None = None):
     """Alerte d'une analyse Sentinel 1 ou 2 ; None si sa règle est en observation (épisode compté) ou coupée au
-    panneau de contrôle (lot P)."""
+    panneau de contrôle (lot P). `out` : identifiants des alertes levées ou mises à jour (refusion)."""
     from mars import controle
     sev = controle.filtrer_sync(conn, rules, kind, details, key, sev, lon, lat)     # zone de vigilance appliquée
     if sev is None:
@@ -1390,6 +1493,8 @@ def _alert(conn, kind, sev, t0, lon, lat, details, rules, key, evidence):
          controle.stamp(conn, rules))).fetchone()[0]
     for et, eid in evidence:
         conn.execute("INSERT INTO alert_evidence VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", (aid, et, eid))
+    if out is not None:
+        out.setdefault("alertes_ids", []).append(aid)
     return aid
 
 

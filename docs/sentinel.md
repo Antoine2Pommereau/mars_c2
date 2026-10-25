@@ -761,3 +761,42 @@ avec le polynôme, 0,879 avec la spline : un score à quelques centièmes du seu
 « terre ». Avec l'historique, le navire en route monte nettement (0,962), les rochers et les quais tombent à 0,54 au
 plus. Les navires à quai ne sortent ni avec ni sans historique au seuil de 0,9 : le modèle ne sait pas les séparer
 du quai, et notre sélection en mer écarte déjà ces points de déclenchement (lot C5).
+
+## Fusion d'un navire à l'arrêt (25/10/2026, règles 2026.10.54)
+
+Analyse 105 (réanalyse de 103, passage 779, historique S1C du 17/10 et S1D du 11/10) : la détection 4 (23/10/2026
+17:57:17, 252 m, score 0,966) est SMYRTOS au mouillage, à 143 m de sa position AIS, mais n'a pas été appariée et a levé
+l'alerte DARK_SHIP élevée 75182. **Cause** : la seule position de SMYRTOS dans l'heure date de 17:44:13 (0,1 nœud ;
+réception AISStream partielle côté anglais, un point toutes les dix minutes à l'arrêt par notre allègement), soit
+13 min avant le passage ; la fusion la lisait (fenêtre de 15 min) puis l'écartait (`max_gap_min` de 10 min) : plus aucun
+navire candidat, et la proximité de SMYRTOS, navire des listes, a rendu l'alerte élevée.
+
+**Mesure sur le serveur** (lecture seule, 300 navires de plus de 50 m à l'arrêt, 23 et 24/10) :
+
+| Âge de la position après un point à l'arrêt | Paires | Encore à moins de 300 m | 95e centile de la distance |
+|---|---|---|---|
+| moins de 20 min | 22 858 | 99,5 % | 29 m |
+| 20 à 60 min | 7 292 | 99,7 % | 29 à 55 m |
+| 60 à 120 min | 245 | 96,6 à 97,8 % | 134 à 144 m |
+| 120 à 180 min | 47 | 93,6 % | 729 m |
+| plus de 180 min | 83 | 85,5 % | 2 797 m |
+
+Intervalle entre deux positions d'un navire à l'arrêt : médiane 12 min, 90e centile 24 min, 99e centile 60 min ;
+**68 % des intervalles dépassent les 10 min** de l'ancienne fusion : le défaut était systématique.
+
+**Correction** (`mars/fusion/arret.py`, `positions.py`, `doute.py`, section `fusion` des règles) :
+* un navire à l'arrêt (sous 1 nœud) garde sa dernière position comme candidate **120 min**, sauf si une position plus
+  récente la contredit (en route, ou à plus de 300 m) ; tolérance accrue de **2,5 m par minute** d'âge (333 m à
+  13 min, 600 m à 2 h) ; un navire en route reste à l'estime de 10 min au plus ;
+* positions lues jusqu'à 120 min avant le passage (Sentinel 1, Sentinel 2, VIIRS) ;
+* **prudence** : un écho sans navire apparié, mais qu'un navire AIS connu dans les 120 min peut encore expliquer
+  (estime, rayon de base, dérive, plus 20 % du chemin parcouru ; navires déjà appariés écartés), donne une alerte
+  DARK_SHIP **faible, à confirmer**, jamais élevée, avec ce navire en preuve (`navire_compatible`) ;
+* `taches.py sentinel-refusionner ID` : fusion refaite sur les détections en base, gratuite, tracée
+  (`sentinel.refusion`), tout ou rien ; alertes mises à jour en place, jamais effacées ; celles que la fusion ne lève
+  plus sont classées par MARS C2 avec leur motif (faux positif) si elles sont encore « nouvelles », sinon la décision
+  de l'opérateur reste et une note s'ajoute ; échos fixes comptés une seule fois.
+
+Même famille de défaut : Sentinel 2 utilise la même fusion (10 min) ; VIIRS acceptait 20 min d'estime. Les deux
+bénéficient du maintien à l'arrêt et de la règle de prudence. Tests : `tests/test_fusion_arret.py` (cas exact de
+SMYRTOS, vrai navire sombre synthétique qui reste une alerte, décisions d'opérateurs, VIIRS à 40 min).

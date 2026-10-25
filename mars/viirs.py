@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from mars import traces
 from mars.ais.live import ZONES
 from mars.evaluation import GARDE_VERIFICATION, critere, motif_non_evaluable
+from mars.fusion.doute import motif_doute
 from mars.geo import distance_m
 from mars.satellites import extent
 
@@ -217,19 +218,43 @@ def position_at(track: list[dict], t: datetime, max_min: float):
     return near["lon"] + dlon, near["lat"] + dlat, abs(dt)
 
 
+def arret_viirs(rules: dict) -> dict:
+    """Maintien à l'arrêt (mars/fusion/positions.py) avec la tolérance de base du capteur VIIRS (pixel de 750 m)."""
+    from mars.fusion.arret import arret_params
+    return {**arret_params(rules), "base_m": float(rules["viirs"]["tolerance_m"])}
+
+
+def position_ou_arret(track: list[dict], t: datetime, max_min: float, arret: dict | None):
+    """Position à l'instant t (interpolation ou estime, `position_at`), sinon dernière position d'un navire à l'arrêt
+    encore valable : (lon, lat, durée d'estime ou âge en s, tolérance ajoutée en m), ou None."""
+    pos = position_at(track, t, max_min)
+    if pos is not None:
+        return (*pos, 0.0)
+    if not arret:
+        return None
+    from mars.fusion.arret import maintien_arret
+    m = maintien_arret(track, t, arret)
+    if m is None:
+        return None
+    b, age = m
+    return b["lon"], b["lat"], age * 60, arret["derive_m_par_min"] * age
+
+
 def match(dets: list[dict], tracks: dict[int, list[dict]], rules: dict) -> dict[int, tuple[int, float]]:
     """Appariement glouton un pour un, par distance croissante : détection (indice) vers (navire, distance). La
-    tolérance est celle du capteur (pixel de 750 m), augmentée de la moitié du chemin parcouru pendant l'estime."""
+    tolérance est celle du capteur (pixel de 750 m), augmentée de la moitié du chemin parcouru pendant l'estime, ou,
+    pour la position ancienne d'un navire à l'arrêt (120 min au plus), de la dérive admise selon son âge."""
     v = rules["viirs"]
+    arret = arret_viirs(rules) if "fusion" in rules else None
     cands = []
     for i, d in enumerate(dets):
         for vid, tr in tracks.items():
-            pos = position_at(tr, d["ts"], v["estime_max_min"])
+            pos = position_ou_arret(tr, d["ts"], v["estime_max_min"], arret)
             if pos is None:
                 continue
             dist = haversine_m(d["lon"], d["lat"], pos[0], pos[1])
             sog = max((p.get("sog") or 0.0) for p in tr)
-            tol = v["tolerance_m"] + v["estime_marge_ratio"] * sog * KNOT * pos[2]
+            tol = v["tolerance_m"] + (pos[3] if pos[3] else v["estime_marge_ratio"] * sog * KNOT * pos[2])
             if dist <= tol:
                 cands.append((dist, i, vid))
     out, used = {}, set()
@@ -451,7 +476,9 @@ def _ingest_granule(conn, gid, g, start, end, frame, p, rules, v, new_ids, image
     if dets:
         box = (min(d["lon"] for d in dets) - 0.2, min(d["lat"] for d in dets) - 0.2,
                max(d["lon"] for d in dets) + 0.2, max(d["lat"] for d in dets) + 0.2)
-        matched = match(dets, _tracks(conn, start, end, box, v["estime_max_min"]), rules)
+        # Positions lues jusqu'à la durée bornée d'un navire à l'arrêt (fusion.arret_max_min) avant le granule
+        marge = max(v["estime_max_min"], int(rules.get("fusion", {}).get("arret_max_min", 0)))
+        matched = match(dets, _tracks(conn, start, end, box, marge), rules)
     else:
         matched = {}
     for i, d in enumerate(dets):
@@ -594,12 +621,17 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
         if to_confirm:
             context.insert(0, "À confirmer : l'AIS peut être incomplet (un point par minute, réception partielle) et la "
                               "petite pêche n'a pas l'obligation d'AIS")
+        doute = _doute(conn, did, ts, lon, lat, rules)
+        if doute:
+            # Prudence : un navire AIS connu dans la durée bornée peut expliquer la lumière, jamais une alerte élevée
+            sev, to_confirm = "faible", True
+            context.insert(0, motif_doute(doute, doute.get("name")))
         details = {
             "source": "viirs", "detection_id": did, "satellite": sat, "granule": nom, "nuit": str(nuit),
             "heure": ts.isoformat(), "nanowatts": nw, "lune": lune, "ciel_clair": ciel,
             "distance_cote_km": None if cote_m is None else round(cote_m / 1000, 1),
             "infrastructure": infra, "navire_liste": liste, "candidats_ais": cands, "contexte": context,
-            "a_confirmer": to_confirm, "ais_proche_m": ais_m, "ais_navires_rayon": around,
+            "a_confirmer": to_confirm, "ais_proche_m": ais_m, "ais_navires_rayon": around, "navire_compatible": doute,
             "critere_evaluation": critere(cells),
             "motif": "Lumière en mer la nuit, sans navire AIS compatible alors que l'AIS est reçu alentour, loin des côtes "
                      "et absente les autres nuits",
@@ -623,8 +655,27 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
         conn.execute("INSERT INTO alert_evidence VALUES (%s, 'viirs', %s) ON CONFLICT DO NOTHING", (aid, did))
         if liste:
             conn.execute("INSERT INTO alert_evidence VALUES (%s, 'vessel', %s) ON CONFLICT DO NOTHING", (aid, liste["vessel_id"]))
+        if doute:
+            conn.execute("INSERT INTO alert_evidence VALUES (%s, 'vessel', %s) ON CONFLICT DO NOTHING", (aid, doute["vessel_id"]))
         n += 1
     return n
+
+
+def _doute(conn, did: int, ts: datetime, lon: float, lat: float, rules: dict) -> dict | None:
+    """Navire AIS connu dans la durée bornée qui peut expliquer la détection (mars/fusion/doute.py), hors navires déjà
+    appariés à une autre détection du même granule."""
+    from mars.fusion.doute import compatible
+    arret = arret_viirs(rules)
+    box = (lon - 0.3, lat - 0.2, lon + 0.3, lat + 0.2)
+    tracks = _tracks(conn, ts, ts, box, int(arret["max_min"]))
+    exclus = {r[0] for r in conn.execute(
+        "SELECT matched_vessel_id FROM viirs_detections WHERE granule_id = (SELECT granule_id FROM viirs_detections "
+        "WHERE id = %s) AND matched_vessel_id IS NOT NULL", (did,)).fetchall()}
+    c = compatible(lon, lat, ts, tracks, arret, exclus)
+    if c:
+        r = conn.execute("SELECT name FROM vessels WHERE id = %s", (c["vessel_id"],)).fetchone()
+        c["name"] = r and r[0]
+    return c
 
 
 # Bilan des nuits (lot Z6) : lecture seule, une ligne par nuit depuis une date, nuits absentes comprises

@@ -42,6 +42,7 @@ Usage :
     python scripts/taches.py operateur-hacher [NOM]   # lot P : ligne MARS_OPERATEURS du .env (connexion au panneau)
     python scripts/taches.py controle-diagnostic      # lignes MARS_OPERATEURS lues par taches et par l'API (lecture seule)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
+    python scripts/taches.py sentinel-refusionner ID   # fusion refaite sur les détections en base (gratuit)
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
     python scripts/taches.py essai-reel               # lot Z6 : prêt pour un essai réel ? candidats (lecture seule)
     python scripts/taches.py essai-reel --lancer ID   # un essai réel sur le passage ID, types éprouvés seulement
@@ -1032,6 +1033,33 @@ def _controle_diagnostic(_conn, _a):
 
 commande("sentinel")(_sentinel(False))
 commande("sentinel-analyser")(_sentinel(True))
+
+
+@commande("sentinel-refusionner")                    # gratuit : fusion refaite sur les détections en base
+def _sentinel_refusionner(conn, a):
+    """taches.py sentinel-refusionner ID : refait la fusion de l'analyse ID (Sentinel 1 ou 2, terminée) avec les règles
+    en vigueur, sans travailleur ; alertes mises à jour en place, jamais effacées, décisions des opérateurs gardées.
+    Tout ou rien (une transaction), consigné dans task_runs (sentinel_refusion) et tracé."""
+    from mars import sentinel, travailleurs
+    if not a.args or not a.args[0].isdigit():
+        raise SystemExit("Préciser l'identifiant de l'analyse : taches.py sentinel-refusionner ID (table analyses)")
+    aid = int(a.args[0])
+    vu = {}
+
+    def refaire():
+        with conn.transaction():
+            r = sentinel.refusionner(conn, aid, regles(conn))
+        if "refus" in r:
+            vu["refus"] = r["refus"]
+            raise travailleurs.RefusLancement(r["refus"])      # tâche en échec avec son motif, sans trace d'erreur
+        return r
+    r = run(conn, "sentinel_refusion", refaire, parent=traces.traceparent())
+    if r is None:
+        raise SystemExit(f"REFUS : {vu['refus']}" if "refus" in vu else 1)
+    print(f"Analyse {aid} refusionnée : {r['appariees_avant']} écho(s) apparié(s) avant, {r['appariees']} après ; "
+          f"alertes classées automatiquement {r['alertes_classees'] or 'aucune'}, décisions d'opérateurs gardées "
+          f"{r['decisions_gardees'] or 'aucune'}, alertes levées ou mises à jour {r['alertes_levees'] or 'aucune'} "
+          f"(dont {r['alertes_douteuses']} à confirmer) ; trace {traces.trace_id()}")
 
 
 @commande("sentinel2-analyser")                      # essai réel : SENTINEL_PLAFOND_ESSAI=1 (Sentinel 2 coupé)

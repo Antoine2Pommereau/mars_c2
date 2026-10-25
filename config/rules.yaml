@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.53"
+version: "2026.10.54"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -15,7 +15,19 @@ masks:
 
 fusion:
   ais_window_min: 15     # positions AIS lues autour de t0
-  max_gap_min: 10        # interpolation ou estime au plus 10 minutes
+  max_gap_min: 10        # interpolation ou estime au plus 10 minutes (navire en route)
+  # Navire à l'arrêt (sous 1 nœud) : sa dernière position reste candidate 120 min, sans position plus récente qui la
+  # contredise (en route, ou à plus de 300 m), tolérance accrue de 2,5 m par minute d'âge. Mesure du 25/10/2026 sur le
+  # serveur (300 navires à l'arrêt, 30 525 paires) : intervalle médian 12 min, 99e centile 60 min ; encore à moins de
+  # 300 m dans 96,6 % des cas de 90 à 120 min, 93,6 % de 120 à 180 min ; 95e centile de la distance 144 m à 120 min.
+  # Analyse 105 : SMYRTOS au mouillage, une seule position à 13 min du passage, écho à 143 m, alerte DARK_SHIP fausse
+  arret_kn: 1.0
+  arret_max_min: 120
+  arret_derive_m_par_min: 2.5
+  arret_contredit_m: 300
+  # Prudence (DARK_SHIP radar, optique, VIIRS) : un navire AIS connu dans les 120 min qui peut encore expliquer l'écho
+  # (estime, rayon de base, dérive à l'arrêt, plus 20 % du chemin parcouru) rend l'alerte faible et à confirmer
+  doute_ratio: 0.2
   base_radius_m: 300
   doppler_s: 150         # décalage le long de la trace = doppler_s x vitesse vers le radar (m/s) ; phase 0 : jusqu'à 730 m
   # Direction de vol de Sentinel 1 à ces latitudes, selon le sens de l'orbite : la tolérance est une ellipse
