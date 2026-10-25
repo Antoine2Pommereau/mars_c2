@@ -44,6 +44,8 @@ Usage :
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-refusionner ID   # fusion refaite sur les détections en base (gratuit)
     python scripts/taches.py viirs-refusionner --toutes --simulation   # appariement VIIRS refait (lecture seule)
+    python scripts/taches.py tip-rejeu [JOURS]          # demandes qu'auraient données les jours passés (lecture seule)
+    python scripts/taches.py tip-and-cue-bilan [--du AAAA-MM-JJ]   # suivi quotidien de tip and cue (lecture seule)
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
     python scripts/taches.py essai-reel               # lot Z6 : prêt pour un essai réel ? candidats (lecture seule)
     python scripts/taches.py essai-reel --lancer ID   # un essai réel sur le passage ID, types éprouvés seulement
@@ -811,6 +813,53 @@ def _tip_rejeu(conn, a):
         print(f"  délai du tip au passage : médiane {delais[len(delais) // 2]} h, de {delais[0]} à {delais[-1]} h")
     print(f"  {r['sessions']} session(s) ({r['sessions_par_jour']} par jour), {r['fenetres']} fenêtre(s), "
           f"{r['cout_eur']:.2f} € sur la période, environ {r['cout_mois_eur']:.2f} € par mois".replace(".", ","))
+    plafond = load_rules()["sentinel"]["scenes_max_par_jour"]
+    print(f"  sous le plafond de {plafond} scènes par jour : {r['cout_plafond_eur']:.2f} € sur la période, environ "
+          f"{r['cout_plafond_mois_eur']:.2f} € par mois".replace(".", ","))
+    print(f"\n  {'jour':<10} {'tips':>5} {'demandes':>9} {'retenues':>9} {'contenance':>11} {'sessions':>9} "
+          f"{'plafonnées':>11} {'fenêtres':>9} {'coût':>7} {'plafonné':>9}")
+    for j, d in r["par_jour"].items():
+        print(f"  {j:<10} {d.get('tips', 0):>5} {d.get('demandes', 0):>9} {d.get('retenues', 0):>9} "
+              f"{d.get('contenance', 0):>11} {d['sessions']:>9} {d['sessions_plafond']:>11} {d['fenetres']:>9} "
+              f"{d['cout_eur']:>7.2f} {d['cout_plafond_eur']:>9.2f}".replace(".", ","))
+    print(f"\n  Demandes retenues ({len(r['navires'])}) :")
+    for n in r["navires"]:
+        qui = f"{n['name'] or n['vessel_id']} (MMSI {n['mmsi']})" if n["vessel_id"] else f"point {n['lon']}, {n['lat']}"
+        cont = f", contenance {100 * n['contenance']:.0f} %" if n.get("contenance") is not None else ""
+        print(f"    {n['tip']:<12} {qui} : passage {n['passage']} le {n['heure_passage'][:16].replace('T', ' ')} UTC, "
+              f"délai {n['delai_h']} h, {n['fenetres']} fenêtre(s){cont}")
+
+
+@commande("tip-and-cue-bilan")                       # lecture seule : suivi quotidien de tip and cue
+def _tip_and_cue_bilan(conn, a):
+    """Une ligne par jour depuis --du (7 jours par défaut) : demandes créées, planifiées, analysées, résultats, fins
+    sans analyse, travailleurs et coût ; puis travailleurs en vie, scènes du jour, budget du mois, interrupteurs."""
+    from mars import tip_and_cue
+    du = a.du or (datetime.now(timezone.utc).date() - timedelta(days=7))
+    b = tip_and_cue.bilan(conn, du, regles(conn))
+    traces.attributs(**{"tip.bilan_jours": len(b["jours"]), "tip.bilan_vivants": len(b["vivants"])})
+    etat = lambda src: b["pauses"][src] or "en service"
+    print(f"Tip and cue depuis le {du:%d/%m/%Y} ({'actif' if b['actif'] else 'coupé dans les règles'}) ; "
+          f"tip and cue : {etat('tip_and_cue')} ; Sentinel 1 : {etat('sentinel1')} ; Sentinel 2 : {etat('sentinel2')}")
+    print(f"  {'jour':<10} {'créées':>6} {'planif.':>7} {'analys.':>7} {'apparié':>8} {'sans AIS':>9} {'absent':>7} "
+          f"{'non éval.':>9} {'sans pass.':>10} {'expirées':>8} {'refusées':>8} {'annulées':>8} {'actives':>7} "
+          f"{'trav.':>5} {'coût':>6}")
+    for j in b["jours"]:
+        print(f"  {j['jour']:%d/%m/%Y} {j['creees']:>6} {j['planifiees']:>7} {j['analysees']:>7} {j['present_apparie']:>8} "
+              f"{j['present_sans_ais']:>9} {j['absent']:>7} {j['non_evaluable']:>9} {j['sans_passage']:>10} "
+              f"{j['expirees']:>8} {j['refusees']:>8} {j['annulees']:>8} {j['actives']:>7} {j['travailleurs']:>5} "
+              f"{float(j['cout_eur']):>6.2f}".replace(".", ","))
+    tot = sum(float(j["cout_eur"]) for j in b["jours"])
+    print(f"Total : {sum(j['creees'] for j in b['jours'])} demandes, {sum(j['analysees'] for j in b['jours'])} "
+          f"analysées, {sum(j['present_sans_ais'] for j in b['jours'])} présentes sans AIS, {tot:.2f} € HT ; "
+          f"scènes aujourd'hui {b['scenes_aujourd_hui']} sur {b['plafond_scenes']} ; dépense Sentinel du mois "
+          f"{b['depense_mois_eur']:.2f} € sur {b['budget_mois_eur']:.2f} €".replace(".", ","))
+    if b["vivants"]:
+        for v in b["vivants"]:
+            print(f"  TRAVAILLEUR EN VIE : {v['id']} {v['tache']} {v['type']} en {v['zone']}, {v['etat']}, créé le "
+                  f"{v['cree_le']:%d/%m %H:%M} UTC")
+    else:
+        print("  Aucun travailleur en vie.")
 
 
 def _instant(texte: str) -> datetime:

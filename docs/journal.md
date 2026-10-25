@@ -1280,3 +1280,12 @@ Aucune règle changée (2026.10.54), aucune migration, aucun essai payant.
   navire AIS à moins de 15 km entre 00:20 et 02:20 ; le seul proche (CIRTA, 13 nœuds) était à 5,8 km 80 min avant. La
   refusion ne l'explique pas : ce n'est pas un défaut de fusion (petit navire sans AIS possible).
 * Tests : 544 réussis avec la base.
+
+## 26/10/2026 : préparation d'une semaine réelle de tip and cue (Sentinel 1)
+
+Règles 2026.10.55 (`travailleurs.types_eprouves_seuls`), aucune migration, aucun essai payant.
+* Défaut trouvé : hors essai réel, une rupture de GP1-S aurait lancé POP2-8C-32G, jamais éprouvé ; refusé désormais
+  pour Sentinel 1 et 2, l'analyse attend.
+* Rejeu enrichi (par jour, coût brut et sous le plafond, demandes retenues et navires) ; alertes classées écartées
+  du rejeu comme de la collecte en direct ; `taches.py tip-and-cue-bilan --du`.
+* Tests : 547 réussis avec la base.

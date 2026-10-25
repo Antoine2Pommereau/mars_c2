@@ -644,12 +644,13 @@ def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante=
     refus = quota(rules, today, now, tache)
     if refus:
         return {"refus": refus}
-    if ESSAI_EPROUVES_SEULS:
+    if ESSAI_EPROUVES_SEULS or tache in (p.get("types_eprouves_seuls") or []):
         zone_essai = t.get("zone", p["zone"])
         if (t["commercial_type"], zone_essai) not in eprouves(conn):
             traces.attributs(**{"travailleur.refus_non_eprouve": True})
-            return {"refus": f"essai réel : {t['commercial_type']} en {zone_essai} jamais éprouvé (aucun travailleur "
-                             "abouti sur ce type), lancement refusé"}
+            quoi = "essai réel" if ESSAI_EPROUVES_SEULS else tache
+            return {"refus": f"{quoi} : {t['commercial_type']} en {zone_essai} jamais éprouvé (aucun travailleur "
+                             "abouti sur ce type), lancement refusé", "non_eprouve": True}
     ip, pn = os.environ.get("MARS_IP_PRIVEE"), os.environ.get("SCW_PRIVATE_NETWORK_ID")
     if not ip or not pn:
         return {"refus": "réseau privé non configuré (MARS_IP_PRIVEE, SCW_PRIVATE_NETWORK_ID)"}

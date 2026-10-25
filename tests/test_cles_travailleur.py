@@ -167,7 +167,9 @@ def test_sentinel_cloud_init_carries_neither_task_nor_keys(conn, monkeypatch):
     monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "SECRETTRAV")
     scw = FakeScw()
     params = {"scenes": [{"id": "S1D_X", "vv": "s3://eodata/x/vv.tiff", "vh": "s3://eodata/x/vh.tiff"}]}
-    out = T.launch(conn, scw, load_rules(), "sentinel", params, {}, sleep=lambda _s: None)
+    regles = load_rules()
+    regles["travailleurs"]["types_eprouves_seuls"] = []   # fausse instance : garde testée ailleurs
+    out = T.launch(conn, scw, regles, "sentinel", params, {}, sleep=lambda _s: None)
     assert "travailleur" in out, out
     wid = out["travailleur"]
     text = next(iter(scw.servers.values()))["cloud"]

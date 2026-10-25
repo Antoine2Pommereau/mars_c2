@@ -239,3 +239,30 @@ tour, aucun redémarrage).
   couvrent le cercle.
 * Le regroupement par zone ne vaut que pour les tips sans navire (VIIRS, point) à moins de 10 km.
 * Un épisode de coupure en observation n'est lu que parmi les 30 plus longs du dernier cycle des règles (task_runs).
+
+## Préparation de la semaine réelle (26/10/2026, règles 2026.10.55)
+
+Sentinel 1 seul ; Sentinel 2 attendra un vrai positif optique.
+
+**Chemin d'une demande** : tip (alerte ou épisode) → `creer` → `planifier` (passage, contenance) →
+`sentinel.interest_points` (via `points_passage`) → `sentinel.launch` → travailleur → `ingest` → `fuse_analysis` →
+`tip_and_cue.evaluer`. Les quatre corrections du 24 au 25/10 y sont toutes :
+* historique Sentinel 1 : calculé dans `sentinel.launch` pour chaque scène retenue, demandes comprises ;
+* spline des points d'appui : dans le travailleur, pour toute analyse ;
+* masque des nuages et lune VIIRS : une lumière sous une lune forte sans masque ne fait pas d'alerte, et une alerte
+  abaissée en faible par la prudence est sous `gravite_min: moyenne` du tip viirs ;
+* maintien à l'arrêt : dans `fuse_analysis`, avant `evaluer`, qui lit le navire apparié de chaque écho.
+Le rejeu (`tip-rejeu`) écarte désormais, comme la collecte en direct, les alertes classées.
+
+**Gardes de dépense** :
+* plafond de `sentinel.scenes_max_par_jour` (2) scènes par jour UTC, analyses non échouées ;
+* budget de `sentinel.budget_mensuel_eur` (8 €) par mois civil UTC, Sentinel 1 et 2 ensemble : coût réel des
+  travailleurs détruits plus coût estimé de ceux en vie ; il repart de zéro le 01/11 à 00:00 UTC ; le budget des
+  essais réels (8 €, cumulé) ne s'applique qu'à `essai-reel` ;
+* **types jamais éprouvés refusés pour Sentinel 1 et 2, même hors essai** (`travailleurs.types_eprouves_seuls`) :
+  avant ce lot, une rupture de GP1-S aurait lancé POP2-8C-32G, jamais abouti ; désormais l'analyse attend le cycle
+  suivant, motif écrit ;
+* plafonds communs des travailleurs (4 par jour, 180 minutes par jour, place réservée à VIIRS).
+
+**Suivi** : `taches.py tip-and-cue-bilan --du AAAA-MM-JJ` (lecture seule) ; rejeu : `taches.py tip-rejeu 7`, avec le
+détail par jour (brut et sous le plafond) et la liste des demandes retenues.

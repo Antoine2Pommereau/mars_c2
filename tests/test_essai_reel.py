@@ -116,7 +116,7 @@ def test_launch_is_refused_while_a_worker_lives_or_the_trial_budget_is_spent(con
     assert "budget des essais épuisé" in essai_reel.verifier_lancement(conn, RULES, pid)[1]
 
 
-def test_never_proven_type_is_refused_during_a_trial_only(conn, monkeypatch):
+def test_never_proven_type_is_refused_for_sentinel_trial_or_not(conn, monkeypatch):
     from test_travailleurs_base import FakeScw
     conn.execute("UPDATE travailleurs SET etat = 'echec' WHERE commercial_type = 'POP2-8C-32G' AND etat = 'termine'")
     pop2 = T.variantes(RULES, "sentinel")[1]
@@ -128,8 +128,16 @@ def test_never_proven_type_is_refused_during_a_trial_only(conn, monkeypatch):
     r = T.launch(conn, FakeScw(), RULES, "sentinel", {"scenes": []}, {})
     assert "jamais éprouvé" not in r.get("refus", "")                             # garde passée (refus suivant : réseau)
     monkeypatch.setattr(T, "ESSAI_EPROUVES_SEULS", False)
+    # Hors essai (26/10/2026) : refusé aussi pour Sentinel 1 et 2 (travailleurs.types_eprouves_seuls), marqué
+    # non_eprouve pour que le lancement passe au type suivant ou attende au lieu d'échouer
     r = T.launch(conn, FakeScw(), RULES, "sentinel", {"scenes": []}, {}, variante=pop2)
-    assert "jamais éprouvé" not in r.get("refus", "")                             # hors essai : inchangé
+    assert "sentinel : POP2-8C-32G en fr-par-2 jamais éprouvé" in r["refus"] and r["non_eprouve"]
+    r = T.launch(conn, FakeScw(), RULES, "sentinel2", {"scenes": []}, {}, variante=T.variantes(RULES, "sentinel2")[-1])
+    assert "jamais éprouvé" in r.get("refus", "") or "occupe" in r or "travailleur" in r
+    # Une tâche hors de la liste (VIIRS) n'est pas concernée
+    sans = {**RULES, "travailleurs": {**RULES["travailleurs"], "types_eprouves_seuls": []}}
+    r = T.launch(conn, FakeScw(), sans, "sentinel", {"scenes": []}, {}, variante=pop2)
+    assert "jamais éprouvé" not in r.get("refus", "")
 
 
 def _args(**kw):

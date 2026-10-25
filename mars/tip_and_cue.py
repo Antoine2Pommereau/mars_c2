@@ -911,9 +911,10 @@ def tips_periode(conn, rules: dict, debut: datetime, fin: datetime) -> list[dict
             return
         out.append({"tip": tip, "lon": lon, "lat": lat, "t": ts, "connu": t, "vessel_id": vid, "sog": sog, "cog": cog,
                     "a_l_arret": _a_l_arret(conn, vid, t)})
+    # Comme la collecte en direct : une alerte classée (faux positif, refusion) ne donne aucun tip
     rows = conn.execute("SELECT id, type, severity, detected_at, ST_X(geom::geometry), ST_Y(geom::geometry), details, "
-                        "event_time FROM alerts WHERE detected_at BETWEEN %s AND %s ORDER BY detected_at",
-                        (debut, fin)).fetchall()
+                        "event_time FROM alerts WHERE detected_at BETWEEN %s AND %s AND status <> 'classee' "
+                        "ORDER BY detected_at", (debut, fin)).fetchall()
     for _aid, typ, sev, t, lon, lat, det, t_evt in rows:
         det = det or {}
         if typ == "DARK_SHIP" and det.get("source") == "viirs" and (tips.get("viirs") or {}).get("actif") \
@@ -967,7 +968,94 @@ def rejeu_base(conn, rules: dict, debut: datetime, fin: datetime) -> dict:
     jours = max((fin - debut).total_seconds() / 86400, 1e-6)
     cout = sum(estimation(rules, s, n) for n in r["fenetres_par_session"].values())
     cont = [x["contenance"] for x in r["lignes"] if x["issue"] == "passage" and x.get("contenance") is not None]
+    # Par jour (date du passage) : sessions et coût, bruts puis sous le plafond de scènes du jour (une session compte
+    # pour une scène au moins ; les premières du jour passent, comme en direct où la priorité les ordonne)
+    t_pass = {p["id"]: p["t"] for p in passages}
+    par_jour: dict = {}
+    for pid, n in sorted(r["fenetres_par_session"].items(), key=lambda kv: t_pass[kv[0]]):
+        j = par_jour.setdefault(t_pass[pid].date().isoformat(), {"sessions": 0, "fenetres": 0, "cout_eur": 0.0,
+                                                                 "sessions_plafond": 0, "cout_plafond_eur": 0.0})
+        c = estimation(rules, s, n)
+        j["sessions"] += 1
+        j["fenetres"] += n
+        j["cout_eur"] = round(j["cout_eur"] + c, 2)
+        if j["sessions_plafond"] < int(s["scenes_max_par_jour"]):
+            j["sessions_plafond"] += 1
+            j["cout_plafond_eur"] = round(j["cout_plafond_eur"] + c, 2)
+    for x in r["lignes"]:
+        j = par_jour.setdefault((x.get("connu") or x["t"]).date().isoformat(), {"sessions": 0, "fenetres": 0,
+                                "cout_eur": 0.0, "sessions_plafond": 0, "cout_plafond_eur": 0.0})
+        j["tips"] = j.get("tips", 0) + 1
+        j["demandes"] = j.get("demandes", 0) + (x["issue"] != "regroupee")
+        j["retenues"] = j.get("retenues", 0) + (x["issue"] == "passage")
+        j["contenance"] = j.get("contenance", 0) + (x["issue"] == "contenance")
+    noms = {}
+    navires = []
+    for x in r["lignes"]:
+        if x["issue"] != "passage":
+            continue
+        vid = x.get("vessel_id")
+        if vid is not None and vid not in noms:
+            noms[vid] = conn.execute("SELECT name, mmsi FROM vessels WHERE id = %s", (vid,)).fetchone()
+        nom, mmsi = noms.get(vid) or (None, None)
+        navires.append({"tip": x["tip"], "vessel_id": vid, "name": nom, "mmsi": mmsi, "passage": x["passage"],
+                        "heure_passage": t_pass[x["passage"]].isoformat(), "delai_h": x["delai_h"],
+                        "fenetres": x["fenetres"], "contenance": x.get("contenance"),
+                        "lon": round(x["lon"], 4), "lat": round(x["lat"], 4)})
+    cout_plafond = round(sum(j["cout_plafond_eur"] for j in par_jour.values()), 2)
     return {**{k: v for k, v in r.items() if k != "lignes"}, "jours": round(jours, 1), "passages_examines": len(passages),
             "contenance_moyenne": round(sum(cont) / len(cont), 3) if cont else None, "contenance_n": len(cont),
             "cout_eur": round(cout, 2), "cout_mois_eur": round(cout * 30 / jours, 2),
-            "sessions_par_jour": round(r["sessions"] / jours, 2), "lignes": r["lignes"]}
+            "cout_plafond_eur": cout_plafond, "cout_plafond_mois_eur": round(cout_plafond * 30 / jours, 2),
+            "sessions_par_jour": round(r["sessions"] / jours, 2), "par_jour": dict(sorted(par_jour.items())),
+            "navires": navires, "lignes": r["lignes"]}
+
+
+# Suivi quotidien en lecture seule (26/10/2026, semaine d'essai réel de tip and cue)
+
+BILAN_SQL = """
+WITH jours AS (SELECT d::date AS jour FROM generate_series(%(du)s::date, (now() AT TIME ZONE 'UTC')::date, interval '1 day') d),
+d AS (SELECT (cree_le AT TIME ZONE 'UTC')::date AS jour, count(*) AS creees,
+             count(*) FILTER (WHERE pass_id IS NOT NULL) AS planifiees,
+             count(*) FILTER (WHERE etat = 'analysee') AS analysees,
+             count(*) FILTER (WHERE resultat = 'present_apparie') AS present_apparie,
+             count(*) FILTER (WHERE resultat = 'present_sans_ais') AS present_sans_ais,
+             count(*) FILTER (WHERE resultat = 'absent') AS absent,
+             count(*) FILTER (WHERE resultat = 'non_evaluable') AS non_evaluable,
+             count(*) FILTER (WHERE etat = 'sans_passage') AS sans_passage,
+             count(*) FILTER (WHERE etat = 'expiree') AS expirees,
+             count(*) FILTER (WHERE etat = 'refusee_budget') AS refusees,
+             count(*) FILTER (WHERE etat = 'annulee') AS annulees,
+             count(*) FILTER (WHERE etat IN ('en_attente', 'planifiee')) AS actives
+      FROM demandes_observation WHERE cree_le >= %(du)s GROUP BY 1),
+c AS (SELECT (t.cree_le AT TIME ZONE 'UTC')::date AS jour, count(*) AS travailleurs,
+             sum(coalesce(t.cout_reel_eur, (t.mesures->>'cout_estime_eur')::float8, 0)) AS cout
+      FROM travailleurs t WHERE t.tache IN ('sentinel', 'sentinel2') AND t.cree_le >= %(du)s
+        AND EXISTS (SELECT 1 FROM analyses a JOIN demandes_observation o ON o.analysis_id = a.id
+                    WHERE a.travailleur_id = t.id) GROUP BY 1)
+SELECT j.jour, coalesce(d.creees, 0), coalesce(d.planifiees, 0), coalesce(d.analysees, 0),
+       coalesce(d.present_apparie, 0), coalesce(d.present_sans_ais, 0), coalesce(d.absent, 0),
+       coalesce(d.non_evaluable, 0), coalesce(d.sans_passage, 0), coalesce(d.expirees, 0), coalesce(d.refusees, 0),
+       coalesce(d.annulees, 0), coalesce(d.actives, 0), coalesce(c.travailleurs, 0), round(coalesce(c.cout, 0)::numeric, 2)
+FROM jours j LEFT JOIN d USING (jour) LEFT JOIN c USING (jour) ORDER BY j.jour"""
+
+BILAN_COLS = ("jour", "creees", "planifiees", "analysees", "present_apparie", "present_sans_ais", "absent",
+              "non_evaluable", "sans_passage", "expirees", "refusees", "annulees", "actives", "travailleurs", "cout_eur")
+
+
+def bilan(conn, du, rules: dict) -> dict:
+    """Une ligne par jour depuis `du` : demandes créées, planifiées, analysées, résultats, fins sans analyse,
+    travailleurs et coût des analyses qui ont servi une demande ; plus les travailleurs en vie, le budget du mois et
+    l'état des interrupteurs (`rules` : règles en vigueur, panneau compris). Lecture seule."""
+    from mars import controle, sentinel
+    jours = [dict(zip(BILAN_COLS, r)) for r in conn.execute(BILAN_SQL, {"du": du}).fetchall()]
+    vivants = conn.execute("SELECT id, tache, commercial_type, zone, etat, cree_le FROM travailleurs "
+                           "WHERE detruit_le IS NULL ORDER BY id").fetchall()
+    now = datetime.now(timezone.utc)
+    scenes, depense = sentinel.usage(conn, now)
+    pauses = {src: controle.en_pause(rules, src) for src in ("tip_and_cue", "sentinel1", "sentinel2")}
+    return {"du": str(du), "jours": jours, "vivants": [dict(zip(("id", "tache", "type", "zone", "etat", "cree_le"), v))
+                                                       for v in vivants],
+            "scenes_aujourd_hui": scenes, "plafond_scenes": rules["sentinel"]["scenes_max_par_jour"],
+            "depense_mois_eur": round(depense, 2), "budget_mois_eur": rules["sentinel"]["budget_mensuel_eur"],
+            "pauses": pauses, "actif": actif(rules)}

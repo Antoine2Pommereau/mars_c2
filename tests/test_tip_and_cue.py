@@ -645,3 +645,34 @@ def test_replay_keeps_the_nearest_pass_above_the_containment_threshold():
     assert ligne["issue"] == "passage" and ligne["passage"] == 1 and ligne["contenance"] >= 0.4
     loin = tc.rejeu([tip], [{"id": 3, "t": NOW + timedelta(hours=8), "emprise": large}], RULES, lambda *_a: None)
     assert loin["lignes"][0]["issue"] == "contenance" and loin["par_tip"]["coupure_ais"]["contenance"] == 1
+
+
+def test_replay_details_per_day_vessels_ceiling_and_skips_classified_alerts(conn):
+    """Préparation de la semaine réelle (26/10/2026) : coût par jour, brut et sous le plafond de scènes, demandes
+    retenues avec leur passage ; une alerte classée (faux positif, refusion) ne donne aucun tip, comme en direct."""
+    conn.execute("DELETE FROM task_runs WHERE task = 'regles' AND started_at > %s", (NOW - timedelta(days=2),))
+    pid = _passage(conn, "TIP_REJEU_J", NOW + timedelta(hours=8), statut="acquis")
+    _alerte(conn, "DARK_SHIP", "elevee", *LARGE, {"source": "viirs"})
+    classee = _alerte(conn, "DARK_SHIP", "elevee", LARGE[0] + 0.5, LARGE[1], {"source": "viirs"})
+    conn.execute("UPDATE alerts SET status = 'classee' WHERE id = %s", (classee,))
+    r = tc.rejeu_base(conn, RULES, NOW - timedelta(hours=1), NOW + timedelta(hours=1))
+    assert r["par_tip"]["viirs"]["tips"] == 1                                   # la classée est écartée
+    jour = (NOW + timedelta(hours=8)).date().isoformat()
+    assert r["par_jour"][jour]["sessions"] == 1 and r["par_jour"][jour]["sessions_plafond"] == 1
+    assert r["cout_plafond_eur"] == pytest.approx(r["cout_eur"])
+    assert [(n["tip"], n["passage"]) for n in r["navires"]] == [("viirs", pid)]
+    plafond0 = {**RULES, "sentinel": {**RULES["sentinel"], "scenes_max_par_jour": 0}}
+    assert tc.rejeu_base(conn, plafond0, NOW - timedelta(hours=1), NOW + timedelta(hours=1))["cout_plafond_eur"] == 0
+
+
+def test_daily_report_counts_requests_results_and_living_workers(conn):
+    from mars import controle
+    for etat, res in (("analysee", "present_sans_ais"), ("analysee", "absent"), ("expiree", None), ("en_attente", None)):
+        conn.execute("INSERT INTO demandes_observation (tip, priorite, position, position_le, etat, expire_le, resultat, "
+                     "pass_id) VALUES ('viirs', 4, ST_SetSRID(ST_MakePoint(-6, 48), 4326)::geography, now(), %s, "
+                     "now() + interval '1 day', %s, %s)", (etat, res, 1 if etat == "analysee" else None))
+    b = tc.bilan(conn, NOW.date() - timedelta(days=1), controle.appliquer(conn, RULES))
+    j = {x["jour"]: x for x in b["jours"]}[datetime.now(timezone.utc).date()]
+    assert (j["creees"], j["planifiees"], j["analysees"], j["present_sans_ais"], j["absent"], j["expirees"],
+            j["actives"]) == (4, 2, 2, 1, 1, 1, 1)
+    assert b["plafond_scenes"] == 2 and b["budget_mois_eur"] == 8.0 and "tip_and_cue" in b["pauses"]

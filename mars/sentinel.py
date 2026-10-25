@@ -897,6 +897,11 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
                     se.set_attribute("sentinel.rupture_stock", True)
                     essais.append(f"{t['commercial_type']} ({zone}) : rupture de stock à la création ou au démarrage")
                     continue
+                if r.get("non_eprouve"):
+                    # Type jamais éprouvé (secours POP2) : jamais lancé ; le suivant, ou l'attente du cycle suivant
+                    se.set_attribute("sentinel.refus_non_eprouve", True)
+                    essais.append(r["refus"])
+                    continue
             if "travailleur" not in r:
                 conn.execute("UPDATE analyses SET status = 'failed', error = %s, completed_at = now() WHERE id = ANY(%s)",
                              (r.get("refus") or f"travailleur occupé ({r.get('occupe')})", ids))

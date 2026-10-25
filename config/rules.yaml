@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.54"
+version: "2026.10.55"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -518,6 +518,10 @@ travailleurs:
   duree_max_min: 45        # au delà, destruction forcée par le serveur
   max_par_jour: 4          # travailleurs dont une instance a été créée (un lancement refusé avant ne compte pas)
   max_minutes_par_jour: 180
+  # Tâches pour lesquelles tout type jamais éprouvé (aucun travailleur abouti sur ce type et cette zone) est refusé,
+  # même hors essai réel (26/10/2026, avant la reprise de tip and cue) : le secours POP2-8C-32G de Sentinel 1 et 2 n'a
+  # jamais abouti ; une rupture de GP1-S met alors l'analyse en attente au lieu de lancer un type inconnu
+  types_eprouves_seuls: [sentinel, sentinel2]
   reserve_viirs:           # place gardée à la nuit VIIRS tant qu'elle n'a pas eu son travailleur du jour
     travailleurs: 1
     minutes: 60            # une heure : DEV1-M facturée à l'heure entamée, une nuit dure 6 à 10 minutes

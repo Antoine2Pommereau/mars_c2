@@ -19,6 +19,9 @@ from mars.viirs import ingest
 URL = os.environ.get("MARS_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="MARS_TEST_DATABASE_URL absente : base de test requise")
 RULES = load_rules()
+# Garde des types éprouvés (travailleurs.types_eprouves_seuls) levée : ces tests portent sur d'autres mécanismes,
+# avec une fausse instance Scaleway ; la garde a ses tests (tests/test_essai_reel.py)
+RULES["travailleurs"]["types_eprouves_seuls"] = []
 
 
 class FakeScw(T.Scaleway):

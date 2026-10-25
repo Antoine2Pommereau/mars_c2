@@ -13,6 +13,9 @@ from mars import travailleurs as T
 from mars.config import load_rules
 
 RULES = load_rules()
+# Garde des types éprouvés (travailleurs.types_eprouves_seuls) levée : ces tests portent sur d'autres mécanismes,
+# avec une fausse instance Scaleway ; la garde a ses tests (tests/test_essai_reel.py)
+RULES["travailleurs"]["types_eprouves_seuls"] = []
 S = RULES["sentinel"]
 # Sentinel arrêté (plafond à 0) : les variables d'essai ne valent que pour la commande manuelle
 ARRET = {**RULES, "sentinel": {**S, "scenes_max_par_jour": 0}}
@@ -447,3 +450,30 @@ def test_polling_requests_are_not_traced_one_by_one(spans):
     assert noms.count("essai.sondage") == 1 and noms.count("GET") == 1
 
 
+
+
+def test_gp1s_out_of_stock_never_falls_back_on_an_unproven_pop2(conn, monkeypatch):
+    """Avant la reprise de tip and cue (26/10/2026) : GP1-S en rupture, POP2 jamais éprouvé. Aucune instance POP2 n'est
+    créée ; l'analyse attend le cycle suivant (pas d'échec), le motif nomme le refus."""
+    from test_travailleurs_base import FakeScw
+    garde = load_rules()                                         # règles réelles : types_eprouves_seuls en vigueur
+    assert "sentinel" in garde["travailleurs"]["types_eprouves_seuls"]
+    pid, _t0, stac = _passage(conn)
+    conn.execute("UPDATE travailleurs SET etat = 'echec' WHERE commercial_type = 'POP2-8C-32G' AND etat = 'termine'")
+    vrai, crees = T.launch, []
+
+    def lancement(c, scw, rules, tache, params, env, **kw):
+        t = T.type_params(rules, tache, kw.get("variante"))
+        if t["commercial_type"] == "GP1-S":
+            return {"rupture": "rupture de stock", "travailleur": None}
+        r = vrai(c, scw, rules, tache, params, env, **kw)      # vraie garde, avant tout appel à Scaleway
+        crees.append(r)
+        return r
+    monkeypatch.setattr(T, "launch", lancement)
+    r = sentinel.launch(conn, FakeScw(), garde, NOW, stac, pass_id=pid)
+    assert "attente_gpu" in r and "POP2-8C-32G en fr-par-2 jamais éprouvé" in r["motif"]
+    assert crees and all(x.get("non_eprouve") for x in crees)
+    st = conn.execute("SELECT status FROM analyses WHERE id = ANY(%s)", (r["attente_gpu"],)).fetchall()
+    assert st and all(s[0] == "attente_gpu" for s in st)
+    assert conn.execute("SELECT count(*) FROM travailleurs WHERE commercial_type = 'POP2-8C-32G' AND cree_le >= %s",
+                        (NOW - timedelta(minutes=1),)).fetchone()[0] == 0
