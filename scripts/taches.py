@@ -45,6 +45,7 @@ Usage :
     python scripts/taches.py sentinel-refusionner ID   # fusion refaite sur les détections en base (gratuit)
     python scripts/taches.py viirs-refusionner --toutes --simulation   # appariement VIIRS refait (lecture seule)
     python scripts/taches.py viirs-expliquer ALERTE [ALERTE…]   # pourquoi une alerte VIIRS tient (lecture seule)
+    python scripts/taches.py viirs-reevaluer [DEBUT] --simulation   # changements de la réévaluation (rien écrit)
     python scripts/taches.py tip-rejeu [JOURS]          # demandes qu'auraient données les jours passés (lecture seule)
     python scripts/taches.py tip-and-cue-bilan [--du AAAA-MM-JJ]   # suivi quotidien de tip and cue (lecture seule)
     python scripts/taches.py sentinel2-candidats [H]  # passages Sentinel 2 récents utilisables (lecture seule)
@@ -60,6 +61,8 @@ Usage :
     python scripts/taches.py sentinel-diagnostic       # prêt pour Sentinel ? aucune instance, aucun coût ; crée au besoin le groupe de sécurité des travailleurs
     python scripts/taches.py sentinel-candidats [H]    # passages des H (36) dernières heures avec un navire des listes
     python scripts/taches.py coupures-injection [--jour 2026-10-09] [--essais 20]
+    python scripts/taches.py coupures-injection --jour J --tranches 6-9,10- --min-prior 10 --min-prior 6
+                       [--zone-du D --zone-au D] [--episodes-depuis T]   # diagnostic, transactions annulées
                                                       # test par injection de la règle des coupures (rien n'est écrit)
     python scripts/taches.py detruire-travailleurs    # arrêt d'urgence : détruit toute instance étiquetée
     python scripts/taches.py mesures [--jours 14]     # mesures de calibration (scripts/mesures_calibration.py)
@@ -390,21 +393,64 @@ def update_list(conn, source: str) -> dict:
     return out
 
 
-def injection(day: date, essais: int) -> dict:
+def injection(day: date, essais: int, tranches=None, min_prior=None, zone=None, episodes_depuis=None) -> dict:
     """Test par injection de la règle des coupures AIS (mars/rules.py, ais_gap_injection) : coupures de 3 h à 2, 6,
-    10, 14 et 18 h UTC, sur une connexion asyncpg dédiée ; chaque essai est annulé, la base n'est pas modifiée."""
+    10, 14 et 18 h UTC, sur une connexion asyncpg dédiée ; chaque essai est annulé, la base n'est pas modifiée.
+    Diagnostic (27/10/2026) : `tranches` [(6, 9), (10, None)] mesure le taux par tranche de messages dans l'heure ;
+    `min_prior` [10, 6] rejoue avec chaque seuil ; `zone` (du, au) reconstruit la zone de réception fiable sur ces
+    jours dans une transaction annulée, pour comparer à la zone en service ; `episodes_depuis` compte les coupures
+    réellement observées depuis cet instant, par tranche et par gravité (lecture)."""
     import asyncio
+    import copy
     import asyncpg
-    from mars.rules import ais_gap_injection
+    from mars.rules import RECEPTION_SQL, ais_gap_injection, tranche_de
 
     async def go():
         c = await asyncpg.connect(database_url())
+        tr = c.transaction()
+        await tr.start()                       # tout est annulé à la fin : zone de comparaison comprise
         try:
+            rules = load_rules()
+            out = {}
+            if zone:
+                z = rules["reception"]
+                borne = "($7::timestamptz IS NULL OR p.ts >= $7::timestamptz)"
+                assert borne in RECEPTION_SQL
+                du, au = (datetime(d.year, d.month, d.day, tzinfo=timezone.utc) for d in zone)
+                await c.execute("DELETE FROM reception_cells")
+                await c.execute(RECEPTION_SQL.replace(borne, "(p.ts >= $7::timestamptz AND p.ts < $8::timestamptz)"),
+                                z["cell_deg_lon"], z["cell_deg_lat"], z["max_interval_s"], z["min_coverage"],
+                                z["min_pairs"], z["min_vessels"], du, au + timedelta(days=1))
+                r = await c.fetchrow("SELECT count(*) AS n, round((sum(ST_Area(geom)) / 1e6)::numeric) AS km2 "
+                                     "FROM reception_cells")
+                out["zone_de_comparaison"] = {"du": str(zone[0]), "au": str(zone[1]), "cellules": r["n"],
+                                              "km2": float(r["km2"] or 0), "annulee": True}
             if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM reception_cells)"):
                 return {"refus": "zone de réception fiable absente : lancer scripts/build_masks.py"}
             start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-            return await ais_gap_injection(c, start, load_rules(), essais=essais, heures=[2, 6, 10, 14, 18])
+            for n in (min_prior or [None]):
+                r = copy.deepcopy(rules)
+                if n is not None:
+                    r["ais_gap"]["min_prior_messages"] = int(n)
+                res = await ais_gap_injection(c, start, r, essais=essais, heures=[2, 6, 10, 14, 18], tranches=tranches)
+                out[f"min_prior_{r['ais_gap']['min_prior_messages']}"] = res
+            if episodes_depuis:
+                obs: dict = {}
+                for cle, grav in await c.fetch("SELECT cle, gravite FROM episodes_observes WHERE regle = 'ais_gap' "
+                                               "AND premiere_le >= $1", episodes_depuis):
+                    vid, stamp = cle.split(":")
+                    tl = datetime.strptime(stamp, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+                    m = await c.fetchval("SELECT count(*) FROM positions WHERE vessel_id = $1 AND ts > $2 "
+                                         "AND ts < $3", int(vid), tl - timedelta(minutes=rules["ais_gap"]["prior_window_min"]),
+                                         tl + timedelta(seconds=1))
+                    lab = tranche_de(int(m), tranches or [(0, None)]) or f"moins de {tranches[0][0]}"
+                    x = obs.setdefault(lab, {"episodes": 0, "gravites": {}})
+                    x["episodes"] += 1
+                    x["gravites"][grav] = x["gravites"].get(grav, 0) + 1
+                out["episodes_observes_par_tranche"] = {"depuis": episodes_depuis.isoformat(), **obs}
+            return out if len(out) > 1 or zone or episodes_depuis else next(iter(out.values()))
         finally:
+            await tr.rollback()
             await c.close()
     return asyncio.run(go())
 
@@ -936,11 +982,12 @@ def _viirs_reevaluer(conn, a):
     coupees = [r[0] for r in conn.execute("SELECT id FROM viirs_detections WHERE non_evaluable = %s AND ts >= %s "
                                           "AND ts < %s", (MOTIF_COUPURE, debut or datetime(2000, 1, 1, tzinfo=timezone.utc),
                                                            fin)).fetchall()]
-    res = viirs.reevaluate(conn, load_rules(), debut)
+    res = viirs.reevaluate(conn, load_rules(), debut, simulation=a.simulation)
     devenues = conn.execute("SELECT count(*) FROM viirs_detections WHERE id = ANY(%s) AND non_evaluable IS NULL",
                             (coupees,)).fetchone()[0]
     res |= {"periode_avant": avant, "periode_apres": compte(), "coupure_puis_evaluees": devenues}
-    traces.attributs(**{"viirs.coupure_puis_evaluees": devenues, "viirs.coupure_avant": len(coupees)})
+    traces.attributs(**{"viirs.coupure_puis_evaluees": devenues, "viirs.coupure_avant": len(coupees),
+                        "viirs.simulation": bool(a.simulation), "viirs.changements": len(res.get("changements", []))})
     print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
 
 
@@ -1419,8 +1466,14 @@ def _sentinel2_diagnostic(_conn, _a):
 
 @commande("coupures-injection", base=False)          # coupures simulées dans des transactions annulées
 def _coupures_injection(_conn, a):
-    print(json.dumps(injection(a.jour or (datetime.now(timezone.utc) - timedelta(days=1)).date(), a.essais),
-                     ensure_ascii=False, indent=2, default=str))
+    tranches = None
+    if a.tranches:                                    # « 6-9,10- » : 6 à 9 messages dans l'heure, puis 10 et plus
+        tranches = [(int(lo), int(hi) if hi else None) for lo, hi in (t.split("-") for t in a.tranches.split(","))]
+    res = injection(a.jour or (datetime.now(timezone.utc) - timedelta(days=1)).date(), a.essais, tranches,
+                    a.min_prior, (a.zone_du, a.zone_au) if a.zone_du else None,
+                    _instant(a.episodes_depuis) if a.episodes_depuis else None)
+    traces.attributs(**{"injection.tranches": a.tranches or "", "injection.zone_du": str(a.zone_du or "")})
+    print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
 
 
 @commande("mesures", base=False)
@@ -1548,6 +1601,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--jours", type=int, default=14, help="mesures : nombre de jours examinés")
     ap.add_argument("--jour", type=date.fromisoformat, help="coupures-injection : journée (par défaut, la veille)")
     ap.add_argument("--essais", type=int, default=20, help="coupures-injection : navires par heure de coupure")
+    ap.add_argument("--tranches", help="coupures-injection : tranches de messages dans l'heure, « 6-9,10- »")
+    ap.add_argument("--min-prior", type=int, action="append", help="coupures-injection : seuil rejoué (répétable)")
+    ap.add_argument("--zone-du", type=date.fromisoformat, help="coupures-injection : zone de comparaison, premier jour")
+    ap.add_argument("--zone-au", type=date.fromisoformat, help="coupures-injection : zone de comparaison, dernier jour")
+    ap.add_argument("--episodes-depuis", help="coupures-injection : coupures observées depuis (UTC), par tranche")
     ap.add_argument("--test-jours", type=int, default=5, help="trajectoire-mesures : derniers jours tenus à l'écart")
     ap.add_argument("--hypotheses", action="store_true",
                     help="trajectoire-mesures : routes fréquentes en plusieurs hypothèses (étape 2), de 1 à 30 h")

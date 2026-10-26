@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.57"
+version: "2026.10.58"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -234,10 +234,22 @@ viirs:
   estime_max_min: 20
   estime_marge_ratio: 0.5  # marge de plus : la moitié du chemin parcouru pendant l'estime
   cote_km: 5               # détection à moins de 5 km de la terre : écartée (ports, côtes éclairées)
-  persistance_m: 1000      # lumière revue à moins de 1 km au moins 3 nuits distinctes sur 30 jours : lumière fixe
-  persistance_nuits: 3
+  persistance_m: 1000      # lumière revue à moins de 1 km au moins 2 nuits distinctes sur 30 jours : lumière fixe
+  persistance_nuits: 2     # (3 jusqu'au 26/10/2026 : feux du parc d'Yeu et Noirmoutier revus à 8 jours d'écart, alertes
+                           # élevées). Nuits comptées : granule évaluable, lumière sans AIS apparié, hors côte
+  # Lumière à moins de eolien_m d'un parc éolien en service (polygones EMODnet, table infrastructure) : feux de balisage,
+  # écartée (mask_reason eolienne). Seulement les parcs construits ou en chantier : EMODnet ne donne pas l'état en base,
+  # et une lumière dans un parc en projet (Fécamp Grand Large, 80241 et 80242) peut être un navire. Liste à tenir à jour
+  eolien_m: 1000
+  parcs_en_service: ["Saint-Nazaire", "Saint-Brieuc", "Fécamp Offshore Hautes Falaises", "Courseulles-sur-mer",
+                     "Iles d'Yeu et de Noirmoutier", "Dieppe Le Tréport", "Provence Grand Large Faraman", "Gruissan",
+                     "Leucate-Le Barcarès", "Rampion"]
+  # Prudence (navire AIS compatible) : positions lues jusqu'à doute_portee_km autour de la lumière, ce qu'un navire à
+  # 25 nœuds parcourt en fusion.arret_max_min (120 min). 26/10/2026 : la boîte de 0,3 × 0,2 degré de la réévaluation
+  # perdait ATHENA SEAWAYS (alerte 50277), que la refusion avait trouvé
+  doute_portee_km: 100
   persistance_jours: 30
-  corridor_m: 3704         # à moins de 2 milles d'une infrastructure : gravité élevée
+  corridor_m: 3704         # à moins de 2 milles d'une infrastructure (hors parcs éoliens) : gravité élevée
   liste_rayon_km: 10       # navire des listes à moins de 10 km (30 min près) : gravité élevée ; les deux : critique
   # Sans AIS ailleurs : gravité faible, « à confirmer » (AIS incomplet, petite pêche sans obligation d'AIS) ; moyenne
   # au delà de 12 milles des côtes (22 km, limite des eaux territoriales : la petite pêche côtière reste en deçà)

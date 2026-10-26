@@ -21,7 +21,7 @@ MMSI0 = 299990100                      # MMSI d'essai, effacés à la fin
 
 
 def test_rules_version_and_thresholds():
-    assert RULES["version"] == "2026.10.57"
+    assert RULES["version"] >= "2026.10.57"
     assert RULES["rendezvous"]["min_duration_min"] == 60 and RULES["rendezvous"]["max_distance_m"] == 500
     assert RULES["ais_gap"]["min_prior_messages"] == 6 and RULES["ais_gap"]["mode"] == "observation"
 
@@ -210,3 +210,10 @@ def test_northern_osprey_is_one_dossier_and_partners_see_it_too(base, monkeypatc
         assert f"navire:{ids['B1']}" not in ds
         recit = c.get(f"/api/dossiers/navire:{ids['NORTHERN OSPREY']}", params={"end": fin.isoformat()})
         assert recit.status_code == 200 and len(recit.json()["alertes_detail"]) == 3
+
+
+def test_message_rate_bands_of_the_injection():
+    from mars.rules import tranche_de
+    t = [(6, 9), (10, None)]
+    assert (tranche_de(5, t), tranche_de(6, t), tranche_de(9, t), tranche_de(10, t), tranche_de(40, t)) == \
+        (None, "6-9", "6-9", "10+", "10+")

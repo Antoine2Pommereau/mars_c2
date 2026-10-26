@@ -20,7 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from mars import traces
 from mars.ais.live import ZONES
-from mars.evaluation import GARDE_VERIFICATION, critere, motif_non_evaluable
+from mars.evaluation import critere, motif_non_evaluable
 from mars.fusion.doute import motif_doute
 from mars.geo import distance_m
 from mars.satellites import extent
@@ -386,40 +386,106 @@ def _evaluability(conn, ids: list[int], rules: dict) -> int:
     return n
 
 
-def reevaluate(conn, rules: dict, since: datetime | None = None) -> dict:
-    """Réévalue les détections déjà en base avec les règles en vigueur : mesures AIS, détections non évaluables,
-    gravité des alertes. Les alertes encore vierges d'une détection devenue non évaluable sont retirées ; celles qui
-    portent une décision de l'opérateur sont gardées, en gravité faible, avec le motif."""
+class _Simulation(Exception):
+    pass
+
+
+ETAT_ALERTES_SQL = """SELECT a.id, a.severity, a.status, a.details->>'nuit',
+                             ST_X(a.geom::geometry), ST_Y(a.geom::geometry)
+                      FROM alerts a WHERE a.type = 'DARK_SHIP' AND a.details->>'source' = 'viirs'"""
+
+
+def reevaluate(conn, rules: dict, since: datetime | None = None, simulation: bool = False) -> dict:
+    """Réévalue les détections déjà en base avec les règles et la fusion en vigueur (26/10/2026) : mesures AIS,
+    évaluabilité (zone de réception fiable), masques (parcs éoliens en service, lumières fixes, alertes classées par
+    MARS C2 avec le motif), alertes des lumières restées sans AIS, puis la refusion (maintien à l'arrêt, lumière voisine,
+    prudence) sur les mêmes nuits. Ce que le système a déjà abaissé ou classé ne remonte jamais ; les décisions des
+    opérateurs restent. Les alertes vierges d'une détection devenue non évaluable sont retirées.
+    `simulation` : tout est calculé dans une transaction annulée, et la liste des changements est rendue."""
     since = since or datetime(2000, 1, 1, tzinfo=timezone.utc)
     sev_sql = ("SELECT severity, count(*) FROM alerts WHERE type = 'DARK_SHIP' AND details->>'source' = 'viirs' "
-               "GROUP BY 1 ORDER BY 1")
+               "AND status <> 'classee' GROUP BY 1 ORDER BY 1")
     before = dict(conn.execute(sev_sql).fetchall())
-    with conn.transaction():
-        conn.execute("UPDATE viirs_detections SET mask_reason = NULL, non_evaluable = NULL "
-                     "WHERE mask_reason = 'non_evaluable' AND ts >= %s", (since,))
-        for (gid,) in conn.execute("SELECT DISTINCT granule_id FROM viirs_detections WHERE ts >= %s", (since,)).fetchall():
-            _measure_granule(conn, gid, rules)
-        ids = [r[0] for r in conn.execute("SELECT id FROM viirs_detections WHERE ts >= %s", (since,)).fetchall()]
-        non_eval = _evaluability(conn, ids, rules)
-        removed = kept = 0
-        for aid, virgin, motif in conn.execute(
-                """SELECT a.id, a.status = 'nouvelle' AND NOT EXISTS (SELECT 1 FROM alert_actions x WHERE x.alert_id = a.id),
-                          coalesce(d.non_evaluable, d.mask_reason, 'appariée à l''AIS')
-                   FROM alerts a JOIN alert_evidence e ON e.alert_id = a.id AND e.evidence_type = 'viirs'
-                   JOIN viirs_detections d ON d.id = e.evidence_id
-                   WHERE a.type = 'DARK_SHIP' AND d.ts >= %s
-                     AND (d.mask_reason IS NOT NULL OR d.matched_vessel_id IS NOT NULL)""", (since,)).fetchall():
-            if virgin:
-                conn.execute("DELETE FROM alerts WHERE id = %s", (aid,))
-                removed += 1
-            else:
-                conn.execute("UPDATE alerts SET severity = 'faible', details = details || %s WHERE id = %s",
-                             (json.dumps({"non_evaluable": motif}), aid))
-                kept += 1
-        alerts = _alerts(conn, ids, rules)
-    return {"detections": len(ids), "non_evaluables": non_eval, "alertes": alerts, "alertes_retirees": removed,
-            "alertes_gardees_avec_decision": kept, "gravites_avant": before,
-            "gravites_apres": dict(conn.execute(sev_sql).fetchall())}
+    etat_avant = {r[0]: r for r in conn.execute(ETAT_ALERTES_SQL).fetchall()}
+    res: dict = {}
+    try:
+        with conn.transaction():
+            res = _reevaluer(conn, rules, since)
+            res["gravites_ouvertes_avant"] = before
+            res["gravites_ouvertes_apres"] = dict(conn.execute(sev_sql).fetchall())
+            res["changements"] = _changements(conn, etat_avant)
+            if simulation:
+                raise _Simulation()
+    except _Simulation:
+        res["simulation"] = "rien n'est écrit : transaction annulée"
+    return res
+
+
+def _reevaluer(conn, rules: dict, since: datetime) -> dict:
+    conn.execute("UPDATE viirs_detections SET mask_reason = NULL, non_evaluable = NULL "
+                 "WHERE mask_reason = 'non_evaluable' AND ts >= %s", (since,))
+    for (gid,) in conn.execute("SELECT DISTINCT granule_id FROM viirs_detections WHERE ts >= %s", (since,)).fetchall():
+        _measure_granule(conn, gid, rules)
+    ids = [r[0] for r in conn.execute("SELECT id FROM viirs_detections WHERE ts >= %s", (since,)).fetchall()]
+    masques = _masques(conn, ids, rules)
+    non_eval = _evaluability(conn, ids, rules)
+    removed = kept = 0
+    for aid, virgin, motif in conn.execute(
+            """SELECT a.id, a.status = 'nouvelle' AND NOT EXISTS (SELECT 1 FROM alert_actions x WHERE x.alert_id = a.id),
+                      d.non_evaluable
+               FROM alerts a JOIN alert_evidence e ON e.alert_id = a.id AND e.evidence_type = 'viirs'
+               JOIN viirs_detections d ON d.id = e.evidence_id
+               WHERE a.type = 'DARK_SHIP' AND d.ts >= %s AND d.mask_reason = 'non_evaluable'
+                 AND d.matched_vessel_id IS NULL""", (since,)).fetchall():
+        if virgin:
+            conn.execute("DELETE FROM alerts WHERE id = %s", (aid,))
+            removed += 1
+        else:
+            conn.execute("UPDATE alerts SET severity = 'faible', details = details || %s WHERE id = %s",
+                         (json.dumps({"non_evaluable": motif}), aid))
+            kept += 1
+    # Fusion actuelle sur les mêmes nuits, avant toute nouvelle alerte : appariements refaits (maintien à l'arrêt,
+    # lumière voisine), alertes existantes classées ou abaissées (prudence), jamais relevées
+    nuit = conn.execute("SELECT min(g.nuit) FROM viirs_granules g JOIN viirs_detections d ON d.granule_id = g.id "
+                        "WHERE d.ts >= %s", (since,)).fetchone()[0]
+    refusion = refusion_appliquer(conn, refusion_plan(conn, rules, nuit), rules) if nuit else {}
+    alerts = _alerts(conn, ids, rules)
+    return {"detections": len(ids), "non_evaluables": non_eval, "eoliennes": masques["eolienne"],
+            "lumieres_fixes": masques["lumiere_fixe"], "classees_masque": masques["classees"], "alertes": alerts,
+            "alertes_retirees": removed, "alertes_gardees_avec_decision": kept,
+            "refusion": {k: v for k, v in refusion.items() if k != "demandes_notees"}}
+
+
+def _changements(conn, avant: dict) -> list[dict]:
+    """Alertes VIIRS créées, retirées, classées, abaissées ou relevées par rapport à `avant`, avec leur motif."""
+    apres = {r[0]: r for r in conn.execute(ETAT_ALERTES_SQL).fetchall()}
+    rang = {"faible": 0, "moyenne": 1, "elevee": 2, "critique": 3}
+    out = []
+    for aid in sorted(set(avant) | set(apres)):
+        a, b = avant.get(aid), apres.get(aid)
+        if a and b and a[1:3] == b[1:3]:
+            continue
+        r = b or a
+        x = {"alerte": aid, "nuit": r[3], "lon": round(r[4], 4), "lat": round(r[5], 4),
+             "avant": a and f"{a[1]} {a[2]}", "apres": b and f"{b[1]} {b[2]}"}
+        if not a:
+            x["changement"] = "creee"
+        elif not b:
+            x["changement"] = "retiree"
+        elif b[2] == "classee" and a[2] != "classee":
+            x["changement"] = "classee"
+        elif rang.get(b[1], 0) < rang.get(a[1], 0):
+            x["changement"] = "abaissee"
+        elif rang.get(b[1], 0) > rang.get(a[1], 0):
+            x["changement"] = "relevee"
+        else:
+            x["changement"] = "statut"
+        if b:
+            d = conn.execute("SELECT details->>'ecartee', details->'refusion'->>'motif', details->'navire_compatible'"
+                             "->>'name', details->'infrastructure'->>'name' FROM alerts WHERE id = %s", (aid,)).fetchone()
+            x["motif"] = d[0] or d[1] or (d[2] and f"navire compatible {d[2]}") or (d[3] and f"près de {d[3]}")
+        out.append(x)
+    return out
 
 
 def ingest(conn, w: dict, rules: dict) -> dict:
@@ -553,45 +619,115 @@ def _screen(conn, ids: list[int], rules: dict, out: dict) -> dict:
     out["cote"] = conn.execute(
         "UPDATE viirs_detections SET mask_reason = 'cote' WHERE id = ANY(%s) AND distance_cote_m < %s",
         (ids, v["cote_km"] * 1000)).rowcount
-    # Lumières fixes : registre, puis persistance sur plusieurs nuits distinctes
-    fixed = conn.execute(
-        """UPDATE viirs_detections d SET mask_reason = 'lumiere_fixe' WHERE d.id = ANY(%s) AND d.mask_reason IS NULL
+    m = _masques(conn, ids, rules)
+    out["eolienne"] = m["eolienne"]
+    out["lumiere_fixe"] = m["lumiere_fixe"]
+    out["reclassees"] = m["reclassees"]
+    out["non_evaluables"] = _evaluability(conn, ids, rules)
+    out["alertes"] = _alerts(conn, ids, rules)
+    return out
+
+
+def _portee_deg(lat: float, km: float) -> tuple[float, float]:
+    return km * 1000 / (111_320 * max(0.1, math.cos(math.radians(lat)))), km * 1000 / 110_574
+
+
+def _masques(conn, ids: list[int], rules: dict) -> dict:
+    """Lumières qui ne sont pas des navires (26/10/2026), écartées avec leur motif et leurs alertes encore nouvelles
+    classées par MARS C2 : feux d'un parc éolien en service (moins de eolien_m de son polygone EMODnet), puis lumière
+    fixe (registre, ou revue à moins de persistance_m sur persistance_nuits nuits distinctes : granule évaluable, sans
+    AIS apparié, hors côte). Retourne les comptes et les alertes classées."""
+    v = rules["viirs"]
+    parcs = list(v.get("parcs_en_service") or [])
+    eol = conn.execute(
+        """UPDATE viirs_detections d SET mask_reason = 'eolienne' WHERE d.id = ANY(%s)
+           AND (d.mask_reason IS NULL OR d.mask_reason = 'non_evaluable') AND d.matched_vessel_id IS NULL
+           AND EXISTS (SELECT 1 FROM infrastructure i WHERE i.kind = 'windfarm' AND i.name = ANY(%s)
+                       AND ST_DWithin(i.geom, d.geom, %s)) RETURNING d.id""",
+        (ids, parcs, float(v.get("eolien_m", 0)))).fetchall() if parcs else []
+    registre = conn.execute(
+        """UPDATE viirs_detections d SET mask_reason = 'lumiere_fixe' WHERE d.id = ANY(%s)
+           AND (d.mask_reason IS NULL OR d.mask_reason = 'non_evaluable') AND d.matched_vessel_id IS NULL
            AND EXISTS (SELECT 1 FROM viirs_lumieres_fixes f WHERE ST_DWithin(f.geom, d.geom, %s)) RETURNING d.id""",
         (ids, v["persistance_m"])).fetchall()
+    # Nuits où la lumière est revue, avant comme après (une réévaluation voit aussi les nuits suivantes)
     persistent = conn.execute(
         """SELECT d.id, count(DISTINCT g2.nuit), min(d2.ts), max(d2.ts) FROM viirs_detections d
-           JOIN viirs_detections d2 ON ST_DWithin(d.geom, d2.geom, %s) AND d2.ts > d.ts - make_interval(days => %s)
-           JOIN viirs_granules g2 ON g2.id = d2.granule_id
-           WHERE d.id = ANY(%s) AND d.mask_reason IS NULL GROUP BY d.id HAVING count(DISTINCT g2.nuit) >= %s""",
-        (v["persistance_m"], v["persistance_jours"], ids, v["persistance_nuits"])).fetchall()
-    reclassees = 0
+           JOIN viirs_detections d2 ON ST_DWithin(d.geom, d2.geom, %s)
+                AND d2.ts BETWEEN d.ts - make_interval(days => %s) AND d.ts + make_interval(days => %s)
+                AND d2.matched_vessel_id IS NULL AND coalesce(d2.mask_reason, '') <> 'cote'
+           JOIN viirs_granules g2 ON g2.id = d2.granule_id AND g2.non_evaluable IS NULL AND g2.erreur IS NULL
+           WHERE d.id = ANY(%s) AND (d.mask_reason IS NULL OR d.mask_reason = 'non_evaluable')
+             AND d.matched_vessel_id IS NULL
+           GROUP BY d.id HAVING count(DISTINCT g2.nuit) >= %s""",
+        (v["persistance_m"], v["persistance_jours"], v["persistance_jours"], ids, v["persistance_nuits"])).fetchall()
     for did, nuits, first, last in persistent:
-        # La détection, et ses précédentes sans AIS au même endroit, deviennent des lumières fixes
         conn.execute(
             """UPDATE viirs_detections d2 SET mask_reason = 'lumiere_fixe' FROM viirs_detections d
-               WHERE d.id = %s AND (d2.id = d.id OR (d2.mask_reason IS NULL AND d2.matched_vessel_id IS NULL
-                     AND ST_DWithin(d2.geom, d.geom, %s)))""", (did, v["persistance_m"]))
+               WHERE d.id = %s AND (d2.id = d.id OR ((d2.mask_reason IS NULL OR d2.mask_reason = 'non_evaluable')
+                     AND d2.matched_vessel_id IS NULL AND ST_DWithin(d2.geom, d.geom, %s)))""",
+            (did, v["persistance_m"]))
         conn.execute(
             """INSERT INTO viirs_lumieres_fixes (geom, nuits, premiere, derniere)
                SELECT geom, %s, %s, %s FROM viirs_detections WHERE id = %s
                AND NOT EXISTS (SELECT 1 FROM viirs_lumieres_fixes f, viirs_detections d
                                WHERE d.id = %s AND ST_DWithin(f.geom, d.geom, %s))""",
             (nuits, first, last, did, did, v["persistance_m"]))
-        # Les alertes encore vierges levées sur cette lumière les nuits précédentes sont classées, avec une note
-        for (aid,) in conn.execute(
-                """SELECT a.id FROM alerts a, viirs_detections d WHERE d.id = %s AND a.type = 'DARK_SHIP'
-                   AND a.details->>'source' = 'viirs' AND a.status = 'nouvelle' AND ST_DWithin(a.geom, d.geom, %s)""",
-                (did, v["persistance_m"])).fetchall():
-            conn.execute("UPDATE alerts SET status = 'classee' WHERE id = %s", (aid,))
+    nuits_de = {did: nuits for did, nuits, _a, _b in persistent}
+    classees = _classer_masquees(conn, ids, rules, nuits_de)
+    return {"eolienne": len(eol), "lumiere_fixe": len(registre) + len(persistent),
+            "reclassees": len(classees), "classees": classees}
+
+
+def _classer_masquees(conn, ids: list[int], rules: dict, nuits_de: dict | None = None) -> list[int]:
+    """Alertes DARK_SHIP VIIRS dont une lumière est désormais écartée (parc éolien, lumière fixe) : classées par MARS C2
+    en faux positif si encore nouvelles, avec le motif ; sinon la décision de l'opérateur reste et une note s'ajoute."""
+    v = rules["viirs"]
+    out = []
+    rows = conn.execute(
+        """SELECT DISTINCT a.id, a.status, d.id, d.mask_reason,
+                  (SELECT jsonb_build_object('name', i.name, 'distance_m', round(ST_Distance(i.geom, d.geom)))
+                   FROM infrastructure i WHERE i.kind = 'windfarm' ORDER BY i.geom <-> d.geom LIMIT 1)
+           FROM viirs_detections d
+           JOIN viirs_detections x ON x.id = ANY(%s) AND x.mask_reason IN ('eolienne', 'lumiere_fixe')
+                AND (d.id = x.id OR (d.mask_reason = x.mask_reason AND ST_DWithin(d.geom, x.geom, %s)))
+           JOIN alert_evidence e ON e.evidence_type = 'viirs' AND e.evidence_id = d.id
+           JOIN alerts a ON a.id = e.alert_id AND a.type = 'DARK_SHIP'
+           WHERE a.status <> 'classee'""", (ids, v["persistance_m"])).fetchall()
+    for aid, st, did, raison, parc in rows:
+        if aid in out:
+            continue
+        if raison == "eolienne":
+            motif = (f"Lumière d'un parc éolien en service ({parc['name']}, à {parc['distance_m']:.0f} m) : feux de "
+                     "balisage, pas un navire")
+        else:
+            n = (nuits_de or {}).get(did)
+            motif = (f"Lumière fixe : revue {n} nuits distinctes à moins de {v['persistance_m']} m, sans AIS" if n
+                     else f"Lumière fixe connue à moins de {v['persistance_m']} m")
+        if st == "nouvelle":
+            conn.execute("UPDATE alerts SET status = 'classee', details = details || jsonb_build_object('ecartee', "
+                         "%s::text) WHERE id = %s", (motif, aid))
             conn.execute("INSERT INTO alert_actions (alert_id, action, motif, note, author) VALUES "
-                         "(%s, 'classer', 'faux_positif', %s, 'MARS C2')",
-                         (aid, f"Lumière fixe : revue {nuits} nuits distinctes à moins de {v['persistance_m']} m"))
-            reclassees += 1
-    out["lumiere_fixe"] = len(fixed) + len(persistent)
-    out["reclassees"] = reclassees
-    out["non_evaluables"] = _evaluability(conn, ids, rules)
-    out["alertes"] = _alerts(conn, ids, rules)
+                         "(%s, 'classer', 'faux_positif', %s, 'MARS C2')", (aid, motif))
+        else:
+            conn.execute("UPDATE alerts SET details = details || jsonb_build_object('ecartee', %s::text, "
+                         "'decision_gardee', %s::text) WHERE id = %s", (motif, st, aid))
+        out.append(aid)
     return out
+
+
+# Écriture d'une alerte DARK_SHIP VIIRS déjà présente : ce que l'évaluation du système a abaissé (navire compatible,
+# refusion) ne remonte pas, et ses preuves restent ; la vérification satellite garde sa gravité ajustée
+GARDE_VIIRS = (
+    "severity = CASE WHEN alerts.details->'navire_compatible' IS NOT NULL "
+    "AND jsonb_typeof(alerts.details->'navire_compatible') = 'object' THEN alerts.severity "
+    "ELSE coalesce(alerts.details->'verification_satellite'->>'gravite_ajustee', EXCLUDED.severity) END, "
+    "details = EXCLUDED.details || jsonb_strip_nulls(jsonb_build_object("
+    "'verification_satellite', alerts.details->'verification_satellite', 'refusion', alerts.details->'refusion', "
+    "'navire_apparie', alerts.details->'navire_apparie', 'ecartee', alerts.details->'ecartee')) "
+    "|| CASE WHEN jsonb_typeof(alerts.details->'navire_compatible') = 'object' THEN jsonb_build_object("
+    "'navire_compatible', alerts.details->'navire_compatible', 'a_confirmer', true, "
+    "'contexte', alerts.details->'contexte') ELSE '{}'::jsonb END")
 
 
 def _alerts(conn, ids: list[int], rules: dict) -> int:
@@ -602,7 +738,7 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
                   d.distance_cote_m, g.satellite, g.nom, g.nuit, round(d.ais_proche_m) AS ais_m, d.ais_navires_rayon,
                   (SELECT json_build_object('id', i.id, 'name', i.name, 'type', i.attrs->>'type',
                                             'distance_m', round(ST_Distance(i.geom, d.geom)))
-                   FROM infrastructure i WHERE ST_DWithin(i.geom, d.geom, %s)
+                   FROM infrastructure i WHERE i.kind <> 'windfarm' AND ST_DWithin(i.geom, d.geom, %s)
                    ORDER BY ST_Distance(i.geom, d.geom) LIMIT 1) AS infra,
                   (SELECT json_build_object('vessel_id', v.id, 'name', v.name, 'mmsi', v.mmsi, 'flag', v.flag,
                                             'level', w.level, 'distance_km', round((ST_Distance(p.geom, d.geom) / 1000)::numeric, 1))
@@ -664,7 +800,7 @@ def _alerts(conn, ids: list[int], rules: dict) -> int:
                VALUES ('DARK_SHIP', %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s)
                ON CONFLICT (type, rule_key) WHERE rule_key IS NOT NULL DO UPDATE
                SET rule_version = EXCLUDED.rule_version, controle_empreinte = EXCLUDED.controle_empreinte,
-               """ + GARDE_VERIFICATION + """
+               """ + GARDE_VIIRS + """
                RETURNING id""",
             (sev, ts, lon, lat, json.dumps(details, default=str), rules["version"], cle,
              controle.stamp(conn, rules))).fetchone()[0]
@@ -682,7 +818,8 @@ def _doute(conn, did: int, ts: datetime, lon: float, lat: float, rules: dict) ->
     appariés à une autre détection du même granule."""
     from mars.fusion.doute import compatible
     arret = arret_viirs(rules)
-    box = (lon - 0.3, lat - 0.2, lon + 0.3, lat + 0.2)
+    dlon, dlat = _portee_deg(lat, float(rules["viirs"].get("doute_portee_km", 100)))
+    box = (lon - dlon, lat - dlat, lon + dlon, lat + dlat)
     tracks = _tracks(conn, ts, ts, box, int(arret["max_min"]))
     exclus = {r[0] for r in conn.execute(
         "SELECT matched_vessel_id FROM viirs_detections WHERE granule_id = (SELECT granule_id FROM viirs_detections "
@@ -796,8 +933,10 @@ def refusion_plan(conn, rules: dict, du: date | None = None, au: date | None = N
     nouveau, appariement = {}, {}
     pistes_granule: dict[int, dict] = {}
     for gid, dets in par_granule.items():
-        box = (min(d[3] for d in dets) - 0.2, min(d[4] for d in dets) - 0.2, max(d[3] for d in dets) + 0.2,
-               max(d[4] for d in dets) + 0.2)
+        # Même portée que la réévaluation (doute_portee_km) : un navire en route vu 55 min avant peut être loin
+        dlon, dlat = _portee_deg(max(abs(d[4]) for d in dets), float(v.get("doute_portee_km", 100)))
+        box = (min(d[3] for d in dets) - dlon, min(d[4] for d in dets) - dlat, max(d[3] for d in dets) + dlon,
+               max(d[4] for d in dets) + dlat)
         tracks = _tracks(conn, min(d[8] for d in dets), max(d[9] for d in dets), box, marge)
         pistes_granule[gid] = tracks
         sec: set = set()
@@ -911,9 +1050,10 @@ def refusion_appliquer(conn, plan: dict, rules: dict) -> dict:
             conn.execute(
                 "UPDATE alerts SET severity = coalesce(details->'verification_satellite'->>'gravite_ajustee', 'faible'), "
                 "details = details || jsonb_build_object('a_confirmer', true, 'navire_compatible', %s::jsonb, "
-                "'refusion', %s::jsonb, 'contexte', jsonb_build_array(%s::text) || coalesce(details->'contexte', "
-                "'[]'::jsonb)) WHERE id = %s",
-                (json.dumps(a["navire_compatible"]), json.dumps(note), a["motif"], a["alerte"]))
+                "'refusion', %s::jsonb, 'contexte', CASE WHEN coalesce(details->'contexte', '[]'::jsonb) @> "
+                "jsonb_build_array(%s::text) THEN details->'contexte' ELSE jsonb_build_array(%s::text) || "
+                "coalesce(details->'contexte', '[]'::jsonb) END) WHERE id = %s",
+                (json.dumps(a["navire_compatible"]), json.dumps(note), a["motif"], a["motif"], a["alerte"]))
             conn.execute("INSERT INTO alert_evidence VALUES (%s, 'vessel', %s) ON CONFLICT DO NOTHING",
                          (a["alerte"], a["navire_compatible"]["vessel_id"]))
             faibles.append(a["alerte"])

@@ -1326,3 +1326,24 @@ exclu), proposition chiffrée seuil par seuil ; décisions d'Antoine :
   contre 57 867, 621 mouillages contre 364).
 
 * Tests : 557 réussis avec la base.
+
+## 27/10/2026 : réévaluation VIIRS corrigée, feux des parcs éoliens, diagnostic de l'injection
+
+Règles 2026.10.58, aucune migration, aucun essai payant. Après le déploiement de c251223 et la reconstruction de la
+zone de réception (1 626 cellules, 68 625 km²) :
+* `viirs-reevaluer` avait relevé 50277 (abaissée par la refusion, ATHENA SEAWAYS compatible) en élevée : chaque
+  alerte était réécrite avec une gravité recalculée, et la prudence ne lisait les navires que dans 0,3 × 0,2 degré
+  autour de la lumière (un navire en route vu 60 min avant à 37 km en sortait). Désormais : refusion appliquée sur
+  les mêmes nuits avant toute nouvelle alerte, abaissement du système jamais remonté, portée de 100 km
+  (`viirs.doute_portee_km`), option `--simulation` qui liste les changements dans une transaction annulée.
+* 9 alertes élevées sur les feux du parc d'Yeu et Noirmoutier : lumières à moins de 1 km d'un parc en service
+  (`viirs.parcs_en_service`, l'état n'est pas dans EMODnet) écartées (`eolienne`), alertes classées par MARS C2 avec
+  le motif ; lumière fixe dès 2 nuits évaluables sans AIS ; un parc éolien ne compte plus comme infrastructure
+  proche. 80241 et 80242 sont dans le parc en projet de Fécamp Grand Large, à 16 et 18 km du parc construit : pas
+  masquées. 80238 est à 10,6 km du parc de Saint Nazaire : pas masquée.
+* Injection : options `--tranches`, `--min-prior` (répétable), `--zone-du` et `--zone-au` (zone de comparaison
+  reconstruite dans une transaction annulée), `--episodes-depuis`. Base de test, même zone, navires pris sans
+  préférence : 6 à 9 messages dans l'heure, 3 sur 11 retrouvées ; 10 et plus, 32 sur 50. L'injection d'avant
+  prenait les navires les mieux reçus d'abord : le seuil ne change presque pas qui est essayé.
+* Tests : 563 réussis avec la base.
+

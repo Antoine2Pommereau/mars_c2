@@ -776,14 +776,25 @@ class _Rollback(Exception):
     pass
 
 
-async def ais_gap_injection(c, day_start, rules: dict, essais: int = 5, heures=(11,)) -> dict:
+def tranche_de(n: int, tranches) -> str | None:
+    """Libellé de la tranche de messages par heure qui contient n (tranches : [(6, 9), (10, None)] donne « 6-9 »,
+    « 10+ »), ou None."""
+    for lo, hi in tranches:
+        if n >= lo and (hi is None or n <= hi):
+            return f"{lo}-{hi}" if hi is not None else f"{lo}+"
+    return None
+
+
+async def ais_gap_injection(c, day_start, rules: dict, essais: int = 5, heures=(11,), tranches=None) -> dict:
     """Coupures de trois heures simulées en effaçant les messages de navires réels, chacune dans une transaction
     annulée : la base n'est jamais modifiée. Pour chaque heure de coupure, les navires de classe A en route dans
     l'heure qui précède sont triés : historique insuffisant pour la règle (moins de min_prior_messages dans la fenêtre
     prior_window_min), pas de réapparition dans l'heure qui suit, dernière position près des côtes ou hors de la zone
     de réception fiable ; parmi les autres (au plus `essais`), la règle doit retrouver le silence (find_gaps, et
     projection restée dans la zone fiable). Vaut en mode observation comme en mode alertes : seule la détection est
-    éprouvée, aucune alerte n'est écrite."""
+    éprouvée, aucune alerte n'est écrite. `tranches` (27/10/2026) : au plus `essais` navires par tranche de messages
+    dans l'heure et par heure de coupure, pris par identifiant (sans préférer les mieux reçus), taux par tranche ; sans
+    tranches, les mieux reçus d'abord, comme avant."""
     g, z = rules["ais_gap"], rules["reception"]
     essais = max(1, min(int(essais), 50))
     trials, rejected, total_moving = [], {"historique_insuffisant": 0, "sans_reapparition": 0, "pres_des_cotes": 0,
@@ -805,7 +816,9 @@ async def ais_gap_injection(c, day_start, rules: dict, essais: int = 5, heures=(
             t_cut, t_back, g["excluded_ship_types"], g["prior_window_min"])
         total_moving += len(rows)
         kept = 0
-        for cand in sorted(rows, key=lambda r: -r["avant"]):
+        par_tranche_h: dict = {}
+        ordre = (sorted(rows, key=lambda r: r["vessel_id"]) if tranches else sorted(rows, key=lambda r: -r["avant"]))
+        for cand in ordre:
             if cand["avant"] < g["min_prior_messages"] + 1:
                 rejected["historique_insuffisant"] += 1
                 continue
@@ -825,10 +838,16 @@ async def ais_gap_injection(c, day_start, rules: dict, essais: int = 5, heures=(
             if not where["fiable"]:
                 rejected["hors_zone_de_reception_fiable"] += 1
                 continue
-            if kept >= essais:
+            tr = tranche_de(int(cand["avant"]), tranches) if tranches else None
+            if tranches:
+                if tr is None or par_tranche_h.get(tr, 0) >= essais:
+                    continue
+                par_tranche_h[tr] = par_tranche_h.get(tr, 0) + 1
+            elif kept >= essais:
                 continue
             kept += 1
-            result = {"mmsi": cand["mmsi"], "name": cand["name"], "coupure": f"{t_cut:%d/%m %H:%M}"}
+            result = {"mmsi": cand["mmsi"], "name": cand["name"], "coupure": f"{t_cut:%d/%m %H:%M}",
+                      "messages_heure": int(cand["avant"]), **({"tranche": tr} if tr else {})}
             try:
                 async with c.transaction():
                     result["messages_effaces"] = int((await c.execute(
@@ -849,10 +868,23 @@ async def ais_gap_injection(c, day_start, rules: dict, essais: int = 5, heures=(
                 pass
             trials.append(result)
     detected = sum(1 for t in trials if t.get("detectee"))
-    return {"mode": g.get("mode", "alertes"), "heures_de_coupure": list(heures), "duree_coupure_h": 3,
-            "navires_en_route_classe_a": total_moving, "ecartes_avant_essai": rejected, "essais": len(trials),
-            "detectees": detected, "taux_de_detection": round(detected / len(trials), 3) if trials else None,
-            "details": trials}
+    out = {"mode": g.get("mode", "alertes"), "min_prior_messages": g["min_prior_messages"],
+           "heures_de_coupure": list(heures), "duree_coupure_h": 3,
+           "navires_en_route_classe_a": total_moving, "ecartes_avant_essai": rejected, "essais": len(trials),
+           "detectees": detected, "taux_de_detection": round(detected / len(trials), 3) if trials else None}
+    if tranches:
+        out["par_tranche"] = {}
+        for lo, hi in tranches:
+            lab = tranche_de(lo, [(lo, hi)])
+            xs = [t for t in trials if t.get("tranche") == lab]
+            raisons: dict = {}
+            for t in xs:
+                if not t["detectee"]:
+                    raisons[t["raison_probable"]] = raisons.get(t["raison_probable"], 0) + 1
+            n = sum(1 for t in xs if t["detectee"])
+            out["par_tranche"][lab] = {"essais": len(xs), "detectees": n,
+                                       "taux": round(n / len(xs), 3) if xs else None, "manquees": raisons}
+    return {**out, "details": trials}
 
 
 # Navire d'une liste de surveillance dans nos eaux (WATCHLIST)
