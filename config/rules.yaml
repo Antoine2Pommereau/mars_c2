@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.56"
+version: "2026.10.57"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -56,7 +56,9 @@ rendezvous:
   # (amarré à l'autre navire), pas une excuse ; exclure ce statut effaçait les transbordements bord à bord.
   excluded_nav_status: []
   max_speed_kn: 2.0
-  min_duration_min: 120
+  # 60 min depuis le 26/10/2026 (120 danois) : mesure Z7 sur 18 jours, 10 épisodes de plus (0,6 par jour), dont
+  # NORTHERN OSPREY bord à bord de trois navires en deux jours (8 à 37 m, 25 km au large), jamais vu à 120 min
+  min_duration_min: 60
   slot_min: 10           # positions regroupées par tranches de 10 minutes
   max_gap_min: 20        # deux tranches séparées de 20 minutes au plus restent dans le même épisode
   min_coast_km: 3        # en dessous : abords de côte et de port, exclus
@@ -68,6 +70,24 @@ rendezvous:
   high_coast_km: 20
   excluded_ship_types: [Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement", "Port tender",
                         Dredging, Diving, Military, Medical, "Anti-pollution"]
+  # Balises de pêche et engins signalés par AIS (B1, M2, BUOY3 COEUR DE MARIN, lot Z7) : jamais un navire ; un
+  # rendez vous où l'un des deux en est une est écarté et compté à part (exclus.balise)
+  balises:
+    mmsi_navire: [200000000, 799999999]  # MMSI d'un navire (UIT M.585) ; hors de l'intervalle : engin associé (98),
+                                         # aide à la navigation (99), balise de détresse (970 à 974), portatif (8)
+    noms: ['BUOY', 'BOU[EÉ]E', 'BALISE', '\bNET\b', '\bFILET\b', '\d+ ?%']   # où qu'ils soient dans le nom
+    codes: '^[A-Z]{1,2} ?[0-9]{1,3}$'    # nom réduit à un code (B1, M2) : balise seulement sans longueur déclarée
+    longueur_max_m: 6                    # ou plus courte que ceci
+  # Travaux offshore (lot Z7) : rendez vous à moins de parc_m d'un parc éolien, avec un navire du chantier (type
+  # déclaré dans types, ou présent dans ce parc au moins presence_jours jours distincts sur les presence_fenetre_j
+  # précédents) : gardé, marqué « travaux offshore », gravité faible, comme un mouillage connu. Jamais pour un navire
+  # des listes. Cas mesurés : EEMS DOVER et BOLD TERN (installation d'éoliennes) dans le parc de Courseulles, 6 des 7
+  # épisodes aux seuils danois ; ISLAND DILIGENCE et TSM WINDCAT 59 dans celui de Dieppe et du Tréport
+  travaux_offshore:
+    parc_m: 1000
+    types: [Other]
+    presence_jours: 3
+    presence_fenetre_j: 7
 
 stationary_zones:
   cell_deg_lon: 0.04     # environ 2,4 km à ces latitudes : capte les mouillages dispersés
@@ -97,7 +117,9 @@ ais_gap:
   mode: observation
   min_gap_min: 120       # silence d'au moins deux heures
   min_speed_kn: 1.0      # le navire faisait route au moment de se taire
-  min_prior_messages: 10 # et émettait régulièrement : au moins 10 messages dans l'heure précédente
+  min_prior_messages: 6  # et émettait régulièrement : au moins 6 messages dans l'heure précédente (un toutes les
+                         # 10 min, l'intervalle de la zone fiable). 10 danois jusqu'au 26/10/2026 : 37 à 43 % des
+                         # navires en route écartés avant tout essai (médiane 13 positions par heure, lot Z7)
   prior_window_min: 60   # (écarte les MMSI fantômes : un message isolé, souvent un identifiant corrompu)
   min_coast_km: 3        # dernière position au large
   edge_margin_deg: 0.25  # loin du bord des données chargées (environ 15 km en longitude, 28 km en latitude)

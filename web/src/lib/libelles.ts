@@ -324,7 +324,7 @@ export const L = {
     vitesseDeclaree: "Vitesse déclarée", positionPassage: "Position à l'instant du passage",
     echoProche: "Écho radar le plus proche", aucun: "aucun",
     sousAutreMmsi: "sous un autre MMSI", pavillonChange: "pavillon changé", militaire: "militaire", militaireRow: "Militaire", puis: "puis", devenu: "devenu",
-    silenceDe: (min: number) => `AIS coupé ${duree(min)}`, rencontreDe: (min: number, m: number) => `${duree(min)}, ${m} m au plus près`,
+    silenceDe: (min: number) => `AIS coupé ${duree(min)}`, rencontreDe: (min: number, m: number) => `${duree(min)}, ${m} m au plus près`, travaux: "travaux offshore", travauxRow: "Travaux offshore",
     contrasteDe: (db: string) => `contraste ${db} dB`, sansEcho: (m: string) => `${m} m déclarés, aucun écho`,
     echo: (m: string) => `Écho de ${m} m sans AIS`, mmsiDe: (m: string | number) => `MMSI ${m}`, omiDe: (o: string | number) => `OMI ${o}`,
     deplacement: (km: string) => `, déplacement de ${km} km`, continuite: (n: number, pct: string) => `${n} navires, continuité ${pct} %`,

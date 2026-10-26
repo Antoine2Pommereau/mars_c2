@@ -37,6 +37,8 @@ async def _alertes(c, debut, instant, rejeu: bool, ewkt, p: dict) -> list[dict]:
                    ST_X(a.geom::geometry) AS lon, ST_Y(a.geom::geometry) AS lat,
                    (SELECT min(e.evidence_id) FROM alert_evidence e WHERE e.alert_id = a.id
                       AND e.evidence_type = 'vessel') AS vessel_id,
+                   (SELECT array_agg(e.evidence_id ORDER BY e.evidence_id) FROM alert_evidence e
+                    WHERE e.alert_id = a.id AND e.evidence_type = 'vessel') AS vessel_ids,
                    (SELECT array_agg(e.evidence_id) FROM alert_evidence e WHERE e.alert_id = a.id
                       AND e.evidence_type = 'detection') AS detections,
                    CASE WHEN a.type = 'AIS_GAP' THEN (
@@ -83,7 +85,8 @@ async def calculer(c, instant: datetime, rejeu: bool, region: str | None, rules:
     p = _p(rules)
     debut, fin = D.fenetre(instant, p)
     alertes = await _alertes(c, debut, fin, rejeu, await region_ewkt(c, region), p)
-    navires = await _navires(c, sorted({a["vessel_id"] for a in alertes if a.get("vessel_id") is not None}))
+    navires = await _navires(c, sorted({v for a in alertes for v in (a.get("vessel_ids") or [a.get("vessel_id")])
+                                        if v is not None}))
     return D.regrouper(alertes, p, navires, await _contextes(c, alertes, instant, rules))
 
 

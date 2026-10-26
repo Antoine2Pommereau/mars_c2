@@ -95,7 +95,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     type: "RENDEZVOUS", Icone: ArrowRightLeft, couleur: "#f0a84b", piste: "deux", etape: "en place", actif: true,
     navires: (d) => d.navires ?? [],
     titre: (d) => { const [a, b] = d.navires ?? []; return `${nom(a)} et ${nom(b)}`; },
-    signe: (d) => <Tag>{P.rencontreDe(d.duree_min, d.distance_min_m)}</Tag>,
+    signe: (d) => d.travaux_offshore ? <Tag>{P.travaux}</Tag> : <Tag>{P.rencontreDe(d.duree_min, d.distance_min_m)}</Tag>,
     preuves: (p) => {
       const d = p.details ?? {};
       const [v1, v2] = d.navires ?? [];
@@ -106,6 +106,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
           <Row label={P.rencontre}>{hm(d.debut)} {P.au} {hm(d.fin)} UTC, {d.duree_min} min</Row>
           <Row label={P.distance}>{d.distance_min_m} m, {d.distance_moyenne_m} m</Row>
           <Row label={P.distanceCote}>{d.distance_cote_km == null ? L.commun.nd : `${num(d.distance_cote_km)} km`}</Row>
+          {d.travaux_offshore && <Row label={P.travauxRow}>{d.travaux_offshore.parc}, {d.travaux_offshore.navire}</Row>}
           <Context items={d.contexte} />
         </>
       );

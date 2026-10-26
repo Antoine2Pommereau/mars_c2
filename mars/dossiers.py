@@ -4,7 +4,9 @@ suspicion à trois niveaux et une phrase d'explication tirée des faits. Calcul 
 (backend/dossiers.py) ; le moteur des alertes ne change pas. Règles : docs/ux_refonte.md, section 8, et la section
 `dossiers` de config/rules.yaml.
 
-* Navire : alertes qui ont le navire pour preuve (alert_evidence vessel). Point : alerte sans navire (lumière VIIRS,
+* Navire : alertes qui ont le navire pour preuve (alert_evidence vessel) ; un rendez vous figure dans le dossier de
+  chacun des deux navires (lot Z7 : auparavant dans celui du plus petit identifiant seulement).
+  Point : alerte sans navire (lumière VIIRS,
   écho radar ou optique sans AIS), rattaché au dossier d'un navire quand une vérification satellite les relie (même
   détection en preuve), sinon fusionné avec un autre point à moins de point_fusion_m et point_fusion_h.
 * Niveau : base selon la gravité la plus haute (navire des listes seul : À noter, sauf en mer près d'une
@@ -126,7 +128,8 @@ def phrase(alertes: list[dict]) -> str:
         par_type.setdefault(a["type"], []).append(a)
     frags = []
     for t, xs in par_type.items():
-        frags.append(f"AIS coupé {len(xs)} fois" if t == "AIS_GAP" and len(xs) > 1 else fragment(xs[0]))
+        frags.append(f"AIS coupé {len(xs)} fois" if t == "AIS_GAP" and len(xs) > 1 else
+                     f"Rendez vous {len(xs)} fois" if t == "RENDEZVOUS" and len(xs) > 1 else fragment(xs[0]))
     if any(_verifie_sans_ais(a) for a in alertes):
         frags = [f for f in frags if f != "Écho radar sans AIS"]
         frags.insert(min(2, len(frags)), "revu au radar sans AIS")
@@ -147,6 +150,10 @@ def regrouper(alertes: list[dict], p: dict, navires: dict, contextes: dict | Non
     par_navire: dict = {}
     points: list = []
     for a in ouvertes:
+        if a["type"] == "RENDEZVOUS" and a.get("vessel_ids"):     # les deux navires de la rencontre
+            for v in dict.fromkeys(a["vessel_ids"]):
+                par_navire.setdefault(v, []).append(a)
+            continue
         (par_navire.setdefault(a["vessel_id"], []) if a.get("vessel_id") is not None else points).append(a)
     detections_navire = {v: {d for a in xs for d in (a.get("detections") or [])} for v, xs in par_navire.items()}
     groupes_points: list[list[dict]] = []

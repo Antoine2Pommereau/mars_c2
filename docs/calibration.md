@@ -218,3 +218,4 @@ Les épisodes décrits un par un (30 plus longs par cycle) sont dans `details->'
 | 20/10/2026 | 2026.10.32 et 2026.10.34 | Délai de 12 h du tip VIIRS ; garde des nuages Sentinel 2 |
 | 21/10/2026 | 2026.10.43 | Séjour hors port des navires des listes |
 | 22/10/2026 | 2026.10.44 à 2026.10.46 | Cercle appris, garde de contenance, table de l'archive |
+| 26/10/2026 | 2026.10.57 | Lot Z7 : rendez vous à 60 min (500 m gardés), balises de pêche écartées, travaux offshore d'un parc éolien marqués et abaissés ; coupures : 6 messages dans l'heure au lieu de 10, toujours en observation ; zone de réception et masques reconstruits sur 14 jours, seuils inchangés |

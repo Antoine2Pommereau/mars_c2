@@ -1302,3 +1302,27 @@ Règles 2026.10.56 (`viirs.lumiere_voisine_m`), aucune migration, aucun essai pa
   estime à 385 m de la lumière). Nouvelle méthode : `taches.py viirs-expliquer ALERTE` (lecture seule, code de la
   fusion). Gardée faible à confirmer : une estime de 55 min d'un navire en route n'est pas un appariement.
 * Tests : 551 réussis avec la base.
+
+## 26/10/2026 : décisions du lot Z7 (calibration)
+
+Règles 2026.10.57, aucune migration, aucun essai payant. Mesures sur le serveur du 06 au 24/10 (18 jours, 18/10
+exclu), proposition chiffrée seuil par seuil ; décisions d'Antoine :
+* Rendez vous : durée minimale de 120 à 60 min, distance de 500 m gardée (1 000 m refusé : 39 épisodes, dont 21 au
+  mouillage, aucun bord à bord). Aux seuils danois, NORTHERN OSPREY bord à bord de TORM ALMENA puis de PHILOTIMOS
+  (8 à 37 m, 25 km au large, 70 à 90 min) n'était jamais vu ; il forme désormais un dossier « À examiner »,
+  « Rendez vous 3 fois ».
+* Balises de pêche (B1, M2, BUOY3 COEUR DE MARIN) reconnues par le MMSI, le nom, ou un nom réduit à un code sans
+  longueur de navire : rendez vous écarté, compté à part (`exclus_balises`).
+* Travaux offshore : rendez vous à moins de 1 km d'un parc éolien avec un navire du chantier (type « Other », ou
+  présent dans le parc 3 jours sur 7) : gardé, étiqueté « travaux offshore », gravité faible ; jamais pour un navire
+  des listes. EEMS DOVER et BOLD TERN (6 des 7 épisodes danois) sont dans le parc de Courseulles, ISLAND DILIGENCE
+  et TSM WINDCAT 59 dans celui de Dieppe et du Tréport.
+* Dossiers : un rendez vous figure dans le dossier de chacun des deux navires (auparavant, du plus petit identifiant
+  seulement).
+* Coupures AIS : `min_prior_messages` de 10 à 6, toujours en observation. Injection de contrôle sur la base de test
+  (09/10) : navires écartés faute d'historique de 188 à 128, détection inchangée (80 sur 100). Sur le serveur, avant
+  le changement : 239 coupures retrouvées sur 299 (80 %).
+* Zone de réception fiable et masques des mouillages reconstruits sur 14 jours, seuils inchangés (mesure : 78 228 km²
+  contre 57 867, 621 mouillages contre 364).
+
+* Tests : 557 réussis avec la base.

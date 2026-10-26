@@ -156,6 +156,57 @@ LEFT JOIN LATERAL (
 """
 
 
+def balise(v: dict | None, cfg: dict | None) -> str | None:
+    """Balise de pêche ou engin signalé par AIS (jamais un navire) : motif, ou None. `v` : mmsi, name, length_m."""
+    if not v or not cfg:
+        return None
+    lo, hi = cfg.get("mmsi_navire") or (200000000, 799999999)
+    if v.get("mmsi") is not None and not lo <= int(v["mmsi"]) <= hi:
+        return "MMSI hors de l'intervalle des navires"
+    nom = (v.get("name") or "").upper().strip()
+    if nom and any(re.search(m, nom) for m in cfg.get("noms") or []):
+        return "nom de balise"
+    longueur = v.get("length_m")
+    if (nom and cfg.get("codes") and re.fullmatch(cfg["codes"], nom)
+            and (longueur is None or longueur <= float(cfg.get("longueur_max_m", 6)))):
+        return "nom réduit à un code, sans longueur de navire"
+    return None
+
+
+TRAVAUX_PARC_SQL = """SELECT id, coalesce(name, 'parc éolien') AS name
+                      FROM infrastructure, (SELECT ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography AS g) x
+                      WHERE kind = 'windfarm' AND ST_DWithin(geom, x.g, $3) ORDER BY geom <-> x.g LIMIT 1"""
+TRAVAUX_PRESENCE_SQL = """SELECT p.vessel_id, count(DISTINCT (p.ts AT TIME ZONE 'UTC')::date) AS jours
+                          FROM positions p, infrastructure i
+                          WHERE i.id = $1 AND p.vessel_id = ANY($2::bigint[]) AND p.ts >= $3 AND p.ts < $4
+                            AND ST_DWithin(p.geom, i.geom, $5)
+                          GROUP BY p.vessel_id"""
+
+
+async def travaux_offshore(c, x: dict, navires: list, cfg: dict | None, suivis: set) -> dict | None:
+    """Rendez vous de travaux dans un parc éolien : parc à moins de parc_m du milieu de la rencontre, et un des deux
+    navires du chantier (type déclaré, ou présence répétée dans ce parc avant la rencontre). Jamais pour un navire des
+    listes. Retourne {parc, navire, motif} ou None."""
+    if not cfg or any(v and v.get("vessel_id") in suivis for v in navires):
+        return None
+    parc = await c.fetchrow(TRAVAUX_PARC_SQL, x["lon"], x["lat"], float(cfg["parc_m"]))
+    if parc is None:
+        return None
+    for v in navires:
+        if v and v.get("ship_type") in (cfg.get("types") or []):
+            return {"parc": parc["name"], "navire": v.get("name"), "motif": f"type déclaré {v['ship_type']}"}
+    ids = [v["vessel_id"] for v in navires if v]
+    debut = x["t_start"] - timedelta(days=int(cfg["presence_fenetre_j"]))
+    jours = {r["vessel_id"]: r["jours"] for r in await c.fetch(TRAVAUX_PRESENCE_SQL, parc["id"], ids, debut,
+                                                                 x["t_start"], float(cfg["parc_m"]))}
+    for v in navires:
+        n = jours.get(v["vessel_id"], 0) if v else 0
+        if n >= int(cfg["presence_jours"]):
+            return {"parc": parc["name"], "navire": v.get("name"),
+                    "motif": f"présent dans le parc {n} jours sur les {cfg['presence_fenetre_j']} précédents"}
+    return None
+
+
 async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
     """Évalue la règle sur [day_start, day_end[ et met à jour les alertes RENDEZVOUS de cette période."""
     from mars import controle
@@ -175,10 +226,18 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
                               "ship_type": v["ship_type"],
                               "length_m": None if v["length_m"] is None or v["length_m"] != v["length_m"] else v["length_m"]}
 
-    items, excluded, anchorage = [], {"cote": 0}, 0
+    items, excluded, anchorage, travaux_n = [], {"cote": 0}, 0, 0
+    suivis = set()                                     # navires des listes : jamais abaissés pour travaux
+    if rows and r.get("travaux_offshore"):
+        suivis = {w["vessel_id"] for w in await c.fetch(
+            "SELECT vessel_id FROM vessel_watch WHERE level <> 'autre_risque'")}
     for x in rows:
         if x["near_coast"]:
             excluded["cote"] += 1
+            continue
+        # Balise de pêche (lot Z7) : jamais un navire, rendez vous écarté et compté à part
+        if balise(names.get(x["v1"]), r.get("balises")) or balise(names.get(x["v2"]), r.get("balises")):
+            excluded["balise"] = excluded.get("balise", 0) + 1
             continue
         coast_km = None if x["coast_m"] is None else x["coast_m"] / 1000
         duration_min = (x["t_end"] - x["t_start"]).total_seconds() / 60
@@ -192,6 +251,12 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
         if in_zone:
             context.append("Zone de mouillage connue : activité souvent légitime (avitaillement, transbordement autorisé)")
             anchorage += 1
+        travaux = await travaux_offshore(c, x, [names.get(x["v1"]), names.get(x["v2"])], r.get("travaux_offshore"),
+                                         suivis)
+        if travaux:
+            context.append(f"Travaux offshore : {travaux['parc']}, {travaux['navire']} du chantier "
+                           f"({travaux['motif']})")
+            travaux_n += 1
         if alongside:
             context.append(f"Bord à bord ({round(x['d_min'])} m au plus près) : transfert physiquement possible")
         moored_offshore = bool(x["moored_share"] and x["moored_share"] > 0)
@@ -200,7 +265,7 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
                            "de la rencontre : amarrage probable à l'autre navire")
         if x["anchored_share"] and x["anchored_share"] > 0:
             context.append(f"Statut déclaré « au mouillage » sur {round(100 * x['anchored_share'])} % de la rencontre")
-        if in_zone:
+        if in_zone or travaux:
             severity = "faible"
         elif (duration_min >= r["high_duration_min"] or alongside or moored_offshore
               or (coast_km is not None and coast_km >= r["high_coast_km"])):
@@ -214,14 +279,15 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
             "distance_moyenne_m": round(x["d_avg"]),
             "distance_cote_km": None if coast_km is None else round(coast_km, 1),
             "bord_a_bord": alongside, "zone_de_mouillage": in_zone, "amarre_en_mer": moored_offshore,
+            "travaux_offshore": travaux,
             "contexte": context,
-            "motif": "Deux navires quasi immobiles, à moins de 500 m l'un de l'autre, pendant plus de deux heures, "
-                     "loin des côtes",
+            "motif": f"Deux navires quasi immobiles, à moins de {r['max_distance_m']} m l'un de l'autre, pendant "
+                     f"{round(seuil)} min au moins, loin des côtes",
             "parametres": {**{k: r[k] for k in ("max_distance_m", "max_speed_kn", "min_duration_min", "min_coast_km",
                                                 "alongside_m")}, "min_duration_min": seuil},
         }
-        # Instant où la règle aurait été franchie en direct : deux heures après le début de l'épisode (moins dans une
-        # zone de vigilance au seuil abaissé)
+        # Instant où la règle aurait été franchie en direct : la durée minimale après le début de l'épisode (moins dans
+        # une zone de vigilance au seuil abaissé)
         event_time = x["t_start"] + timedelta(minutes=seuil)
         items.append({"v1": x["v1"], "v2": x["v2"], "severity": severity, "event_time": event_time, "seuil": seuil,
                       "lon": x["lon"], "lat": x["lat"], "details": details, "vessels": [x["v1"], x["v2"]],
@@ -251,7 +317,8 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
             it["key"] = f"{it['v1']}:{it['v2']}:{stamp(it['t_start'])}"
     saved = await save_alerts(c, "RENDEZVOUS", items, day_start, day_end, "debut", rules["version"], rules=rules)
     return {"episodes_detectes": len(rows), "alertes": len(items), "dont_zone_de_mouillage": anchorage,
-            "exclus": excluded, **saved}
+            "dont_travaux_offshore": travaux_n, "exclus_balises": excluded.get("balise", 0), "exclus": excluded,
+            **saved}
 
 
 STATIONARY_ZONES_SQL = """
