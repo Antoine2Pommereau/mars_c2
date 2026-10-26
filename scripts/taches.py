@@ -43,6 +43,7 @@ Usage :
     python scripts/taches.py controle-diagnostic      # lignes MARS_OPERATEURS lues par taches et par l'API (lecture seule)
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-refusionner ID   # fusion refaite sur les détections en base (gratuit)
+    python scripts/taches.py sentinel-refusionner ID --simulation   # ce que la refusion changerait (rien écrit)
     python scripts/taches.py viirs-refusionner --toutes --simulation   # appariement VIIRS refait (lecture seule)
     python scripts/taches.py viirs-expliquer ALERTE [ALERTE…]   # pourquoi une alerte VIIRS tient (lecture seule)
     python scripts/taches.py viirs-reevaluer [DEBUT] --simulation   # changements de la réévaluation (rien écrit)
@@ -1143,6 +1144,20 @@ def _sentinel_refusionner(conn, a):
         raise SystemExit("Préciser l'identifiant de l'analyse : taches.py sentinel-refusionner ID (table analyses)")
     aid = int(a.args[0])
     vu = {}
+    if getattr(a, "simulation", False):               # rien n'est écrit : transaction annulée, résultat affiché
+        import psycopg
+        res = {}
+        with conn.transaction():
+            res = sentinel.refusionner(conn, aid, regles(conn))
+            res["alertes"] = [dict(zip(("id", "type", "gravite", "statut", "motif"), r)) for r in conn.execute(
+                """SELECT DISTINCT a.id, a.type, a.severity, a.status, a.details->'refusion'->>'motif' FROM alerts a
+                   JOIN alert_evidence e ON e.alert_id = a.id AND e.evidence_type = 'analysis' AND e.evidence_id = %s
+                   ORDER BY a.id""", (aid,)).fetchall()]
+            raise psycopg.Rollback()
+        traces.attributs(**{"sentinel.analyse": aid, "sentinel.simulation": True})
+        print(json.dumps({**res, "simulation": "rien n'est écrit : transaction annulée"}, ensure_ascii=False, indent=2,
+                         default=str))
+        return
 
     def refaire():
         with conn.transaction():

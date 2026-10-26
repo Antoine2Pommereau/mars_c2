@@ -13,11 +13,13 @@ from mars.geo import local_projector
 
 
 def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: dict, heading_deg: float | None = None,
-         fixed_points: pd.DataFrame | None = None):
+         fixed_points: pd.DataFrame | None = None, echos_faibles: pd.DataFrame | None = None):
     """det : lon, lat, objectness, vessel_score, fishing_score, length_m, contrast_vv_db (et on_land).
     pos : vessel_id, mmsi, name, length_m, ts, lat, lon, sog, cog (positions brutes autour de t0).
     heading_deg : direction de vol du satellite, pour la tolérance orientée (None : tolérance circulaire).
     fixed_points : lon, lat, source, ref (échos fixes connus et échos sans AIS observés à d'autres dates).
+    echos_faibles : lon, lat (et score) des échos sous le seuil de détection (analyse 106) : ils ne font ni détection ni
+    alerte, mais un navire AIS qui en a un dans sa tolérance n'est pas « sans écho ».
 
     Renvoie (det enrichi, alertes navire sombre, nombre de navires AIS à t0, extras) ; extras contient
     les positions AIS à t0, les navires AIS non confirmés par le radar et la statistique des décalages.
@@ -111,13 +113,19 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
         })
 
     inside = ais[ais.inside].reset_index(drop=True) if len(ais) else ais
-    extras = {"ais": ais, "unconfirmed": unconfirmed(inside, det, rules, heading_deg), "offsets": offsets(det),
+    faibles = None
+    if echos_faibles is not None and len(echos_faibles):
+        fx, fy = to_xy(echos_faibles.lon.to_numpy(float), echos_faibles.lat.to_numpy(float))
+        faibles = np.stack([fx, fy], axis=1)
+    extras = {"ais": ais, "unconfirmed": unconfirmed(inside, det, rules, heading_deg, faibles), "offsets": offsets(det),
               "fixed_hits": fixed_hits}
     return det, alerts, int(ais.inside.sum()) if len(ais) else 0, extras
 
 
-def unconfirmed(ais: pd.DataFrame, det: pd.DataFrame, rules: dict, heading_deg: float | None) -> list[dict]:
-    """Grands navires AIS sans aucun écho radar compatible, même écarté par un filtre (hors terre)."""
+def unconfirmed(ais: pd.DataFrame, det: pd.DataFrame, rules: dict, heading_deg: float | None,
+                faibles: np.ndarray | None = None) -> list[dict]:
+    """Grands navires AIS sans aucun écho radar compatible, même écarté par un filtre (hors terre), ni écho faible sous
+    le seuil de détection (`faibles` : coordonnées projetées x, y)."""
     u, f = rules["unconfirmed"], rules["fusion"]
     if not len(ais):
         return []
@@ -125,13 +133,14 @@ def unconfirmed(ais: pd.DataFrame, det: pd.DataFrame, rules: dict, heading_deg: 
     if not len(big):
         return []
     echoes = det[det.mask_reason.fillna("") != "terre"] if len(det) else det
+    xy = echoes[["x", "y"]].to_numpy(float) if len(echoes) else np.zeros((0, 2))
+    if faibles is not None and len(faibles):
+        xy = np.concatenate([xy, np.asarray(faibles, float)])
     semi_along, semi_cross, along, cross = tolerance(big, f["base_radius_m"] * u["tolerance_factor"],
                                                      f["doppler_s"] * u["tolerance_factor"], heading_deg)
-    if len(echoes):
-        nd = normalized_distance(echoes[["x", "y"]].to_numpy(float), big[["x", "y"]].to_numpy(float),
-                                 semi_along, semi_cross, along, cross)
-        dist = np.linalg.norm(echoes[["x", "y"]].to_numpy(float)[:, None, :] - big[["x", "y"]].to_numpy(float)[None],
-                              axis=2)
+    if len(xy):
+        nd = normalized_distance(xy, big[["x", "y"]].to_numpy(float), semi_along, semi_cross, along, cross)
+        dist = np.linalg.norm(xy[:, None, :] - big[["x", "y"]].to_numpy(float)[None], axis=2)
         nearest_nd, nearest_m = nd.min(axis=0), dist.min(axis=0)
     else:
         nearest_nd = np.full(len(big), np.inf)

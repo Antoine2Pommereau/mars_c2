@@ -1347,3 +1347,23 @@ zone de réception (1 626 cellules, 68 625 km²) :
   prenait les navires les mieux reçus d'abord : le seuil ne change presque pas qui est essayé.
 * Tests : 563 réussis avec la base.
 
+## 27/10/2026 : enquête sur l'analyse Sentinel 1 106 (pas de Calais)
+
+Règles 2026.10.59 (`sentinel.seuil_absence`), aucune migration, aucun essai payant. Scène S1D du 25/10 17:40 (passage
+782), deux fenêtres de 24 km (NOSTOS, ALTAI), 3 détections, une alerte DARK_SHIP critique (76467) et 5 AIS_UNCONFIRMED.
+Reproduite sur le Mac par la copie publique (Planetary Computer), avec et sans les passages du 19/10 (S1C) et du 13/10
+(S1D) : `travailleurs/essai_diagnostic_s1.py`.
+* L'analyse a tourné **sans historique** : NOSTOS à 0,963 et 130 m, l'écho 6 à 0,971 et 50 m, l'écho 7 à 36 m sont les
+  valeurs exactes du passage sans historique, et le seuil prudent de 0,95 laisse exactement ces 3 détections. Avec
+  l'historique : 11 détections au dessus de 0,9 dans les cœurs (7 et 4), dont quatre grands échos de 112 à 256 m dans la
+  fenêtre NOSTOS restés entre 0,76 et 0,95 sans historique. Cause de l'absence d'historique : à lire dans les mesures de
+  l'analyse (`historique_erreurs`).
+* L'absence d'un navire AIS se jugeait contre les seules détections gardées : un navire vu à 0,87 passait pour absent.
+  Le modèle tourne désormais au seuil d'absence (0,5) ; les échos entre ce seuil et celui de détection, et ceux hors de
+  nos zones (le Doppler pousse au delà de 51,2 degrés nord l'écho d'un navire du bord de la Manche), sont transmis comme
+  échos faibles, ne font ni détection ni alerte, mais confirment un navire. Sans eux, l'absence n'est jamais concluante
+  (refusion de 106 : les 5 alertes classées avec ce motif). `sentinel-refusionner ID --simulation`.
+* Doppler : décalage le long de la trace de 150 s fois la vitesse vers le radar, dans l'appariement comme dans
+  l'absence (élargi de moitié) ; la physique de Sentinel 1 donne plutôt 80 à 90 s : tolérance généreuse.
+* Tests : 566 réussis avec la base.
+

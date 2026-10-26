@@ -369,28 +369,43 @@ def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, dev
     cat_path, base_path = os.path.join(scratch, scene_id + "_cat.npy"), os.path.join(scratch, scene_id + "_base.tif")
     hist = list(historiques or [])[:2]
     conf = seuil(task, len(hist))
+    # Analyse 106 (27/10/2026) : l'absence d'un navire AIS se juge contre tous les échos, pas seulement ceux du seuil
+    # de détection. Le modèle tourne au seuil d'absence (plus bas) ; au dessus de `conf`, détections comme avant ; entre
+    # les deux, « échos faibles » (position et score), qui ne servent qu'à ne pas déclarer absent un navire vu
+    bas = min(conf, float(task.get("seuil_absence", conf)))
     with tr.span("sentinel.preparation_scene", **{"sentinel.historique": len(hist)}):
         prepare_scenes(raw, scratch, scene_id, hist[0] if hist else None, hist[1] if len(hist) > 1 else None,
                        "sentinel1", cat_path, base_path, device, DETECTEUR, ATTRIBUTS)
     # nms_thresh : annoncé float mais utilisé en division entière par la grille de la chaîne d'AI2 (range) ; un décimal
     # la fait échouer (« 'float' object cannot be interpreted as an integer », essai dans l'image du 15/10/2026)
     with tr.span("sentinel.inference", **{"sentinel.appareil": device.type, "sentinel.historique": len(hist),
-                                          "sentinel.seuil": conf}):
+                                          "sentinel.seuil": conf, "sentinel.seuil_absence": bas}):
         detect_vessels(DETECTEUR, ATTRIBUTS, raw, scene_id, cat_path, base_path, out, 2048, 400, 20,
-                       conf, int(round(float(task.get("nms_m", 10)))), False, device, "sentinel1", None)
+                       bas, int(round(float(task.get("nms_m", 10)))), False, device, "sentinel1", None)
     r["analyse_s"] = round(time.time() - t, 1)
     r["confiance"] = conf
+    r["seuil_absence"] = bas
     with tr.span("sentinel.mesures_et_vignettes") as ms:
         radar = Radar(files["vv"])
-        dets, hors, bord = [], 0, 0
+        dets, faibles, hors, bord = [], [], 0, 0
         with open(os.path.join(out, "predictions.csv")) as f:
             for row in csv.DictReader(f):
                 lon, lat = num(row.get("lon")), num(row.get("lat"))
-                if lon is None or lat is None or not in_regions(lon, lat, task["regions"]):
+                if lon is None or lat is None:
                     hors += 1
                     continue
                 if coeur and not in_regions(lon, lat, [coeur]):
                     bord += 1                                # marge de la fenêtre : vue par une autre, ou coupée
+                    continue
+                score = num(row.get("score"))
+                hors_zone = not in_regions(lon, lat, task["regions"])
+                if hors_zone:
+                    hors += 1
+                # Hors de nos zones (pas d'alerte) ou sous le seuil : écho faible, pour l'absence seulement ; le Doppler
+                # pousse l'écho d'un navire du bord de zone au delà (analyse 106 : Manche coupée à 51,2 degrés nord)
+                if hors_zone or (score is not None and score < conf):
+                    faibles.append({"lon": round(lon, 6), "lat": round(lat, 6), "score": round(score, 3),
+                                    "longueur_m": num(row.get("vessel_length_m"))})
                     continue
                 cap, cap_p = heading([num(row.get(f"heading_bucket_{k}")) for k in range(16)])
                 det = {"lon": round(lon, 6), "lat": round(lat, 6), "score": num(row.get("score")),
@@ -407,8 +422,9 @@ def _detecter(raw: str, scene_id: str, files: dict, scene: dict, task: dict, dev
                 except Exception as e:
                     det["vignette_erreur"] = f"{type(e).__name__}: {e}"[:200]
                 dets.append(det)
-        ms.set(**{"sentinel.detections": len(dets), "sentinel.hors_regions": hors, "sentinel.marge": bord})
-    r.update({"detections": dets, "hors_regions": hors, "ecartees_marge": bord})
+        ms.set(**{"sentinel.detections": len(dets), "sentinel.echos_faibles": len(faibles),
+                  "sentinel.hors_regions": hors, "sentinel.marge": bord})
+    r.update({"detections": dets, "echos_faibles": faibles, "hors_regions": hors, "ecartees_marge": bord})
     return r
 
 
@@ -580,7 +596,7 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
     passes = list(scene.get("historique") or [])[:2]
     ouverts: dict = {}
     r["historique"] = {"prevus": [h.get("id") for h in passes], "passages_min": None}
-    dets, octets, t_lecture, t_analyse, ecartees = [], 0, 0.0, 0.0, 0
+    dets, faibles, octets, t_lecture, t_analyse, ecartees = [], [], 0, 0.0, 0.0, 0
     for j, f in enumerate(scene["fenetres"]):
         k = f.get("id", j)              # identifiant donné par le serveur (lots sur processeur, lot C5)
         base = scene["id"].replace(".SAFE", "")
@@ -628,7 +644,10 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
                 t_analyse += d["analyse_s"]
                 ecartees += d["ecartees_marge"]
                 dets += d["detections"]
+                faibles += d["echos_faibles"]
+                rf["seuil_absence"] = d["seuil_absence"]
                 rf.update({"analyse_s": d["analyse_s"], "detections": len(d["detections"]),
+                           "echos_faibles": len(d["echos_faibles"]),
                            "ecartees_marge": d["ecartees_marge"]})
                 sf.set(**{"sentinel.detections": len(d["detections"]), "sentinel.octets": rf["octets"],
                           "sentinel.historique": n_h, "sentinel.octets_historique": rf["octets_historique"],
@@ -645,7 +664,7 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
                                  .get("GET", {}).get("downloaded_bytes", 0)) or None
     except Exception:
         r["reseau_octets"] = None
-    r.update({"detections": dets, "octets_lus": octets, "telecharge_mo": round(octets / 1e6, 1),
+    r.update({"detections": dets, "echos_faibles": faibles, "octets_lus": octets, "telecharge_mo": round(octets / 1e6, 1),
               "telecharge_s": round(t_lecture, 1), "analyse_s": round(t_analyse, 1), "ecartees_marge": ecartees})
     if r["fenetres"] and all(x.get("erreur") for x in r["fenetres"]):
         r["erreur"] = "aucune fenêtre analysée : " + r["fenetres"][0]["erreur"]

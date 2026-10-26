@@ -877,7 +877,7 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
                 continue
             variante = {**v, "cout_prevu_eur": est, "duree_max_min": duree_cpu(n_lot, s)}
             params = {"scenes": lot, "regions": regions_boxes(), "confiance": s["confiance"], "nms_m": s["nms_m"],
-                      "vignette_km": s["vignette_km"],
+                      "vignette_km": s["vignette_km"], "seuil_absence": s.get("seuil_absence", s["confiance"]),
                       "confiance_sans_historique": (s.get("historique") or {}).get("confiance_sans_historique",
                                                                                    s["confiance"])}
             with traces.span("sentinel.essai_type", **{"sentinel.type": t["commercial_type"], "scaleway.zone": zone,
@@ -997,11 +997,14 @@ def ingest(conn, w: dict, rules: dict) -> dict:
         for sc in scenes:                             # fenêtres : taille, octets, durées, détections, motif d'échec
             m = {k: sc.get(k) for k in ("telecharge_s", "telecharge_mo", "analyse_s", "erreur",
                                          "octets_lus", "ecartees_marge", "image_px", "historique")}
+            if "echos_faibles" in sc:                 # analyse 106 : échos sous le seuil, pour juger l'absence
+                m["echos_faibles"] = (mes.get(sc["id"]) or {}).get("echos_faibles", []) + sc["echos_faibles"]
             if sc.get("fenetres"):
                 m["fenetres"] = (mes.get(sc["id"]) or {}).get("fenetres", []) + [
                     {k: f.get(k) for k in ("index", "srcwin", "octets", "lecture_s", "analyse_s", "detections",
                                            "ecartees_marge", "erreur", "historique", "octets_historique",
-                                           "lecture_historique_s", "historique_erreurs", "confiance")}
+                                           "lecture_historique_s", "historique_erreurs", "confiance",
+                                           "seuil_absence", "echos_faibles")}
                     for f in sc["fenetres"]]
             mes[sc["id"]] = m
         octets = (sum(int(sc.get("octets_lus") or 0) for sc in scenes) + int((prev[3] or 0) if prev else 0)) or None
@@ -1014,6 +1017,8 @@ def ingest(conn, w: dict, rules: dict) -> dict:
                           "cycle", aid))
             traces.attributs(**{"sentinel.lot_fenetres_faites": fait, "sentinel.lot_fenetres_restantes": reste})
             continue
+        # Mesures écrites avant la fusion, qui y lit les fenêtres en erreur et les échos faibles
+        conn.execute("UPDATE analyses SET timings = %s WHERE id = %s", (json.dumps(mes), aid))
         with traces.span("sentinel.fusion_et_alertes", **{"sentinel.analyse": aid, "sentinel.scenes": len(scenes)}) as sp:
             summary = fuse_analysis(conn, aid, rules) if any(not sc.get("erreur") for sc in scenes) else {}
             sp.set_attributes({f"sentinel.{k}": v for k, v in summary.items() if isinstance(v, (int, float))})
@@ -1123,7 +1128,14 @@ def fuse_analysis(conn, aid: int, rules: dict) -> dict:
         ascending = (sc.get("orbite") or "").lower().startswith("asc")
         heading = track_heading((bbox[1] + bbox[3]) / 2, ascending) if sc.get("orbite") else None
         fixed = _fixed_points(conn, bbox, t0, rules)
-        det_f, _alerts, n_ais, extras = fuse(det, pos, pd.Timestamp(t0), bbox, rules_f, heading, fixed)
+        mes_scene = timings.get(scene) or {}
+        faibles = pd.DataFrame(mes_scene.get("echos_faibles") or [], columns=["lon", "lat", "score", "longueur_m"])
+        det_f, _alerts, n_ais, extras = fuse(det, pos, pd.Timestamp(t0), bbox, rules_f, heading, fixed, faibles)
+        # Analyse 106 (27/10/2026) : sans les échos sous le seuil (analyses antérieures, ou travailleur ancien), un navire
+        # « sans écho » peut avoir été vu à 0,85 ; l'absence n'est pas concluante, aucune alerte AIS_UNCONFIRMED
+        if "echos_faibles" not in mes_scene and extras["unconfirmed"]:
+            out["absence_non_concluante"] = out.get("absence_non_concluante", 0) + len(extras["unconfirmed"])
+            extras["unconfirmed"] = []
         n_fixed = _record_fixed(conn, det_f, extras["fixed_hits"], t0)
         cut = flux_coupe(conn, t0, rules)
         # Analyse par fenêtres (lot C3) : seules les fenêtres lues sont vues ; un grand navire AIS ailleurs dans la scène
@@ -1179,7 +1191,7 @@ def refusionner(conn, aid: int, rules: dict) -> dict:
         for alert_id, kind, st, _sev in avant:
             if alert_id in levees:
                 continue
-            motif = _motif_refusion(conn, alert_id, kind, aid)
+            motif = _motif_refusion(conn, alert_id, kind, aid, summary)
             note = {"le": quand.isoformat(), "version_regles": rules["version"], "motif": motif}
             if st == "nouvelle":
                 conn.execute("UPDATE alerts SET status = 'classee', details = details || jsonb_build_object("
@@ -1203,7 +1215,12 @@ def refusionner(conn, aid: int, rules: dict) -> dict:
             "alertes_douteuses": summary.get("alertes_douteuses", 0), "alertes_levees": sorted(levees)}
 
 
-def _motif_refusion(conn, alert_id: int, kind: str, aid: int) -> str:
+MOTIF_ABSENCE_NON_CONCLUANTE = (
+    "absence non concluante : l'analyse n'a transmis que les échos au dessus du seuil de détection, un navire vu "
+    "plus faiblement y passait pour absent (analyse 106, correction du 27/10/2026)")
+
+
+def _motif_refusion(conn, alert_id: int, kind: str, aid: int, summary: dict | None = None) -> str:
     """Pourquoi la nouvelle fusion ne lève plus cette alerte : navire apparié à l'écho (avec la méthode de position),
     ou écho masqué, ou navire désormais confirmé par un écho."""
     r = conn.execute(
@@ -1220,6 +1237,8 @@ def _motif_refusion(conn, alert_id: int, kind: str, aid: int) -> str:
                 "l'arrêt gardée jusqu'à 120 min : pas un navire sombre")
     if r and r[1]:
         return f"Refusion de l'analyse {aid} : écho écarté ({r[1]})"
+    if kind == "AIS_UNCONFIRMED" and (summary or {}).get("absence_non_concluante"):
+        return f"Refusion de l'analyse {aid} : {MOTIF_ABSENCE_NON_CONCLUANTE}"
     if kind == "AIS_UNCONFIRMED":
         return f"Refusion de l'analyse {aid} : un écho compatible confirme désormais ce navire"
     return f"Refusion de l'analyse {aid} : alerte non relevée par les règles de fusion en vigueur"

@@ -334,7 +334,7 @@ def _setup(conn, now):
     return pid, ids, t0
 
 
-def test_selection_launch_and_results_end_to_end(conn, monkeypatch):
+def test_selection_launch_and_results_end_to_end(conn, monkeypatch, capsys):
     from mars import sentinel, travailleurs
     now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
     pid, ids, t0 = _setup(conn, now)
@@ -384,7 +384,8 @@ def test_selection_launch_and_results_end_to_end(conn, monkeypatch):
     res = {"scenes": [{"analyse": aid, "id": scenes[0]["id"], "debut": scenes[0]["debut"], "fin": scenes[0]["fin"],
                        "telecharge_s": 40, "telecharge_mo": 990, "analyse_s": 150, "gpu_max_mo": 6100,
                        "detections": [det(-6.1 + off, 48.01, 118, 90), det(-6.0, 48.3, 60), det(-6.30, 48.30, 90),
-                                      det(-6.2 + off, 47.9, 260, 90)]}],
+                                      det(-6.2 + off, 47.9, 260, 90)],
+                       "echos_faibles": []}],                # travailleur depuis l'analyse 106 : échos sous le seuil
            "mesures": {"duree_s": 400, "gpu": "NVIDIA L4"}}
     wid = launched and conn.execute("SELECT travailleur_id FROM analyses WHERE id = %s", (aid,)).fetchone()[0]
     w = {"id": wid, "resultat": res}
@@ -408,6 +409,27 @@ def test_selection_launch_and_results_end_to_end(conn, monkeypatch):
     assert again["detections"] == 0
     assert conn.execute("SELECT count(*) FROM detections WHERE analysis_id = %s", (aid,)).fetchone()[0] == 4
     assert conn.execute("SELECT count(*) FROM alerts").fetchone()[0] == 3
+    assert params["seuil_absence"] == RULES["sentinel"]["seuil_absence"]
+    # Analyse 106 : sans échos faibles transmis (analyse antérieure au 27/10/2026), l'absence n'est pas concluante ; la
+    # refusion classe l'alerte AIS_UNCONFIRMED, avec le motif
+    conn.execute("UPDATE analyses SET timings = (SELECT jsonb_object_agg(k, v - 'echos_faibles') "
+                 "FROM jsonb_each(timings) x(k, v)) WHERE id = %s", (aid,))
+    # Simulation d'abord : elle annonce le classement, n'écrit rien
+    import argparse
+    import sys as _sys
+    from pathlib import Path as _P
+    _sys.path.insert(0, str(_P(__file__).resolve().parents[1] / "scripts"))
+    import taches
+    monkeypatch.setattr(taches, "regles", lambda _c: RULES)
+    taches._sentinel_refusionner(conn, argparse.Namespace(args=[str(aid)], simulation=True))
+    sim = json.loads(capsys.readouterr().out)
+    assert sim["simulation"] and len(sim["alertes_classees"]) == 1
+    assert any(x["type"] == "AIS_UNCONFIRMED" and x["statut"] == "classee" for x in sim["alertes"])
+    assert conn.execute("SELECT status FROM alerts WHERE type = 'AIS_UNCONFIRMED'").fetchone()[0] == "nouvelle"
+    r = sentinel.refusionner(conn, aid, RULES)
+    st, d = conn.execute("SELECT status, details FROM alerts WHERE type = 'AIS_UNCONFIRMED'").fetchone()
+    assert st == "classee" and "absence non concluante" in d["refusion"]["motif"]
+    assert r["alertes_classees"] and len(r["alertes_classees"]) == 1
 
 
 def test_daily_cap_refuses_clearly(conn, monkeypatch):

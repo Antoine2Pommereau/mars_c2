@@ -220,3 +220,4 @@ Les épisodes décrits un par un (30 plus longs par cycle) sont dans `details->'
 | 22/10/2026 | 2026.10.44 à 2026.10.46 | Cercle appris, garde de contenance, table de l'archive |
 | 26/10/2026 | 2026.10.57 | Lot Z7 : rendez vous à 60 min (500 m gardés), balises de pêche écartées, travaux offshore d'un parc éolien marqués et abaissés ; coupures : 6 messages dans l'heure au lieu de 10, toujours en observation ; zone de réception et masques reconstruits sur 14 jours, seuils inchangés |
 | 27/10/2026 | 2026.10.58 | VIIRS : lumières d'un parc éolien en service écartées (1 km), lumière fixe dès 2 nuits évaluables sans AIS, parcs éoliens hors du corridor, prudence cherchée à 100 km ; réévaluation qui applique la fusion actuelle et garde les abaissements |
+| 27/10/2026 | 2026.10.59 | Sentinel 1 : modèle lancé au seuil d'absence 0,5, échos faibles (et hors zones) transmis pour juger l'absence d'un navire AIS ; sans eux, absence non concluante |

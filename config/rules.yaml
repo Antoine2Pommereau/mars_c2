@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.58"
+version: "2026.10.59"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -311,6 +311,10 @@ sentinel:
   fenetre_utile_h: 24           # après l'acquisition ; au delà, analyse abandonnée et alerte ntfy
   # Modèle d'AI2 (paramètres de sa chaîne)
   confiance: 0.9
+  # Analyse 106 (27/10/2026) : le modèle tourne à ce seuil ; au dessus de confiance (ou de 0,95 sans historique), des
+  # détections ; entre les deux, et hors de nos zones, des échos faibles qui ne servent qu'à juger l'absence d'un navire
+  # AIS (AIS_UNCONFIRMED). Sans eux (analyses antérieures), l'absence n'est jamais concluante
+  seuil_absence: 0.5
   nms_m: 10
   # Historique (enquête sur l'analyse 103, 25/10/2026) : le détecteur d'AI2 compare l'image à deux passages antérieurs
   # de la même orbite pour éteindre ce qui ne bouge pas. Sans eux, le brise lames de Portland sortait à 0,909 et
