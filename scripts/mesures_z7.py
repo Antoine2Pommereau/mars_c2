@@ -176,6 +176,7 @@ async def coupures(c, depuis: datetime, fin: datetime, exclus: set, rules: dict)
             if ep.get("point_collectif"):
                 collectifs.add(cle)
     log(f"coupures : {len(cles)} épisode(s) à recalculer")
+    g = rules["ais_gap"]
     eps = []
     for k, (cle, meta) in enumerate(sorted(cles.items())):
         try:
@@ -188,19 +189,30 @@ async def coupures(c, depuis: datetime, fin: datetime, exclus: set, rules: dict)
         p = await c.fetchrow(
             """SELECT ST_X(p.geom::geometry) AS lon, ST_Y(p.geom::geometry) AS lat, p.sog_kn, v.ship_type_code, v.name,
                       v.mmsi, v.length_m,
-                      (SELECT min(ts) FROM positions q WHERE q.vessel_id = p.vessel_id AND q.ts > p.ts) AS retour
+                      r.ts AS retour, ST_Distance(p.geom::geography, r.geom::geography) AS deplacement_m
                FROM positions p JOIN vessels v ON v.id = p.vessel_id
-               WHERE p.vessel_id = $1 AND p.ts <= $2 ORDER BY p.ts DESC LIMIT 1""", int(vid), tl)
+               LEFT JOIN LATERAL (SELECT ts, geom FROM positions q WHERE q.vessel_id = p.vessel_id AND q.ts > p.ts
+                                  ORDER BY q.ts LIMIT 1) r ON true
+               WHERE p.vessel_id = $1 AND p.ts < $2::timestamptz + interval '1 second'
+               ORDER BY p.ts DESC LIMIT 1""", int(vid), tl)
+        # La clé tronque l'heure à la seconde, la position garde ses fractions : sans la seconde de marge, on prenait la
+        # position d'avant, et la « réapparition » était le dernier message lui même (durée nulle, rapport du 25/10)
         if p is None:
             continue
         cote, infra = await c.fetchrow(COTE_SQL, p["lon"], p["lat"])
         duree = (p["retour"] - tl).total_seconds() / 60 if p["retour"] else None
+        vitesse = (p["deplacement_m"] / 1852) / (duree / 60) if duree and p["deplacement_m"] is not None else None
+        ratio = vitesse / p["sog_kn"] if vitesse is not None and p["sog_kn"] else None
         eps.append({"cle": cle, "vessel_id": int(vid), "name": p["name"], "mmsi": p["mmsi"], "t": tl.isoformat(),
                     "region": region(p["lon"], p["lat"]), "lon": round(p["lon"], 4), "lat": round(p["lat"], 4),
                     "sog_kn": p["sog_kn"], "categorie": categorie(p["ship_type_code"]), "longueur_m": p["length_m"],
                     "duree_min": None if duree is None else round(duree), "reapparu": p["retour"] is not None,
                     "cote_m": None if cote is None else round(cote), "infra_m": None if infra is None else round(infra),
-                    "gravite": meta["gravite"], "point_collectif": cle in collectifs})
+                    "gravite": meta["gravite"], "point_collectif": cle in collectifs,
+                    "deplacement_km": None if p["deplacement_m"] is None else round(p["deplacement_m"] / 1000, 1),
+                    "vitesse_implicite_kn": None if vitesse is None else round(vitesse, 1),
+                    "conduite": None if ratio is None else "arret" if ratio < g["stop_ratio"] and p["sog_kn"] >=
+                    g["stop_min_speed_kn"] else "route_poursuivie" if ratio > g["continue_ratio"] else "intermediaire"})
         if k % 200 == 199:
             log(f"  {k + 1} épisodes recalculés")
     jours = {str(j): v for j, v in sorted(par_jour.items()) if j not in exclus}
@@ -242,6 +254,33 @@ def section_coupures(x: dict, rules: dict) -> list[str]:
           table(["Distance", "Épisodes", "Part"], repart("classe_infra", [f"moins de {b} km" for b in (1, 3.7, 10, 30)]
                                                           + ["au delà de 30 km"])), ""]
     L += ["### Gravité qu'aurait eue l'alerte", "", table(["Gravité", "Épisodes", "Part"], repart("gravite")), ""]
+    for e in eps:
+        e["conduite"] = e.get("conduite") or ("non réapparu" if not e["reapparu"] else "inconnue")
+    L += ["### Conduite pendant le silence (vitesse implicite contre vitesse déclarée)", "",
+          table(["Conduite", "Épisodes", "Part"], repart("conduite")), ""]
+    croise = Counter((e["gravite"], e["classe_duree"], "collectif" if e["point_collectif"] else "isolé") for e in eps)
+    L += ["### Gravité selon la durée et le point de disparition", "",
+          table(["Gravité", "Durée", "Point", "Épisodes"], [[*k, v] for k, v in sorted(croise.items())]), ""]
+    jours_ep = Counter(e["t"][:10] for e in eps)
+    L += ["### Épisodes par jour du dernier message", "",
+          table(["Jour", "Épisodes", "dont élevée", "dont moyenne", "dont isolés"],
+                [[j, v, sum(1 for e in eps if e["t"][:10] == j and e["gravite"] == "elevee"),
+                  sum(1 for e in eps if e["t"][:10] == j and e["gravite"] == "moyenne"),
+                  sum(1 for e in eps if e["t"][:10] == j and not e["point_collectif"])]
+                 for j, v in sorted(jours_ep.items())]), ""]
+    hautes = [e for e in eps if e["gravite"] in ("elevee", "moyenne")]
+    L += [f"### Épisodes de gravité élevée ou moyenne : {len(hautes)}", "",
+          table(["Navire", "MMSI", "Type", "Dernier message (UTC)", "Position", "Durée", "Déplacement",
+                 "Vitesse implicite", "Conduite", "Côte", "Infrastructure", "Gravité", "Collectif"],
+                [[e["name"], e["mmsi"], e["categorie"], e["t"][:16].replace("T", " "), f"{e['lat']:.3f}, {e['lon']:.3f}",
+                  f"{e['duree_min']} min" if e["reapparu"] else "non réapparu",
+                  "·" if e.get("deplacement_km") is None else f"{e['deplacement_km']} km",
+                  "·" if e.get("vitesse_implicite_kn") is None else f"{e['vitesse_implicite_kn']} nd ({e['sog_kn']:.1f})",
+                  e["conduite"], "·" if e["cote_m"] is None else f"{e['cote_m'] / 1000:.1f} km",
+                  "·" if e["infra_m"] is None else f"{e['infra_m']} m", e["gravite"],
+                  "oui" if e["point_collectif"] else "non"]
+                 for e in sorted(hautes, key=lambda e: (e["gravite"] != "elevee", -(e["duree_min"] or 10 ** 6)))[:40]]),
+          ""]
     coll = sum(e["point_collectif"] for e in eps)
     L += [f"Points de disparition collectifs parmi ces épisodes : {coll} ({pct(coll, n)}), d'après le journal des "
           "cycles (30 épisodes les plus longs par cycle : borne basse).", ""]
@@ -479,7 +518,10 @@ def section_viirs(x: dict) -> list[str]:
                    "Alertes (gravité, statut)"], rows), ""]
 
 
-async def mesurer(jours_n: int, exclus: set, sortie: Path):
+SECTIONS = ("coupures", "reception", "rendezvous", "zones", "viirs")
+
+
+async def mesurer(jours_n: int, exclus: set, sortie: Path, sections=SECTIONS):
     load_env()
     rules = load_rules()
     c = await asyncpg.connect(database_url(), server_settings={"default_transaction_read_only": "on",
@@ -498,12 +540,17 @@ async def mesurer(jours_n: int, exclus: set, sortie: Path):
         res["trous"] = [{**t, "debut": t["debut"].isoformat(), "fin": t["fin"].isoformat()} for t in
                         await trous_flux(c, t0(first), t0(last) + timedelta(days=1), rules["continu"]["flux_min_ratio"])]
         depuis = datetime(2026, 10, 11, tzinfo=timezone.utc)
-        res["coupures"] = {**await coupures(c, depuis, t0(last) + timedelta(days=1), exclus, rules),
-                           "depuis": f"{depuis:%d/%m/%Y}"}
-        res["reception"] = await reception(c, jours, rules)
-        res["rendezvous"] = await rendezvous(c, jours, rules)
-        res["zones"] = await zones_arret(c, first, last, rules)
-        res["viirs"] = await viirs(c, first, rules)
+        if "coupures" in sections:
+            res["coupures"] = {**await coupures(c, depuis, t0(last) + timedelta(days=1), exclus, rules),
+                               "depuis": f"{depuis:%d/%m/%Y}"}
+        if "reception" in sections:
+            res["reception"] = await reception(c, jours, rules)
+        if "rendezvous" in sections:
+            res["rendezvous"] = await rendezvous(c, jours, rules)
+        if "zones" in sections:
+            res["zones"] = await zones_arret(c, first, last, rules)
+        if "viirs" in sections:
+            res["viirs"] = await viirs(c, first, rules)
     finally:
         await c.close()
     res["duree_s"] = round(time.time() - t_debut)
@@ -514,11 +561,16 @@ async def mesurer(jours_n: int, exclus: set, sortie: Path):
          f"{100 * rules['continu']['flux_min_ratio']:.0f} % de la médiane du jour)", "",
          table(["Début (UTC)", "Fin (UTC)", "Minutes"], [[t["debut"][:16], t["fin"][:16], t["minutes"]] for t in res["trous"]])
          if res["trous"] else "Aucun trou de 30 min ou plus.", ""]
-    L += section_coupures(res["coupures"], rules)
-    L += section_reception(res["reception"], rules)
-    L += section_rendezvous(res["rendezvous"], rules)
-    L += section_zones(res["zones"], date.fromisoformat(res["periode"][0]), date.fromisoformat(res["periode"][1]))
-    L += section_viirs(res["viirs"])
+    if "coupures" in res:
+        L += section_coupures(res["coupures"], rules)
+    if "reception" in res:
+        L += section_reception(res["reception"], rules)
+    if "rendezvous" in res:
+        L += section_rendezvous(res["rendezvous"], rules)
+    if "zones" in res:
+        L += section_zones(res["zones"], date.fromisoformat(res["periode"][0]), date.fromisoformat(res["periode"][1]))
+    if "viirs" in res:
+        L += section_viirs(res["viirs"])
     sortie.mkdir(parents=True, exist_ok=True)
     nom = f"z7_mesures_{datetime.now(timezone.utc):%Y%m%dT%H%M}"
     (sortie / f"{nom}.md").write_text("\n".join(L))
@@ -532,6 +584,10 @@ if __name__ == "__main__":
     ap.add_argument("--jours", type=int, default=14)
     ap.add_argument("--exclure-jour", type=date.fromisoformat, action="append", default=None)
     ap.add_argument("--sortie", default="/sortie")
+    ap.add_argument("--sections", default=",".join(SECTIONS),
+                    help="sections à mesurer, séparées par des virgules (trous du flux toujours)")
     a = ap.parse_args()
     exclus = set(a.exclure_jour) if a.exclure_jour is not None else {date(2026, 10, 18)}
-    asyncio.run(mesurer(a.jours, exclus, Path(a.sortie)))
+    sections = tuple(x for x in a.sections.split(",") if x)
+    assert set(sections) <= set(SECTIONS), f"sections inconnues : {set(sections) - set(SECTIONS)}"
+    asyncio.run(mesurer(a.jours, exclus, Path(a.sortie), sections))
