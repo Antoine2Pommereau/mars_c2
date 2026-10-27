@@ -53,3 +53,45 @@ def test_no_absence_where_the_image_has_no_data():
     assert not dans_coeur(lues, 0.13453 + 4.5 * dx, 50.57)             # colonne 4 : pas de données
     assert dans_coeur(lues, 0.13453 + 10.5 * dx, 50.57)                # colonne 10 : image lue
     assert dans_coeur(fenetres_lues(sc, None), 0.13453 + 4.5 * dx, 50.57)   # sans mesure : comme avant
+
+
+# Analyse 106, données réelles (tests/donnees/s106_cas.json) : positions AIS de la base autour du passage du 25/10
+# 17:40, détections de production (3, seuil prudent de 0,95 faute d'historique) et échos bruts du rejeu gratuit sur la
+# copie publique (au dessus de 0,5)
+
+def _cas106():
+    import json
+    from pathlib import Path
+    from mars.sentinel import track_heading
+    c = json.loads((Path(__file__).parent / "donnees" / "s106_cas.json").read_text())
+    pos = pd.DataFrame(c["positions"])
+    pos["ts"] = pd.to_datetime(pos.ts, utc=True)
+    det = pd.DataFrame([{**d, "objectness": d["score"], "vessel_score": d["score"], "fishing_score": 0.1,
+                         "contrast_vv_db": 12.0, "width_m": None, "heading_deg": None, "heading_prob": None,
+                         "on_land": False} for d in c["production"]])
+    xs = [v for f in c["fenetres"] for v in (f["bbox"][0], f["bbox"][2])]
+    ys = [v for f in c["fenetres"] for v in (f["bbox"][1], f["bbox"][3])]
+    bbox = (min(xs), min(ys), max(xs), max(ys))
+    return c, pos, det, bbox, pd.Timestamp(c["t0"]), track_heading((bbox[1] + bbox[3]) / 2, True)
+
+
+CINQ = {"SEAPEAK YAMAL", "VICTORINE", "MED TUNCER", "KATRE", "XIN HAI TONG 809"}
+
+
+def test_106_production_declared_the_five_ships_absent():
+    c, pos, det, bbox, t0, cap = _cas106()
+    _d, _a, _n, extras = fuse(det, pos, t0, bbox, RULES, cap)
+    assert CINQ <= {u["name"] for u in extras["unconfirmed"]}
+
+
+def test_106_weak_echoes_confirm_the_five_ships_and_keep_echo_6():
+    """Les échos que le travailleur transmet désormais (entre 0,5 et le seuil de 0,95) : chacun des cinq a le sien."""
+    c, pos, det, bbox, t0, cap = _cas106()
+    faibles = pd.DataFrame([x for k in ("nostos_sans", "altai_sans") for x in c["echos"][k] if x["score"] < 0.95])
+    d, alertes, _n, extras = fuse(det, pos, t0, bbox, RULES, cap, None, faibles)
+    assert not CINQ & {u["name"] for u in extras["unconfirmed"]}
+    # L'écho 6 reste sans AIS : aucun navire à moins de 5 km au passage (VELOS AQUARIUS, à l'estime, à 11,6 km)
+    six = d[d.id == 6].iloc[0]
+    assert six.matched_vessel_id is None and any(a["det_index"] == six.name for a in alertes)
+    # NOSTOS reste apparié à son écho
+    assert d[d.id == 5].iloc[0].matched_vessel_id is not None
