@@ -364,17 +364,33 @@ HAVING count(*) >= $5::int AND count(DISTINCT vessel_id) >= $6::int
 """
 
 
+def min_paires(z: dict, jours: float | None) -> int:
+    """Minimum de paires d'une cellule pour une reconstruction sur `jours` jours : `min_pairs` est donné pour
+    `min_pairs_jours` jours (sans eux, ou sans durée connue, la valeur telle quelle)."""
+    ref = z.get("min_pairs_jours")
+    if not ref or not jours:
+        return int(z["min_pairs"])
+    return max(1, round(z["min_pairs"] * float(jours) / float(ref)))
+
+
 async def build_reception_cells(c, rules: dict, since=None) -> dict:
     """Zone de réception fiable : cellules où les trajectoires des navires en route sont continues. `since` borne
     les positions examinées (calcul plus léger en mémoire et en fichiers temporaires sur un petit serveur)."""
     z = rules["reception"]
+    debut = since or await c.fetchval("SELECT min(ts) FROM positions")
+    fin = await c.fetchval("SELECT max(ts) FROM positions")
+    jours = (fin - debut).total_seconds() / 86400 if debut and fin else None
+    paires = min_paires(z, jours)
+    from mars import traces
+    traces.attributs(**{"reception.jours": round(jours or 0, 1), "reception.min_pairs": paires})
     async with c.transaction():
         await c.execute("DELETE FROM reception_cells")
         await c.execute(RECEPTION_SQL, z["cell_deg_lon"], z["cell_deg_lat"], z["max_interval_s"],
-                        z["min_coverage"], z["min_pairs"], z["min_vessels"], since)
+                        z["min_coverage"], paires, z["min_vessels"], since)
         r = await c.fetchrow("SELECT count(*) AS n, round((sum(ST_Area(geom)) / 1e6)::numeric) AS km2, "
                              "round(avg(coverage)::numeric, 3) AS couverture FROM reception_cells")
-    return {"cellules_fiables": r["n"], "surface_km2": float(r["km2"] or 0), "continuite_moyenne": float(r["couverture"] or 0)}
+    return {"cellules_fiables": r["n"], "surface_km2": float(r["km2"] or 0), "continuite_moyenne": float(r["couverture"] or 0),
+            "jours": round(jours or 0, 1), "min_pairs": paires}
 
 
 AIS_GAP_SQL = """

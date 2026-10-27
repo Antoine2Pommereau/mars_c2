@@ -399,6 +399,18 @@ TACHES_BUDGET = ("sentinel", "sentinel2")
 SOURCES_BUDGET = ("sentinel1", "sentinel2")
 
 
+def places_reservees(conn, now: datetime, exclus: list[int]) -> list[int]:
+    """Passages Sentinel 1 encore à venir aujourd'hui (UTC) qui portent une demande d'observation planifiée, hors
+    `exclus` (passages examinés maintenant) : chacun garde une scène du plafond quotidien (B02 : le 26/10/2026 à 00:28,
+    la sélection automatique avait pris la seule scène du jour, et la demande planifiée plus tard a été refusée)."""
+    fin = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return [r[0] for r in conn.execute(
+        """SELECT DISTINCT d.pass_id FROM demandes_observation d JOIN sar_passes p ON p.id = d.pass_id
+           WHERE d.etat = 'planifiee' AND d.analysis_id IS NULL AND p.mission = 'S1'
+             AND coalesce(d.heure_passage, p.acquired_at) >= %s AND coalesce(d.heure_passage, p.acquired_at) < %s
+             AND NOT (d.pass_id = ANY(%s))""", (now - timedelta(hours=1), fin, list(exclus))).fetchall()]
+
+
 def usage(conn, now: datetime, source: str = "sentinel1") -> tuple[int, float]:
     """Scènes de `source` déjà engagées aujourd'hui (analyses non échouées) et euros engagés ce mois ci par Sentinel 1 et
     Sentinel 2 ensemble (coût mesuré des sessions finies, coût estimé de celles en cours)."""
@@ -776,10 +788,15 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
         return {"passages": 0, "abandonnees": abandon, **{k: v for k, v in p.items() if k != "passages"}}
     scenes_today, spent = usage(conn, now)
     room = max(0, s["scenes_max_par_jour"] - scenes_today)
+    # Places gardées pour les demandes planifiées plus tard aujourd'hui (B02) : la sélection automatique ne les prend pas
+    from mars.tip_and_cue import priorite as _prio
+    reservees = places_reservees(conn, now, [ps["pass_id"] for ps in p["passages"]]) if pass_id is None else []
+    traces.attributs(**{"sentinel.places_reservees": len(reservees)})
     # Plafond : les scènes les plus riches en points d'intérêt d'abord, passage par passage
     selected, dropped = [], 0
     for ps in p["passages"]:
-        keep = ps["scenes"][:max(0, room - sum(len(x["scenes"]) for x in selected))]
+        limite = room if _prio(ps["points"]) > 0 else room - len(reservees)
+        keep = ps["scenes"][:max(0, limite - sum(len(x["scenes"]) for x in selected))]
         dropped += len(ps["scenes"]) - len(keep)
         if keep:
             selected.append({**ps, "scenes": keep})
@@ -794,6 +811,10 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     toutes = sorted({d for ps in p["passages"] for d in demandes(ps["scenes"])})
     tip_and_cue.refuser(conn, [d for d in toutes if d not in {x for v in gardees.values() for x in v}],
                         f"plafond de {s['scenes_max_par_jour']} scènes par jour atteint")
+    if not n and reservees:
+        return {"refus": f"plafond de {s['scenes_max_par_jour']} scène(s) par jour : {scenes_today} déjà analysée(s), "
+                         f"{len(reservees)} gardée(s) pour les demandes d'observation planifiées des passages "
+                         f"{', '.join(map(str, reservees))}", "places_reservees": reservees}
     # Fenêtres utiles de chaque scène (passage choisi à la main sans point d'intérêt : scène entière)
     with traces.span("sentinel.fenetres") as sp:
         for ps in selected:

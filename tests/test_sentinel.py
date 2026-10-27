@@ -291,6 +291,7 @@ def _setup(conn, now):
     AIS ; une zone de réception fiable autour ; un parc éolien."""
     for sql in ("DELETE FROM alert_evidence", "DELETE FROM alerts", "DELETE FROM detections", "DELETE FROM analyses",
                 "DELETE FROM reception_cells", "DELETE FROM fixed_echoes", "DELETE FROM stats_minute",
+                "DELETE FROM demandes_origines", "DELETE FROM demandes_observation",
                 "DELETE FROM sar_passes WHERE product_name LIKE 'S1C_OR999%'", "DELETE FROM infrastructure WHERE source = 'essai'",
                 "DELETE FROM watchlist WHERE imo = 9999011",
                 "DELETE FROM positions WHERE vessel_id IN (SELECT id FROM vessels WHERE mmsi IN (273999001, 228999002, 228999003, "
@@ -448,6 +449,33 @@ def test_daily_cap_refuses_clearly(conn, monkeypatch):
     r = sentinel.launch(conn, None, RULES, now, stac)
     assert r["refus"].startswith("plafond de 2 scènes par jour : 2 déjà analysée(s)")
     assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0
+
+
+def test_planned_request_keeps_its_place_under_the_cap(conn, monkeypatch):
+    """B02 : le 26/10/2026 à 00:28 UTC, la sélection automatique avait pris la seule scène du jour ; la demande
+    d'observation planifiée sur un passage du soir a été refusée. Elle garde désormais sa place."""
+    import copy
+    from mars import sentinel
+    now = datetime(2026, 10, 11, 0, 28, tzinfo=timezone.utc)
+    pid, _ids, t0 = _setup(conn, now)
+    soir = conn.execute("INSERT INTO sar_passes (product_name, acquired_at, mission, satellite, mode, statut) VALUES "
+                        "('S1C_OR9997', %s, 'S1', 'S1C', 'IW', 'prevu') RETURNING id",
+                        (now + timedelta(hours=17),)).fetchone()[0]
+    conn.execute("INSERT INTO demandes_observation (tip, priorite, position, position_le, etat, expire_le, pass_id, "
+                 "heure_passage) VALUES ('viirs', 2, ST_SetSRID(ST_MakePoint(-6.0, 48.1), 4326)::geography, %s, "
+                 "'planifiee', %s, %s, %s)", (now, now + timedelta(days=1), soir, now + timedelta(hours=17)))
+    rules = copy.deepcopy(RULES)
+    rules["sentinel"]["scenes_max_par_jour"] = 1
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
+    stac = FakeStac([_scene(t0)])
+    assert sentinel.places_reservees(conn, now, [pid]) == [soir]
+    r = sentinel.launch(conn, None, rules, now, stac)
+    assert "gardée(s) pour les demandes d'observation planifiées des passages" in r["refus"]
+    assert r["places_reservees"] == [soir]
+    assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0
+    # Demande déjà analysée ou passage d'un autre jour : plus de réservation
+    assert sentinel.places_reservees(conn, now + timedelta(days=1), [pid]) == []
 
 
 def _scene(t0, sid="S1C_IW_GRDH_1SDV_A_COG"):

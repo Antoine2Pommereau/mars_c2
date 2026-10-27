@@ -23,7 +23,7 @@ MMSI0 = 299990100                      # MMSI d'essai, effacés à la fin
 def test_rules_version_and_thresholds():
     assert RULES["version"] >= "2026.10.57"
     assert RULES["rendezvous"]["min_duration_min"] == 60 and RULES["rendezvous"]["max_distance_m"] == 500
-    assert RULES["ais_gap"]["min_prior_messages"] == 6 and RULES["ais_gap"]["mode"] == "observation"
+    assert RULES["ais_gap"]["min_prior_messages"] == 8 and RULES["ais_gap"]["mode"] == "observation"
 
 
 def test_fishing_buoys_are_recognised_ships_are_not():
@@ -217,3 +217,11 @@ def test_message_rate_bands_of_the_injection():
     t = [(6, 9), (10, None)]
     assert (tranche_de(5, t), tranche_de(6, t), tranche_de(9, t), tranche_de(10, t), tranche_de(40, t)) == \
         (None, "6-9", "6-9", "10+", "10+")
+
+
+def test_min_pairs_scale_with_the_number_of_days():
+    """Socle A : 50 paires pour 18 jours, 39 pour 14 (la zone de 14 jours ne retombe plus à 1 626 cellules)."""
+    from mars.rules import min_paires
+    z = RULES["reception"]
+    assert (min_paires(z, 18), min_paires(z, 14), min_paires(z, 19), min_paires(z, None)) == (50, 39, 53, 50)
+    assert min_paires({"min_pairs": 50}, 14) == 50                 # sans période de référence : valeur telle quelle

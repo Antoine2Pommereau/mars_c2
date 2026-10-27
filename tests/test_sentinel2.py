@@ -518,3 +518,17 @@ def test_calendar_takes_the_tile_time_and_keeps_it(conn, monkeypatch):
                               "satellite": "S2B", "mode": "MSI", "statut": "acquis", "source": "catalogue",
                               "geoms": [SQUARE], "nuages": 8.0}])
     assert conn.execute("SELECT acquired_at FROM sar_passes WHERE id = %s", (pid,)).fetchone()[0] == acq
+
+
+def test_nothing_to_analyse_is_said_plainly():
+    """C02 : essai-reel affichait le dictionnaire brut des points écartés ; motifs propres à l'optique."""
+    from mars.sentinel2 import motif_rien
+    assert motif_rien({"refus": "passage 9 inconnu"}, 9) == "passage 9 inconnu"
+    assert motif_rien({"en_attente": [{"passage": 9, "motif": "tuiles L1C pas encore au catalogue"}]}, 9) == \
+        "en attente : tuiles L1C pas encore au catalogue"
+    p = {"points_ecartes": {9: [{"tuile": "30UVU", "points": 2, "ecarte": "nuages annoncés : 64 % sur la tuile"},
+                                {"name": "SMYRTOS", "ecarte": "à quai ou au mouillage près de la côte"}]}}
+    m = motif_rien(p, 9)
+    assert m == ("tuile 30UVU (2 point(s)) : nuages annoncés : 64 % sur la tuile ; SMYRTOS : à quai ou au mouillage "
+                 "près de la côte").replace(" ; ", "; ")
+    assert "{" not in m and motif_rien({}, 9).startswith("aucun navire des listes")

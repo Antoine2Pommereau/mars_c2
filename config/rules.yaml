@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.60"
+version: "2026.10.61"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -107,7 +107,11 @@ reception:
   # couvrait 1 067 cellules, environ 44 000 km² (rapport de mesures, section 2).
   max_interval_s: 600    # intervalle jugé normal entre deux messages d'un navire en route (provisoire)
   min_coverage: 0.90     # au moins 90 % des intervalles sous ce seuil (provisoire)
-  min_pairs: 50          # assez d'observations pour juger (provisoire)
+  min_pairs: 50          # assez d'observations pour juger, sur min_pairs_jours jours (provisoire)
+  # Socle A (27/10/2026) : min_pairs est un compte sur toute la période ; reconstruite sur 14 jours, la zone tombait à
+  # 1 626 cellules contre 1 863 sur 18 jours (mêmes seuils). Le minimum est désormais proportionnel au nombre de jours
+  # de la reconstruction : 50 paires pour 18 jours, 39 pour 14
+  min_pairs_jours: 18
   min_vessels: 3         # navires distincts au moins
 
 ais_gap:
@@ -117,9 +121,10 @@ ais_gap:
   mode: observation
   min_gap_min: 120       # silence d'au moins deux heures
   min_speed_kn: 1.0      # le navire faisait route au moment de se taire
-  min_prior_messages: 6  # et émettait régulièrement : au moins 6 messages dans l'heure précédente (un toutes les
-                         # 10 min, l'intervalle de la zone fiable). 10 danois jusqu'au 26/10/2026 : 37 à 43 % des
-                         # navires en route écartés avant tout essai (médiane 13 positions par heure, lot Z7)
+  min_prior_messages: 8  # et émettait régulièrement : au moins 8 messages dans l'heure précédente. 10 danois
+                         # jusqu'au 26/10/2026 (37 à 43 % des navires en route écartés), 6 au lot Z7, 8 au socle A
+                         # (27/10/2026) : injection sur la zone en service, 20, 22 et 24/10, 358 essais, 8 à 9 messages
+                         # retrouvés à 54,8 % contre 62,3 % à 10 et plus (7,5 points), 6 à 7 à 43,8 %
   prior_window_min: 60   # (écarte les MMSI fantômes : un message isolé, souvent un identifiant corrompu)
   min_coast_km: 3        # dernière position au large
   edge_margin_deg: 0.25  # loin du bord des données chargées (environ 15 km en longitude, 28 km en latitude)

@@ -404,7 +404,7 @@ def injection(day: date, essais: int, tranches=None, min_prior=None, zone=None, 
     import asyncio
     import copy
     import asyncpg
-    from mars.rules import RECEPTION_SQL, ais_gap_injection, tranche_de
+    from mars.rules import RECEPTION_SQL, ais_gap_injection, min_paires, tranche_de
 
     async def go():
         c = await asyncpg.connect(database_url())
@@ -421,10 +421,11 @@ def injection(day: date, essais: int, tranches=None, min_prior=None, zone=None, 
                 await c.execute("DELETE FROM reception_cells")
                 await c.execute(RECEPTION_SQL.replace(borne, "(p.ts >= $7::timestamptz AND p.ts < $8::timestamptz)"),
                                 z["cell_deg_lon"], z["cell_deg_lat"], z["max_interval_s"], z["min_coverage"],
-                                z["min_pairs"], z["min_vessels"], du, au + timedelta(days=1))
+                                min_paires(z, (au - du).days + 1), z["min_vessels"], du, au + timedelta(days=1))
                 r = await c.fetchrow("SELECT count(*) AS n, round((sum(ST_Area(geom)) / 1e6)::numeric) AS km2 "
                                      "FROM reception_cells")
                 out["zone_de_comparaison"] = {"du": str(zone[0]), "au": str(zone[1]), "cellules": r["n"],
+                                              "min_pairs": min_paires(z, (au - du).days + 1),
                                               "km2": float(r["km2"] or 0), "annulee": True}
             if not await c.fetchval("SELECT EXISTS (SELECT 1 FROM reception_cells)"):
                 return {"refus": "zone de réception fiable absente : lancer scripts/build_masks.py"}

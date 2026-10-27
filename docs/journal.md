@@ -1384,3 +1384,20 @@ Règles 2026.10.60 (`sentinel.historique.couverture_min`), aucune migration, auc
   données ; un navire AIS qui s'y trouve n'est plus déclaré absent.
 * Tests : 573 réussis avec la base.
 
+## 27/10/2026 : mission socle A, étapes 1 et 2 (diagnostics, correctifs)
+
+Règles 2026.10.61, aucune migration, aucune dépense.
+* Étape 1 (serveur, conteneurs à part, transactions annulées). Injection du 24/10, navires pris sans préférence : zone
+  en service (1 626 cellules) et zone du 06 au 10/10 (1 304) donnent le même taux à 10 messages (66 %) ; la baisse de
+  80 à 64 % venait de l'ancien tirage (navires les mieux reçus d'abord), pas de la zone. Zone du 06 au 24/10 : 1 863
+  cellules, l'écart de surface vient de la durée (`min_pairs` est un compte sur la période). Par tranche, zone en
+  service, 20, 22 et 24/10, 358 essais : 6 à 7 messages 43,8 %, 8 à 9 messages 54,8 %, 10 et plus 62,3 %.
+  Simulation `viirs-reevaluer` : critères remplis (50277 faible avec ATHENA SEAWAYS, 10 alertes du parc d'Yeu et
+  Noirmoutier classées, aucune relevée, décisions gardées), élevées ouvertes de 13 à 3.
+* Étape 2, branche `socle-a` : historique Sentinel 1 sur la part de la fenêtre dans l'image (A03), garde sans
+  historique, cases sans données ; analyse 106 navire par navire (les cinq « absents » vus entre 0,76 et 0,945 sans
+  historique, écho 6 sans AIS à moins de 5 km) ; `min_prior_messages` à 8 (critère : 8 à 9 à moins de 10 points de
+  10 et plus) ; `min_pairs` proportionnel au nombre de jours ; place gardée pour une demande planifiée sous le plafond
+  (B02) ; motif clair des candidats Sentinel 2 (C02). Tests : 578 réussis avec la base, typecheck, knip, 25 tests de
+  l'interface.
+

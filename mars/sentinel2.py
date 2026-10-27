@@ -305,6 +305,24 @@ def plan(conn, session, rules: dict, now: datetime, pass_id: int | None = None) 
     return {"passages": out, "en_attente": attente, "points_ecartes": ecartes, "sans_interet": sans_interet}
 
 
+def motif_rien(p: dict, pid: int) -> str:
+    """Pourquoi un passage Sentinel 2 n'a rien à analyser, en clair (C02 : essai-reel affichait le dictionnaire brut) :
+    refus, tuile pas encore publiée ou masque L2A attendu, tuile trop nuageuse à l'annonce, navire à quai."""
+    if p.get("refus"):
+        return str(p["refus"])
+    attente = [a.get("motif") for a in p.get("en_attente") or [] if a.get("passage") == pid]
+    if attente:
+        return "en attente : " + "; ".join(dict.fromkeys(m for m in attente if m))
+    morceaux = []
+    for e in (p.get("points_ecartes") or {}).get(pid) or []:
+        if e.get("tuile"):
+            morceaux.append(f"tuile {e['tuile']} ({e.get('points', 0)} point(s)) : {e.get('ecarte')}")
+        else:
+            qui = e.get("name") or e.get("nom") or e.get("navire") or e.get("vessel_id") or "point"
+            morceaux.append(f"{qui} : {e.get('ecarte')}")
+    return "; ".join(morceaux) or "aucun navire des listes ni point d'intérêt dans l'emprise"
+
+
 def candidats_essai(conn, session, rules: dict, now: datetime, heures: int = 72) -> list[dict]:
     """Passages Sentinel 2 récents qui couvrent un navire des listes ou un point d'intérêt (essai réel) : tuiles,
     nuages annoncés, masque, fenêtres et coût, sans rien lancer ni écrire."""
@@ -328,8 +346,7 @@ def candidats_essai(conn, session, rules: dict, now: datetime, heures: int = 72)
                                  "heure_tuile": x["heure_tuile"]} for x in ps["tuiles"]],
                             "fenetres": len(fen), "cout_estime_eur": cout(len(fen), s2, t)})
             if not p.get("passages"):
-                out.append({"passage": pid, "rien": p.get("refus") or p.get("en_attente") or p.get("points_ecartes")
-                            or "aucun point d'intérêt"})
+                out.append({"passage": pid, "rien": motif_rien(p, pid)})
         sp.set_attribute("sentinel2.candidats", len(out))
     return out
 
