@@ -1401,3 +1401,23 @@ Règles 2026.10.61, aucune migration, aucune dépense.
   (B02) ; motif clair des candidats Sentinel 2 (C02). Tests : 578 réussis avec la base, typecheck, knip, 25 tests de
   l'interface.
 
+## 27/10/2026 : mission socle A, étapes 3 et 4 (déploiement, opérations sur les données)
+
+* État trouvé au départ : Sentinel 1 et tip and cue en service (repris le 25/10 à 21:38) et analyse automatique 107
+  à 00:16 (avec historique : 2 passages, seuil 0,9, 3 détections, aucune alerte, 0,19 €). Mis en pause par claude-code
+  à 13:40 UTC, motif écrit, jusqu'au déploiement du correctif.
+* Étape 3 : `02b660e` publiée (toutes les vérifications OK) et déployée en 59 s, VERDICT à OK partout, règles
+  2026.10.61.
+* 4a : refusion de 106, simulation conforme puis réelle : 76468 à 76472 classées « absence non concluante », 76467
+  (écho 6, critique) inchangée.
+* 4b : `viirs-reevaluer`, simulation conforme puis réelle : 50277 faible (ATHENA SEAWAYS compatible), 10 alertes du
+  parc d'Yeu et Noirmoutier classées, aucune relevée, décisions gardées ; élevées ouvertes de 13 à 3.
+* 4c : prévision de la zone sur 14 jours avec 39 paires, 1 679 cellules ; reconstruite à 1 649 (69 676 km², à 1,8 %
+  de la prévision), mouillages 512. La surface de 1 863 cellules sur 06 au 24/10 tenait à la période (réception plus
+  étendue début octobre), pas au seul nombre de paires. Réévaluation VIIRS : 2 alertes créées (92405 moyenne, 92408
+  faible), rien relevé. Injection de contrôle du 24/10 : 65 sur 100.
+* 4d : verdicts des 9 alertes VIIRS élevées ou moyennes ouvertes, aucune expliquée par un navire AIS : 15198, 45569
+  et 80242 (élevées) à surveiller ; 80241 et 80242, même granule dans le parc en projet de Fécamp Grand Large,
+  balisage de bouée de mesure possible ; 80229, 80230 et 92405, golfe du Lion la même nuit, flottille sans AIS reçu
+  probable ; 10478 et 80244, petite pêche probable. Décisions laissées à Antoine.
+
