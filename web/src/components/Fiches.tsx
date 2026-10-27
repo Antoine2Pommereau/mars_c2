@@ -488,7 +488,8 @@ export function RadarMesures({ id }: { id: number }) {
       <Row label={R.cap}>{d.heading_deg != null ? R.capDe(num(d.heading_deg, 0), num(d.heading_prob, 2)) : L.commun.nd}</Row>
       <Row label={R.score}>{num(d.score, 2)}</Row>
       <Row label={R.contraste}>{d.contrast_vv_db != null ? `${num(d.contrast_vv_db, 1)} dB` : L.commun.nd}</Row>
-      <Row label={R.historique}>{d.historique ? R.historiqueDe(d.historique.passages, num(d.historique.seuil, 2)) : R.historiqueAncien}</Row>
+      <Row label={R.historique}>{d.historique ? R.historiqueDe(d.historique.passages, num(d.historique.seuil, 2)) : R.historiqueAncien}
+        {d.historique?.motif && !d.historique.passages && <div className="text-[12px] text-unconf">{d.historique.motif}</div>}</Row>
       <Row label={R.cote}>{d.distance_cote_m != null ? `${num(d.distance_cote_m / 1000, 1)} km` : L.commun.nd}</Row>
       {d.non_evaluable && <Row label={R.motifNonEvaluable}>{d.non_evaluable}</Row>}
     </div>

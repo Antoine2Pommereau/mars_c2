@@ -223,6 +223,32 @@ class Radar:
         return a, x0, y0, np
 
 
+def cases_sans_donnees(path: str, bbox: list, n: int = 24) -> dict:
+    """Cases d'une grille n × n sur la fenêtre (environ 1 km) où l'image VV n'a pas de données : hors de l'image, ou
+    pixels nuls. L'absence d'un navire AIS n'y prouve rien. Analyse 106 : 19 % de la fenêtre NOSTOS hors de l'image
+    radar, alors que l'emprise du catalogue la couvrait presque entière."""
+    radar = Radar(path)
+    w, h = radar.ds.RasterXSize, radar.ds.RasterYSize
+    cases = []
+    for i in range(n):
+        for j in range(n):
+            lon = bbox[0] + (bbox[2] - bbox[0]) * (i + 0.5) / n
+            lat = bbox[1] + (bbox[3] - bbox[1]) * (j + 0.5) / n
+            try:
+                x, y = radar.pixel(lon, lat)
+            except ValueError:
+                cases.append([i, j])
+                continue
+            x0, y0 = int(x) - 1, int(y) - 1
+            if x0 < 0 or y0 < 0 or x0 + 3 > w or y0 + 3 > h:
+                cases.append([i, j])
+                continue
+            a = radar.band.ReadAsArray(x0, y0, 3, 3)
+            if a is None or float(a.max()) <= 0:
+                cases.append([i, j])
+    return {"n": n, "cases": cases}
+
+
 def contrast_db(radar: Radar, lon: float, lat: float, peak_half: int = 2, ring_in: int = 10, ring_out: int = 40):
     """Contraste local en décibels : intensité maximale du pic (5 × 5 pixels) contre la médiane d'un anneau de 10 à
     40 pixels. Rapport d'intensités : la calibration absolue s'annule, la mesure vaut en sigma0 comme en compte brut."""
@@ -439,11 +465,12 @@ def lire_historique(tmp: str, k: int, j: int, h: dict, bbox: list, local: bool, 
     racine de la fenêtre, octets lus. FenetreInvalide si le passage ne couvre pas la fenêtre."""
     from osgeo import gdal
     srcs = {pol: (h[f"{pol}_path"] if local else source_image(h[pol])) for pol in ("vv", "vh")}
-    if j not in ouverts:
-        ouverts[j] = gdal.Open(srcs["vv"])
-    if ouverts[j] is None:
+    cle = h.get("id") or j                    # un passage ouvert une fois, quelle que soit la fenêtre qui le lit
+    if cle not in ouverts:
+        ouverts[cle] = gdal.Open(srcs["vv"])
+    if ouverts[cle] is None:
         raise FenetreInvalide(f"passage antérieur illisible : {gdal.GetLastErrorMsg()[:200]}")
-    win = fenetre_pixels(ouverts[j], bbox)
+    win = fenetre_pixels(ouverts[cle], bbox)
     sid = f"HIST{j}_F{k}.SAFE"
     mdir = os.path.join(tmp, "raw_f" + str(k), sid, "measurement")
     os.makedirs(mdir, exist_ok=True)
@@ -593,9 +620,9 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
     if vv is None:
         raise Arret(f"image VV illisible chez Copernicus : {gdal.GetLastErrorMsg()[:200]}")
     r["image_px"] = [vv.RasterXSize, vv.RasterYSize]
-    passes = list(scene.get("historique") or [])[:2]
+    passes_scene = list(scene.get("historique") or [])[:2]
     ouverts: dict = {}
-    r["historique"] = {"prevus": [h.get("id") for h in passes], "passages_min": None}
+    r["historique"] = {"prevus": [h.get("id") for h in passes_scene], "passages_min": None}
     dets, faibles, octets, t_lecture, t_analyse, ecartees = [], [], 0, 0.0, 0.0, 0
     for j, f in enumerate(scene["fenetres"]):
         k = f.get("id", j)              # identifiant donné par le serveur (lots sur processeur, lot C5)
@@ -620,10 +647,16 @@ def analyse_fenetres(scene: dict, task: dict, device, tmp: str, local: bool, tr=
                         octets += n
                         rf["octets"] = rf.get("octets", 0) + n
                 rf["lecture_s"] = round(time.time() - t, 1)
+                try:
+                    rf["sans_donnees"] = cases_sans_donnees(files["vv"], f["bbox"])
+                except Exception as e:                   # une mesure en échec n'empêche pas l'analyse
+                    rf["sans_donnees_erreur"] = f"{type(e).__name__}: {e}"[:200]
                 t_lecture += time.time() - t
                 # Passages antérieurs de la même orbite, même emprise ; un passage illisible ou qui ne couvre pas la
                 # fenêtre est écarté avec son motif, l'analyse se fait avec ce qui reste
                 th, hist, rf["historique"], rf["octets_historique"] = time.time(), [], [], 0
+                # Passages choisis pour cette fenêtre (analyse 106 : aucun ne convenait à toutes), sinon ceux de la scène
+                passes = list(f.get("historique") or passes_scene)[:2]
                 for j, h in enumerate(passes):
                     try:
                         hs, _w, n = lire_historique(tmp, k, j, h, f["bbox"], local, ouverts, tr)

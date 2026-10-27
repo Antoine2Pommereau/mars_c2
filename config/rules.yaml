@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.59"
+version: "2026.10.60"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -325,6 +325,10 @@ sentinel:
     passages: 2
     jours_max: 24
     confiance_sans_historique: 0.95
+    # Analyse 106 (27/10/2026) : un passage convient à une fenêtre s'il couvre cette part de la fenêtre qui est dans
+    # l'image du jour (grille de 9 × 9 points) ; exiger les quatre coins écartait tout passage quand la fenêtre
+    # dépassait l'image (NOSTOS, 19 %), avec un motif faux (« aucun passage antérieur »)
+    couverture_min: 0.98
     minutes_par_fenetre_cpu: 2  # en plus des 3 min : deux lectures et le tronc du modèle sur trois images (à mesurer)
   # Vignette radar : environ 3 km de côté autour de la détection, VV en décibels
   vignette_km: 3

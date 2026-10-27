@@ -562,16 +562,35 @@ def _couvre_fenetres(emprise: dict, fens: list[dict]) -> bool:
                for y in (f["bbox"][1], f["bbox"][3]))
 
 
+def _grille(bbox: list, n: int = 9) -> list[tuple]:
+    return [(bbox[0] + (bbox[2] - bbox[0]) * i / (n - 1), bbox[1] + (bbox[3] - bbox[1]) * j / (n - 1))
+            for i in range(n) for j in range(n)]
+
+
+def part_couverte(emprise: dict, emprise_jour: dict, bbox: list) -> float | None:
+    """Part de la fenêtre `bbox` située dans l'image du jour que le passage `emprise` couvre (grille de 9 × 9 points),
+    ou None si la fenêtre n'a aucun point dans l'image du jour. Analyse 106 : la fenêtre NOSTOS dépassait l'image du
+    jour de 19 % ; exiger ses quatre coins écartait tous les passages de la même trace, qui ne les couvrent pas non plus."""
+    pts = [p for p in _grille(bbox) if covers(emprise_jour, p[0], p[1], 0)]
+    if not pts:
+        return None
+    return sum(1 for p in pts if covers(emprise, p[0], p[1], 0)) / len(pts)
+
+
 def historique(session, sc: dict, s: dict) -> tuple[list[dict], str]:
     """Passages antérieurs d'une scène pour le détecteur d'AI2 : même orbite relative et même sens, dans les
-    `jours_max` jours, couvrant toutes ses fenêtres, les plus récents d'abord, un par date et satellite, `passages`
-    au plus. Retourne la liste (identifiant, début, satellite, adresses VV et VH) et le motif lisible."""
+    `jours_max` jours, les plus récents d'abord, un par date et satellite, `passages` au plus. Un passage convient à une
+    fenêtre s'il couvre la part de la fenêtre qui est dans l'image du jour (`couverture_min`, analyse 106). Retourne les
+    passages qui conviennent à toutes les fenêtres ; s'il en manque, chaque fenêtre reçoit les siens
+    (`fenetre["historique"]`). Retourne aussi le motif lisible, exact sur ce qui manque."""
     h = s.get("historique") or {}
     n_max, jours = int(h.get("passages", 0)), int(h.get("jours_max", 24))
+    part_min = float(h.get("couverture_min", 0.98))
     if n_max <= 0:
         return [], "historique coupé (sentinel.historique.passages à 0)"
     if sc.get("orbite_relative") is None or not sc.get("fenetres"):
         return [], "orbite relative inconnue : sans historique"
+    seuil = str(h.get("confiance_sans_historique", s["confiance"])).replace(".", ",")
     t0 = datetime.fromisoformat(sc["debut"].replace("Z", "+00:00"))
     xs = [v for f in sc["fenetres"] for v in (f["bbox"][0], f["bbox"][2])]
     ys = [v for f in sc["fenetres"] for v in (f["bbox"][1], f["bbox"][3])]
@@ -579,28 +598,58 @@ def historique(session, sc: dict, s: dict) -> tuple[list[dict], str]:
             "datetime": f"{t0 - timedelta(days=jours):%Y-%m-%dT%H:%M:%SZ}/{t0 - timedelta(minutes=30):%Y-%m-%dT%H:%M:%SZ}"}
     r = session.post(STAC, json=body, headers=HEADERS, timeout=60)
     r.raise_for_status()
-    cands = [c for c in (scene_from_item(f) for f in r.json().get("features", [])) if c
-             and c.get("orbite_relative") == sc["orbite_relative"] and c.get("orbite") == sc.get("orbite")
-             and f"{t0 - timedelta(days=jours):%Y-%m-%dT%H:%M:%S}" <= c["debut"] < sc["debut"]
-             and _couvre_fenetres(c["emprise"], sc["fenetres"])]
-    out, vus = [], set()
-    for c in sorted(cands, key=lambda c: c["debut"], reverse=True):
+    orbite = [c for c in (scene_from_item(f) for f in r.json().get("features", [])) if c
+              and c.get("orbite_relative") == sc["orbite_relative"] and c.get("orbite") == sc.get("orbite")
+              and f"{t0 - timedelta(days=jours):%Y-%m-%dT%H:%M:%S}" <= c["debut"] < sc["debut"]]
+    if not orbite:
+        return [], (f"aucun passage antérieur de l'orbite {sc['orbite_relative']} dans les {jours} jours : sans "
+                    f"historique, seuil prudent de {seuil}")
+
+    def convient(c, f):
+        if not sc.get("emprise"):                       # emprise du jour inconnue : quatre coins, comme avant
+            return _couvre_fenetres(c["emprise"], [f])
+        p = part_couverte(c["emprise"], sc["emprise"], f["bbox"])
+        return p is None or p >= part_min
+    # Un passage par date et satellite (une même acquisition est découpée en tranches au catalogue) : la tranche qui
+    # couvre le plus de fenêtres
+    par_date: dict = {}
+    for c in sorted(orbite, key=lambda c: c["debut"], reverse=True):
         cle = (c["debut"][:10], c["satellite"])
-        if cle in vus:
+        n = sum(1 for f in sc["fenetres"] if convient(c, f))
+        if n and n > par_date.get(cle, (0, None))[0]:
+            par_date[cle] = (n, c)
+    passages = [c for _n, c in sorted(par_date.values(), key=lambda x: x[1]["debut"], reverse=True)]
+    garde = ("id", "debut", "satellite", "vv", "vh")
+    tous = [{k: c[k] for k in garde} for c in passages if all(convient(c, f) for f in sc["fenetres"])][:n_max]
+    manque = []
+    for k, f in enumerate(sc["fenetres"]):
+        f.pop("historique", None)
+        if len(tous) >= n_max:
             continue
-        vus.add(cle)
-        out.append({k: c[k] for k in ("id", "debut", "satellite", "vv", "vh")})
-        if len(out) == n_max:
-            break
-    dates = ", ".join(f"{c['debut'][8:10]}/{c['debut'][5:7]}/{c['debut'][:4]} {c['satellite']}" for c in out)
-    if len(out) >= 2:
-        motif = f"{len(out)} passages antérieurs ({dates})"
-    elif out:
-        motif = f"un seul passage antérieur dans les {jours} jours ({dates})"
+        siens = [{k2: c[k2] for k2 in garde} for c in passages if convient(c, f)][:n_max]
+        if len(siens) > len(tous):
+            f["historique"] = siens                     # choisis pour cette fenêtre seulement
+        if not siens:
+            manque.append(str(f.get("id", k)))
+
+    def dates(xs):
+        return ", ".join(f"{c['debut'][8:10]}/{c['debut'][5:7]}/{c['debut'][:4]} {c['satellite']}" for c in xs)
+    par_fenetre = [f for f in sc["fenetres"] if f.get("historique")]
+    if len(tous) >= 2:
+        motif = f"{len(tous)} passages antérieurs ({dates(tous)})"
+    elif par_fenetre:
+        motif = "passages antérieurs choisis par fenêtre : " + " ; ".join(
+            f"fenêtre {f.get('id', k)} : {dates(f['historique'])}" for k, f in enumerate(sc["fenetres"])
+            if f.get("historique"))
+    elif tous:
+        motif = f"un seul passage antérieur dans les {jours} jours ({dates(tous)})"
     else:
-        motif = (f"aucun passage antérieur de l'orbite {sc['orbite_relative']} dans les {jours} jours : sans "
-                 f"historique, seuil prudent de {h.get('confiance_sans_historique', s['confiance'])}")
-    return out, motif.replace(".", ",") if not out else motif
+        motif = (f"{len(passages) or len(orbite)} passage(s) antérieur(s) de l'orbite {sc['orbite_relative']} trouvé(s), "
+                 f"aucun ne couvre la part dans l'image du jour de la fenêtre {', '.join(manque) or '?'} : sans "
+                 f"historique, seuil prudent de {seuil}")
+    if manque and (tous or par_fenetre):
+        motif += f" ; fenêtre {', '.join(manque)} sans historique (seuil prudent de {seuil})"
+    return tous, motif
 
 
 # Motifs du calcul : un passage de fenetres_max_cpu fenêtres au plus part en une session, au delà par lots
@@ -1004,9 +1053,10 @@ def ingest(conn, w: dict, rules: dict) -> dict:
                     {k: f.get(k) for k in ("index", "srcwin", "octets", "lecture_s", "analyse_s", "detections",
                                            "ecartees_marge", "erreur", "historique", "octets_historique",
                                            "lecture_historique_s", "historique_erreurs", "confiance",
-                                           "seuil_absence", "echos_faibles")}
+                                           "seuil_absence", "echos_faibles", "sans_donnees")}
                     for f in sc["fenetres"]]
             mes[sc["id"]] = m
+        _garde_historique(conn, aid, scenes, mes, rules)
         octets = (sum(int(sc.get("octets_lus") or 0) for sc in scenes) + int((prev[3] or 0) if prev else 0)) or None
         if reste and not errors:
             fait = sum(len(v) for v in faites.values())
@@ -1026,6 +1076,9 @@ def ingest(conn, w: dict, rules: dict) -> dict:
                   "echos_fixes"):
             out[k] += summary.get(k, 0)
         conn.execute("UPDATE analyses SET fenetres_faites = %s WHERE id = %s", (json.dumps(faites), aid))
+        sans = [{"scene": sid, "motif": m["historique_motif"]} for sid, m in mes.items() if m.get("historique_motif")]
+        if sans:
+            summary = {**summary, "sans_historique": sans}
         status = "done" if len(errors) < len(scenes) else "failed"
         termines.append(aid)
         conn.execute("UPDATE analyses SET status = %s, completed_at = now(), summary = %s, timings = %s, error = %s, "
@@ -1244,19 +1297,55 @@ def _motif_refusion(conn, alert_id: int, kind: str, aid: int, summary: dict | No
     return f"Refusion de l'analyse {aid} : alerte non relevée par les règles de fusion en vigueur"
 
 
+def _garde_historique(conn, aid: int, scenes: list[dict], mes: dict, rules: dict) -> list:
+    """Analyse 106 (27/10/2026) : une fenêtre analysée sans passage antérieur, alors que l'historique est demandé, tourne
+    au seuil prudent et rate les navires faibles. Chaque scène concernée garde son motif dans les mesures (fiche de la
+    détection), la trace le compte, et une notification part, une fois par analyse."""
+    if int((rules["sentinel"].get("historique") or {}).get("passages", 0)) <= 0:
+        return []
+    prevu = {sc.get("id"): sc.get("historique_motif") for sc in (conn.execute(
+        "SELECT scenes FROM analyses WHERE id = %s", (aid,)).fetchone() or [None])[0] or []}
+    sans = []
+    for sc in scenes:
+        fen = [f for f in sc.get("fenetres") or [] if not f.get("erreur") and not f.get("historique")]
+        if fen:
+            motif = prevu.get(sc["id"]) or "passages antérieurs illisibles par le travailleur"
+            mes[sc["id"]]["historique_motif"] = motif
+            sans.append({"scene": sc["id"], "fenetres": [f.get("index") for f in fen], "motif": motif})
+    traces.attributs(**{"sentinel.fenetres_sans_historique": sum(len(x["fenetres"]) for x in sans)})
+    deja = conn.execute("SELECT summary ? 'sans_historique' FROM analyses WHERE id = %s", (aid,)).fetchone()
+    if sans and not (deja and deja[0]):
+        from mars import controle
+        n = sum(len(x["fenetres"]) for x in sans)
+        controle.notifier("travailleurs", "moyenne", f"MARS C2 : analyse Sentinel 1 {aid} sans historique",
+                          f"{n} fenêtre(s) analysée(s) sans passage antérieur, au seuil prudent : navires faibles "
+                          f"manqués possibles. {sans[0]['motif']}"[:900], conn=conn, rules=rules)
+    return sans
+
+
 def fenetres_lues(sc: dict, mesures: list | None) -> list[dict]:
     """Fenêtres d'une scène réellement analysées : celles prévues (emprise, marge), moins celles en erreur au retour du
     travailleur (hors de l'image, trop petites). Sans mesure par fenêtre, toutes les fenêtres prévues."""
     erreurs = {f.get("index") for f in mesures or [] if f.get("erreur")}
-    return [f for k, f in enumerate(sc.get("fenetres") or []) if f.get("id", k) not in erreurs]
+    vides = {f.get("index"): f["sans_donnees"] for f in mesures or [] if f.get("sans_donnees")}
+    return [{**f, **({"sans_donnees": vides[f.get("id", k)]} if f.get("id", k) in vides else {})}
+            for k, f in enumerate(sc.get("fenetres") or []) if f.get("id", k) not in erreurs]
 
 
 def dans_coeur(fenetres_scene: list[dict], lon: float, lat: float) -> bool:
-    """Le point est il dans le cœur d'une fenêtre lue (emprise moins sa marge, où les détections sont gardées) ?"""
+    """Le point est il dans le cœur d'une fenêtre lue (emprise moins sa marge, où les détections sont gardées), hors des
+    cases où l'image n'a pas de données (`sans_donnees`, relevées par le travailleur depuis l'analyse 106) ?"""
     for f in fenetres_scene:
         b, m = f["bbox"], f.get("marge_m", 2000)
         dlat, dlon = m / 110_574.0, m / (111_320.0 * math.cos(math.radians((b[1] + b[3]) / 2)))
         if b[0] + dlon <= lon <= b[2] - dlon and b[1] + dlat <= lat <= b[3] - dlat:
+            vide = f.get("sans_donnees") or {}
+            n = int(vide.get("n") or 0)
+            if n:
+                i = min(n - 1, int((lon - b[0]) / (b[2] - b[0]) * n))
+                j = min(n - 1, int((lat - b[1]) / (b[3] - b[1]) * n))
+                if [i, j] in vide.get("cases", []):
+                    continue
             return True
     return False
 

@@ -39,3 +39,17 @@ def test_weak_echo_far_away_does_not_hide_the_absence():
     faibles = pd.DataFrame([{"lon": 1.80, "lat": 51.25, "score": 0.7, "longueur_m": 250.0}])
     _d, _a, _n, extras = fuse(_vide(), _pos(1.70, 51.20), T0, BBOX, RULES, 348.0, None, faibles)
     assert len(extras["unconfirmed"]) == 1
+
+
+def test_no_absence_where_the_image_has_no_data():
+    """Fenêtre NOSTOS de l'analyse 106 : les six colonnes ouest de la grille (17 % des cases, mesure sur l'image réelle)
+    sont hors de l'image radar ; un navire AIS qui s'y trouve n'est pas « visible »."""
+    from mars.sentinel import dans_coeur, fenetres_lues
+    sc = {"fenetres": [{"bbox": [0.13453, 50.4663, 0.47401, 50.68334], "marge_m": 2000, "id": 0}]}
+    vide = {"n": 24, "cases": [[i, j] for i in range(6) for j in range(24)]}
+    lues = fenetres_lues(sc, [{"index": 0, "sans_donnees": vide}])
+    assert lues[0]["sans_donnees"] == vide
+    dx = (0.47401 - 0.13453) / 24
+    assert not dans_coeur(lues, 0.13453 + 4.5 * dx, 50.57)             # colonne 4 : pas de données
+    assert dans_coeur(lues, 0.13453 + 10.5 * dx, 50.57)                # colonne 10 : image lue
+    assert dans_coeur(fenetres_lues(sc, None), 0.13453 + 4.5 * dx, 50.57)   # sans mesure : comme avant

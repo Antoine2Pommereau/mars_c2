@@ -93,7 +93,7 @@ def historique_de(timings, scene: str | None) -> dict | None:
         return None
     seuils = [f.get("confiance") for f in m.get("fenetres") or [] if f.get("confiance") is not None]
     return {"passages": h.get("passages_min"), "prevus": len(h.get("prevus") or []),
-            "seuil": max(seuils) if seuils else None}
+            "seuil": max(seuils) if seuils else None, "motif": m.get("historique_motif")}
 
 
 def fenetre_de(timings, scene: str | None, lon: float, lat: float) -> dict | None:

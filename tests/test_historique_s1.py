@@ -102,8 +102,9 @@ def test_fiche_detection_historique():
     sc = "S1D_IW_GRDH_1SDV_20261023T175704"
     t = {sc: {"historique": {"prevus": ["a", "b"], "passages_min": 2},
               "fenetres": [{"index": 0, "confiance": 0.9}]}}
-    assert historique_de(t, sc) == {"passages": 2, "prevus": 2, "seuil": 0.9}
+    assert historique_de(t, sc) == {"passages": 2, "prevus": 2, "seuil": 0.9, "motif": None}
     t[sc]["historique"]["passages_min"] = 0
     t[sc]["fenetres"][0]["confiance"] = 0.95
-    assert historique_de(t, sc) == {"passages": 0, "prevus": 2, "seuil": 0.95}
+    t[sc]["historique_motif"] = "aucun ne couvre la fenêtre 0"          # garde de l'analyse 106 : motif dans la fiche
+    assert historique_de(t, sc) == {"passages": 0, "prevus": 2, "seuil": 0.95, "motif": "aucun ne couvre la fenêtre 0"}
     assert historique_de({sc: {"fenetres": []}}, sc) is None            # analyse antérieure à l'historique

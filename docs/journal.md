@@ -1367,3 +1367,20 @@ Reproduite sur le Mac par la copie publique (Planetary Computer), avec et sans l
   l'absence (élargi de moitié) ; la physique de Sentinel 1 donne plutôt 80 à 90 s : tolérance généreuse.
 * Tests : 566 réussis avec la base.
 
+## 27/10/2026 : socle A, A03 (historique Sentinel 1 manquant)
+
+Règles 2026.10.60 (`sentinel.historique.couverture_min`), aucune migration, aucun essai payant.
+* Cause, rejouée sur le catalogue de Copernicus : le choix des passages antérieurs exigeait les quatre coins de chaque
+  fenêtre dans leur emprise. Le coin sud ouest de la fenêtre NOSTOS est hors de l'image du jour, donc hors de tout
+  passage de la même trace : les quatre passages de l'orbite 59 (19/10 S1C, 13/10 S1D, 07/10 S1C, 01/10 S1D) étaient
+  écartés, avec le motif faux « aucun passage antérieur », et l'analyse partait au seuil prudent de 0,95.
+* Désormais : un passage convient à une fenêtre s'il couvre 98 % de la part de la fenêtre dans l'image du jour (grille
+  de 9 × 9 points) ; s'il n'en est aucun pour toutes les fenêtres, chaque fenêtre reçoit les siens ; le motif dit
+  quelle fenêtre n'en a pas. Testé sur les géométries réelles de 106 (19/10 et 13/10 retrouvés) et de 103 (inchangée).
+* Garde : une fenêtre analysée sans passage antérieur est comptée dans la trace, son motif s'affiche dans la fiche de
+  la détection, le résumé de l'analyse la porte (`sans_historique`) et une notification part, une fois par analyse.
+* Bande sans données : l'emprise du catalogue couvrait presque toute la fenêtre NOSTOS (3 points sur 81 dehors), l'image
+  réelle n'en a pas sur 17 % (mesure sur la fenêtre découpée). Le travailleur relève les cases d'environ 1 km sans
+  données ; un navire AIS qui s'y trouve n'est plus déclaré absent.
+* Tests : 573 réussis avec la base.
+
