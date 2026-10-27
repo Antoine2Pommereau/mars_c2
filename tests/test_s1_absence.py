@@ -95,3 +95,34 @@ def test_106_weak_echoes_confirm_the_five_ships_and_keep_echo_6():
     assert six.matched_vessel_id is None and any(a["det_index"] == six.name for a in alertes)
     # NOSTOS reste apparié à son écho
     assert d[d.id == 5].iloc[0].matched_vessel_id is not None
+
+
+# Analyse 108 (réanalyse du passage de 106 avec historique, 27/10/2026) : 11 détections de production
+DETECTIONS_108 = [(21, 1.78796, 51.15629, 0.992, 51.5), (11, 0.27765, 50.57187, 0.991, 131.7),
+                  (20, 1.74831, 51.18648, 0.985, 35.7), (14, 0.31885, 50.54166, 0.984, 111.5),
+                  (12, 0.32649, 50.59999, 0.982, 34.4), (13, 0.27602, 50.60010, 0.969, 29.6),
+                  (18, 1.60102, 51.15085, 0.964, 150.3), (15, 0.28881, 50.55524, 0.957, 200.5),
+                  (16, 0.26221, 50.51580, 0.954, 119.8), (19, 1.60008, 51.15010, 0.943, 150.3),
+                  (17, 0.26315, 50.51836, 0.931, 255.9)]
+
+
+def test_108_second_echo_of_victorine_is_explained_by_her():
+    c, pos, _det, bbox, t0, cap = _cas106()
+    det = pd.DataFrame([{"id": i, "lon": lon, "lat": lat, "score": s, "objectness": s, "vessel_score": s,
+                         "fishing_score": 0.1, "length_m": L,
+                         "contrast_vv_db": 1.0 if i in (16, 20) else 12.0,     # 16 et 20 : « contraste faible » en production
+                         "width_m": None, "heading_deg": None, "heading_prob": None, "on_land": False}
+                        for i, lon, lat, s, L in DETECTIONS_108])
+    d, alertes, _n, extras = fuse(det, pos, t0, bbox, RULES, cap)
+    noms = dict(zip(pos.vessel_id, pos.name))
+    vu = {int(r.id): noms.get(r.matched_vessel_id) for r in d.itertuples() if r.matched_vessel_id is not None}
+    assert vu[18] == vu[19] == "VICTORINE" and d[d.id == 18].iloc[0].echo_voisin_de == 19
+    assert CINQ <= set(vu.values()) and extras["unconfirmed"] == []
+    sans_ais = {int(d.loc[a["det_index"]].id) for a in alertes}
+    assert sans_ais == {21, 13}                    # écho 6 de 106 et le petit écho de 30 m : vrais candidats
+    # Sans la règle : le second écho de VICTORINE restait sans AIS
+    import copy
+    r = copy.deepcopy(RULES)
+    r["fusion"]["echo_voisin_m"] = 0
+    _d, alertes0, _n, _e = fuse(det, pos, t0, bbox, r, cap)
+    assert 18 in {int(_d.loc[a["det_index"]].id) for a in alertes0}

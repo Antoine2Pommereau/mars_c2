@@ -1298,13 +1298,18 @@ def _motif_refusion(conn, alert_id: int, kind: str, aid: int, summary: dict | No
     """Pourquoi la nouvelle fusion ne lève plus cette alerte : navire apparié à l'écho (avec la méthode de position),
     ou écho masqué, ou navire désormais confirmé par un écho."""
     r = conn.execute(
-        """SELECT d.id, d.mask_reason, v.name, v.mmsi, round(ST_Distance(d.geom, p.geom))
+        """SELECT d.id, d.mask_reason, v.name, v.mmsi, round(ST_Distance(d.geom, p.geom)),
+                  (SELECT round(min(ST_Distance(d.geom, d2.geom))) FROM detections d2 WHERE d2.analysis_id = d.analysis_id
+                     AND d2.id <> d.id AND d2.matched_vessel_id = d.matched_vessel_id) AS voisin_m
            FROM alert_evidence e JOIN detections d ON d.id = e.evidence_id
            LEFT JOIN vessels v ON v.id = d.matched_vessel_id
            LEFT JOIN LATERAL (SELECT geom FROM positions WHERE vessel_id = d.matched_vessel_id
                               AND ts BETWEEN coalesce(d.ts, now()) - interval '2 hours' AND coalesce(d.ts, now())
                               ORDER BY ts DESC LIMIT 1) p ON true
            WHERE e.alert_id = %s AND e.evidence_type = 'detection' LIMIT 1""", (alert_id,)).fetchone()
+    if r and r[2] is not None and r[5] is not None:
+        return (f"Refusion de l'analyse {aid} : second écho du même navire, {r[2]} (MMSI {r[3]}), à {r[5]:.0f} m d'un "
+                "écho qui lui est apparié : pas un navire sombre")
     if r and r[2] is not None:
         dist = f", dernière position AIS à {r[4]:.0f} m" if r[4] is not None else ""
         return (f"Refusion de l'analyse {aid} : écho apparié à {r[2]} (MMSI {r[3]}){dist}, position d'un navire à "

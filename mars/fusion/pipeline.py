@@ -63,6 +63,26 @@ def fuse(det: pd.DataFrame, pos: pd.DataFrame, t0: pd.Timestamp, bbox, rules: di
     det["matched_vessel_id"] = pd.Series(
         [int(ais.vessel_id.iloc[int(m)]) if pd.notna(m) and m >= 0 else None for m in det.matched_idx],
         index=det.index, dtype=object)
+    # Écho voisin du même navire (analyse 108, 27/10/2026) : un grand navire rend parfois deux échos proches (VICTORINE,
+    # 150 m, deux détections à 106 m l'une de l'autre) ; l'appariement un pour un laissait le second « sans AIS » et levait
+    # une alerte critique. Un écho resté seul, à moins de echo_voisin_m d'un écho apparié au navire V et de longueur
+    # proche (écart relatif sous echo_voisin_longueur), est expliqué par V
+    det["echo_voisin_de"] = None
+    voisin = float(f.get("echo_voisin_m", 0))
+    if voisin > 0 and len(det):
+        apparies = det[det.matched_vessel_id.notna()]
+        for i, d in det[det.matched_vessel_id.isna() & det.mask_reason.isna()].iterrows():
+            for j, m in apparies.iterrows():
+                if np.hypot(d.x - m.x, d.y - m.y) > voisin:
+                    continue
+                la, lb = pd.to_numeric(d.length_m, errors="coerce"), pd.to_numeric(m.length_m, errors="coerce")
+                if pd.notna(la) and pd.notna(lb) and max(la, lb) > 0 and \
+                        abs(la - lb) / max(la, lb) > float(f.get("echo_voisin_longueur", 0.4)):
+                    continue
+                det.at[i, "matched_vessel_id"] = m.matched_vessel_id
+                det.at[i, "matched_idx"] = m.matched_idx
+                det.at[i, "echo_voisin_de"] = int(m.id) if "id" in det and pd.notna(m.id) else int(j)
+                break
     # Règle de prudence (mars/fusion/doute.py) : un navire AIS connu dans la durée bornée peut il expliquer l'écho ?
     tracks = pistes(pos) if len(pos) else {}
     apparies = {int(v) for v in det.matched_vessel_id if v is not None}

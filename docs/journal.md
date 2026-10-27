@@ -1421,3 +1421,17 @@ Règles 2026.10.61, aucune migration, aucune dépense.
   balisage de bouée de mesure possible ; 80229, 80230 et 92405, golfe du Lion la même nuit, flottille sans AIS reçu
   probable ; 10478 et 80244, petite pêche probable. Décisions laissées à Antoine.
 
+## 27/10/2026 : mission socle A, étape 5 (B01, l'historique en production)
+
+Essai payant : `essai-reel --lancer 782 --refaire` (plafond porté à 2 pour la seule commande, la scène du jour ayant été
+prise par l'analyse automatique 107), analyse 108, travailleur 44 (GP1-S), 13 min, 0,19 €, détruit. Dépense de la
+mission : 0,19 €.
+* Critères tenus : historique choisi « 2 passages antérieurs (19/10/2026 S1C, 13/10/2026 S1D) », lu par les deux
+  fenêtres, seuil 0,9 ; 11 détections, exactement le rejeu gratuit ; échos faibles transmis (7 et 11) ; 98 cases sans
+  données relevées sur NOSTOS (17 %) ; aucune AIS_UNCONFIRMED, les cinq « absents » de 106 appariés à leur écho.
+* Défaut trouvé : VICTORINE rend deux échos à 106 m (150 m chacun) ; l'appariement un pour un laissait le second sans
+  AIS, alerte DARK_SHIP critique 92604 fausse. Corrigé (règles 2026.10.62, `fusion.echo_voisin_m`), test sur les 11
+  détections réelles ; refusion de 108 après déploiement.
+* Alertes réelles à décider : 76467 (écho 6, 52 m, aucun AIS à 5 km), 92603 (écho de 30 m à 0,969, aucun AIS à 3,4 km),
+  92602 (KATRE, longueur mesurée 34 m contre 119 m : sous estimation ou autre petit navire, ambigu).
+

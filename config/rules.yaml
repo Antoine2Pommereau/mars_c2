@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.61"
+version: "2026.10.62"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -28,6 +28,10 @@ fusion:
   # Prudence (DARK_SHIP radar, optique, VIIRS) : un navire AIS connu dans les 120 min qui peut encore expliquer l'écho
   # (estime, rayon de base, dérive à l'arrêt, plus 20 % du chemin parcouru) rend l'alerte faible et à confirmer
   doute_ratio: 0.2
+  # Écho voisin du même navire (analyse 108) : un écho sans AIS à moins de 300 m d'un écho apparié, de longueur proche
+  # (écart relatif de 40 % au plus), est le même navire
+  echo_voisin_m: 300
+  echo_voisin_longueur: 0.4
   base_radius_m: 300
   doppler_s: 150         # décalage le long de la trace = doppler_s x vitesse vers le radar (m/s) ; phase 0 : jusqu'à 730 m
   # Direction de vol de Sentinel 1 à ces latitudes, selon le sens de l'orbite : la tolérance est une ellipse

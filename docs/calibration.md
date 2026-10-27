@@ -223,3 +223,4 @@ Les épisodes décrits un par un (30 plus longs par cycle) sont dans `details->'
 | 27/10/2026 | 2026.10.59 | Sentinel 1 : modèle lancé au seuil d'absence 0,5, échos faibles (et hors zones) transmis pour juger l'absence d'un navire AIS ; sans eux, absence non concluante |
 | 27/10/2026 | 2026.10.60 | Sentinel 1 : historique choisi sur la part de chaque fenêtre dans l'image du jour (`historique.couverture_min` 0,98), par fenêtre si besoin, motif exact ; garde des analyses retombées sans historique ; absence jamais déclarée là où l'image n'a pas de données |
 | 27/10/2026 | 2026.10.61 | Coupures : `min_prior_messages` à 8 (injection, 358 essais : 8 à 9 messages à 54,8 % contre 62,3 % à 10 et plus) ; zone fiable : `min_pairs` proportionnel au nombre de jours (50 pour 18) ; tip and cue : place gardée sous le plafond pour une demande planifiée |
+| 27/10/2026 | 2026.10.62 | Fusion radar : écho voisin du même navire (300 m, longueur à 40 % près) expliqué par lui |
