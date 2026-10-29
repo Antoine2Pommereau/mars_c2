@@ -1492,3 +1492,30 @@ Règles 2026.10.64, aucune migration.
   (`points_liste`, repli prévu pour un passage choisi à la main). **Reporté au 30/10** : aujourd'hui, l'essai prendrait
   la troisième place du plafond de 4 travailleurs par jour, et le remasquage VIIRS de 18:30 la quatrième, au risque de
   refuser la demande 51 (passage S1C de 17:54), preuve de l'étape 6.
+
+## 29/10/2026 : verdicts sur 76467, 92603 et 92602 ; zone fiable et évaluation ; journal du plafond
+
+Lecture seule et diagnostics gratuits (copie publique de Planetary Computer, scènes S1C du 19/10 et S1D du 13/10 de la
+même orbite, mêmes fenêtres, `travailleurs/essai_diagnostic_s1.py`). Décisions laissées à Antoine.
+* **76467 (DARK_SHIP critique, 52 m) : objet fixe, le bateau feu Sandettie.** Position publiée 51,155917 N
+  1,785367 E, à 190 m de l'écho ; 47,5 m de long (52 m mesurés) ; il émet sous le MMSI 992351029, message d'aide à la
+  navigation que la collecte ne demande pas (`FilterMessageTypes` : positions et données statiques des navires). Aucun
+  navire AIS à moins de 1 km en 30 jours. Écho fort le 19/10 (0,97, à 290 m) ; le 13/10, données présentes et pixel
+  brillant voisin, mais score de 0,05 (non expliqué). Le câble à 487 m et ALTAI à 6,2 km sont des coïncidences de lieu.
+* **92603 (DARK_SHIP critique, 30 m) : vrai navire sans AIS reçu, petit.** Dans la voie vers l'ouest au sud de Beachy
+  Head, sur la route du ferry Dieppe Newhaven ; aucun navire AIS à moins de 3,3 km à 17:40 (NOSTOS 3,4 km, KATRE
+  3,6 km, tous au 245 à 258, Doppler de quelques centaines de mètres au plus). Pas persistant : rien le 19/10, écho
+  faible (0,21) le 13/10. Écho net (0,90 sans historique, 0,97 avec). Pêcheur ou plaisancier de 30 m sans AIS, ou
+  classe B mal reçue ; aucune bouée connue à cette position (non vérifié sur carte marine). Le lien avec le câble
+  (592 m) ou NOSTOS n'est pas établi : la gravité critique vient du lieu, pas d'un indice propre.
+* **92602 (IDENTITY_MISMATCH faible, KATRE) : navire mal mesuré, pas usurpé.** Position interpolée à 130 m de l'écho,
+  route et vitesse cohérentes (4 nœuds au 254) ; écho non persistant (rien le 19/10 ni le 13/10 au même point).
+  Longueur mesurée à 29 % de la déclarée, hors de la plage des 21 autres échos appariés de 108 et 109 (57 à 117 %,
+  médiane vers 85 %), contraste faible (19,2 dB) : sous estimation par le modèle, ou longueur déclarée fausse. Une
+  usurpation ne donnerait pas une position et une route aussi exactes.
+* **Zone fiable et évaluation** : l'évaluation teste chaque détection contre les cellules une à une
+  (`ST_Intersects`), jamais contre leur union ni leur bord ; le défaut des frontières internes ne touchait que le calcul
+  du bord écrit pour E01, corrigé avant tout déploiement. Vérifié sur toutes les détections en base (740 VIIRS, 39
+  Sentinel) : test géométrique et test par indice de cellule identiques, 0 désaccord. Ni réévaluation ni refusion.
+* **Commande `plafond`** : ligne 30 de `journal_controle` (auteur claude-code, action `plafond`, cible sentinel1,
+  avant 1, après 2, motif, trace), même forme que la ligne 22 écrite par le panneau.
