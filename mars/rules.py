@@ -431,6 +431,14 @@ edge AS MATERIALIZED (
                                    WHERE ST_Intersects(l.geom::geometry, ST_Boundary(a.g)))),
                     ST_Boundary(a.g)) AS sea_edge
     FROM area a
+),
+-- Bord de la zone de réception fiable (lot E01, 29/10/2026) : calculé une fois, utilisé pour les silences sans réapparition
+-- Cellules refaites depuis leurs indices et accrochées à une grille : l'union des géométries stockées, dont les bords
+-- voisins diffèrent de quelques ulp, laisse des frontières internes (un bord à 5 km au milieu de la zone)
+zone_bord AS MATERIALIZED (
+    SELECT ST_Boundary(ST_Union(ST_SnapToGrid(ST_MakeEnvelope(cx * $5::float8, cy * $6::float8, (cx + 1) * $5::float8,
+                                                              (cy + 1) * $6::float8, 4326), 1e-7))) AS b
+    FROM reception_cells
 )
 SELECT g.vessel_id, v.mmsi, v.name, v.ship_type, v.length_m, v.ais_class, g.prior_n,
        g.ts AS t_last, g.next_ts AS t_next, extract(epoch FROM g.duration)::float8 / 60 AS duration_min,
@@ -451,7 +459,14 @@ SELECT g.vessel_id, v.mmsi, v.name, v.ship_type, v.length_m, v.ais_class, g.prio
             WHERE NOT EXISTS (SELECT 1 FROM reception_cells r3
                               WHERE r3.cx = floor(ST_X(qq.q) / $5::float8)::int AND r3.cy = floor(ST_Y(qq.q) / $6::float8)::int)
        )) AS route_couverte,
-       g.cog_deg AS cog_deg
+       g.cog_deg AS cog_deg,
+       -- Silence sans réapparition : distance de la dernière position au point le plus proche du bord de la zone
+       -- fiable, seulement si ce point est en mer (à plus de $17 m de la terre) ; le bord qui longe la côte n'est pas
+       -- une sortie de notre réception, et les abords des atterrages doivent garder leur gravité
+       (SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM land l WHERE ST_DWithin(l.geom, q.cp::geography, $17::float8))
+                    THEN ST_Distance(g.geom, q.cp::geography) END
+        FROM (SELECT ST_ClosestPoint(zb.b, g.geom::geometry) AS cp FROM zone_bord zb) q
+        WHERE g.next_ts IS NULL AND q.cp IS NOT NULL) AS bord_mer_m
 FROM gaps g
 JOIN vessels v ON v.id = g.vessel_id
 JOIN reception_cells rc
@@ -523,7 +538,8 @@ async def find_gaps(c, day_start, day_end, rules: dict, min_prior: int | None = 
                          g["edge_margin_deg"], g["min_coast_km"] * 1000.0, g["prior_window_min"],
                          g["min_prior_messages"] if min_prior is None else min_prior,
                          g["projection_min"], g["projection_open_min"],
-                         int(g.get("route_horizon_min", 0)), max(1, int(g.get("route_pas_min", 10))))
+                         int(g.get("route_horizon_min", 0)), max(1, int(g.get("route_pas_min", 10))),
+                         float(g.get("bord_zone_terre_km", 6)) * 1000.0)
 
 
 def _cell(lon: float, lat: float, size: list) -> tuple[int, int]:
@@ -608,7 +624,7 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
             outages += 1                                  # silence dû au flux coupé, pas au navire
             continue
         real.append(x)
-    items, with_partner, exits, route_exits, downgraded = [], 0, 0, 0, 0
+    items, with_partner, exits, route_exits, downgraded, at_edge = [], 0, 0, 0, 0, 0
     # Points collectifs : sur les vrais silences seulement (ceux d'un trou de collecte gonfleraient chaque maille)
     collective = collective_points(real, g)
     by_point: dict[tuple, list] = {}
@@ -689,6 +705,20 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
         point = (*_cell(x["lon"], x["lat"], g["disparition_cellule_deg"]), x["t_last"].astimezone(timezone.utc).date())
         before = severity
         strong = bool(offshore_partners or linked or behaviour == "arret")
+        # Lot E01 : sans réapparition, près du bord en mer de la zone fiable, le navire a pu sortir de notre réception
+        # sans quitter sa route (mesure du 29/10/2026 : 15 silences élevés sur 36 à moins de 10 km d'un bord en mer,
+        # contre 7 sur 31 pour les réapparus ; un point de la Manche face à Newhaven revenait chaque jour sans former de
+        # point collectif, à cheval sur la maille du méridien 0 et sur plusieurs jours)
+        bord_km = None if x.get("bord_mer_m") is None else x["bord_mer_m"] / 1000
+        au_bord = open_gap and bord_km is not None and bord_km <= g.get("bord_zone_km", 0)
+        if au_bord and point not in collective and not strong:
+            severity = "faible"
+            at_edge += 1
+            context.insert(0, f"Sans réapparition à {bord_km:.1f} km du bord en mer de la zone de réception fiable : "
+                              "sortie de notre réception probable, indice faible")
+        elif au_bord and point not in collective and severity != "faible":
+            context.append(f"Près du bord en mer de la zone de réception fiable ({bord_km:.1f} km), mais indice propre "
+                           "au navire : gravité gardée")
         if point in collective and not strong:
             # Déclassée, pas exclue : un navire sombre pourrait se cacher derrière une limite de réception. Un indice
             # propre au navire (partenaire au large, rendez vous lié, arrêt pendant le silence) garde sa gravité : seul
@@ -731,6 +761,7 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
         details["disparition_collective"] = collective.get(point)
         details["nature_point_collectif"] = kinds.get(point)
         details["gravite_avant_declassement"] = before
+        details["bord_zone_km"] = None if bord_km is None else round(bord_km, 1)
         event_time = x["t_last"] + timedelta(minutes=seuils.get((x["vessel_id"], x["t_last"]), g["min_gap_min"]))
         items.append({"key": f"{x['vessel_id']}:{stamp(x['t_last'])}", "severity": severity,
                       "event_time": event_time, "lon": x["lon"], "lat": x["lat"], "details": details,
@@ -740,6 +771,7 @@ async def run_ais_gap(c, day_start, day_end, rules: dict) -> dict:
               "exclus_route_hors_zone": route_exits, "exclus_coupure_du_flux": outages,
               "exclus_debut_pendant_coupure_du_flux": uncertain, "coupures_retenues": len(items),
               "coupures_declassees_disparition_collective": downgraded,
+              "coupures_declassees_bord_de_zone": at_edge,
               "points_de_disparition_collectifs": len(collective),
               "points_collectifs": [{"lon": round((k[0] + 0.5) * g["disparition_cellule_deg"][0], 3),
                                      "lat": round((k[1] + 0.5) * g["disparition_cellule_deg"][1], 3), "jour": str(k[2]),
@@ -783,7 +815,8 @@ def observation_summary(items: list[dict]) -> dict:
          "messages_heure_precedente": it["details"]["messages_heure_precedente"],
          "derniere_position": it["details"]["derniere_position"], "gravite": it["severity"],
          "gravite_avant_declassement": it["details"].get("gravite_avant_declassement"),
-         "point_collectif": it["details"].get("disparition_collective")} for it in longest]}
+         "point_collectif": it["details"].get("disparition_collective"),
+         "bord_zone_km": it["details"].get("bord_zone_km")} for it in longest]}
 
 
 # Test par injection de la règle des coupures (API /api/rules/ais_gap/selftest, taches.py coupures-injection)

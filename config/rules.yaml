@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.62"
+version: "2026.10.63"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -160,6 +160,12 @@ ais_gap:
   partner_max_speed_kn: 2.0
   partner_min_positions: 5
   high_duration_min: 360 # silence sans réapparition : sévérité élevée au delà de 6 heures
+  # Silence sans réapparition à moins de bord_zone_km du bord en mer de la zone de réception fiable : déclassé en
+  # faible comme un point collectif, sauf indice propre au navire (lot E01, 29/10/2026 : 15 silences élevés sur 36 du
+  # 20 au 29/10 à moins de 10 km d'un bord en mer, contre 7 sur 31 réapparus). Un bord dont le point le plus proche est
+  # à moins de bord_zone_terre_km de la terre longe la côte : pas une sortie de notre réception, gravité gardée.
+  bord_zone_km: 10
+  bord_zone_terre_km: 6
   excluded_ship_types: [Tug, Towing, "Towing long/wide", Pilot, SAR, "Law enforcement", "Port tender",
                         Dredging, Diving, Military, Medical, "Anti-pollution"]
 

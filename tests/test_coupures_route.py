@@ -175,3 +175,49 @@ def test_nature_of_a_collective_point():
     assert point_kind(spread, 3) == "limite_de_couverture"
     burst = [T0 + timedelta(minutes=m) for m in (0, 4, 9, 15, 22, 400)]          # cinq sur six en une demi heure
     assert point_kind(burst, 3) == "coupure_simultanee"
+
+
+def test_open_gap_near_the_sea_edge_of_the_zone_is_downgraded():
+    """Lot E01 : un silence sans réapparition à moins de bord_zone_km du bord en mer de la zone fiable est déclassé comme
+    un point collectif (sortie de notre réception probable) ; le même silence au milieu de la zone garde sa gravité."""
+    if not URL:
+        pytest.skip("MARS_TEST_DATABASE_URL absente : base de test requise")
+    import asyncpg
+    from mars.rules import run_ais_gap
+
+    async def go():
+        c = await asyncpg.connect(URL)
+        for t in ("json", "jsonb"):
+            await c.set_type_codec(t, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+        tr = c.transaction()
+        await tr.start()
+        try:
+            await _scenario(c)
+            await c.execute("DELETE FROM land")
+            await c.execute("DELETE FROM positions WHERE vessel_id IN (SELECT id FROM vessels WHERE mmsi BETWEEN "
+                            "636999001 AND 636999004)")
+            ids = {}
+            step = 5 * 0.514444 * 60 * DLON                      # 5 nœuds, cap 90 : la route reste dans la zone
+            # Bord nord de la zone de test : 50,60 N ; BORD se tait à 50,52 N (environ 9 km), MILIEU à 50,35 N (28 km)
+            for name, mmsi, lat in (("BORD", 636999021, LAT + 0.17), ("MILIEU", 636999022, LAT)):
+                ids[name] = await c.fetchval("INSERT INTO vessels (mmsi, name, ship_type, length_m, ais_class) VALUES "
+                                             "($1, $2, 'Cargo', 150, 'A') RETURNING id", mmsi, name)
+                for k in range(60, -1, -1):
+                    await c.execute("INSERT INTO positions (vessel_id, ts, geom, sog_kn, cog_deg) VALUES ($1, $2, "
+                                    "ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, 5, 90)",
+                                    ids[name], T0 - timedelta(minutes=k), 0.0 - k * step, lat)
+            start, end = T0 - timedelta(hours=2), T0 + timedelta(hours=12)
+            out = await run_ais_gap(c, start, end, RULES)
+            ep = {e["vessel_id"]: e for e in out["episodes"]}
+            assert out["coupures_declassees_bord_de_zone"] == 1
+            assert ep[ids["BORD"]]["gravite"] == "faible" and ep[ids["BORD"]]["gravite_avant_declassement"] == "elevee"
+            assert 8 < ep[ids["BORD"]]["bord_zone_km"] < 10
+            assert ep[ids["MILIEU"]]["gravite"] == "elevee" and ep[ids["MILIEU"]]["bord_zone_km"] > 20
+            # Seuil nul : ancien comportement, les deux silences élevés
+            old = await run_ais_gap(c, start, end, {**RULES, "ais_gap": {**G, "bord_zone_km": 0}})
+            assert old["coupures_declassees_bord_de_zone"] == 0
+            assert old["gravites_hypothetiques"] == {"elevee": 2}
+        finally:
+            await tr.rollback()
+            await c.close()
+    asyncio.run(go())

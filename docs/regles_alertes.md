@@ -179,7 +179,9 @@ dernière position ou de la réapparition, si un rendez vous est lié, ou si le 
 route a été poursuivie (au delà de `continue_ratio`) ; élevée sans réapparition au delà de `high_duration_min` ;
 moyenne sinon. **Déclassée en faible** dans un point de disparition collectif (au moins `disparition_min_navires`
 navires sans lien qui se taisent le même jour dans la même maille), sauf indice propre au navire ; gravité d'avant
-gardée (`gravite_avant_declassement`).
+gardée (`gravite_avant_declassement`). **Déclassée en faible aussi** sans réapparition, à moins de `bord_zone_km` du
+bord en mer de la zone de réception fiable (bord dont le point le plus proche est à plus de `bord_zone_terre_km` de la
+terre), sauf indice propre au navire : sortie de notre réception probable (`bord_zone_km` dans le détail, lot E01).
 
 | Seuil | Valeur | Origine | Note |
 |---|---|---|---|
@@ -197,6 +199,7 @@ gardée (`gravite_avant_declassement`).
 | `ais_gap.high_duration_min` | 360 min | danoise | |
 | `ais_gap.excluded_ship_types` | 12 types de service | danoise | La pêche n'est pas exclue |
 | `ais_gap.route_horizon_min`, `route_pas_min` | 60 et 10 min | française mesurée | Règles 2026.10.24 (12/10/2026), voie ouest en Manche ; sur une copie réelle du 11/10, 22 sorties de couverture de plus, 63 coupures retenues au lieu de 85 (docs/journal.md) |
+| `ais_gap.bord_zone_km`, `bord_zone_terre_km` | 10 km, 6 km | française mesurée | Épisodes du 20 au 29/10/2026 : 15 silences élevés sans réapparition sur 36 déclassés, 7 réapparus sur 31 aussi près d'un bord en mer ; injection inchangée (les coupures injectées réapparaissent) (règles 2026.10.63) |
 | `ais_gap.disparition_min_navires`, `disparition_cellule_deg` | 3 navires, 0,2 × 0,1° | française mesurée | Même copie : 13 points collectifs, 47 coupures déclassées (règles 2026.10.24 et 2026.10.25, 12 et 13/10/2026) ; mesure d'une seule journée |
 | `ais_gap.debut_incertain_min` | 10 min | française mesurée | Règles 2026.10.25 (13/10/2026) : arrêts simulés de 20 et 140 min sur la copie du 11/10 sans effet sur les élevées |
 | `continu.flux_min_ratio` | 0,2 | provisoire | 06/10/2026 : 41 fausses coupures évitées sur la base de test lors d'une coupure du flux de 140 min ; pas de mesure du seuil lui même |
