@@ -174,6 +174,23 @@ Constantes codées en dur, même problème :
   (15 des 36 silences élevés sans réapparition déclassés au bord de la zone). À refaire après une semaine avec E01 en
   service, et avec une injection de silences sans réapparition (messages effacés jusqu'à la fin de la fenêtre) pour
   que le critère puisse trancher.
+* **Estime à rebours VIIRS** (`viirs.estime_max_min`, 20 min, D03, mesure du 29/10/2026) : cas de COSTA TOSCANA
+  (alerte 50275), vue 55 min après la lumière, estime à 385 m. Mesure sur le serveur (positions de navires en route,
+  5 nœuds et plus, de 0 à 5 h UTC, tirées au hasard, environ 580 par horizon) : position remontée avec le cap et la
+  vitesse déclarés, comparée à la vraie position du navire.
+
+  | Remontée | Erreur médiane | 80 % sous | 90 % sous | Sous 1 500 m |
+  |---|---|---|---|---|
+  | 20 min | 0,5 à 0,6 km | 1,1 à 1,5 km | 1,9 à 3,3 km | 80 à 83 % |
+  | 30 min | 0,7 à 1,0 km | 2,1 à 3,9 km | 3,8 à 6,7 km | 62 à 74 % |
+  | 60 min | 1,6 à 2,4 km | 7,0 à 10,0 km | 13,5 à 16,8 km | 38 à 48 % |
+  | 90 min | 3,4 à 5,1 km | 12 à 17,5 km | 21 à 27 km | 16 à 30 % |
+
+  (fourchettes : tranches de 5 à 10, 10 à 15 et plus de 15 nœuds). **Aucune règle** : contenir 80 % des navires à
+  60 min demanderait un rayon de 7 à 10 km, qui la nuit expliquerait n'importe quelle lumière, celle d'un navire
+  sombre comprise ; les 385 m de COSTA TOSCANA sont un cas favorable (route droite d'un paquebot). L'estime reste
+  bornée à 20 min (tolérance actuelle, 1 500 m plus la moitié du chemin : 93 à 100 % des navires) ; un navire vu plus
+  loin dans le temps rend l'alerte faible « à confirmer » par la règle de prudence, sans l'expliquer.
 * **Zone de réception fiable** : seuils définitifs sur dix jours, qui décident aussi de l'évaluation des détections
   VIIRS et Sentinel.
 * **Rendez vous** : seuils danois (500 m, 2 nœuds, 120 min, tranches de 10 et 20 min) contre les épisodes réels.
