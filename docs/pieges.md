@@ -229,3 +229,16 @@ le résumé. Pièges résolus : `docs/pieges_archives.md`.
   privé est régional : une instance de pl-waw-2 ne peut pas renvoyer ses résultats au serveur de fr-par.
 * Une alerte « une fois » de Grafana (abandon Sentinel) regarde une fenêtre de 55 minutes :
   avec le rappel d'une heure de la politique ntfy, une fenêtre plus longue enverrait une seconde notification.
+* **Union des cellules de la zone fiable** (29/10/2026, E01) : `ST_Union` des géométries stockées de `reception_cells`
+  laisse des frontières internes (bords voisins différents de quelques ulp) ; un point au milieu de la zone se
+  trouvait à 5,6 km « du bord ». Refaire chaque cellule depuis ses indices (`ST_MakeEnvelope(cx * pas, …)`) et
+  l'accrocher à une grille (`ST_SnapToGrid(…, 1e-7)`) avant l'union.
+* **SSH avec un bloc `bash -s` et `docker compose exec -T`** (29/10/2026) : `exec -T` lit l'entrée standard, donc la
+  suite du bloc ; tout ce qui suit disparaît sans erreur. Toujours `</dev/null` sur chaque `docker compose exec` ou
+  `run` d'un bloc envoyé par SSH.
+* **Chemin du dépôt avec une espace** (« Projet Perso », 29/10/2026) : `test_boot_script_spans_are_valid_otlp` source
+  `traces.sh` sans guillemets et échoue depuis le dépôt du Mac ; la suite passe depuis un worktree sans espace (même
+  code). Défaut du test, pas du script.
+* Les résumés d'épisodes des coupures (`task_runs.details->'ais_gap'->'episodes'`) ne gardent que les 30 plus longs
+  par cycle et ne remontent qu'au 27/10/2026 02:32 UTC (29/10/2026) : une mesure « depuis le 20/10 » n'en couvre que
+  2,4 jours ; les épisodes eux mêmes (`episodes_observes`) n'ont que leur clé et leur gravité.

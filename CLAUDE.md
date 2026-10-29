@@ -97,11 +97,14 @@ indice, jamais une excuse).
   `( cd /opt/mars_c2 || { echo "PAS SUR LE SERVEUR : arrêt"; exit 1; } ; … )`, empreinte lue par
   `git rev-parse --short HEAD`. Serveur : jamais d'action sur les alertes depuis un essai, l'API par le tunnel en GET.
 
-## 4. État actuel (24/10/2026)
+## 4. État actuel (29/10/2026)
 
-`main` au 25/10/2026 : lots Z1 à Z6, spline des points d'appui Sentinel 1, lot historique Sentinel 1, lot
-viirs-masque, réanalyse par --refaire, fusion d'un navire à l'arrêt, types jamais éprouvés refusés, lumières voisines VIIRS ; règles 2026.10.56, migrations 01 à 46 (44 et 46 : granules VIIRS
-non évaluables, 45 : analyses refaites). Essais réels : `taches.py essai-reel`
+`main` au 29/10/2026 : lots Z1 à Z7, historique Sentinel 1 (choisi sur la part de chaque fenêtre dans l'image),
+mission socle A (zone fiable proportionnelle à la durée, `min_prior_messages` 8, échos faibles et cases sans données
+pour juger l'absence, écho voisin du même navire, place gardée d'une demande planifiée, E01 bord de zone, D02 VIIRS
+remasqué) ; règles 2026.10.64, migrations 01 à 46 (44 et 46 : granules VIIRS non évaluables, 45 : analyses refaites).
+Suivi de la mission : `docs/journal.md` ; calibration : `docs/calibration.md` (E02 et D03 : mesures sans changement).
+Plafond de scènes sans le panneau : `taches.py plafond sentinel1 N --motif TEXTE`. Essais réels : `taches.py essai-reel`
 (préparation), `essai-reel --lancer ID` (un essai, types éprouvés seulement), `viirs-bilan` ; procédure dans
 `docs/travailleurs.md`, section 11. État des sources : en base (panneau), pas
 dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibration : `docs/calibration.md`.
@@ -111,12 +114,12 @@ dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibr
 | Collecte AIS, ingestion | en service | continu ; environ 680 messages par minute (06/10) | inclus au serveur |
 | Archive R2, purge, sauvegarde | en service | chaque nuit ; restauration essayée le 24/10 | R2 gratuit (moins de 10 Go) |
 | Règles WATCHLIST, IDENTITY_CHANGE, RENDEZVOUS | en service | cycle de 5 min, 18,8 s (22/10) | inclus |
-| Règle AIS_GAP | observation (fichier) | 84 épisodes observés en 7 jours (22/10), aucune alerte | inclus |
-| VIIRS (travailleur DEV1-M) | en pause depuis le 21/10 ; reprise au déploiement de 29bcfff | 21/10, 12 granules | environ 0,02 € la nuit |
-| Sentinel 1 sur processeur seul (GP1-S, POP2 en secours, lots de 4 fenêtres) | en pause depuis le 21/10 | 19/10, analyse 97, 1,7 % de la scène lue | 0,19 € l'analyse |
+| Règle AIS_GAP | observation (fichier) | injection du 24/10 : 65 sur 100 ; bord de zone déclassé (E01, 29/10) | inclus |
+| VIIRS (travailleur DEV1-M) | en service ; à 18:30 UTC, granules sans masque refaites (D02) | chaque nuit (travailleur 46, 29/10) | environ 0,02 € la nuit, 0,04 € avec le remasquage |
+| Sentinel 1 sur processeur seul (GP1-S, lots de 4 fenêtres ; POP2 jamais) | boucle tip and cue de la mission socle A depuis le 29/10 11:28 UTC, plafond 2 | 27/10, analyse 108, historique lu, 11 détections | 0,19 € l'analyse |
 | Sentinel 2 (GP1-S, rslearn) | en pause depuis le 21/10 | 20/10 : 3 échecs, correctif livré non rejoué | 0,19 € la session |
-| Tip and cue, vérification satellite | en pause depuis le 21/10 | 20 demandes réelles, aucune observation | selon le capteur |
-| Alertes radar (DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH) | jamais éprouvées | aucune alerte réelle | inclus |
+| Tip and cue, vérification satellite | en service pour la preuve de la mission (étape 6), garde fou `/tmp/z7/garde_tip.sh` sur le serveur, pause au plus tard le 01/11 11:28 UTC | demande 51, passage S1C du 29/10 17:54 | selon le capteur |
+| Alertes radar (DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH) | éprouvées (analyses 106 et 108) | 76467 et 92603 (DARK_SHIP critiques, à décider), 92602 (KATRE, ambiguë) | inclus |
 | Trajectoire, étape 2 (analogues) | hors production | mesures sur l'archive à faire | inclus |
 | Supervision (Grafana, ntfy, Tempo) | en service | continu | inclus |
 | Échéances des secrets | en service après déploiement de 29bcfff | clés Copernicus des travailleurs : 14/11/2026 | inclus |
@@ -213,8 +216,8 @@ http://localhost:8000/api ; base, API et interface du Mac sur 127.0.0.1 seulemen
 `docker compose up -d --build backend` ; `web/`, rien en développement ; `config/rules.yaml`, rien (relu).
 
 Tests : `python -m pytest tests` (chaque test borné à 60 s) ; avec la base de test
-(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 46) : **551 réussis**
-(26/10/2026, lumières voisines VIIRS) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
+(`MARS_TEST_DATABASE_URL=postgresql://mars:mars@localhost:55432/mars`, migrations 01 à 46) : **582 réussis**
+(29/10/2026, mission socle A ; depuis un chemin sans espace, voir les pièges) ; sans base, 357 réussis, 126 ignorés. Interface : `npm run typecheck`, `npx knip`, `npm test`. Images :
 `scripts/verifier_images.sh backend scripts web controle sante traces` (et `ai2`, `fenetres`, `geolocalisation`, `s2`, `s2-s3` selon le
 travail). Décomptes passés : `docs/journal.md`.
 
@@ -242,6 +245,8 @@ Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : 
   la côte : table subdivisée, plus proches voisins, jamais `ST_DWithin` large sur `land`. GSHHG lu en numpy.
 * Identités qui alternent (227000000, « MUTIN » et « FS MUTIN ») ; entrées GUR sans nom (PASIPHAE, OMI 9289518) ;
   `Vessels1.db` en WAL (`load_gur` remet les octets 18 et 19 à 1).
+* Zone fiable : union des cellules refaites depuis leurs indices et accrochées à une grille (frontières internes
+  sinon) ; épisodes des coupures décrits dans `task_runs` depuis le 27/10 seulement, 30 par cycle.
 * Règles en continu : fenêtre de 24 h (une durée plus longue se relit depuis l'alerte précédente) ; tout filtre avant
   un appariement garde une marge sous le seuil final ; un trou de collecte agit de trois façons sur les coupures.
 * Recharger d'anciens jours : `taches.py restaurer-positions` ; la collecte écrit un fichier caché puis renomme.
@@ -259,6 +264,7 @@ Résumé ; texte complet de chaque piège, avec ses identifiants et ses dates : 
   port 8000. FastAPI récent enveloppe les routeurs (`original_router`) : parcourir les routes à plat.
 * zsh : `$i:latest` applique le modificateur `:l` (écrire `${i}:latest`) ; une variable de boucle `path` écrase `PATH`.
 * Le dossier temporaire de Claude Code est purgé au bout de quelques jours : repartir d'un clone neuf.
+* Bloc SSH `bash -s` : `docker compose exec -T` avale la suite du bloc ; toujours `</dev/null`.
 * L'horloge de la machine Docker du Mac peut prendre du retard ou sauter après une veille.
 
 **Stockage et sources externes**

@@ -1459,3 +1459,20 @@ mission : 0,19 €.
   cheval sur la maille du méridien 0, jours différents). Bord le long de la côte écarté (baie de Seine, abords
   d'Ouessant gardés élevés). Défaut trouvé en chemin : l'union des géométries des cellules laisse des frontières
   internes ; cellules refaites depuis leurs indices. Les coupures injectées réapparaissent : taux inchangé.
+
+## 29/10/2026 : mission socle A, étape 8 (chantiers de code sans dépense)
+
+Règles 2026.10.64, aucune migration.
+* E01 : voir l'entrée précédente (bord en mer de la zone fiable, 15 silences élevés sur 36 déclassés).
+* E02 : proposition chiffrée pour `high_duration_min` (720 min) dans `docs/calibration.md`, **valeur inchangée** :
+  66 silences passés en élevé pendant qu'ils étaient ouverts du 27 au 29/10, dont 26 réapparus ensuite ; à 720 min,
+  44 et 14. Le critère de la mission ne tranche pas : une coupure injectée réapparaît toujours, ce seuil ne la touche
+  pas. À refaire après une semaine avec E01, avec une injection de silences sans réapparition.
+* D02 : NOAA 21 n'a jamais de masque des nuages à 06:30 (21 granules du 24 au 28/10, aucune masquée ; sous la pleine
+  lune, le modèle éteint alors toute la scène). Tâche `viirs_masque` à 18:30 UTC : granules traitées sans masque
+  refaites une fois si le masque standard est publié ; `viirs --remasquer` à la main. Un travailleur DEV1-M de plus
+  par jour quand il y a lieu (environ 0,02 €), dans le plafond de 4 travailleurs par jour.
+* D03 : erreur de l'estime à rebours mesurée (médiane 1,6 à 2,4 km, 80 % sous 7 à 10 km à 60 min) ; aucune règle,
+  l'estime reste bornée à 20 min ; COSTA TOSCANA (385 m à 55 min) est un cas favorable.
+* E06 : CLAUDE.md (état au 29/10), pièges (union des cellules, `docker compose exec` qui avale un bloc SSH, chemin du
+  dépôt avec une espace, profondeur des résumés d'épisodes), calibration.
