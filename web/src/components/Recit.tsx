@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, type Dossier } from "../lib/api";
 import { toucheLibre } from "../lib/clavier";
 import { hm, jourHeure } from "../lib/format";
+import { gdh, reglagesUnites } from "../lib/unites";
 import { L } from "../lib/libelles";
 import { COULEURS_PREUVE as CP, distance, type Preuve } from "../lib/preuve";
 import type { Feature, Props } from "../lib/types";
@@ -113,7 +114,7 @@ export default function Recit({ dossier: d, recit, instant, suivi, onSuivre, onP
   const touche = (k: string) => R.touches[k] && <kbd className="ml-1 text-[10px] text-faint">{R.touches[k]}</kbd>;
   const faits = chronologie(d, recit);
   const jours = new Set(faits.map((f) => f.t.slice(0, 10))).size > 1;
-  const quand = (t: string) => (jours ? jourHeure(t) : hm(t));
+  const quand = (t: string) => (reglagesUnites.horodatage === "gdh" ? gdh(t) : jours ? jourHeure(t) : hm(t));
   const preuve = recit?.preuve as Preuve | null | undefined;
   const alertes: Props[] = recit?.alertes_detail ?? [];
 

@@ -7,7 +7,13 @@ const duree = (min: number) => (min >= 90 ? `${Math.round(min / 60)} h` : `${Mat
 const nb = (n: number, sing: string, plur = `${sing}s`) => `${n} ${n > 1 ? plur : sing}`;
 
 export const L = {
-  app: { nom: "MARS C2" },
+  // Titre de l'onglet du navigateur (lib/onglet.ts) : « (N) MARS C2 · objet »
+  onglet: {
+    veille: "Veille", coulisses: "Coulisses",
+    dossier: (nom: string) => `Dossier ${nom}`, alerte: (id: number | string) => `Alerte ${id}`,
+    infrastructure: (nom: string) => `Infrastructure ${nom}`, navire: (nom: string) => `Navire ${nom}`,
+  },
+  app: { nom: "MARS C2", sousTitre: "Surveillance maritime", mention: "Données ouvertes · Projet personnel" },
   commun: {
     nd: "n.d.", inconnu: "inconnu", sansNom: "Sans nom", fermer: "Fermer", annuler: "Annuler", aVenir: "à venir",
     etape: (n: number | string) => `étape ${n}`,
@@ -105,7 +111,12 @@ export const L = {
       passages: "Passages à venir, 48 h", verifications: "Vérifications en cours", analyses: "Analyses récentes" } as Record<string, string>,
     sources: { sentinel1: "Sentinel 1", sentinel2: "Sentinel 2", viirs: "VIIRS", tip_and_cue: "Vérification satellite" } as Record<string, string>,
     affichage: { carte: "Apparence, carte et fil", theme: "Thème",
-      themes: { sombre: "Sombre", clair: "Clair", systeme: "Comme le système" }, vueDefaut: "Vue de carte à l'ouverture", vignettes: "Vignettes des navires dans le fil" },
+      themes: { sombre: "Sombre", clair: "Clair", systeme: "Comme le système" },
+      unites: "Unités marines", coordonnees: "Coordonnées",
+      coordModes: { dm: "Degrés et minutes", dd: "Degrés décimaux" } as Record<string, string>,
+      horodatage: "Heure des dossiers et alertes",
+      horodatageModes: { utc: "UTC (05:58Z)", gdh: "Groupe date heure" } as Record<string, string>,
+      unitesNote: "Distances en milles nautiques (NM), vitesses en nœuds, heures en UTC ; heure de Paris au survol", vueDefaut: "Vue de carte à l'ouverture", vignettes: "Vignettes des navires dans le fil" },
     passage: (sat: string, h: string, infra: number, listes: number) =>
       [`${sat}, ${h}`, infra ? nb(infra, "infrastructure") : null, listes ? nb(listes, "navire des listes", "navires des listes") : null].filter(Boolean).join(" · "),
     aucunPassage: "Aucun passage prévu sur 48 h",
@@ -313,7 +324,7 @@ export const L = {
     zones: "Zones", positions: "Positions", sources: "Sources", nom: "Nom", omi: "OMI", depuis: "Depuis",
     sejour: "Séjour prolongé", sejourDuree: (h: string) => `${h} h dans nos eaux`, sejourArret: "Temps à l'arrêt",
     sejourLieu: "Lieu de l'arrêt", sejourMouillage: "mouillage connu",
-    sejourHorsMouillage: (km: string) => `hors de tout mouillage connu, à ${km} km des côtes`,
+    sejourHorsMouillage: (d: string) => `hors de tout mouillage connu, à ${d} des côtes`,
     sejourHorsMouillageSeul: "hors de tout mouillage connu", sejourTag: (h: string) => `séjour ${h} h`,
     identites: "Identités successives", pavillon: "Pavillon", mmsi: "MMSI", vuDu: "Vu du", au: "au",
     rencontre: "Rencontre", distance: "Distance", distanceCote: "Distance à la côte",
@@ -325,11 +336,11 @@ export const L = {
     vitesseDeclaree: "Vitesse déclarée", positionPassage: "Position à l'instant du passage",
     echoProche: "Écho radar le plus proche", aucun: "aucun",
     sousAutreMmsi: "sous un autre MMSI", pavillonChange: "pavillon changé", militaire: "militaire", militaireRow: "Militaire", puis: "puis", devenu: "devenu",
-    silenceDe: (min: number) => `AIS coupé ${duree(min)}`, rencontreDe: (min: number, m: number) => `${duree(min)}, ${m} m au plus près`, travaux: "travaux offshore", travauxRow: "Travaux offshore",
+    silenceDe: (min: number) => `AIS coupé ${duree(min)}`, rencontreDe: (min: number, d: string) => `${duree(min)}, ${d} au plus près`, travaux: "travaux offshore", travauxRow: "Travaux offshore",
     contrasteDe: (db: string) => `contraste ${db} dB`, sansEcho: (m: string) => `${m} m déclarés, aucun écho`,
     echo: (m: string) => `Écho de ${m} m sans AIS`, mmsiDe: (m: string | number) => `MMSI ${m}`, omiDe: (o: string | number) => `OMI ${o}`,
-    deplacement: (km: string) => `, déplacement de ${km} km`, continuite: (n: number, pct: string) => `${n} navires, continuité ${pct} %`,
-    toleranceDe: (le: number, tr: number) => `${le} m le long de la trace, ${tr} m en travers`,
+    deplacement: (d: string) => `, déplacement de ${d}`, continuite: (n: number, pct: string) => `${n} navires, continuité ${pct} %`,
+    toleranceDe: (le: string, tr: string) => `${le} le long de la trace, ${tr} en travers`,
     seuil: (v: string) => `seuil ${v}`, ecartee: (r: string) => `Écartée (${r})`, appariee: (n: string) => `Appariée à ${n}`,
     sansAis: "Sans AIS", detection: "Détection radar", statut: "Statut",
     lumiere: "Lumière en mer sans AIS", viirsDe: (nw: string) => `VIIRS, ${nw} nW`, aConfirmer: "à confirmer", capteur: "Capteur",
@@ -347,7 +358,7 @@ export const L = {
     titre: "Image satellite", alt: "Vignette satellite de la détection", agrandir: "Agrandir l'image",
     aucune: "Pas d'image pour cette détection",
     legende: (n: number, apparie: string | number | null) =>
-      `${n ? `${n} AIS à moins de 5 km` : "Aucun AIS à moins de 5 km"}${apparie ? `, apparié : ${apparie}` : ""}`,
+      `${n ? `${n} AIS à moins de 2,7 NM` : "Aucun AIS à moins de 2,7 NM"}${apparie ? `, apparié : ${apparie}` : ""}`,
     taille: (ko: number) => `${String(ko).replace(".", ",")} Ko`,
     copernicus: "Contient des données Copernicus Sentinel modifiées",
   },
@@ -372,7 +383,7 @@ export const L = {
       passes: "Navires passés à moins de 2 milles", liees: "Alertes liées", resume: "Zone", trafic: "Trafic",
       passage: "Passage", infrastructures: "Infrastructures couvertes", listes_couvertes: "Navires des listes couverts",
       viirs: "Détection", apparie: "Navire AIS apparié", sejour: "Séjour prolongé", navire: "Navire",
-      observation: "Vérification satellite demandée", contexte_optique: "Contexte, 10 km",
+      observation: "Vérification satellite demandée", contexte_optique: "Contexte, 5,4 NM",
     } as Record<string, string>,
     etat: { route: "en route", immobile: "immobile", silencieux: "silencieux" } as Record<string, string>,
     dernierMessageIlYa: (t: string) => `dernier message il y a ${t}`, horsTrafic: "hors du trafic affiché",
@@ -380,8 +391,8 @@ export const L = {
     comportement: {
       silences: "Silences de plus de deux heures", arrets: "Arrêts au large", passages: "Passages près d'une infrastructure",
       aucun: "Rien de notable sur la plage", silence: (d: string, min: number) => `${d}, ${min} min`,
-      arret: (d: string, min: number) => `${d}, ${min} min`, passage: (nom: string, min: number, kn: string, m: number) =>
-        `${nom}, ${min} min, ${kn} nœuds au plus lent, ${m} m au plus près`,
+      arret: (d: string, min: number) => `${d}, ${min} min`, passage: (nom: string, min: number, kn: string, d: string) =>
+        `${nom}, ${min} min, ${kn} nœuds au plus lent, ${d} au plus près`,
     },
     trajectoire: { periode: (a: string, b: string) => `Sur la plage, du ${a} au ${b}`, rejouer: "Rejouer", gpx: "Exporter en GPX",
       carte: "Affichée sur la carte" },
@@ -389,7 +400,7 @@ export const L = {
     ouvrir: "Ouvrir la fiche",
     infra: { type: "Type", operateur: "Opérateur", longueur: "Longueur", zone: "Zone", source: "Source", sansNom: (t: string, id: number) => `${t} n° ${id}`,
       aucunNavire: "Aucun navire à moins de 2 milles sur la plage", aucuneAlerte: "Aucune alerte liée",
-      ligne: (m: number, kn: string, d: string) => `${m} m, ${kn} nœuds au plus lent, ${d}` },
+      ligne: (dist: string, kn: string, d: string) => `${dist}, ${kn} nœuds au plus lent, ${d}` },
     viirs: {
       titre: "Détection nocturne VIIRS", heure: "Heure", capteur: "Capteur", intensite: "Intensité",
       lune: "Éclairement lunaire", statut: "Statut", cote: "Distance à la côte",
@@ -397,9 +408,9 @@ export const L = {
       statuts: { avec_ais: "appariée à l'AIS", sans_ais: "sans AIS", ecartee: "écartée", non_evaluable: "non évaluable" } as Record<string, string>,
       aisProche: "AIS le plus proche", aisProcheDe: (m: number, estime: number | null) =>
         `${m} m${estime ? `, estimé sur ${Math.round(estime / 60)} min` : ", interpolé"}`, aucunAis: "aucun navire AIS connu à cette heure",
-      reception: "Réception AIS", receptionDe: (n: number) => `${n} navires reçus à moins de 30 km`, motifNonEvaluable: "Non évaluable",
+      reception: "Réception AIS", receptionDe: (n: number) => `${n} navires reçus à moins de 16 NM`, motifNonEvaluable: "Non évaluable",
       motifs: { cote: "près de la côte", lumiere_fixe: "lumière fixe" } as Record<string, string>,
-      aucunNavire: "Aucun navire AIS compatible à l'heure du passage", ecart: (m: string) => `${m} m`,
+      aucunNavire: "Aucun navire AIS compatible à l'heure du passage", ecart: (d: string) => d,
     },
     passage: {
       titre: (sat: string) => `Passage ${sat.replace(/^S(\d)/, "Sentinel $1")}`,
@@ -454,9 +465,9 @@ export const L = {
       passage: (sat: string, t: string, retro: boolean) =>
         `${sat.replace(/^S(\d)/, "Sentinel $1")}, ${t}${retro ? ", déjà acquis" : ""}`,
       capteurs: { radar: "radar", optique: "optique" } as Record<string, string>,
-      cercle: (km: string, mode: string) => `cercle de ${km} km, ${mode}`,
+      cercle: (d: string, mode: string) => `cercle de ${d}, ${mode}`,
       modes: { estime: "à l'estime", arret: "navire à l'arrêt", point: "position du signal" } as Record<string, string>,
-      distance: (m: number) => `écho à ${m} m de la position prédite`,
+      distance: (d: string) => `écho à ${d} de la position prédite`,
       gravite: (avant: string, apres: string) => `gravité ${avant} portée à ${apres}`,
       passageLabel: "Passage", resultat: "Résultat", incertitude: "Incertitude",
     },

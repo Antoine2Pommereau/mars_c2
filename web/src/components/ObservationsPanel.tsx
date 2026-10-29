@@ -1,10 +1,10 @@
 import { Aperture, Check, CircleHelp, Crosshair, EyeOff, Minus, Radar } from "lucide-react";
 import { type CSSProperties, useMemo, useState } from "react";
-import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
 import { typeAlerte } from "../registres/alertes";
 import { Tag } from "./Elements";
+import { Heure } from "./Heure";
 
 // Type de tip : icône et couleur du type d'alerte correspondant (registre des alertes) ; demande manuelle à part
 const ALERTE_DU_TIP: Record<string, string> = { viirs: "DARK_SHIP", coupure_ais: "AIS_GAP", rendezvous: "RENDEZVOUS",
@@ -60,7 +60,7 @@ export default function ObservationsPanel({ demandes, selectedId, onPick, titre 
                   const C = optique ? Aperture : Radar;
                   return <span title={L.fiche.observation.capteurs[optique ? "optique" : "radar"]}><C size={10} className="text-faint" /></span>;
                 })()}
-                {jourHeure(d.heure_passage)}
+                <Heure iso={d.heure_passage} f="jourHeure" />
                 {/* Contenance estimée : part des navires réels attendue dans les fenêtres (garde de probabilité) */}
                 {d.contenance != null && <span className="text-faint" title={L.fiche.observation.contenanceAide}>
                   {L.fiche.observation.contenanceCourte(d.contenance)}</span>}

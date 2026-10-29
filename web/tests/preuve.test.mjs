@@ -11,11 +11,11 @@ const PREUVE = {
   distance_estimee_echo_m: 4105, distance_derniere_echo_m: 4180,
 };
 
-test("distances lisibles, à la française", () => {
-  assert.equal(distance(4105), "4,1 km");
-  assert.equal(distance(9000), "9 km");
-  assert.equal(distance(12_400), "12 km");
-  assert.equal(distance(847), "850 m");
+test("distances des preuves en milles nautiques, mètres sous 0,1 mille (lot UX1)", () => {
+  assert.equal(distance(4105), "2,2 NM");
+  assert.equal(distance(12_400), "6,7 NM");
+  assert.equal(distance(847), "0,46 NM");
+  assert.equal(distance(150), "150 m");
 });
 
 test("la carte porte la distance de la légende, et chaque rôle une fois", () => {

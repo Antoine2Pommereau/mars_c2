@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, type Region } from "../lib/api";
 import { L } from "../lib/libelles";
 import { ZONE_KEYS } from "../lib/zones";
+import { Logotype } from "./Logotype";
 import { COULEUR_NIVEAU, mesurer, systeme } from "../registres/etat";
 
 interface Props {
@@ -58,8 +59,8 @@ export default function BarreEtat({ now, connected, onSearch, region, regions, o
   const E = L.etat;
 
   return (
-    <header ref={ref} className="relative z-20 flex h-9 shrink-0 items-center gap-1 border-b border-hair bg-panel px-3 text-[12px]">
-      <span className="mr-3 font-cond text-[13px] font-semibold tracking-wide text-ink">{L.app.nom}</span>
+    <header ref={ref} className="relative z-20 flex h-11 shrink-0 items-center gap-1 border-b border-hair bg-panel px-3 text-[12px]">
+      <span className="mr-4"><Logotype taille={24} /></span>
       <select aria-label={L.region.titre} title={L.region.titre} value={region ?? ""} onChange={(e) => onRegion(e.target.value || null)}
         className={`mr-2 rounded border bg-abyss px-1.5 py-0.5 text-[12px] ${region ? "border-signal/60 text-ink" : "border-hair text-muted"}`}>
         <option value="">{L.region.france}</option>
@@ -84,7 +85,8 @@ export default function BarreEtat({ now, connected, onSearch, region, regions, o
         )}
       </div>
       {!connected && <span className="ml-2 text-gap">{L.commun.reconnexion}</span>}
-      <button onClick={onSearch} className="ml-auto flex items-center gap-2 rounded-md border border-hair px-2.5 py-1 text-muted hover:text-ink">
+      <span className="ml-auto mr-3 hidden text-[10px] uppercase tracking-[0.14em] text-muted lg:inline">{L.app.mention}</span>
+      <button onClick={onSearch} className="flex items-center gap-2 rounded-md border border-hair px-2.5 py-1 text-muted hover:text-ink">
         <Search size={13} /> {L.recherche.titre} <span className="text-faint">{L.recherche.raccourci}</span>
       </button>
     </header>

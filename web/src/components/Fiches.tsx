@@ -10,6 +10,8 @@ import { zoneAlerte } from "../lib/fil";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
 import { Row, Tag } from "./Elements";
 import PreuveImage from "./PreuveImage";
+import { Heure } from "./Heure";
+import { distance, distanceKm, vitesse } from "../lib/unites";
 
 const F = L.fiche;
 const MIN = 60_000;
@@ -94,7 +96,7 @@ export function EnTeteNavire({ navire, carte, suivi, onSuivre }:
       <Row label={F.longueur}>{(navire.length_m ?? carte?.length_m) ? `${num(navire.length_m ?? carte?.length_m, 0)} m` : L.commun.nd}</Row>
       <Row label={F.indicatif}>{carte?.callsign ?? L.commun.nd}</Row>
       <Row label={F.destination}>{carte?.destination ?? L.commun.nd}</Row>
-      {navire.sog_kn != null && <Row label={F.vitesse}>{num(navire.sog_kn)} {L.commun.noeuds}, {num(navire.cog_deg, 0)}°</Row>}
+      {navire.sog_kn != null && <Row label={F.vitesse}>{vitesse(navire.sog_kn)}, {num(navire.cog_deg, 0)}°</Row>}
     </div>
   );
 }
@@ -140,7 +142,7 @@ export function Comportement({ vesselId, debut, fin, onPickInfra }:
       {d.passages_infra.length > 0 && <div><div className="text-muted">{C.passages}</div>
         {d.passages_infra.map((x, i) => (
           <button key={i} onClick={() => onPickInfra(x.infra_id)} className="block text-left hover:text-signal">
-            {C.passage(x.name ?? F.infra.sansNom(x.type, x.infra_id), x.duree_min, num(x.vitesse_min), x.distance_min_m)}
+            {C.passage(x.name ?? F.infra.sansNom(x.type, x.infra_id), x.duree_min, num(x.vitesse_min), distance(x.distance_min_m))}
           </button>
         ))}</div>}
     </div>
@@ -202,7 +204,7 @@ export function ListeAlertes({ alerts, onPick }: { alerts: Feature[]; onPick?: (
           <button onClick={() => onPick?.(a)} className="flex w-full items-center gap-2 text-left hover:text-ink">
             <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: couleurAlerte(a.properties.type) }} />
             <span className="flex-1">{libelleAlerte(a.properties.type)}</span>
-            <span className="text-muted">{jourHeure(a.properties.event_time)}</span>
+            <span className="text-muted"><Heure iso={a.properties.event_time} f="jourHeure" /></span>
           </button>
         </li>
       ))}
@@ -224,7 +226,7 @@ export function InfraIdentite({ id, debut, fin }: { id: number; debut: string; f
     <>
       <Row label={I.type}>{d.type}</Row>
       <Row label={I.operateur}>{d.operator ?? L.commun.nd}</Row>
-      <Row label={I.longueur}>{d.longueur_km != null ? `${num(d.longueur_km)} km` : L.commun.nd}</Row>
+      <Row label={I.longueur}>{d.longueur_km != null ? distanceKm(d.longueur_km) : L.commun.nd}</Row>
       <Row label={I.zone}>{L.zones[(d.region ?? "").toLowerCase()] ?? d.region}</Row>
       <Row label={I.source}>{d.source ?? L.commun.nd}</Row>
     </>
@@ -245,7 +247,7 @@ export function InfraNavires({ id, debut, fin, onPickVessel }:
               <span className="text-ink">{v.name ?? `MMSI ${v.mmsi}`}</span>{v.flag && <Tag>{v.flag}</Tag>}
               {v.watch && <Tag color={COULEUR_LISTE}>{L.signal[v.watch]}</Tag>}
             </span>
-            <span className="text-muted">{F.infra.ligne(v.distance_min_m, num(v.vitesse_min), jourHeure(v.debut))}</span>
+            <span className="text-muted">{F.infra.ligne(distance(v.distance_min_m), num(v.vitesse_min), jourHeure(v.debut))}</span>
           </button>
         </li>
       ))}
@@ -302,7 +304,7 @@ export function PassageResume({ id }: { id: number }) {
   const regions = (d.regions ?? []).map((r: string) => L.zones[r] ?? r).join(", ");
   return (
     <div>
-      <Row label={P.heure}>{utc(d.acquired_at)}{d.ended_at && d.ended_at !== d.acquired_at ? ` ${P.a} ${utc(d.ended_at).slice(11)}` : ""}</Row>
+      <Row label={P.heure}><Heure iso={d.acquired_at} f="utc" />{d.ended_at && d.ended_at !== d.acquired_at ? ` ${P.a} ${utc(d.ended_at).slice(11)}` : ""}</Row>
       <Row label={P.statut}>{P.statuts[d.statut] ?? d.statut}</Row>
       <Row label={P.capteur}>{P.mode(d.satellite, d.mode)}</Row>
       <Row label={P.orbite}>{P.orbiteDe(d.relative_orbit, d.absolute_orbit, P.sens[d.orbit_direction] ?? d.orbit_direction ?? L.commun.nd)}</Row>
@@ -381,12 +383,12 @@ export function ViirsMesures({ id }: { id: number }) {
   const V = F.viirs;
   return (
     <div>
-      <Row label={V.heure}>{utc(d.ts)}</Row>
+      <Row label={V.heure}><Heure iso={d.ts} f="utc" /></Row>
       <Row label={V.capteur}>{V.satellites[d.satellite] ?? d.satellite}</Row>
       <Row label={V.intensite}>{`${num(d.nanowatts, 1)} nW/cm²/sr`}</Row>
       <Row label={V.lune}>{d.lune != null ? `${num(d.lune, 0)} %` : L.commun.nd}</Row>
       <Row label={V.statut}>{V.statuts[d.statut] ?? d.statut}{d.mask_reason ? ` (${V.motifs[d.mask_reason] ?? d.mask_reason})` : ""}</Row>
-      <Row label={V.cote}>{d.distance_cote_m != null ? `${num(d.distance_cote_m / 1000, 1)} km` : L.commun.nd}</Row>
+      <Row label={V.cote}>{d.distance_cote_m != null ? distance(d.distance_cote_m) : L.commun.nd}</Row>
       <Row label={V.aisProche}>{d.ais_proche_m != null ? V.aisProcheDe(d.ais_proche_m, d.ais_proche_ecart_s) : V.aucunAis}</Row>
       {d.ais_navires_rayon != null && <Row label={V.reception}>{V.receptionDe(d.ais_navires_rayon)}</Row>}
       {d.non_evaluable && <Row label={V.motifNonEvaluable}>{d.non_evaluable}</Row>}
@@ -404,7 +406,7 @@ export function ViirsNavire({ id, onPickVessel }: { id: number; onPickVessel: (p
       <Vignette vesselId={d.vessel_id} />
       <span className="text-ink">{d.name ?? `MMSI ${d.mmsi}`}</span>{d.flag && <Tag>{d.flag}</Tag>}
       {d.watch && <Tag color={COULEUR_LISTE}>{L.signal[d.watch]}</Tag>}
-      <span className="ml-auto text-muted">{F.viirs.ecart(num(d.match_distance_m, 0))}</span>
+      <span className="ml-auto text-muted">{F.viirs.ecart(distance(d.match_distance_m, true))}</span>
     </button>
   );
 }
@@ -463,24 +465,24 @@ export function RadarMesures({ id }: { id: number }) {
     const f = d.fenetre;
     return (
       <div>
-        <Row label={R.heureTuile}>{utc(d.ts)}</Row>
+        <Row label={R.heureTuile}><Heure iso={d.ts} f="utc" /></Row>
         <Row label={R.capteur}>{String(d.satellite ?? "").replace(/^S2/, "Sentinel 2")}</Row>
         <Row label={R.statut}>{V.statuts[d.statut] ?? d.statut}{d.mask_reason && d.mask_reason !== "non_evaluable" ? ` (${R.motifs[d.mask_reason] ?? d.mask_reason})` : ""}</Row>
         <Row label={R.longueur}>{d.length_m != null ? `${num(d.length_m, 0)} m` : L.commun.nd}</Row>
         <Row label={R.largeur}>{d.width_m != null ? `${num(d.width_m, 0)} m` : L.commun.nd}</Row>
         <Row label={R.capOptique}>{d.heading_deg != null ? `${num(d.heading_deg, 0)}°` : L.commun.nd}</Row>
-        <Row label={R.vitesse}>{d.speed_kn != null ? `${num(d.speed_kn, 1)} ${L.commun.noeuds}` : L.commun.nd}</Row>
+        <Row label={R.vitesse}>{vitesse(d.speed_kn)}</Row>
         <Row label={R.type}>{d.type_navire ? R.types[d.type_navire] ?? d.type_navire : L.commun.nd}</Row>
         <Row label={R.score}>{num(d.score, 2)}</Row>
         <Row label={R.nuagesFenetre}>{f ? R.nuagesDe(num(f.nuages_pct ?? 0, 1), f.masque !== "present") : L.commun.nd}</Row>
-        <Row label={R.cote}>{d.distance_cote_m != null ? `${num(d.distance_cote_m / 1000, 1)} km` : L.commun.nd}</Row>
+        <Row label={R.cote}>{d.distance_cote_m != null ? distance(d.distance_cote_m) : L.commun.nd}</Row>
         {d.non_evaluable && <Row label={R.motifNonEvaluable}>{d.non_evaluable}</Row>}
       </div>
     );
   }
   return (
     <div>
-      <Row label={R.heure}>{utc(d.ts)}</Row>
+      <Row label={R.heure}><Heure iso={d.ts} f="utc" /></Row>
       <Row label={R.capteur}>{String(d.satellite ?? "").replace(/^S1/, "Sentinel 1")}</Row>
       <Row label={R.statut}>{V.statuts[d.statut] ?? d.statut}{d.mask_reason && d.mask_reason !== "non_evaluable" ? ` (${R.motifs[d.mask_reason] ?? d.mask_reason})` : ""}</Row>
       <Row label={R.longueur}>{d.length_m != null ? `${num(d.length_m, 0)} m` : L.commun.nd}</Row>
@@ -490,7 +492,7 @@ export function RadarMesures({ id }: { id: number }) {
       <Row label={R.contraste}>{d.contrast_vv_db != null ? `${num(d.contrast_vv_db, 1)} dB` : L.commun.nd}</Row>
       <Row label={R.historique}>{d.historique ? R.historiqueDe(d.historique.passages, num(d.historique.seuil, 2)) : R.historiqueAncien}
         {d.historique?.motif && !d.historique.passages && <div className="text-[12px] text-unconf">{d.historique.motif}</div>}</Row>
-      <Row label={R.cote}>{d.distance_cote_m != null ? `${num(d.distance_cote_m / 1000, 1)} km` : L.commun.nd}</Row>
+      <Row label={R.cote}>{d.distance_cote_m != null ? distance(d.distance_cote_m) : L.commun.nd}</Row>
       {d.non_evaluable && <Row label={R.motifNonEvaluable}>{d.non_evaluable}</Row>}
     </div>
   );
@@ -549,7 +551,7 @@ export function VerificationSatellite({ vesselId, onPickDetection }:
       <button onClick={() => onPickDetection(src, x.id)} className="flex w-full items-center gap-2 text-left hover:text-ink">
         {x.preuve ? <img src={x.preuve} alt="" className="h-8 w-8 shrink-0 rounded-sm border border-hair object-cover" />
           : <span className="h-8 w-8 shrink-0 rounded-sm border border-hair bg-abyss" />}
-        <span className="text-muted">{jourHeure(x.ts)}</span>
+        <span className="text-muted"><Heure iso={x.ts} f="jourHeure" /></span>
         {src !== "viirs" && <span className="text-faint">{V.sources[src]}</span>}
         <span className="ml-auto text-ink">{texte}</span>
       </button>
@@ -621,10 +623,10 @@ export function DemandesObservation({ alerteId, vesselId, verification, onPickDe
               <span className="ml-auto text-muted">{O.etats[d.etat] ?? d.etat}</span>
             </div>
             {d.heure_passage && <Row label={O.passageLabel}>{O.passage(d.satellite ?? "", utc(d.heure_passage), !!d.passage_retro)}</Row>}
-            {d.rayon_m != null && <Row label={O.incertitude}>{O.cercle(num(d.rayon_m / 1000, 1), O.modes[d.prediction] ?? "")}</Row>}
+            {d.rayon_m != null && <Row label={O.incertitude}>{O.cercle(distance(d.rayon_m), O.modes[d.prediction] ?? "")}</Row>}
             {d.contenance != null && <Row label={O.contenance}>{O.contenanceValeur(d.contenance)}</Row>}
             {d.resultat && <Row label={O.resultat}><span style={{ color: fort ? "#e85bc7" : undefined }}>{O.resultats[d.resultat] ?? d.resultat}</span></Row>}
-            {d.distance_m != null && <div className="pt-1 text-muted">{O.distance(Math.round(d.distance_m))}</div>}
+            {d.distance_m != null && <div className="pt-1 text-muted">{O.distance(distance(d.distance_m, true))}</div>}
             {verification?.demande === d.id && verification?.gravite_ajustee &&
               <div className="pt-1 text-muted">{O.gravite(verification.gravite_avant, verification.gravite_ajustee)}</div>}
             {!d.resultat && d.motif && ["sans_passage", "expiree", "refusee_budget"].includes(d.etat) &&

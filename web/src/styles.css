@@ -21,6 +21,7 @@
   --color-u1: #aab6bf;
   --color-neutre: #c9d3da;
   --color-passage: #9fb3c8;
+  --color-symbole: #4fb6c8;
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-cond: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
 }
@@ -46,6 +47,7 @@
   --color-u1: #6f7c86;
   --color-neutre: #4f5d69;
   --color-passage: #5d7489;
+  --color-symbole: #1f7f91;
 }
 
 html, body, #root { height: 100%; margin: 0; }

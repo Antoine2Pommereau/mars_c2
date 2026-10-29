@@ -3,6 +3,7 @@ import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
 import { Tag } from "./Elements";
+import { Heure } from "./Heure";
 
 /** Navires suivis : dernière position et dernière alerte ; un clic ouvre la fiche et centre la carte. */
 export default function SuivisPanel({ suivis, onPick, titre = true }: { suivis: Props[]; onPick: (p: Props) => void; titre?: boolean }) {
@@ -25,7 +26,7 @@ export default function SuivisPanel({ suivis, onPick, titre = true }: { suivis: 
                 {v.alerte_type ? (
                   <span className="flex items-center gap-1.5">
                     <span className="h-1.5 w-1.5 rounded-full" style={{ background: couleurAlerte(v.alerte_type) }} />
-                    {libelleAlerte(v.alerte_type)}, {jourHeure(v.alerte_le)}
+                    {libelleAlerte(v.alerte_type)}, <Heure iso={v.alerte_le} f="jourHeure" />
                   </span>
                 ) : <span>{S.aucuneAlerte}</span>}
               </span>

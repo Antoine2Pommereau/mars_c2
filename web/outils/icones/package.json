@@ -1,0 +1,14 @@
+{
+  "name": "mars-c2-icones",
+  "private": true,
+  "type": "module",
+  "description": "Génère les icônes, le manifeste et l'image d'aperçu de l'interface depuis le symbole (web/src/lib/symbole.ts)",
+  "scripts": {
+    "generer": "node generer.mjs"
+  },
+  "devDependencies": {
+    "@fontsource/ibm-plex-sans": "5.2.6",
+    "@fontsource/ibm-plex-sans-condensed": "5.2.6",
+    "@resvg/resvg-js": "2.6.2"
+  }
+}

@@ -3,6 +3,7 @@ import { dayLabel, num } from "../lib/format";
 import { L } from "../lib/libelles";
 import { grouperSources } from "../lib/sources";
 import type { Props } from "../lib/types";
+import { distanceKm, texteMarin } from "../lib/unites";
 
 /** Éléments communs des fiches : ligne libellé et valeur, contexte, identités successives, sources des listes. */
 export function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -15,7 +16,7 @@ export function Row({ label, children }: { label: string; children: ReactNode })
 
 export function Context({ items }: { items?: string[] }) {
   if (!items?.length) return null;
-  return <ul className="list-disc space-y-1 pl-5 text-ink/85">{items.map((t, i) => <li key={i}>{t}</li>)}</ul>;
+  return <ul className="list-disc space-y-1 pl-5 text-ink/85">{items.map((t, i) => <li key={i}>{texteMarin(t)}</li>)}</ul>;
 }
 
 export function vesselText(v?: Props) {
@@ -69,7 +70,7 @@ export function Tag({ children, color }: { children: ReactNode; color?: string }
 export function Sejour({ s }: { s: Props }) {
   const P = L.preuves;
   const lieu = s.mouillage_connu ? P.sejourMouillage
-    : s.distance_cote_km != null ? P.sejourHorsMouillage(num(s.distance_cote_km, 0)) : P.sejourHorsMouillageSeul;
+    : s.distance_cote_km != null ? P.sejourHorsMouillage(distanceKm(s.distance_cote_km)) : P.sejourHorsMouillageSeul;
   return (
     <>
       <Row label={P.sejour}>{P.sejourDuree(num(s.duree_h, 0))}</Row>

@@ -3,9 +3,11 @@ import { ArrowRightLeft, Cable, CircleHelp, EyeOff, Fingerprint, Navigation, Rou
 import type { ReactNode } from "react";
 import { Context, Identities, Row, Sejour, Sources, Tag, vesselText } from "../components/Elements";
 import PreuveImage from "../components/PreuveImage";
-import { hm, num, utc } from "../lib/format";
+import { num } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
+import { Heure } from "../components/Heure";
+import { distance, distanceKm, vitesse } from "../lib/unites";
 
 // Registre des types d'alerte : un nouveau type s'ajoute par une entrée, sans toucher au fil ni à la fiche.
 
@@ -56,7 +58,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
         <>
           <Row label={P.navire}>{vesselText(d.navire)}</Row>
           <Row label={P.signal}>{L.signal[d.niveau] ?? d.niveau}, {L.reconnuPar[d.reconnu_par] ?? d.reconnu_par}</Row>
-          <Row label={P.dansNosEaux}>{utc(d.debut)} {P.au} {utc(d.fin)}</Row>
+          <Row label={P.dansNosEaux}><Heure iso={d.debut} f="horodatage" /> {P.au} <Heure iso={d.fin} f="horodatage" /></Row>
           <Row label={P.zones}>{(d.zones ?? []).map((z: string) => L.zones[z] ?? z).join(", ")}</Row>
           <Row label={P.positions}>{d.positions}</Row>
           {d.sejour && <Sejour s={d.sejour} />}
@@ -82,7 +84,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
           {d.changement === "nom"
             ? <Row label={P.nom}>{d.ancien_nom} {P.puis} {d.nouveau_nom}</Row>
             : <Row label={P.omi}>{d.omi}, {P.sousAutreMmsi}</Row>}
-          <Row label={P.depuis}>{utc(d.debut)}</Row>
+          <Row label={P.depuis}><Heure iso={d.debut} f="horodatage" /></Row>
           {d.militaire && <Row label={P.militaireRow}>{d.militaire}</Row>}
           <Context items={d.contexte} />
           <div className="mt-3 font-semibold">{P.identites}</div>
@@ -95,7 +97,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
     type: "RENDEZVOUS", Icone: ArrowRightLeft, couleur: "#f0a84b", piste: "deux", etape: "en place", actif: true,
     navires: (d) => d.navires ?? [],
     titre: (d) => { const [a, b] = d.navires ?? []; return `${nom(a)} et ${nom(b)}`; },
-    signe: (d) => d.travaux_offshore ? <Tag>{P.travaux}</Tag> : <Tag>{P.rencontreDe(d.duree_min, d.distance_min_m)}</Tag>,
+    signe: (d) => d.travaux_offshore ? <Tag>{P.travaux}</Tag> : <Tag>{P.rencontreDe(d.duree_min, distance(d.distance_min_m))}</Tag>,
     preuves: (p) => {
       const d = p.details ?? {};
       const [v1, v2] = d.navires ?? [];
@@ -103,9 +105,9 @@ export const TYPES_ALERTE: TypeAlerte[] = [
         <>
           <Row label={P.navire1}>{vesselText(v1)}</Row>
           <Row label={P.navire2}>{vesselText(v2)}</Row>
-          <Row label={P.rencontre}>{hm(d.debut)} {P.au} {hm(d.fin)} UTC, {d.duree_min} min</Row>
-          <Row label={P.distance}>{d.distance_min_m} m, {d.distance_moyenne_m} m</Row>
-          <Row label={P.distanceCote}>{d.distance_cote_km == null ? L.commun.nd : `${num(d.distance_cote_km)} km`}</Row>
+          <Row label={P.rencontre}><Heure iso={d.debut} f="hm" /> {P.au} <Heure iso={d.fin} f="hm" />, {d.duree_min} min</Row>
+          <Row label={P.distance}>{distance(d.distance_min_m, true)}, {distance(d.distance_moyenne_m, true)}</Row>
+          <Row label={P.distanceCote}>{distanceKm(d.distance_cote_km)}</Row>
           {d.travaux_offshore && <Row label={P.travauxRow}>{d.travaux_offshore.parc}, {d.travaux_offshore.navire}</Row>}
           <Context items={d.contexte} />
         </>
@@ -122,9 +124,9 @@ export const TYPES_ALERTE: TypeAlerte[] = [
       return (
         <>
           <Row label={P.navire}>{vesselText(d.navire)}</Row>
-          <Row label={P.dernierMessage}>{hm(d.dernier_message)} UTC, {num(d.vitesse_avant_kn)} {L.commun.noeuds}</Row>
-          <Row label={P.reapparition}>{d.reapparition ? `${hm(d.reapparition)} UTC` : P.aucuneReapparition}</Row>
-          <Row label={P.silence}>{d.duree_min} min{d.deplacement_km != null ? P.deplacement(num(d.deplacement_km)) : ""}</Row>
+          <Row label={P.dernierMessage}><Heure iso={d.dernier_message} f="hm" />, {vitesse(d.vitesse_avant_kn)}</Row>
+          <Row label={P.reapparition}>{d.reapparition ? <Heure iso={d.reapparition} f="hm" /> : P.aucuneReapparition}</Row>
+          <Row label={P.silence}>{d.duree_min} min{d.deplacement_km != null ? P.deplacement(distanceKm(d.deplacement_km)) : ""}</Row>
           <Row label={P.receptionZone}>{P.continuite(d.reception_cellule?.navires, num((d.reception_cellule?.continuite ?? 0) * 100, 1))}</Row>
           <Context items={d.contexte} />
           {(d.partenaires_possibles ?? []).length > 0 && (
@@ -132,7 +134,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
               <thead className="text-muted"><tr><th>{P.partenaire}</th><th>{P.auPlusPres}</th><th>{P.lent}</th></tr></thead>
               <tbody>{d.partenaires_possibles.map((x: Props) => (
                 <tr key={x.vessel_id} className="border-t border-hair/70">
-                  <td>{x.name ?? x.mmsi}{x.au_mouillage ? ` ${P.mouillage}` : ""}</td><td>{x.distance_min_m} m</td><td>{hm(x.debut)} {P.au} {hm(x.fin)}</td>
+                  <td>{x.name ?? x.mmsi}{x.au_mouillage ? ` ${P.mouillage}` : ""}</td><td>{distance(x.distance_min_m, true)}</td><td><Heure iso={x.debut} f="hm" /> {P.au} <Heure iso={x.fin} f="hm" /></td>
                 </tr>))}</tbody>
             </table>
           )}
@@ -167,18 +169,18 @@ export const TYPES_ALERTE: TypeAlerte[] = [
           {d.detection_id && <PreuveImage source={d.source} detectionId={Number(d.detection_id)} />}
           {optique && d.detection_id && <PreuveImage source="sentinel2" contexte detectionId={Number(d.detection_id)} />}
           <Row label={P.capteur}>{String(d.satellite ?? "").replace(/^S(\d)/, "Sentinel $1")}</Row>
-          <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
+          <Row label={P.instantPassage}><Heure iso={d.heure ?? p.event_time} f="horodatage" /></Row>
           <Row label={P.longueurEstimee}>{d.longueur_m != null ? `${num(d.longueur_m, 0)} m` : L.commun.nd}</Row>
           <Row label={P.largeurEstimee}>{d.largeur_m != null ? `${num(d.largeur_m, 0)} m` : L.commun.nd}</Row>
           {optique ? <>
             <Row label={P.cap}>{d.cap_deg != null ? `${num(d.cap_deg, 0)}°` : L.commun.nd}</Row>
-            <Row label={P.vitesseEstimee}>{d.vitesse_kn != null ? `${num(d.vitesse_kn, 1)} ${L.commun.noeuds}` : L.commun.nd}</Row>
+            <Row label={P.vitesseEstimee}>{vitesse(d.vitesse_kn)}</Row>
             <Row label={P.typeNavire}>{d.type_navire ? L.fiche.radar.types[d.type_navire] ?? d.type_navire : L.commun.nd}</Row>
             <Row label={P.nuagesAutour}>{d.masque_nuages === "present" ? `${num(d.nuages_pct ?? 0, 1)} %` : P.masqueAbsent}</Row>
           </> : <Row label={P.contraste}>{d.contraste_db != null ? `${num(d.contraste_db, 1)} dB` : L.commun.nd}</Row>}
-          <Row label={P.distanceCote}>{d.distance_cote_km != null ? `${num(d.distance_cote_km)} km` : L.commun.nd}</Row>
-          {d.infrastructure && <Row label={P.infrastructure}>{d.infrastructure.name ?? d.infrastructure.type}, {d.infrastructure.distance_m} m</Row>}
-          {d.navire_liste && <Row label={P.navireListe}>{d.navire_liste.name ?? d.navire_liste.mmsi}, {num(d.navire_liste.distance_km)} km</Row>}
+          <Row label={P.distanceCote}>{distanceKm(d.distance_cote_km)}</Row>
+          {d.infrastructure && <Row label={P.infrastructure}>{d.infrastructure.name ?? d.infrastructure.type}, {distance(d.infrastructure.distance_m)}</Row>}
+          {d.navire_liste && <Row label={P.navireListe}>{d.navire_liste.name ?? d.navire_liste.mmsi}, {distanceKm(d.navire_liste.distance_km)}</Row>}
           <Context items={d.contexte} />
           <div className="mt-3 font-semibold">{P.naviresExamines}</div>
           {(d.candidats_ais ?? []).length ? (
@@ -186,7 +188,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
               <thead className="text-muted"><tr><th>{P.navire}</th><th>{P.distance}</th><th>{P.tolerance}</th></tr></thead>
               <tbody>{d.candidats_ais.map((c: Props) => (
                 <tr key={c.vessel_id} className="border-t border-hair/70">
-                  <td>{c.name ?? c.mmsi}</td><td>{c.distance_m} m</td><td>{c.tolerance_le_long_m} m</td>
+                  <td>{c.name ?? c.mmsi}</td><td>{distance(c.distance_m, true)}</td><td>{distance(c.tolerance_le_long_m, true)}</td>
                 </tr>))}</tbody>
             </table>
           ) : <p className="text-muted">{P.aucunNavireProche}</p>}
@@ -196,12 +198,12 @@ export const TYPES_ALERTE: TypeAlerte[] = [
         <>
           {d.detection_id && <PreuveImage source="viirs" detectionId={Number(d.detection_id)} />}
           <Row label={P.capteur}>{L.fiche.viirs.satellites[d.satellite] ?? d.satellite}</Row>
-          <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
+          <Row label={P.instantPassage}><Heure iso={d.heure ?? p.event_time} f="horodatage" /></Row>
           <Row label={P.intensite}>{num(d.nanowatts, 1)} nW/cm²/sr</Row>
           <Row label={P.lune}>{d.lune != null ? `${num(d.lune, 0)} %` : L.commun.nd}</Row>
-          <Row label={P.distanceCote}>{d.distance_cote_km != null ? `${num(d.distance_cote_km)} km` : L.commun.nd}</Row>
-          {d.infrastructure && <Row label={P.infrastructure}>{d.infrastructure.name ?? d.infrastructure.type}, {d.infrastructure.distance_m} m</Row>}
-          {d.navire_liste && <Row label={P.navireListe}>{d.navire_liste.name ?? d.navire_liste.mmsi}, {num(d.navire_liste.distance_km)} km</Row>}
+          <Row label={P.distanceCote}>{distanceKm(d.distance_cote_km)}</Row>
+          {d.infrastructure && <Row label={P.infrastructure}>{d.infrastructure.name ?? d.infrastructure.type}, {distance(d.infrastructure.distance_m)}</Row>}
+          {d.navire_liste && <Row label={P.navireListe}>{d.navire_liste.name ?? d.navire_liste.mmsi}, {distanceKm(d.navire_liste.distance_km)}</Row>}
           <Context items={d.contexte} />
           <div className="mt-3 font-semibold">{P.naviresExamines}</div>
           {(d.candidats_ais ?? []).length ? (
@@ -209,7 +211,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
               <thead className="text-muted"><tr><th>{P.navire}</th><th>{P.distance}</th><th>{P.tolerance}</th></tr></thead>
               <tbody>{d.candidats_ais.map((c: Props) => (
                 <tr key={c.vessel_id} className="border-t border-hair/70">
-                  <td>{c.name ?? c.mmsi}</td><td>{c.distance_m} m</td><td>{c.rayon_tolere_m} m</td>
+                  <td>{c.name ?? c.mmsi}</td><td>{distance(c.distance_m, true)}</td><td>{distance(c.rayon_tolere_m, true)}</td>
                 </tr>))}</tbody>
             </table>
           ) : <p className="text-muted">{P.aucunNavireProche}</p>}
@@ -221,7 +223,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
           <Row label={P.contraste}>{num(d.contrast_vv_db)} dB ({P.seuil(num(d.parametres?.seuil_contraste_db, 0))})</Row>
           <Row label={P.scorePresence}>{num(d.objectness, 2)}</Row>
           <Row label={P.scoreNavire}>{num(d.vessel_score, 2)}</Row>
-          <Row label={P.instantPassage}>{utc(p.event_time)}</Row>
+          <Row label={P.instantPassage}><Heure iso={p.event_time} f="horodatage" /></Row>
           {d.reclassement && <p className="mt-3 rounded-md bg-raised p-2.5 text-ink/90">{d.reclassement}</p>}
           <div className="mt-3 font-semibold">{P.naviresExamines}</div>
           {(d.candidats_ais ?? []).length ? (
@@ -229,7 +231,7 @@ export const TYPES_ALERTE: TypeAlerte[] = [
               <thead className="text-muted"><tr><th>{P.navire}</th><th>{P.distance}</th><th>{P.tolerance}</th></tr></thead>
               <tbody>{d.candidats_ais.map((c: Props) => (
                 <tr key={c.mmsi} className="border-t border-hair/70">
-                  <td>{c.name ?? c.mmsi}</td><td>{c.distance_m} m</td><td>{c.tolerance_le_long_m ?? c.rayon_tolere_m} m</td>
+                  <td>{c.name ?? c.mmsi}</td><td>{distance(c.distance_m, true)}</td><td>{distance(c.tolerance_le_long_m ?? c.rayon_tolere_m, true)}</td>
                 </tr>))}</tbody>
             </table>
           ) : <p className="text-muted">{P.aucunNavireProche}</p>}
@@ -246,12 +248,12 @@ export const TYPES_ALERTE: TypeAlerte[] = [
       return (
         <>
           <Row label={P.navire}>{vesselText(d.navire)}</Row>
-          <Row label={P.vitesseDeclaree}>{num(d.navire?.sog_kn)} {L.commun.noeuds}</Row>
+          <Row label={P.vitesseDeclaree}>{vitesse(d.navire?.sog_kn)}</Row>
           <Row label={P.positionPassage}>{d.methode_position}</Row>
           {d.source === "sentinel2" && <Row label={P.capteur}>{String(d.satellite ?? "").replace(/^S2/, "Sentinel 2")}</Row>}
           <Row label={P.echoProche}>{d.echo_le_plus_proche_m == null ? (d.source === "sentinel2" ? P.aucunNavireVu : P.aucun)
             : `${d.echo_le_plus_proche_m} m`}</Row>
-          <Row label={P.tolerance}>{P.toleranceDe(d.tolerance_le_long_m, d.tolerance_en_travers_m)}</Row>
+          <Row label={P.tolerance}>{P.toleranceDe(distance(d.tolerance_le_long_m, true), distance(d.tolerance_en_travers_m, true))}</Row>
           <Context items={d.contexte} />
         </>
       );
@@ -269,11 +271,11 @@ export const TYPES_ALERTE: TypeAlerte[] = [
         <>
           {d.detection_id && <PreuveImage source={d.source === "sentinel2" ? "sentinel2" : "sentinel1"} detectionId={Number(d.detection_id)} />}
           <Row label={P.navire}>{vesselText(n)}</Row>
-          <Row label={P.instantPassage}>{utc(d.heure ?? p.event_time)}</Row>
+          <Row label={P.instantPassage}><Heure iso={d.heure ?? p.event_time} f="horodatage" /></Row>
           <Row label={P.longueurEstimee}>{d.longueur_m != null ? `${num(d.longueur_m, 0)} m` : L.commun.nd}</Row>
           <Row label={P.longueurDeclaree}>{n.length_m != null ? `${num(n.length_m, 0)} m` : L.commun.nd}</Row>
           <Row label={P.orientation}>{d.cap_deg != null ? `${num(d.cap_deg, 0)}°` : L.commun.nd}</Row>
-          <Row label={P.routeDeclaree}>{n.cog != null ? `${num(n.cog, 0)}°, ${num(n.sog_kn)} ${L.commun.noeuds}` : L.commun.nd}</Row>
+          <Row label={P.routeDeclaree}>{n.cog != null ? `${num(n.cog, 0)}°, ${vitesse(n.sog_kn)}` : L.commun.nd}</Row>
           <div className="mt-3 font-semibold">{P.ecarts}</div>
           <Context items={d.contexte} />
         </>

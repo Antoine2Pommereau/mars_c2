@@ -2,6 +2,8 @@
 // en tirets jusqu'à l'écho, position estimée et cercle d'incertitude, écho, et la distance entre position estimée et
 // écho. Calcul pur, partagé par la carte (MapView) et la légende du récit : les deux affichent les mêmes chiffres.
 
+import { distance as distanceMarine } from "./unites.ts";
+
 type Pt = { lon: number; lat: number; t?: string | null };
 export interface Preuve {
   derniere_position: Pt | null;
@@ -11,9 +13,8 @@ export interface Preuve {
   distance_derniere_echo_m?: number;
 }
 
-/** Distance lisible : « 850 m », « 4,1 km », « 9 km » */
-export const distance = (m: number): string => (m < 1000 ? `${Math.round(m / 10) * 10} m`
-  : `${(m / 1000).toLocaleString("fr-FR", { maximumFractionDigits: m < 10_000 ? 1 : 0 })} km`);
+/** Distance d'une preuve, en milles nautiques (mètres sous 0,1 mille : preuve fine), lib/unites.ts */
+export const distance = (m: number): string => distanceMarine(m, true);
 
 /** Cercle géodésique approché (64 sommets) autour d'un point, rayon en mètres */
 export function cercle(lon: number, lat: number, rayon_m: number, n = 64): number[][] {

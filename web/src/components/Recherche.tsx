@@ -2,13 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
-import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import { chercherLieux, type Lieu } from "../lib/lieux";
 import { zoneOf } from "../lib/zones";
 import type { Props } from "../lib/types";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
 import { Tag } from "./Elements";
+import { Heure } from "./Heure";
 
 export type Resultat =
   | { kind: "navire"; p: Props }
@@ -109,7 +109,7 @@ function Ligne({ r }: { r: Resultat }) {
       <>
         <span className="h-2 w-2 rounded-full" style={{ background: couleurAlerte(r.p.type) }} />
         <span className="text-ink">{R.alerte(r.p.id)}</span>
-        <span className="ml-auto text-muted">{libelleAlerte(r.p.type)}, {jourHeure(r.p.event_time)}</span>
+        <span className="ml-auto text-muted">{libelleAlerte(r.p.type)}, <Heure iso={r.p.event_time} f="jourHeure" /></span>
       </>
     );
   }

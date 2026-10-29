@@ -17,7 +17,7 @@ function duree(ms: number): string {
   if (ms < 48 * 60 * MIN) return `${Math.round(ms / 60 / MIN)} h`;
   return `${Math.round(ms / 1440 / MIN)} j`;
 }
-const date = (iso?: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)} ${iso.slice(11, 16)}` : L.commun.nd);
+const date = (iso?: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)} ${iso.slice(11, 16)}Z` : L.commun.nd);
 const palier = (v: number, vert: number, orange: number): Niveau => (v < vert ? "vert" : v < orange ? "orange" : "rouge");
 const pire = (ns: Niveau[]): Niveau => (["rouge", "orange", "gris", "vert"] as Niveau[]).find((n) => ns.includes(n)) ?? "gris";
 const E = L.etat;
@@ -30,7 +30,7 @@ const INDICATEURS: Indicateur[] = [
       const a = age(h.derniere_position, now);
       const debit = Math.round((h.lus ?? 0) / 60);
       return { niveau: s ? palier(a, 5 * MIN, 15 * MIN) : "gris", resume: duree(a),
-        detail: [[E.dernierMessage, `${date(h.derniere_position)} UTC, ${E.ilYa(duree(a))}`],
+        detail: [[E.dernierMessage, `${date(h.derniere_position)}, ${E.ilYa(duree(a))}`],
                  [E.debit, `${debit} ${E.parMinute}`], [E.navires, String(h.navires ?? L.commun.nd)]] };
     },
   },
@@ -118,12 +118,12 @@ const INDICATEURS: Indicateur[] = [
       const niveau = pire(niveaux);
       const prochains: any[] = sat.prochains ?? [];
       const premier = prochains.reduce((a: any, b: any) => (!a || b.acquired_at < a.acquired_at ? b : a), null);
-      const quand = (iso: string) => `${date(iso)} UTC, ${E.dans(duree(Date.parse(iso) - now))}`;
+      const quand = (iso: string) => `${date(iso)}, ${E.dans(duree(Date.parse(iso) - now))}`;
       const detail: [string, string][] = (["S1", "S2"] as const).map((m) => {
         const p = prochains.find((x) => x.mission === m);
         return [E.prochain(m), p ? `${p.satellite} ${quand(p.acquired_at)}` : L.commun.nd];
       });
-      detail.push([E.dernierAcquis, sat.dernier ? `${sat.dernier.satellite} ${date(sat.dernier.acquired_at)} UTC` : L.commun.nd]);
+      detail.push([E.dernierAcquis, sat.dernier ? `${sat.dernier.satellite} ${date(sat.dernier.acquired_at)}` : L.commun.nd]);
       detail.push([E.calendrier, maj ? `${date(maj.le)}${maj.statut === "echec" ? `, ${E.echec}` : ""}` : L.commun.nd]);
       const jour = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
       detail.push([E.nuitViirs, nuit ? E.nuitDe(jour(nuit.nuit), nuit.granules, nuit.detections ?? 0, nuit.en_echec, nuit.non_evaluables ?? 0) : L.commun.nd]);

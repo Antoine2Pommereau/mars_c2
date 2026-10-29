@@ -8,6 +8,7 @@ import { PRESETS, VITESSES, avecDuree, avecInstant, avecPlage, iso, lecture, res
 import type { FC, Feature, Props as Objet } from "../lib/types";
 import { couleurAlerte, libelleAlerte } from "../registres/alertes";
 import { pistesActives } from "../registres/frise";
+import { Heure } from "./Heure";
 
 interface Props {
   temps: Temps;
@@ -84,7 +85,7 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
           </button>
         )}
         <div className="min-w-[205px] font-cond text-[20px] font-medium leading-none tabular-nums" title={F.instant}>
-          {utc(iso(shownInstant))}
+          <Heure iso={iso(shownInstant)} f="utc" />
         </div>
         {temps.mode === "rejeu" && (
           <div className="flex rounded-md border border-hair p-0.5" role="group" aria-label={F.vitesse}>

@@ -1,0 +1,26 @@
+{
+  "name": "MARS C2",
+  "short_name": "MARS C2",
+  "description": "Surveillance maritime : infrastructures et flotte fantôme",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#0e1419",
+  "background_color": "#0e1419",
+  "icons": [
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

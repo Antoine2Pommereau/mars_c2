@@ -35,6 +35,7 @@ import { decodeTraffic } from "./lib/trafic";
 import { aveugle } from "./lib/systeme";
 import { EMPTY, type FC, type Feature, type Props, type Selection } from "./lib/types";
 import { ecrireAdresse, lireAdresse } from "./lib/url";
+import { appliquerOnglet, etatOnglet } from "./lib/onglet";
 import { FRANCE, zoneBbox, zoneOf, zonesGeoJSON } from "./lib/zones";
 import { useStream } from "./lib/useStream";
 import { COULEUR_LISTE, naviresAlerte, typeAlerte } from "./registres/alertes";
@@ -349,6 +350,16 @@ export default function App() {
     queryFn: () => api.dossier(dossierSel!.cle, instantDossiers, aLInstant), enabled: !!dossierSel,
     placeholderData: (prev) => (prev?.cle === dossierSel?.cle ? prev : undefined), retry: 2 });
   const recit = dossierSel && recitQ.data?.cle === dossierSel.cle ? recitQ.data : undefined;
+  // Onglet du navigateur (lot UX1) : objet affiché, dossiers à examiner ; rien tant que le mode démonstration n'est pas
+  // connu (les noms viennent de l'API, déjà masqués en démonstration)
+  const O = L.onglet;
+  const objetOnglet = dossierSel ? O.dossier(dossierSel.nom)
+    : selection?.kind === "alert" ? O.alerte(selection.feature.properties.id)
+    : selection?.kind === "infrastructure" ? O.infrastructure(String(selection.properties.name ?? selection.properties.type ?? selection.properties.id))
+    : selection?.kind === "vessel" ? O.navire(String(selection.properties.name ?? selection.properties.mmsi ?? ""))
+    : panel === "coulisses" ? O.coulisses : O.veille;
+  useEffect(() => appliquerOnglet(etatOnglet(dossiersQ.data?.dossiers, objetOnglet, demoQ.data?.masquage ?? true)),
+    [dossiersQ.data, objetOnglet, demoQ.data?.masquage]);
   const preuveCarte = useMemo<FC>(() => (recit ? preuveGeoJSON(recit.preuve, recit.route) as FC : EMPTY), [recit]);
   // À l'ouverture d'un dossier, la carte cadre sa preuve (cercle compris), une fois par dossier
   const [preuveCadree, setPreuveCadree] = useState<string | null>(null);

@@ -22,6 +22,8 @@ export const REGLAGES: Reglage[] = [
   { rubrique: "notifications", partie: "notif-systeme", libelle: "Notifications système et vérification satellite", mots: "pannes disque collecte travailleurs" },
   { rubrique: "notifications", partie: "notif-calmes", libelle: "Heures calmes", mots: "nuit silence debut fin reveil" },
   { rubrique: "notifications", partie: null, libelle: "Notification de test", mots: "essai envoyer" },
+  { rubrique: "affichage", partie: "aff-carte", libelle: "Coordonnées", mots: "unites degres minutes decimaux latitude longitude position" },
+  { rubrique: "affichage", partie: "aff-carte", libelle: "Heure des dossiers et alertes", mots: "unites utc groupe date heure gdh zulu" },
   { rubrique: "affichage", partie: "aff-carte", libelle: "Thème", mots: "clair sombre jour nuit apparence mode couleurs" },
   { rubrique: "affichage", partie: "aff-carte", libelle: "Vue de carte par défaut", mots: "veille trafic satellites ouverture" },
   { rubrique: "affichage", partie: "aff-carte", libelle: "Vignettes dans le fil", mots: "photo image alertes" },

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, LogOut, Minus, Plus } from "lucide-react";
 import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { choisirUnites, type ModeCoord, type ModeHorodatage, reglagesUnites } from "../lib/unites";
 import { choisirTheme, PREFERENCES, type Preference, useTheme } from "../lib/theme";
 import { COULEUR_NIVEAU } from "../registres/etat";
 import { api, type PrefsNotification, type BlocRegle, type Echeance, type EtatControle, type Interrupteur, type SystemeControle } from "../lib/api";
@@ -10,6 +11,7 @@ import type { Feature, Props } from "../lib/types";
 import { libelleAlerte } from "../registres/alertes";
 import type { VueCarte } from "../lib/preferences";
 import { ListeIndicateurs } from "./BarreEtat";
+import { Heure } from "./Heure";
 
 const C = L.controle;
 const euros = (v: number) => `${v.toFixed(2).replace(".", ",")} €`;
@@ -295,7 +297,7 @@ function Systeme({ s }: { s: SystemeControle }) {
         <ul className="space-y-0.5">
           {s.echecs.map((e) => (
             <li key={e.id} className="text-muted" title={e.erreur ?? undefined}>
-              <span className="tabular-nums text-faint">{jourHeure(e.le)}</span> <span className="text-gap">{e.tache}</span>{" "}
+              <span className="tabular-nums text-faint"><Heure iso={e.le} f="jourHeure" /></span> <span className="text-gap">{e.tache}</span>{" "}
               <span className="line-clamp-1 inline">{e.erreur}</span> <Lien href={e.lien_trace} titre={Y.trace} />
             </li>
           ))}
@@ -589,7 +591,7 @@ function Journal({ lignes }: { lignes: Props[] }) {
     <ul className="space-y-1 text-[11.5px] leading-snug">
       {lignes.map((j) => (
         <li key={j.id} className="text-muted">
-          <span className="tabular-nums text-faint">{jourHeure(j.le)}</span>{" "}
+          <span className="tabular-nums text-faint"><Heure iso={j.le} f="jourHeure" /></span>{" "}
           <span className="text-ink">{j.auteur}</span> {C.actions[j.action] ?? j.action}
           {j.cible && <> · {j.cible}</>}{j.motif && <> · {j.motif}</>}
         </li>
@@ -694,13 +696,27 @@ export function RubriqueBudget() {
         {e.travailleurs.map((t) => (
           <li key={t.id} className="flex gap-2 text-muted">
             <span className="w-8 text-faint">{t.id}</span>
-            <span className="flex-1">{t.tache} · {jourHeure(t.cree_le)}</span>
+            <span className="flex-1">{t.tache} · <Heure iso={t.cree_le} f="jourHeure" /></span>
             <span className="text-ink">{t.cout_reel_eur != null ? euros(t.cout_reel_eur)
               : t.cout_estime_eur != null ? `${euros(t.cout_estime_eur)} ${C.coutEstime}` : "·"}</span>
           </li>
         ))}
       </ul>
     </>
+  );
+}
+
+/** Liste de choix d'un réglage de la rubrique Affichage (gardé par navigateur). */
+function Choix({ libelle, valeur, options, onChange }:
+  { libelle: string; valeur: string; options: Record<string, string>; onChange: (v: string) => void }) {
+  return (
+    <label className="flex items-center justify-between gap-2 py-0.5 text-[12px]">
+      <span className="text-muted">{libelle}</span>
+      <select value={valeur} onChange={(e) => onChange(e.target.value)} aria-label={libelle}
+        className="rounded border border-hair bg-abyss px-1 py-0.5 text-[11.5px] text-ink">
+        {Object.entries(options).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+      </select>
+    </label>
   );
 }
 
@@ -721,6 +737,11 @@ export function RubriqueAffichage(pp: Pick<PanneauProps, "masquage" | "rejeuFide
             {PREFERENCES.map((t) => <option key={t} value={t}>{A.themes[t]}</option>)}
           </select>
         </label>
+        <Choix libelle={A.coordonnees} valeur={reglagesUnites.coord} options={A.coordModes}
+          onChange={(v) => choisirUnites({ coord: v as ModeCoord })} />
+        <Choix libelle={A.horodatage} valeur={reglagesUnites.horodatage} options={A.horodatageModes}
+          onChange={(v) => choisirUnites({ horodatage: v as ModeHorodatage })} />
+        <p className="pb-1 text-[11px] text-muted">{A.unitesNote}</p>
         <label className="flex items-center justify-between gap-2 py-0.5 text-[12px]">
           <span className="text-muted">{A.vueDefaut}</span>
           <select value={pp.vueDefaut} onChange={(e) => pp.onVueDefaut(e.target.value as VueCarte)} aria-label={A.vueDefaut}
@@ -859,7 +880,7 @@ export function RubriqueJournal() {
         <ul className="space-y-1 text-[11.5px] leading-snug">
           {(d.data ?? []).map((x) => (
             <li key={x.id} className="text-muted">
-              <span className="tabular-nums text-faint">{jourHeure(x.at)}</span>{" "}
+              <span className="tabular-nums text-faint"><Heure iso={x.at} f="jourHeure" /></span>{" "}
               <span className="text-ink">{x.author}</span> {L.decisions.verbe[x.action] ?? x.action} · {libelleAlerte(x.type)} {x.alert_id}
               {x.motif && <> · {L.decisions.motifs[x.motif] ?? x.motif}</>}
             </li>

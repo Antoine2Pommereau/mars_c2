@@ -2,14 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../lib/api";
-import { utc } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Feature, Props, Selection, SourceDetection } from "../lib/types";
 import { COULEUR_LISTE, libelleAlerte, typeAlerte } from "../registres/alertes";
 import { COULEUR_PASSAGE, COULEURS_INFRA } from "../registres/couches";
 import { sectionsDe, type Contexte } from "../registres/sections";
 import { useInfraCard, usePassage } from "./Fiches";
-import { jourHeure } from "../lib/format";
+import { horodatage, jourHeure } from "../lib/format";
+import { Heure } from "./Heure";
 
 /** Fiche d'une zone de vigilance (lot P) : profil, motif, période, surface ; alertes qui portent la zone, demandes
  *  d'observation et passages qui la couvrent */
@@ -33,7 +33,7 @@ function FicheVigilance({ id, onPickAlert }: { id: number; onPickAlert: (f: Feat
           {z.alertes.slice(0, 20).map((a: Props) => (
             <li key={a.id}>
               <button className="w-full text-left text-muted hover:text-ink" onClick={() => ouvrir(a.id)}>
-                <span className="tabular-nums text-faint">{jourHeure(a.event_time)}</span> {libelleAlerte(a.type)}, {L.gravite[a.severity] ?? a.severity}
+                <span className="tabular-nums text-faint"><Heure iso={a.event_time} f="jourHeure" /></span> {libelleAlerte(a.type)}, {L.gravite[a.severity] ?? a.severity}
                 {a.gravite_avant && a.gravite_avant !== a.severity ? ` (${V.relevee(L.gravite[a.gravite_avant] ?? a.gravite_avant)})` : ""}
               </button>
             </li>
@@ -44,7 +44,7 @@ function FicheVigilance({ id, onPickAlert }: { id: number; onPickAlert: (f: Feat
         <p className="mb-1 font-semibold text-ink">{V.demandes(z.demandes.length)}</p>
         <ul className="space-y-0.5 text-muted">
           {z.demandes.slice(0, 10).map((d: Props) => (
-            <li key={d.id}><span className="tabular-nums text-faint">{jourHeure(d.cree_le)}</span> {d.tip} · {L.observations.etats[d.etat] ?? d.etat}</li>
+            <li key={d.id}><span className="tabular-nums text-faint"><Heure iso={d.cree_le} f="jourHeure" /></span> {d.tip} · {L.observations.etats[d.etat] ?? d.etat}</li>
           ))}
         </ul>
       </div>
@@ -52,7 +52,7 @@ function FicheVigilance({ id, onPickAlert }: { id: number; onPickAlert: (f: Feat
         <p className="mb-1 font-semibold text-ink">{V.passages(z.passages.length)}</p>
         <ul className="space-y-0.5 text-muted">
           {z.passages.slice(0, 10).map((s: Props) => (
-            <li key={s.id}><span className="tabular-nums text-faint">{jourHeure(s.acquired_at)}</span> {s.satellite} · {s.statut}</li>
+            <li key={s.id}><span className="tabular-nums text-faint"><Heure iso={s.acquired_at} f="jourHeure" /></span> {s.satellite} · {s.statut}</li>
           ))}
         </ul>
       </div>
@@ -103,7 +103,7 @@ export default function DetailPanel(p: PanelProps) {
     title = `${libelleAlerte(a.type)}, ${L.gravite[a.severity] ?? a.severity}`;
     color = typeAlerte(a.type).couleur;
     badge = a.status && a.status !== "nouvelle" ? L.statut[a.status] : null;
-    footer = L.fiche.regles(a.rule_version, a.event_time ? utc(a.event_time) : undefined, a.controle_empreinte);
+    footer = L.fiche.regles(a.rule_version, a.event_time ? horodatage(a.event_time) : undefined, a.controle_empreinte);
     trace = a.details?.trace_id ?? null;               // trace qui a produit l'alerte (Grafana, Tempo)
   } else if (selection.kind === "vessel") {
     Object.assign(ctx, { objet: "navire", navire: selection.properties, carte: card.data });
