@@ -14,7 +14,8 @@ Calendrier des passages Sentinel 1 et 2, chaque jour : catalogue public de Coper
 d'acquisition de l'ESA (métadonnées seulement), puis infrastructures et navires des listes couverts (mars/satellites.py).
 Détections nocturnes VIIRS, chaque jour à VIIRS_HEURE (UTC, 06:30 par défaut, après la publication des données de
 la nuit) : granules des dernières nuits pas encore traitées (rattrapage automatique), analysées par un travailleur
-éphémère Scaleway (mars/travailleurs.py, mars/viirs.py). Chaque minute : surveillance des travailleurs (résultats
+éphémère Scaleway (mars/travailleurs.py, mars/viirs.py) ; à 18:30 (viirs.masque_nuages.retraitement_heure), celles
+traitées sans masque des nuages (NOAA 21 toujours) refaites une fois si le masque standard est publié. Chaque minute : surveillance des travailleurs (résultats
 traités, instances finies ou trop vieilles détruites, orphelins détruits, exécutions journalisées dans task_runs).
 Preuves images (vignettes des détections sur R2), chaque nuit : sans limite si liées à une alerte, 30 jours sinon.
 Toutes les 10 minutes : espace disque, alerte sous ALERTE_DISQUE_PCT (15 %), et mesures historisées pour Grafana
@@ -178,7 +179,7 @@ def due(conn, task: str, now: datetime, every_days: int = 1, hour: str = HOUR) -
     if r[0]:
         return False
     # Lot P : une source en pause est consignée une fois par jour ; à sa reprise, la tâche redevient due le jour même
-    source = {"viirs": "viirs"}.get(task)
+    source = {"viirs": "viirs", "viirs_masque": "viirs"}.get(task)
     if r[2] and source and conn.execute("SELECT source_en_pause(%s)", (source,)).fetchone()[0]:
         return False
     return r[1] is None or (now - r[1]).total_seconds() >= RETRY_S
@@ -194,6 +195,9 @@ def tasks(conn):
         "listes_gur": (lambda: update_list(conn, "gur"), 7, HOUR),
         "passages": (lambda: update_passes(conn), 1, HOUR),
         "viirs": (lambda: launch_viirs(conn), 1, VIIRS_HOUR),
+        # Lot D02 : granules traitées sans masque des nuages (NOAA 21 toujours) refaites avec le produit standard
+        "viirs_masque": (lambda: launch_viirs(conn, remasquer=True), 1,
+                         load_rules()["viirs"]["masque_nuages"].get("retraitement_heure", "18:30")),
         "preuves": (lambda: purge_proofs(conn), 1, HOUR),
         "echeances": (lambda: echeances.relever(conn, load_rules()), 1, HOUR),   # lot Z1 : secrets qui expirent
         "essai_restauration": (lambda: essai_restauration(conn), 30, HOUR),        # lot Z2 : une fois par mois
@@ -244,9 +248,10 @@ def purge_proofs(conn) -> dict:
 
 
 def launch_viirs(conn, manuel: bool = False, malgre_pause: bool = False, motif: str | None = None,
-                 nuits: list | None = None) -> dict:
+                 nuits: list | None = None, remasquer: bool = False) -> dict:
     """Granules des dernières nuits pas encore traitées, confiées à un travailleur éphémère (un seul à la fois) ; avec
-    `nuits`, toutes les granules de ces nuits, même déjà traitées (retraitement)."""
+    `nuits`, toutes les granules de ces nuits, même déjà traitées (retraitement) ; avec `remasquer`, celles traitées
+    sans masque des nuages dont le masque standard est désormais publié (lot D02)."""
     import requests
     from mars import travailleurs, viirs
     rules = regles(conn)
@@ -259,11 +264,12 @@ def launch_viirs(conn, manuel: bool = False, malgre_pause: bool = False, motif: 
     busy = conn.execute("SELECT id FROM travailleurs WHERE tache = 'viirs' AND detruit_le IS NULL").fetchone()
     if busy:                     # travailleur actif : ses nuits sont couvertes, rien à lancer (le verrou en base le garantit)
         return {"en_cours": busy[0]}
-    p = viirs.plan(conn, requests.Session(), rules, datetime.now(timezone.utc), nuits)
-    traces.attributs(**{"viirs.retraitement": bool(nuits), "viirs.granules_prevues": len(p["granules"]),
+    p = viirs.plan(conn, requests.Session(), rules, datetime.now(timezone.utc), nuits, remasquer)
+    traces.attributs(**{"viirs.retraitement": bool(nuits), "viirs.remasquer": remasquer,
+                        "viirs.granules_sans_masque": p.get("remasquer", 0), "viirs.granules_prevues": len(p["granules"]),
                         "viirs.granules_avec_masque": sum(1 for g in p["granules"] if g.get("masque_urls"))})
     if not p["granules"]:
-        return {"nuits": p["nuits"], "granules": 0}
+        return {"nuits": p["nuits"], "granules": 0, **({"sans_masque": p["remasquer"]} if "remasquer" in p else {})}
     # Le jeton Earthdata n'est plus dans le cloud-init (lot Z1) : l'API le remet au travailleur avec sa tâche
     r = travailleurs.launch(conn, scw, rules, "viirs", {"granules": p["granules"], "regions": viirs.regions_boxes()},
                             {}, log=log)
@@ -765,7 +771,8 @@ def _passages(conn, _a):
 @commande("viirs")
 def _viirs(conn, a):
     # --nuit 2026-10-22 --nuit 2026-10-23 : retraitement de ces nuits (granules déjà traitées comprises)
-    if run(conn, "viirs", lambda: launch_viirs(conn, True, a.malgre_pause, a.motif, a.nuit),
+    # --remasquer : granules des dernières nuits traitées sans masque des nuages dont le masque est publié (lot D02)
+    if run(conn, "viirs", lambda: launch_viirs(conn, True, a.malgre_pause, a.motif, a.nuit, a.remasquer),
            parent=traces.traceparent()) is None:
         sys.exit(1)
 
@@ -1637,6 +1644,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--refaire", action="store_true",
                     help="essai-reel --lancer, sentinel-analyser : réanalyser un passage Sentinel 1 déjà analysé "
                          "(nouvelle analyse liée, l'ancienne gardée)")
+    ap.add_argument("--remasquer", action="store_true",
+                    help="viirs : granules traitées sans masque des nuages, refaites avec le masque désormais publié")
     ap.add_argument("--nuit", type=date.fromisoformat, action="append",
                     help="viirs : nuit à retraiter (AAAA-MM-JJ, date du début de la nuit), répétable")
     ap.add_argument("--jours", type=int, default=14, help="mesures : nombre de jours examinés")

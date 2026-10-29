@@ -145,13 +145,25 @@ def granule_non_evaluable(g: dict, rules: dict) -> str | None:
 
 
 
-def plan(conn, session, rules: dict, now: datetime, nuits: list[date] | None = None) -> dict:
+def plan(conn, session, rules: dict, now: datetime, nuits: list[date] | None = None, remasquer: bool = False) -> dict:
     """Granules à traiter : celles des dernières nuits terminées, ni traitées ni en cours (une granule en échec est
     retentée une fois). Une nuit manquée est ainsi rattrapée au passage suivant. Avec `nuits` (retraitement demandé,
-    par exemple après le lot du masque des nuages) : toutes les granules de ces nuits, même déjà traitées."""
+    par exemple après le lot du masque des nuages) : toutes les granules de ces nuits, même déjà traitées.
+    Avec `remasquer` (lot D02) : seulement les granules des dernières nuits traitées sans masque des nuages dont le
+    masque est désormais publié (produit standard de LAADS, environ 12 h après : seule source pour NOAA 21), une fois."""
+    candidates = None
     if nuits:
         nights = sorted(set(nuits), reverse=True)
         done = set()
+    elif remasquer:
+        nights = [n - timedelta(days=k) for n in [last_night(now, rules)] for k in range(rules["viirs"]["rattrapage_nuits"])]
+        done = set()
+        # tentatives < 2 : une granule n'est remasquée qu'une fois (un masque publié mais illisible ne boucle pas)
+        candidates = {r[0] for r in conn.execute(
+            "SELECT nom FROM viirs_granules WHERE nuit = ANY(%s) AND erreur IS NULL AND masque IS DISTINCT FROM 'fourni' "
+            "AND tentatives < 2", (nights,)).fetchall()}
+        if not candidates:
+            return {"nuits": {n.isoformat(): 0 for n in nights}, "granules": [], "remasquer": 0}
     else:
         nights = [n - timedelta(days=k) for n in [last_night(now, rules)] for k in range(rules["viirs"]["rattrapage_nuits"])]
         done = {r[0] for r in conn.execute(
@@ -171,10 +183,14 @@ def plan(conn, session, rules: dict, now: datetime, nuits: list[date] | None = N
         sp.set_attribute("viirs.granules_trouvees", sum(len(f) for f in found))
     for n in nights:
         gs = [g for (un, _s, _p), f in zip(units, found) if un == n for g in f
-              if g["nom"] not in done and g["nom"] not in busy]
+              if g["nom"] not in done and g["nom"] not in busy
+              and (candidates is None or (g["nom"] in candidates and g.get("masque_urls")))]
         per_night[n.isoformat()] = len(gs)
         todo += [{**g, "nuit": n.isoformat()} for g in gs]
-    return {"nuits": per_night, "granules": todo}
+    out = {"nuits": per_night, "granules": todo}
+    if candidates is not None:
+        out["remasquer"] = len(candidates)          # traitées sans masque ; celles de `granules` ont désormais le leur
+    return out
 
 
 # Traitement des résultats (handler du superviseur des travailleurs)

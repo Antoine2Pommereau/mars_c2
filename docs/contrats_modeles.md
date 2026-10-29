@@ -107,6 +107,10 @@ rejouent pas sans jeton Earthdata : la preuve est faite sur le vrai code du mod�
   nommé sans arrêt, 4 sur 4 à 50 % sans masque). Limite : le classifieur final d'allenai (`feedback_cnn`) écarte sous
   90 % de lune des bateaux synthétiques de 40 à 70 nW (2 sur 4) et garde ceux de 80 à 100 nW ; l'acceptation du
   jeton par SIPS et LAADS ne se prouve qu'avec le vrai jeton, au premier travailleur (motif écrit dans le granule).
+  Lot D02 (29/10/2026) : NOAA 21 n'a jamais de masque à 06:30 (nuits du 24 au 28/10 : 21 granules, aucune masquée,
+  contre 33 sur 37 pour SNPP et NOAA 20) ; chaque jour à 18:30 UTC (`viirs.masque_nuages.retraitement_heure`), les
+  granules des dernières nuits traitées sans masque sont refaites une fois si le masque standard est publié
+  (`taches.py viirs --remasquer` à la main) ; détections remplacées, décisions des opérateurs gardées (`GARDE_VIIRS`).
 * Granules en temps quasi réel conservés par LANCE environ 7 jours (constat du 25/10/2026 : jour 291 en cours de
   purge, 292 complet) : les nuits du 22 et du 23/10 se retraitent jusqu'au 29/10 environ
   (`taches.py viirs --nuit 2026-10-22 --nuit 2026-10-23`).

@@ -193,3 +193,24 @@ def test_masked_granule_concludes_and_the_night_is_partial(conn):
     assert rows["NOAA20.A2026296.0130"][2] is True             # sous 80 % : la conclusion vaut sans masque
     (n,) = [x for x in viirs.bilan(conn, date(2026, 10, 22))["nuits"] if x["nuit"] == date(2026, 10, 22)]
     assert n["etat"] == "partielle" and n["masques"] == 1 and n["granules_non_evaluables"] == 1 and n["detections"] == 3
+
+
+def test_remask_takes_only_granules_done_without_mask_whose_mask_is_now_published(monkeypatch):
+    """Lot D02 : à 18:30, une granule NOAA 21 traitée sans masque à 06:30 est refaite si le masque standard de LAADS
+    est publié ; une granule sans masque publié attend, une granule déjà masquée n'est pas candidate (base)."""
+    masques = {"NOAA21.A2026301.0130": ["https://laads/CLDMSK_L2_VIIRS_NOAA21.A2026301.0130.nc"],
+               "NOAA21.A2026301.0312": []}
+    monkeypatch.setattr(viirs, "sat_granules", lambda _s, n, sat, _p, _r: [
+        {"nom": k, "satellite": sat, "dnb": "x", "dnb_url": "u", "geo_url": "v", "debut": "t", "masque_urls": u}
+        for k, u in masques.items()] + [{"nom": f"{sat}.A2026301.0200", "satellite": sat, "dnb": "x", "dnb_url": "u",
+                                         "geo_url": "v", "debut": "t", "masque_urls": ["m"]}])
+    conn = FakeConn({"NOAA21.A2026301.0130", "NOAA21.A2026301.0312"})       # traitées sans masque, une seule fois
+    now = datetime(2026, 10, 28, 18, 30, tzinfo=timezone.utc)
+    p = viirs.plan(conn, None, RULES, now, remasquer=True)
+    assert {g["nom"] for g in p["granules"]} == {"NOAA21.A2026301.0130"}
+    assert p["remasquer"] == 2
+    assert any("masque IS DISTINCT FROM 'fourni'" in q and "tentatives < 2" in q for q in conn.requetes)
+    # Aucune granule sans masque : pas même une recherche au catalogue
+    appels = []
+    monkeypatch.setattr(viirs, "sat_granules", lambda *a: appels.append(a) or [])
+    assert viirs.plan(FakeConn(set()), None, RULES, now, remasquer=True)["granules"] == [] and appels == []
