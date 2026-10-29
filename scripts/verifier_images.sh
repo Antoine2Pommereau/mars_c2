@@ -69,6 +69,7 @@ OUVRIER=mars_verif_travailleur_$$
 nettoyer() {
   docker rm -f "$API" "$WEB" "$BASE" "$FIGEE" "$SAINE" "$TEMPO" "$OTEL" "$OUVRIER" >/dev/null 2>&1 || true
   docker network rm "$RESEAU" >/dev/null 2>&1 || true
+  docker network rm "${RESEAU}_web" >/dev/null 2>&1 || true
 }
 trap nettoyer EXIT
 
@@ -126,8 +127,12 @@ print('modules chargés')
 verifier_web() {
   local image="$R/mars_c2-web:$TAG"
   docker image inspect "$image" >/dev/null 2>&1 || echec "$image absente : la construire d'abord"
-  # nginx résout le nom « backend » au démarrage : il est fourni ici, sans API derrière
-  docker run -d --name "$WEB" --platform "$PLATEFORME" --add-host backend:127.0.0.1 -p 18766:80 "$image" >/dev/null
+  # nginx résout le nom « backend » au démarrage : il est fourni ici, sans API derrière. Réseau Docker à part (lot UX1) :
+  # le relais de l'API résout « backend » par le DNS de Docker (127.0.0.11), absent hors d'un réseau défini (30 s
+  # d'attente) ; sur ce réseau sans API, la réponse est immédiate, comme pendant un déploiement
+  docker network create "${RESEAU}_web" >/dev/null
+  docker run -d --name "$WEB" --platform "$PLATEFORME" --network "${RESEAU}_web" --add-host backend:127.0.0.1 \
+    -p 18766:80 "$image" >/dev/null
   for _ in $(seq 1 30); do
     if curl -sf -m 3 http://localhost:18766/ | grep -q '<div id="root">'; then
       ok "web : nginx sert la page"
