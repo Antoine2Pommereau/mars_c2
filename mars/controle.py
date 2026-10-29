@@ -144,6 +144,21 @@ def verifier_plafond(rules: dict, source: str, valeur: int) -> int:
     return int(valeur)
 
 
+def regler_plafond(conn, rules: dict, source: str, valeur: int, auteur: str, motif: str | None) -> int:
+    """Plafond quotidien de scènes réglé hors du panneau (psycopg, commande taches.py plafond), comme la route
+    POST /api/controle/plafonds : borné par le fichier, motif obligatoire, journalisé. Retourne la valeur écrite."""
+    if not (motif or "").strip():
+        raise ValueError("motif obligatoire pour un plafond")
+    v = verifier_plafond(rules, source, valeur)
+    cle = f"plafond:{source}"
+    r = conn.execute("SELECT valeur FROM reglages_controle WHERE cle = %s FOR UPDATE", (cle,)).fetchone()
+    conn.execute("INSERT INTO reglages_controle (cle, valeur, auteur) VALUES (%s, %s::jsonb, %s) "
+                 "ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur, auteur = EXCLUDED.auteur, "
+                 "mis_a_jour_le = now()", (cle, json.dumps(v), auteur))
+    journaliser(conn, auteur, "plafond", source, {"valeur": r[0] if r else None}, {"valeur": v}, motif.strip())
+    return v
+
+
 def reglages(conn) -> dict:
     return {k: v for k, v in conn.execute("SELECT cle, valeur FROM reglages_controle").fetchall()}
 

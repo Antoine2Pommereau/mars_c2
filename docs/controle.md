@@ -72,7 +72,8 @@ Toujours derrière le tunnel SSH, mais prêt pour le jour où l'interface sera p
 
 **Plafond quotidien de scènes** de Sentinel 1 et 2 réglable dans le panneau, dans la plage du fichier
 (`controle.plafonds`, 0 à 4) ; motif obligatoire ; la valeur du fichier reste affichée (« fichier : 2 »). Le plafond 0
-coupe la source comme avant.
+coupe la source comme avant. Sans session du panneau : `taches.py plafond sentinel1 2 --motif TEXTE` (même borne, même
+journal, auteur `MARS_OPERATEUR`) ; sans argument, l'état.
 
 **Dépenses** : jauge du budget Sentinel du mois (dépensé, réservé, restant ; orange à 80 %), par source et au total ;
 VIIRS compté hors budget. Dépensé : coût réel des travailleurs détruits (estimé à défaut) ; réservé : travailleurs en

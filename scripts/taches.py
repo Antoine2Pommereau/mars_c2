@@ -38,6 +38,7 @@ Usage :
     python scripts/taches.py sentinel                 # passages Sentinel 1 à analyser maintenant (sélection automatique)
     python scripts/taches.py satellites-pause on|off [sentinel1|sentinel2|viirs|tip_and_cue|tout] [--jusqua DATE]
                                               [--motif TEXTE]   # lot P : pause ou reprise ; sans argument : état
+    python scripts/taches.py plafond [sentinel1|sentinel2 N --motif TEXTE]   # plafond de scènes, comme le panneau
     Commandes viirs, sentinel-analyser, sentinel2-analyser : refusées si la source est en pause, sauf --malgre-pause
     python scripts/taches.py operateur-hacher [NOM]   # lot P : ligne MARS_OPERATEURS du .env (connexion au panneau)
     python scripts/taches.py controle-diagnostic      # lignes MARS_OPERATEURS lues par taches et par l'API (lecture seule)
@@ -1090,6 +1091,30 @@ def _satellites_pause(conn, a):
               (f" jusqu'au {controle._paris(jusqua):%d/%m/%Y %H:%M} (heure de Paris)" if jusqua else ""))
 
 
+@commande("plafond")                                 # plafond quotidien de scènes, comme le panneau (sans argument : état)
+def _plafond(conn, a):
+    """plafond [sentinel1|sentinel2 N --motif TEXTE] : plafond quotidien de scènes, borné par controle.plafonds du
+    fichier, motif obligatoire, journalisé (auteur MARS_OPERATEUR, « terminal » par défaut)."""
+    rules = load_rules()
+    if not a.args:
+        regl = controle.reglages(conn)
+        for source, section in controle.PLAFONDS.items():
+            v = regl.get(f"plafond:{source}")
+            print(f"{source:<12} {rules[section]['scenes_max_par_jour'] if v is None else v} "
+                  f"({'panneau' if v is not None else 'fichier'} ; fichier : {rules[section]['scenes_max_par_jour']})")
+        return
+    if len(a.args) != 2 or not a.args[1].isdigit():
+        raise SystemExit("taches.py plafond [sentinel1|sentinel2 N --motif TEXTE]")
+    auteur = os.environ.get("MARS_OPERATEUR") or "terminal"
+    traces.attributs(**{"controle.cible": a.args[0], "controle.plafond": int(a.args[1])})
+    try:
+        with conn.transaction():
+            v = controle.regler_plafond(conn, rules, a.args[0], int(a.args[1]), auteur, a.motif)
+    except ValueError as err:
+        raise SystemExit(str(err))
+    print(f"{a.args[0]:<12} plafond de {v} scène(s) par jour")
+
+
 @commande("operateur-hacher", base=False)           # lot P : ligne MARS_OPERATEURS du .env (mot de passe saisi masqué)
 def _operateur_hacher(_conn, a):
     """Empreinte PBKDF2 SHA 256 du mot de passe d'un opérateur, saisi deux fois sans écho ; rien n'est écrit ni
@@ -1629,7 +1654,7 @@ def parser() -> argparse.ArgumentParser:
                     help="trajectoire-mesures : inventaire et cercle appris seulement (ni routes ni références)")
     ap.add_argument("--malgre-pause", action="store_true",
                     help="viirs, sentinel-analyser, sentinel2-analyser : lancer malgré la pause (consigné)")
-    ap.add_argument("--motif", help="satellites-pause, --malgre-pause : motif consigné dans journal_controle")
+    ap.add_argument("--motif", help="satellites-pause, plafond, --malgre-pause : motif consigné dans journal_controle")
     ap.add_argument("--lancer", type=int, metavar="ID",
                     help="essai-reel : lance l'essai réel sur le passage ID (sar_passes), types éprouvés seulement")
     ap.add_argument("--jusqua", help="satellites-pause on : reprise automatique (17/06/2024 08:00, heure de Paris)")

@@ -719,3 +719,20 @@ def test_rules_file_untouched():
     """Le panneau ne modifie jamais config/rules.yaml (une modification locale bloque git pull sur le serveur)."""
     src = Path(controle.__file__).read_text() + (ROOT / "backend" / "controle.py").read_text()
     assert "rules.yaml\", \"w" not in src and "write_text" not in src
+
+
+def test_ceiling_command_bounded_and_journaled(conn):
+    """taches.py plafond : même effet que la route du panneau (borné par le fichier, motif obligatoire, journalisé)."""
+    with pytest.raises(ValueError, match="motif obligatoire"):
+        controle.regler_plafond(conn, RULES, "sentinel1", 2, "claude-code", " ")
+    with pytest.raises(ValueError, match="hors de la plage"):
+        controle.regler_plafond(conn, RULES, "sentinel1", 99, "claude-code", "essai")
+    with pytest.raises(ValueError, match="aucun plafond"):
+        controle.regler_plafond(conn, RULES, "viirs", 1, "claude-code", "essai")
+    assert controle.regler_plafond(conn, RULES, "sentinel1", 1, "claude-code", "enquête") == 1
+    assert controle.regler_plafond(conn, RULES, "sentinel1", 2, "claude-code", "boucle tip and cue") == 2
+    assert controle.appliquer(conn, RULES)["sentinel"]["scenes_max_par_jour"] == 2
+    j = conn.execute("SELECT auteur, action, cible, avant->>'valeur', apres->>'valeur', motif FROM journal_controle "
+                     "ORDER BY id").fetchall()
+    assert j == [("claude-code", "plafond", "sentinel1", None, "1", "enquête"),
+                 ("claude-code", "plafond", "sentinel1", "1", "2", "boucle tip and cue")]
