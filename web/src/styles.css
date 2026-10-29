@@ -7,8 +7,9 @@
   --color-raised: #1b252e;
   --color-hair: #26323d;
   --color-ink: #e6ecf0;
-  --color-muted: #7c8b97;
-  --color-faint: #4c5a66;
+  /* Texte secondaire et discret : 4,5:1 au moins sur tous les fonds (lot UX1, mesuré ; avant #7c8b97 et #4c5a66) */
+  --color-muted: #97a4af;
+  --color-faint: #828c94;
   --color-signal: #4fb6c8;
   --color-dark: #e85bc7;
   --color-rdv: #f0a84b;
@@ -34,17 +35,17 @@
   --color-raised: #ffffff;
   --color-hair: #d3dbe2;
   --color-ink: #17222b;
-  --color-muted: #5b6b78;
-  --color-faint: #8b98a3;
-  --color-signal: #1f8798;
-  --color-dark: #c2309f;
-  --color-rdv: #b86e0c;
-  --color-gap: #d23f3c;
-  --color-unconf: #8f7c00;
+  --color-muted: #4f5d69;
+  --color-faint: #636c74;
+  --color-signal: #1b7584;
+  --color-dark: #bb2e99;
+  --color-rdv: #9b5d0a;
+  --color-gap: #c23a38;
+  --color-unconf: #7c6b00;
   --color-watch: #7a4fd1;
-  --color-u3: #d23f3c;
-  --color-u2: #c27610;
-  --color-u1: #6f7c86;
+  --color-u3: #c23a38;
+  --color-u2: #995d0d;
+  --color-u1: #616d75;
   --color-neutre: #4f5d69;
   --color-passage: #5d7489;
   --color-symbole: #1f7f91;
@@ -59,6 +60,8 @@ body { background: var(--color-abyss); color: var(--color-ink); font-family: var
 :root[data-theme="light"] .teinte { color: color-mix(in srgb, var(--teinte) 62%, #000); }
 .teinte-fond { background: var(--teinte); }
 :root[data-theme="light"] .teinte-fond { background: color-mix(in srgb, var(--teinte) 72%, #000); }
+/* Glossaire (components/Glose.tsx) : bulle au survol et au focus du clavier */
+.glose:hover > .glose-bulle, .glose:focus-visible > .glose-bulle { display: block; }
 :focus-visible { outline: 1.5px solid var(--color-signal); outline-offset: 2px; }
 .maplibregl-ctrl-attrib { font-size: 10.5px; background: color-mix(in srgb, var(--color-abyss) 60%, transparent) !important;
                          color: var(--color-muted); }

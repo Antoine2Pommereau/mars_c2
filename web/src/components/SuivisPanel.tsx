@@ -2,16 +2,18 @@ import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
-import { Tag } from "./Elements";
+import { Squelette, Tag, Vide } from "./Elements";
 import { Heure } from "./Heure";
 
 /** Navires suivis : dernière position et dernière alerte ; un clic ouvre la fiche et centre la carte. */
-export default function SuivisPanel({ suivis, onPick, titre = true }: { suivis: Props[]; onPick: (p: Props) => void; titre?: boolean }) {
+export default function SuivisPanel({ suivis, onPick, titre = true, chargement = false }:
+  { suivis: Props[]; onPick: (p: Props) => void; titre?: boolean; chargement?: boolean }) {
   const S = L.suivis;
   return (
     <div className="flex h-full flex-col">
       {titre && <header className="border-b border-hair px-4 pb-3 pt-4"><h2 className="text-[15px] font-semibold">{S.titre}</h2></header>}
-      {!suivis.length && <p className="px-4 py-6 text-muted">{S.aucun}</p>}
+      {chargement && !suivis.length && <Squelette className="px-4 py-4" />}
+      {!chargement && !suivis.length && <Vide titre={S.aucun} />}
       <ul className="flex-1 overflow-y-auto">
         {suivis.map((v) => (
           <li key={v.vessel_id}>

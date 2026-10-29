@@ -353,10 +353,15 @@ export default function App() {
   // Onglet du navigateur (lot UX1) : objet affiché, dossiers à examiner ; rien tant que le mode démonstration n'est pas
   // connu (les noms viennent de l'API, déjà masqués en démonstration)
   const O = L.onglet;
+  // Navire ouvert par l'adresse : la sélection n'a que son numéro ; son nom vient de la fiche (même requête que le
+  // panneau de détail, lue dans le cache : aucun appel de plus)
+  const vesselSelId = selection?.kind === "vessel" ? Number(selection.properties.vessel_id) : null;
+  const nomNavireSel = useQuery({ queryKey: ["vessel", vesselSelId], queryFn: () => api.vessel(vesselSelId!),
+    enabled: vesselSelId != null && selection?.kind === "vessel" && !selection.properties.name, staleTime: 60_000 }).data?.name;
   const objetOnglet = dossierSel ? O.dossier(dossierSel.nom)
     : selection?.kind === "alert" ? O.alerte(selection.feature.properties.id)
     : selection?.kind === "infrastructure" ? O.infrastructure(String(selection.properties.name ?? selection.properties.type ?? selection.properties.id))
-    : selection?.kind === "vessel" ? O.navire(String(selection.properties.name ?? selection.properties.mmsi ?? ""))
+    : selection?.kind === "vessel" ? O.navire(String(selection.properties.name ?? nomNavireSel ?? selection.properties.mmsi ?? ""))
     : panel === "coulisses" ? O.coulisses : O.veille;
   useEffect(() => appliquerOnglet(etatOnglet(dossiersQ.data?.dossiers, objetOnglet, demoQ.data?.masquage ?? true)),
     [dossiersQ.data, objetOnglet, demoQ.data?.masquage]);
@@ -548,7 +553,7 @@ export default function App() {
                 activite: <>
                   <PartiePassages region={region} status={etatSysteme} now={now} onPick={pickPassage} />
                   <Partie id="verifications" titre={L.controle.sections.verifications} ouverte>
-                    <div className="h-[18rem]"><ObservationsPanel titre={false} demandes={observationsQ.data?.demandes ?? []}
+                    <div className="h-[18rem]"><ObservationsPanel titre={false} chargement={observationsQ.isLoading} demandes={observationsQ.data?.demandes ?? []}
                       selectedId={observation && observation.sel === selection ? observation.id : null} onPick={pickObservation} /></div>
                   </Partie>
                   <Partie id="analyses" titre={L.controle.sections.analyses}>
@@ -563,8 +568,8 @@ export default function App() {
               }} />}
             {panel === "alertes" && <VeilleOnglets liste={dossiersQ.data} instant={instant} focus={dossierSel?.cle ?? null} onPick={pickDossier}
               aveugle={veilleAveugle} onglet={onglet} onOnglet={setOnglet}
-              suivis={<SuivisPanel titre={false} suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
-              fil={<AlertsPanel alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels} vignettes={vignettes}
+              suivis={<SuivisPanel titre={false} chargement={(region ? suivisRegionQ : suivisQ).isLoading} suivis={(region ? suivisRegionQ.data : suivisQ.data) ?? []} onPick={pickVessel} />}
+              fil={<AlertsPanel chargement={alertsQ.isLoading} alerts={rangeAlerts} filtres={filtres} onFiltres={setFiltres} vessels={vessels} vignettes={vignettes}
                 suivis={suivis} now={now} selectedId={selectedId} onPick={pickAlert} />} />}
             </div>
           </aside>

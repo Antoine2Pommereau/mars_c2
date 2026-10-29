@@ -97,3 +97,64 @@ const apercu = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630
 const og = png(apercu, 1200);
 ecrire("og.png", og);
 ecrire("apercu_social.png", og, IMAGES);
+
+// Pages d'erreur servies par nginx (web/nginx.conf) : 404, 503 (mise à jour en cours, aussi pour une API injoignable
+// pendant un déploiement), 502 (délai dépassé). Même logotype ; les pages d'attente reviennent seules à la page
+// d'origine dès que /api/health répond (erreurs/retour.js, script du site : la politique de contenu interdit le script
+// en ligne).
+const ERREURS = join(PUBLIC, "erreurs");
+mkdirSync(ERREURS, { recursive: true });
+const logo = symboleSvg({ couleur: "currentColor", enLigne: true, px: 28 });
+function page(titre, texte, { attente = false, lien = false } = {}) {
+  return `<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>MARS C2 · ${titre}</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--fond:#0e1419;--panneau:#141c23;--filet:#26323d;--encre:#e6ecf0;--second:#8d9ba6;--symbole:#4fb6c8}
+@media (prefers-color-scheme: light){:root{--fond:#e9edf1;--panneau:#f7f9fa;--filet:#d3dbe2;--encre:#17222b;--second:#5b6b78;--symbole:#1f7f91}}
+html,body{height:100%;margin:0}
+body{display:grid;place-items:center;background:var(--fond);color:var(--encre);font:14px/1.5 "IBM Plex Sans",system-ui,sans-serif;padding:16px;box-sizing:border-box}
+main{max-width:400px;width:100%;box-sizing:border-box;padding:28px;border:1px solid var(--filet);border-radius:10px;background:var(--panneau)}
+.logo{display:flex;align-items:center;gap:10px;margin-bottom:24px;color:var(--symbole)}
+.nom{display:block;font:600 14px/1 "IBM Plex Sans Condensed","IBM Plex Sans",system-ui,sans-serif;letter-spacing:.12em;color:var(--encre)}
+.sous{display:block;margin-top:3px;font-size:10px;line-height:1;color:var(--second)}
+h1{margin:0 0 6px;font-size:17px;font-weight:600}
+p{margin:0;color:var(--second)}
+a{color:var(--symbole)}
+.attente{margin-top:16px;font-size:12px}
+.mention{margin-top:24px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--second)}
+</style>
+</head>
+<body>
+<main>
+<div class="logo">${logo}<span><span class="nom">MARS C2</span><span class="sous">Surveillance maritime</span></span></div>
+<h1>${titre}</h1>
+<p>${texte}</p>
+${attente ? '<p class="attente" id="attente">Nouvel essai toutes les cinq secondes.</p>\n<script src="/erreurs/retour.js" defer></script>' : ""}${lien ? '<p class="attente"><a href="/">Revenir à la Veille</a></p>' : ""}
+<p class="mention">Données ouvertes · Projet personnel</p>
+</main>
+</body>
+</html>
+`;
+}
+ecrire("erreurs/404.html", page("Page introuvable", "Cette adresse ne correspond à aucune page de MARS C2.", { lien: true }));
+ecrire("erreurs/503.html", page("Mise à jour en cours", "Retour dans une minute : cette page se recharge seule dès que le service répond.", { attente: true }));
+ecrire("erreurs/502.html", page("Le service ne répond pas", "Le serveur de MARS C2 met trop de temps à répondre. Cette page se recharge seule dès qu'il répond.", { attente: true }));
+ecrire("erreurs/retour.js", `// Pages d'attente (503, 502) : interroge /api/health toutes les cinq secondes et revient à la page d'origine
+// (paramètre « retour », adresse du site seulement) dès que le service répond.
+const demande = new URLSearchParams(location.search).get("retour");
+const retour = demande && demande.startsWith("/") && !demande.startsWith("//") ? demande
+  : location.pathname.startsWith("/erreurs/") ? "/" : location.pathname + location.search;
+setInterval(async () => {
+  try {
+    const r = await fetch("/api/health", { cache: "no-store" });
+    if (r.ok && (r.headers.get("content-type") || "").includes("json")) location.replace(retour);
+  } catch { /* toujours injoignable : nouvel essai */ }
+}, 5000);
+`);

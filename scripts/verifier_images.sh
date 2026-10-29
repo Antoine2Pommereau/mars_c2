@@ -131,12 +131,34 @@ verifier_web() {
   for _ in $(seq 1 30); do
     if curl -sf -m 3 http://localhost:18766/ | grep -q '<div id="root">'; then
       ok "web : nginx sert la page"
+      verifier_pages_erreur
       return
     fi
     sleep 1
   done
   docker logs --tail 30 "$WEB"
   echec "web : la page n'est pas servie"
+}
+
+# Lot UX1 : pages d'erreur de nginx. L'image tourne ici sans API : c'est la situation d'un déploiement.
+verifier_pages_erreur() {
+  local corps code
+  corps=$(mktemp)
+  code=$(curl -s -m 5 -o "$corps" -w '%{http_code}' http://localhost:18766/api/health)
+  [ "$code" = 503 ] && grep -q 'Mise à jour en cours' "$corps" && grep -q '/erreurs/retour.js' "$corps" \
+    || echec "web : sans API, /api/ devrait renvoyer la page « Mise à jour en cours » en 503 (reçu $code)"
+  ok "web : API absente, page « Mise à jour en cours » (503) qui revient seule"
+  code=$(curl -s -m 5 -o "$corps" -w '%{http_code}' http://localhost:18766/assets/absent.js)
+  [ "$code" = 404 ] && grep -q 'Page introuvable' "$corps" || echec "web : un fichier absent devrait renvoyer la page 404 (reçu $code)"
+  ok "web : fichier absent, page 404"
+  code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://localhost:18766/erreurs/retour.js)
+  [ "$code" = 200 ] || echec "web : erreurs/retour.js non servi (reçu $code)"
+  for f in favicon.svg favicon-32.png favicon-16.png apple-touch-icon.png icon-512.png site.webmanifest og.png; do
+    code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://localhost:18766/$f")
+    [ "$code" = 200 ] || echec "web : $f non servi (reçu $code)"
+  done
+  ok "web : icônes, manifeste et image d'aperçu servis"
+  rm -f "$corps"
 }
 
 verifier_ai2() {

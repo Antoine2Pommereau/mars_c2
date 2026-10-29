@@ -199,6 +199,13 @@ L'instant est tenu par le navigateur (routes `?at=`) ; l'horloge partagée a ét
   navigateur) ; jetons redéfinis sous `[data-theme="light"]` ; carte : fond Positron, couleurs écrites pour le sombre
   et teintes par `teinter` (calques par `ajouter` et `peindre` dans `MapView`), jamais de variable CSS dans MapLibre ;
   texte d'une couleur posée en ligne : classe `teinte` (`--teinte`).
+* **Identité et confort (lot UX1)** : symbole « viseur » à source unique (`lib/symbole.ts`) ; icônes, manifeste,
+  image d'aperçu et pages d'erreur nginx produits par `web/outils/icones` (`npm ci && npm run generer`, polices IBM
+  Plex de Fontsource décodées du WOFF), jamais à la main ; onglet « (N) MARS C2 · objet » et favicon à pastille
+  (`lib/onglet.ts`, rien en démonstration) ; unités marines (`lib/unites.ts` : degrés et minutes, NM, nœuds, UTC
+  suffixé Z, groupe date heure en option, `texteMarin` pour les phrases de l'API) et `<Heure>` (Paris au survol) ;
+  glossaire (`Glose`, `L.glossaire`) ; `Squelette` et `Vide` ; API arrêtée : page « Mise à jour en cours » qui revient
+  seule (`lib/maj.ts`) ; contraste du texte 4,5:1 mesuré par `web/tests/contraste.test.mjs`.
 * Barre d'état : région affichée (un seul réglage pour tout l'écran), voyant Système unique, recherche (Cmd + K).
 * Rail à deux espaces : **Veille** (dossiers par navire ou par point, « à examiner », « à noter » repliés ; onglets À
   examiner, Alertes, Suivis) et **Coulisses** (quatre groupes, dix rubriques : Compte, Notifications, Affichage et

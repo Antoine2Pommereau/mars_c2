@@ -269,17 +269,23 @@ class Ntfy:
         n = cls()
         return n if n.sujet else None
 
-    def envoyer(self, titre: str, message: str, priorite: str = "high", tags: str = "warning") -> int:
+    def envoyer(self, titre: str, message: str, priorite: str = "high", tags: str = "warning",
+                clic: str | None = None) -> int:
+        """`clic` : adresse ouverte d'un appui sur la notification (en tête Click, lot UX1), vers l'objet dans l'interface."""
         from mars import traces                         # appel externe tracé ; ni sujet ni message dans le span
-        with traces.span("POST ntfy alerte", **{"peer.service": "ntfy", "ntfy.priorite": priorite}) as sp:
-            code = self._envoyer(titre, message, priorite, tags)
+        with traces.span("POST ntfy alerte", **{"peer.service": "ntfy", "ntfy.priorite": priorite,
+                                                 "ntfy.lien": clic is not None}) as sp:
+            code = self._envoyer(titre, message, priorite, tags, clic)
             sp.set_attribute("http.response.status_code", code)
             return code
 
-    def _envoyer(self, titre: str, message: str, priorite: str, tags: str) -> int:
+    def _envoyer(self, titre: str, message: str, priorite: str, tags: str, clic: str | None = None) -> int:
         # Les en têtes HTTP sont en latin 1 : le titre passe en UTF 8 par l'encodage RFC 2047 que ntfy décode
+        entetes = {"Title": _rfc2047(titre), "Priority": priorite, "Tags": tags}
+        if clic:
+            entetes["Click"] = clic
         req = urllib.request.Request(f"{self.url}/{self.sujet}", data=message.encode("utf-8"), method="POST",
-                                     headers={"Title": _rfc2047(titre), "Priority": priorite, "Tags": tags})
+                                     headers=entetes)
         try:
             with self.opener(req, timeout=15) as r:
                 return r.status

@@ -6,10 +6,11 @@ import { L } from "../lib/libelles";
 import type { Feature, Props } from "../lib/types";
 import { naviresAlerte, TYPES_ALERTE, typeAlerte } from "../registres/alertes";
 import { URGENCE, urgenceGravite } from "../lib/urgence";
-import { Tag } from "./Elements";
+import { Squelette, Tag, Vide } from "./Elements";
 import { Vignette } from "./Fiches";
 
 interface PanelProps {
+  chargement?: boolean;         // première lecture de la plage en cours
   alerts: Feature[];            // alertes de la plage
   filtres: Filtres;
   onFiltres: (f: Filtres) => void;
@@ -63,7 +64,7 @@ function Ligne({ a, vessels, now, selected, onPick, indent, vignette }:
 
 /** Fil d'alertes de la plage et de la région affichée (réglage de la barre d'état) : filtres par type, gravité et
  *  statut ; tri par gravité puis date ; alertes d'un même navire regroupées. */
-export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivis, now, selectedId, onPick, vignettes }: PanelProps) {
+export default function AlertsPanel({ chargement = false, alerts, filtres, onFiltres, vessels, suivis, now, selectedId, onPick, vignettes }: PanelProps) {
   const [ouverts, setOuverts] = useState<Set<string>>(new Set());
   const sansVue = useMemo(() => filtrer(alerts, filtres, false), [alerts, filtres]);
   const shown = useMemo(() => trier(filtrer(alerts, filtres)), [alerts, filtres]);
@@ -115,8 +116,9 @@ export default function AlertsPanel({ alerts, filtres, onFiltres, vessels, suivi
       </header>
 
       <ul className="flex-1 overflow-y-auto">
-        {shown.length === 0 && (
-          <li className="px-4 py-6 text-muted">{filtres.vue === "todo" ? L.fil.aucune.todo : L.fil.aucune.autre}</li>
+        {chargement && shown.length === 0 && <li><Squelette lignes={4} className="px-4 py-4" /></li>}
+        {!chargement && shown.length === 0 && (
+          <li><Vide titre={filtres.vue === "todo" ? L.fil.aucune.todo : L.fil.aucune.autre} raison={L.fil.aucuneRaison} /></li>
         )}
         {groupes.map((g) => {
           const suivi = g.vesselId != null && suivis.has(g.vesselId);

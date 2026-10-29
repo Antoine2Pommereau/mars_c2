@@ -3,7 +3,7 @@ import { type CSSProperties, useMemo, useState } from "react";
 import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
 import { typeAlerte } from "../registres/alertes";
-import { Tag } from "./Elements";
+import { Squelette, Tag, Vide } from "./Elements";
 import { Heure } from "./Heure";
 
 // Type de tip : icône et couleur du type d'alerte correspondant (registre des alertes) ; demande manuelle à part
@@ -27,8 +27,8 @@ const FILTRES: Filtre[] = ["toutes", "planifiee", "en_attente", "analysee", "clo
 /** Demandes d'observation (tip and cue, lot T1), dans l'ordre de l'API : planifiées par passage le plus proche, en
  *  attente, analysées les plus récentes ; les closes sans résultat repliées en bas. Un clic ouvre la fiche du navire
  *  (ou de l'alerte d'origine) et montre la position prédite et son cercle. */
-export default function ObservationsPanel({ demandes, selectedId, onPick, titre = true }:
-  { demandes: Props[]; selectedId: number | null; onPick: (d: Props) => void; titre?: boolean }) {
+export default function ObservationsPanel({ demandes, selectedId, onPick, titre = true, chargement = false }:
+  { demandes: Props[]; selectedId: number | null; onPick: (d: Props) => void; titre?: boolean; chargement?: boolean }) {
   const O = L.observations;
   const [filtre, setFiltre] = useState<Filtre>("toutes");
   const [closesOuvertes, setClosesOuvertes] = useState(false);
@@ -107,7 +107,8 @@ export default function ObservationsPanel({ demandes, selectedId, onPick, titre 
           </li>
         )}
         {closesOuvertes && closes.map(ligne)}
-        {!vivantes.length && !closes.length && <li className="px-4 py-6 text-muted">{O.aucune}</li>}
+        {chargement && !vivantes.length && !closes.length && <li><Squelette className="px-4 py-4" /></li>}
+        {!chargement && !vivantes.length && !closes.length && <li><Vide titre={O.aucune} raison={O.aucuneRaison} /></li>}
       </ul>
     </div>
   );

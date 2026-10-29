@@ -10,6 +10,7 @@ import { sectionsDe, type Contexte } from "../registres/sections";
 import { useInfraCard, usePassage } from "./Fiches";
 import { horodatage, jourHeure } from "../lib/format";
 import { Heure } from "./Heure";
+import { Squelette } from "./Elements";
 
 /** Fiche d'une zone de vigilance (lot P) : profil, motif, période, surface ; alertes qui portent la zone, demandes
  *  d'observation et passages qui la couvrent */
@@ -17,7 +18,7 @@ function FicheVigilance({ id, onPickAlert }: { id: number; onPickAlert: (f: Feat
   const V = L.fiche.vigilance;
   const q = useQuery({ queryKey: ["controle", "zone", id], queryFn: () => api.controle.zone(id), staleTime: 30_000 });
   const z = q.data;
-  if (!z) return <p className="text-muted">{L.commun.chargement}</p>;
+  if (!z) return <Squelette />;
   const ouvrir = (aid: number) => api.alert(aid).then(onPickAlert).catch(() => undefined);
   return (
     <div className="space-y-3 text-[12.5px]">

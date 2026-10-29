@@ -2,7 +2,7 @@ import { symboleSvg } from "../lib/symbole";
 import { L } from "../lib/libelles";
 
 /** Symbole « viseur » (lib/symbole.ts) à la couleur du jeton `symbole` du thème ; décoratif, le nom l'accompagne. */
-export function Symbole({ taille = 24, petit = false }: { taille?: number; petit?: boolean }) {
+function Symbole({ taille = 24, petit = false }: { taille?: number; petit?: boolean }) {
   return <span className="inline-flex shrink-0 text-symbole" style={{ width: taille, height: taille }}
     dangerouslySetInnerHTML={{ __html: symboleSvg({ couleur: "currentColor", enLigne: true, petit, px: taille }) }} />;
 }

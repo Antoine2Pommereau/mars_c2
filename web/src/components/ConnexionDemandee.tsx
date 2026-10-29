@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import { L } from "../lib/libelles";
 import { enregistrerDemandeur } from "../lib/session";
+import { Logotype } from "./Logotype";
 
 const C = L.controle;
 const champ = "w-full rounded border border-hair bg-abyss px-2 py-1.5 text-[12.5px] text-ink placeholder:text-faint focus:border-signal focus:outline-none";
@@ -50,7 +51,8 @@ export default function ConnexionDemandee() {
     <div role="dialog" aria-modal="true" aria-label={C.demandee.titre} data-connexion-demandee
       className="fixed inset-0 z-[60] flex items-center justify-center bg-abyss/70 p-6" onClick={() => finir(false)}>
       <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => { e.preventDefault(); entrer(); }}
-        className="w-80 space-y-2 rounded-lg border border-hair bg-panel p-4 shadow-2xl">
+        className="w-80 space-y-2 rounded-lg border border-hair bg-panel p-5 shadow-2xl">
+        <div className="pb-3"><Logotype taille={28} /></div>
         <h2 className="text-[14px] font-semibold text-ink">{C.demandee.titre}</h2>
         <p className="text-[12px] text-muted">{C.demandee.texte}</p>
         <input className={champ} placeholder={C.operateur} value={nom} onChange={(e) => setNom(e.target.value)} autoFocus

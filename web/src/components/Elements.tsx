@@ -4,19 +4,45 @@ import { L } from "../lib/libelles";
 import { grouperSources } from "../lib/sources";
 import type { Props } from "../lib/types";
 import { distanceKm, texteMarin } from "../lib/unites";
+import { Glose } from "./Glose";
 
 /** Éléments communs des fiches : ligne libellé et valeur, contexte, identités successives, sources des listes. */
 export function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex justify-between gap-4 border-b border-hair/70 py-1.5">
-      <span className="text-muted">{label}</span><span className="text-right">{children}</span>
+      <span className="text-muted"><Glose texte={label} /></span><span className="text-right">{children}</span>
+    </div>
+  );
+}
+
+/** Chargement (lot UX1) : quelques barres fixes à la place du contenu, sans animation qui tourne seule. */
+export function Squelette({ lignes = 3, className = "" }: { lignes?: number; className?: string }) {
+  return (
+    <div role="status" aria-busy="true" className={`space-y-2.5 ${className}`}>
+      <span className="sr-only">{L.commun.chargement}</span>
+      {Array.from({ length: lignes }, (_, i) => (
+        <div key={i} className="space-y-1.5">
+          <div className="h-2.5 rounded-sm bg-raised" style={{ width: `${[62, 78, 54, 70][i % 4]}%` }} />
+          <div className="h-2 rounded-sm bg-raised/70" style={{ width: `${[88, 66, 80, 58][i % 4]}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** État vide (lot UX1) : ce qui apparaîtra ici, et pourquoi c'est vide. */
+export function Vide({ titre, raison, className = "px-4 py-6" }: { titre: string; raison?: string; className?: string }) {
+  return (
+    <div className={className}>
+      <p className="text-[12.5px] text-ink/85">{titre}</p>
+      {raison && <p className="mt-1 text-[11.5px] leading-snug text-muted">{raison}</p>}
     </div>
   );
 }
 
 export function Context({ items }: { items?: string[] }) {
   if (!items?.length) return null;
-  return <ul className="list-disc space-y-1 pl-5 text-ink/85">{items.map((t, i) => <li key={i}>{texteMarin(t)}</li>)}</ul>;
+  return <ul className="list-disc space-y-1 pl-5 text-ink/85">{items.map((t, i) => <li key={i}><Glose texte={texteMarin(t)} /></li>)}</ul>;
 }
 
 export function vesselText(v?: Props) {

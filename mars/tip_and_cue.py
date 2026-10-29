@@ -816,7 +816,8 @@ def _retour_alerte(conn, alerte_id: int, trace_alerte: str | None, did: int, tip
                 notifier(titre, message)
             else:                       # préférences du panneau de contrôle et heures calmes (lot P)
                 from mars import controle
-                controle.notifier("tip_and_cue", nouvelle, titre, message, conn=conn)
+                controle.notifier("tip_and_cue", nouvelle, titre, message, conn=conn,
+                                  lien=controle.lien_interface(f"alerte:{alerte_id}"))
     return {"alerte": alerte_id, "gravite_avant": gravite, "gravite_apres": nouvelle or gravite}
 
 

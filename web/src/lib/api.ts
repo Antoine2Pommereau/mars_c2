@@ -1,9 +1,11 @@
+import { basculerSurMaj, signalerReponse } from "./maj";
 import { demanderConnexion } from "./session";
 import { appel } from "./traces";
 import type { FC, Feature, Props } from "./types";
 
 async function get<T>(path: string): Promise<T> {
   const r = await appel(`/api${path}`);
+  if (signalerReponse(r.status, r.headers.get("content-type"))) basculerSurMaj();
   if (!r.ok) throw new Error(`${path} : ${r.status}`);
   return r.json();
 }

@@ -1519,3 +1519,33 @@ même orbite, mêmes fenêtres, `travailleurs/essai_diagnostic_s1.py`). Décisio
   Sentinel) : test géométrique et test par indice de cellule identiques, 0 désaccord. Ni réévaluation ni refusion.
 * **Commande `plafond`** : ligne 30 de `journal_controle` (auteur claude-code, action `plafond`, cible sentinel1,
   avant 1, après 2, motif, trace), même forme que la ligne 22 écrite par le panneau.
+
+## 29/10/2026 : lot UX1, identité et confort d'usage
+
+Aucune règle changée, aucune migration, aucune dépense. Captures avant et après (Chromium sans affichage, mode
+démonstration, base de test du 08 et 09/10 servie par les images de production en local) regardées une à une.
+* Symbole « viseur » (géométrie du canevas, version 16 sans repères, pastille) à source unique `web/src/lib/symbole.ts` ;
+  `web/outils/icones/generer.mjs` produit favicon.svg (couleur selon le thème du système), favicon 32 et 16,
+  apple-touch-icon, icon-512, site.webmanifest, og.png (1200 × 630, aussi `docs/images/apercu_social.png`) et les pages
+  d'erreur. Polices IBM Plex de Fontsource (les paquets d'IBM installent un module de télémétrie : écartés).
+* Onglet « (N) MARS C2 · Veille, Dossier, Alerte, Infrastructure, Navire, Coulisses », N = urgents plus à examiner,
+  favicon à pastille rouge ou orange, rien en démonstration ni tant que le mode n'est pas connu ; noms déjà masqués par
+  l'API. Logotype et bandeau « Données ouvertes · Projet personnel » dans la barre (44 px au lieu de 36).
+* Unités marines (Coulisses, Affichage) : degrés et minutes décimales par défaut, degrés décimaux en option ; milles
+  nautiques (NM ; mètres sous 0,1 mille pour l'appariement radar et VIIRS) ; nœuds ; heures UTC suffixées Z partout,
+  heure de Paris au survol et au focus ; groupe date heure en option pour dossiers et alertes. Phrases de l'API
+  (« à 6,2 km », « À 487 m ») converties à l'affichage, longueurs de navire et surfaces gardées (km² : pas des
+  distances).
+* Glossaire au survol et au focus (AIS, MMSI, OMI, VIIRS, SAR, tip and cue, zone de réception fiable) dans les fiches,
+  les contextes d'alerte et les sources des Coulisses. Squelettes à la place des « Chargement… » et états vides qui
+  disent ce qui apparaîtra.
+* Pages nginx : 404 (fichier absent, plus la page de l'interface), 503 « Mise à jour en cours » pour l'API arrêtée ou
+  injoignable (un déploiement), 502 pour un délai dépassé ; l'interface bascule seule après deux réponses de ce type et
+  revient à la même vue : essai local, bascule en 24 s après l'arrêt de l'API, retour 10 s après son redémarrage.
+  Vérifié par `verifier_images.sh web`. Fenêtre de connexion au logotype.
+* Notifications ntfy : en tête Click vers l'alerte (`controle.lien_interface`, MARS_URL_INTERFACE, tunnel par défaut).
+  Pour une autre adresse, ligne à ajouter au .env du serveur : `MARS_URL_INTERFACE=https://…`.
+* Contraste du texte mesuré à 4,5:1 au moins sur chaque fond des deux thèmes : `muted` et `faint` du sombre éclaircis
+  (#97a4af, #828c94 : `faint` était à 2,4:1), clair assombri (signal, alertes) ; test `web/tests/contraste.test.mjs`.
+* Image d'aperçu du dépôt GitHub : à déposer à la main (Settings, General, Social preview), aucune API ne le permet.
+* Tests : 583 réussis avec la base ; interface : typecheck, knip, 41 tests.

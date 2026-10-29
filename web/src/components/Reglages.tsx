@@ -12,6 +12,8 @@ import { libelleAlerte } from "../registres/alertes";
 import type { VueCarte } from "../lib/preferences";
 import { ListeIndicateurs } from "./BarreEtat";
 import { Heure } from "./Heure";
+import { Glose } from "./Glose";
+import { Squelette } from "./Elements";
 
 const C = L.controle;
 const euros = (v: number) => `${v.toFixed(2).replace(".", ",")} €`;
@@ -105,7 +107,7 @@ function Source({ i, actif }: { i: Interrupteur; actif: boolean }) {
     <li className="py-1.5">
       <div className="flex items-center gap-2">
         <span className={`h-2 w-2 shrink-0 rounded-full ${i.en_pause ? "bg-rdv" : "bg-faint"}`} />
-        <span className="flex-1 text-[12.5px] text-ink">{C.sources[i.source] ?? i.nom}</span>
+        <span className="flex-1 text-[12.5px] text-ink"><Glose texte={C.sources[i.source] ?? i.nom} /></span>
         <span className={`text-[11.5px] ${i.en_pause ? "text-rdv" : "text-muted"}`}>{i.en_pause ? C.enPause : C.enService}</span>
         <button className={bouton} disabled={!actif || m.isPending} data-reglage={`pause-${i.source}`}
           onClick={() => (i.en_pause ? m.mutate(false) : setOuvert(!ouvert))}>
@@ -670,7 +672,7 @@ function CoutParResultat({ c }: { c: EtatControle["cout_par_resultat"] }) {
             if (!x) return null;
             return (
               <tr key={s} className="align-top text-muted" title={s === "tip_and_cue" ? R.inclus : undefined}>
-                <td className="py-0.5">{R.sources[s]}</td>
+                <td className="py-0.5"><Glose texte={R.sources[s]} /></td>
                 <td className="text-right">{x.resultats} {R.unites[x.unite] ?? R.resultats}</td>
                 <td className="text-right text-ink">{x.cout_par_resultat != null ? euros(x.cout_par_resultat) : R.aucun}</td>
                 <td className="pl-2 text-right text-faint">{x.depense_echecs > 0 ? R.echecs(euros(x.depense_echecs)) : ""}</td>
@@ -686,7 +688,7 @@ function CoutParResultat({ c }: { c: EtatControle["cout_par_resultat"] }) {
 /** Budget : dépenses du mois par source et budget mensuel, coût par résultat, coût des derniers travailleurs */
 export function RubriqueBudget() {
   const e = useEtatControle().data;
-  if (!e) return <p className="text-muted">{L.commun.chargement}</p>;
+  if (!e) return <Squelette />;
   return (
     <>
       <Jauge b={e.budget} />
@@ -797,7 +799,7 @@ export function RubriqueRegles() {
   const actif = useSession().data?.operateur != null;
   const q = useQuery({ queryKey: ["controle", "regles"], queryFn: api.controle.regles, refetchInterval: 60_000 });
   const m = useQuery({ queryKey: ["mesuresDecisions"], queryFn: () => api.mesuresDecisions(30), staleTime: 60_000 });
-  if (!q.data) return <p className="text-muted">{L.commun.chargement}</p>;
+  if (!q.data) return <Squelette />;
   const par = Object.entries((m.data?.par_type ?? {}) as Record<string, Record<string, number | null>>);
   return (
     <>

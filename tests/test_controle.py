@@ -483,7 +483,11 @@ def test_held_at_night_then_wake_up_summary(conn, monkeypatch):
 def test_new_alerts_notified_by_severity_and_type(conn):
     vus = []
 
+    liens = []
+
     def envoi(categorie, gravite, _titre, _message, **kw):
+        if kw.get("lien"):
+            liens.append(kw["lien"])
         vus.append((gravite, kw.get("type_alerte"), controle.decision_notification(
             controle.preferences(RULES, None), categorie, gravite, kw["now"], kw.get("type_alerte"))))
     conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_n:%'")
@@ -494,6 +498,7 @@ def test_new_alerts_notified_by_severity_and_type(conn):
                      (typ, sev, f"essai_n:{k}"))
     out = controle.notifier_alertes(conn, RULES, PARIS_JOUR, envoi)
     assert out == {"nouvelles": 3, "notifiees": 1} and vus == [("elevee", "WATCHLIST", "envoyer")]
+    assert liens and all(x.startswith("http://localhost:8080/?sel=alerte:") for x in liens)    # lot UX1 : en tête Click
     assert controle.notifier_alertes(conn, RULES, PARIS_JOUR, envoi) == {"nouvelles": 0, "notifiees": 0}
     conn.execute("DELETE FROM alerts WHERE rule_key LIKE 'essai_n:%'")
 
@@ -736,3 +741,11 @@ def test_ceiling_command_bounded_and_journaled(conn):
                      "ORDER BY id").fetchall()
     assert j == [("claude-code", "plafond", "sentinel1", None, "1", "enquête"),
                  ("claude-code", "plafond", "sentinel1", "1", "2", "boucle tip and cue")]
+
+
+def test_interface_link_from_environment(monkeypatch):
+    """Lot UX1 : adresse de l'objet ouverte d'un appui sur la notification, tunnel SSH par défaut."""
+    monkeypatch.delenv("MARS_URL_INTERFACE", raising=False)
+    assert controle.lien_interface("alerte:12") == "http://localhost:8080/?sel=alerte:12"
+    monkeypatch.setenv("MARS_URL_INTERFACE", "https://mars.exemple.fr/")
+    assert controle.lien_interface() == "https://mars.exemple.fr/"

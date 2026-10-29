@@ -23,6 +23,8 @@ x-cdse-travailleur: &cdsetravailleur
 x-ntfy: &ntfy
   NTFY_SUJET: ${NTFY_SUJET:-}
   NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+  # Adresse de l'interface vue du téléphone ou du navigateur : une notification ouvre l'alerte (en tête Click de ntfy)
+  MARS_URL_INTERFACE: ${MARS_URL_INTERFACE:-http://localhost:8080}
 
 services:
   db:

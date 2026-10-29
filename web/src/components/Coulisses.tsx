@@ -6,6 +6,7 @@ import { L } from "../lib/libelles";
 import { COULEUR_NIVEAU, mesurer } from "../registres/etat";
 import { chercherReglages, GROUPES, type Reglage, type Rubrique } from "../registres/reglages";
 import { quandEcheance, Visee } from "./Reglages";
+import { Vide } from "./Elements";
 
 const C = L.coulisses;
 const A = C.attention;
@@ -89,7 +90,7 @@ export default function Coulisses({ status, now, rubrique, partie, onRubrique, o
                 </li>
               ))}
             </ul>
-          ) : <p className="px-1 py-2 text-[12px] text-muted">{C.aucun}</p>
+          ) : <Vide titre={C.aucun} raison={C.aucunRaison} className="px-1 py-2" />
         ) : (
           <div className="mt-2 space-y-3 overflow-y-auto">
             {GROUPES.map((g) => (

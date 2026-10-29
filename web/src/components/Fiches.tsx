@@ -8,7 +8,7 @@ import { appel } from "../lib/traces";
 import type { Feature, Props, SourceDetection } from "../lib/types";
 import { zoneAlerte } from "../lib/fil";
 import { COULEUR_LISTE, couleurAlerte, libelleAlerte } from "../registres/alertes";
-import { Row, Tag } from "./Elements";
+import { Row, Squelette, Tag } from "./Elements";
 import PreuveImage from "./PreuveImage";
 import { Heure } from "./Heure";
 import { distance, distanceKm, vitesse } from "../lib/unites";
@@ -130,7 +130,7 @@ export function Comportement({ vesselId, debut, fin, onPickInfra }:
   { vesselId: number; debut: string; fin: string; onPickInfra: (id: number) => void }) {
   const q = useQuery({ queryKey: ["comportement", vesselId, debut, fin], queryFn: () => api.comportement(vesselId, debut, fin), retry: 1 });
   const C = F.comportement;
-  if (q.isLoading) return <p className="text-muted">{L.commun.chargement}</p>;
+  if (q.isLoading) return <Squelette />;
   const d = q.data;
   if (!d || (!d.silences.length && !d.arrets.length && !d.passages_infra.length)) return <p className="text-muted">{C.aucun}</p>;
   return (
@@ -221,7 +221,7 @@ export function useInfraCard(id: number, debut: string, fin: string) {
 export function InfraIdentite({ id, debut, fin }: { id: number; debut: string; fin: string }) {
   const d = useInfraCard(id, debut, fin).data;
   const I = F.infra;
-  if (!d) return <p className="text-muted">{L.commun.chargement}</p>;
+  if (!d) return <Squelette />;
   return (
     <>
       <Row label={I.type}>{d.type}</Row>
@@ -268,7 +268,7 @@ export function InfraAlertes({ id, debut, fin, onPickAlert }:
 export function ZoneResume({ zone }: { zone: string }) {
   const d = useQuery({ queryKey: ["zoneCard", zone], queryFn: () => api.zoneCard(zone), staleTime: 300_000 }).data;
   const Z = F.zone;
-  if (!d) return <p className="text-muted">{L.commun.chargement}</p>;
+  if (!d) return <Squelette />;
   const r = d.reception ?? {};
   return (
     <>

@@ -562,15 +562,23 @@ def preferences_en_base(conn) -> dict | None:
 
 
 def notifier(categorie: str, gravite: str, titre: str, message: str, conn=None, rules: dict | None = None,
-             type_alerte: str | None = None, now: datetime | None = None) -> str:
+             type_alerte: str | None = None, now: datetime | None = None, lien: str | None = None) -> str:
     """Notification selon les préférences (psycopg) : envoyée, retenue pour le résumé du réveil, ou tue. Sans connexion,
-    envoyée telle quelle (base indisponible). Retourne la décision."""
+    envoyée telle quelle (base indisponible). `lien` : objet ouvert d'un appui (lien_interface). Retourne la décision."""
     if conn is not None:
         d = decider(conn, categorie, gravite, titre, message, rules, type_alerte, now)
         if d != "envoyer":
             return d
-    envoyer(gravite, titre, message, "satellite" if categorie in ("travailleurs", "tip_and_cue") else "warning")
+    envoyer(gravite, titre, message, "satellite" if categorie in ("travailleurs", "tip_and_cue") else "warning", lien)
     return "envoyer"
+
+
+def lien_interface(sel: str | None = None) -> str:
+    """Adresse d'un objet dans l'interface (lot UX1) : « alerte:12 » ouvre l'alerte et son dossier ; sans objet, la
+    Veille. Base MARS_URL_INTERFACE (le tunnel SSH par défaut) ; aucune donnée sensible, un numéro d'alerte seulement."""
+    from urllib.parse import quote
+    base = (os.environ.get("MARS_URL_INTERFACE") or "http://localhost:8080").rstrip("/")
+    return f"{base}/?sel={quote(sel, safe=':')}" if sel else f"{base}/"
 
 
 def decider(conn, categorie: str, gravite: str, titre: str, message: str, rules: dict | None = None,
@@ -586,14 +594,14 @@ def decider(conn, categorie: str, gravite: str, titre: str, message: str, rules:
     return d
 
 
-def envoyer(gravite: str, titre: str, message: str, tags: str = "warning"):
+def envoyer(gravite: str, titre: str, message: str, tags: str = "warning", lien: str | None = None):
     from mars import supervision
     n = supervision.Ntfy.from_env()
     if n is None:
         return None
     try:
         return n.envoyer(titre, message, priorite="high" if gravite in ("grave", "elevee", "critique") else "default",
-                         tags=tags)
+                         tags=tags, clic=lien)
     except Exception as e:                       # une notification ne bloque jamais l'action
         traces.erreur(f"ntfy : {e}")
         return None
@@ -727,11 +735,12 @@ def notifier_alertes(conn, rules: dict, now: datetime, envoi=None) -> dict:
     nmax = int(prefs.get("par_minute_max", 5))
     for aid, typ, sev, src in retenues[:nmax]:
         envoi("alerte", sev, f"MARS C2 : alerte {aid}, {typ} {sev}", f"Nouvelle alerte {typ}"
-              + (f" ({src})" if src else "") + f", gravité {sev}", conn=conn, rules=rules, type_alerte=typ, now=now)
+              + (f" ({src})" if src else "") + f", gravité {sev}", conn=conn, rules=rules, type_alerte=typ, now=now,
+              lien=lien_interface(f"alerte:{aid}"))
     if len(retenues) > nmax:
         envoi("alerte", "elevee", f"MARS C2 : {len(retenues) - nmax} autres alertes",
               f"{len(retenues)} nouvelles alertes notifiables en une minute", conn=conn, rules=rules,
-              type_alerte=None, now=now)
+              type_alerte=None, now=now, lien=lien_interface())
     return {"nouvelles": len(rows), "notifiees": min(len(retenues), nmax)}
 
 

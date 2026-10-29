@@ -222,6 +222,9 @@ def test_ntfy_message_is_short_and_the_topic_never_leaks():
     req = op.requests[0]
     assert req.full_url == "https://ntfy.sh/sujet-secret-123" and req.data == "12 % libres".encode()
     assert req.headers["Title"].startswith("=?UTF-8?B?") and req.headers["Priority"] == "high"
+    assert "Click" not in req.headers
+    S.Ntfy("sujet-secret-123", "https://ntfy.sh", op).envoyer("t", "m", clic="http://localhost:8080/?sel=alerte:12")
+    assert op.requests[1].headers["Click"] == "http://localhost:8080/?sel=alerte:12"        # lot UX1 : ouvre l'alerte
     op = Opener(error=urllib.error.HTTPError("https://ntfy.sh/sujet-secret-123", 429, "x", {}, None))
     with pytest.raises(RuntimeError) as e:
         S.Ntfy("sujet-secret-123", None, op).envoyer("t", "m")

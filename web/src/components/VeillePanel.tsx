@@ -7,7 +7,7 @@ import { hm } from "../lib/format";
 import { L } from "../lib/libelles";
 import { URGENCE } from "../lib/urgence";
 import { typeAlerte } from "../registres/alertes";
-import { Tag } from "./Elements";
+import { Squelette, Tag } from "./Elements";
 
 const V = L.veille;
 
@@ -125,7 +125,7 @@ export default function VeillePanel({ liste, instant, focus, onPick, fil, suivis
             <span className="text-[11px] text-faint">{V.raccourcis}</span>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {!liste && <p className="px-4 py-6 text-muted">{L.commun.chargement}</p>}
+            {!liste && <Squelette lignes={4} className="px-4 py-4" />}
             {calme && !aveugle && (
               <div className="px-6 py-8 text-center text-muted">
                 <p className="text-[15px] text-ink">{V.calme(liste.dernier_inhabituel ? (instant - Date.parse(liste.dernier_inhabituel)) / 3600_000 : null, liste.fenetre_h)}</p>

@@ -7,6 +7,16 @@ const duree = (min: number) => (min >= 90 ? `${Math.round(min / 60)} h` : `${Mat
 const nb = (n: number, sing: string, plur = `${sing}s`) => `${n} ${n > 1 ? plur : sing}`;
 
 export const L = {
+  // Glossaire au survol (lot UX1, components/Glose.tsx) : une phrase par terme, une seule source
+  glossaire: {
+    AIS: "Système d'identification automatique : chaque navire diffuse par radio sa position, sa route et son identité ; déclaratif, il peut être coupé ou falsifié.",
+    MMSI: "Numéro d'identité radio du navire, neuf chiffres dont les trois premiers donnent le pays ; il change avec le pavillon.",
+    OMI: "Numéro de l'Organisation maritime internationale, attaché à la coque pour toute sa vie : il survit aux changements de nom et de pavillon.",
+    VIIRS: "Capteur de nuit des satellites SNPP, NOAA 20 et NOAA 21 : il voit les lumières en mer, celles des navires comprises.",
+    SAR: "Radar à synthèse d'ouverture, celui de Sentinel 1 : il voit les coques de jour comme de nuit, à travers les nuages.",
+    "tip and cue": "Une alerte (le tip) déclenche une vérification par satellite au prochain passage utile (le cue).",
+    "zone de réception fiable": "Mailles où notre réception AIS est continue : seule une absence d'AIS dans cette zone a valeur d'indice.",
+  } as Record<string, string>,
   // Titre de l'onglet du navigateur (lib/onglet.ts) : « (N) MARS C2 · objet »
   onglet: {
     veille: "Veille", coulisses: "Coulisses",
@@ -87,7 +97,7 @@ export const L = {
   },
   // Coulisses : quatre groupes, dix rubriques (registres/reglages.ts) ; une place par réglage
   coulisses: {
-    titre: "Coulisses", chercher: "Rechercher un réglage", aucun: "Aucun réglage trouvé", echap: "Échap : retour à la Veille",
+    titre: "Coulisses", chercher: "Rechercher un réglage", aucun: "Aucun réglage trouvé", aucunRaison: "La recherche porte sur les noms des réglages et leurs mots clés ; essayez un mot plus court.", echap: "Échap : retour à la Veille",
     groupes: { moi: "Mon espace", surveillance: "Surveillance", capteurs: "Capteurs", plateforme: "Plateforme" } as Record<string, string>,
     rubriques: { compte: "Compte", notifications: "Notifications", affichage: "Affichage et démonstration",
       regles: "Règles d'alerte", zones: "Zones de vigilance", sources: "Sources et capteurs", activite: "Activité satellite",
@@ -193,7 +203,8 @@ export const L = {
   },
   // Panneau « Observations » (tip and cue, lot T1)
   observations: {
-    titre: "Vérifications satellites", point: "point", filtre: "État", aucune: "Aucune demande d'observation",
+    titre: "Vérifications satellites", point: "point", filtre: "État", aucune: "Aucune demande d'observation sur la plage affichée",
+    aucuneRaison: "Une alerte qui le justifie, ou un clic droit sur la carte, demande une vérification au prochain passage satellite utile.",
     filtres: { toutes: "Toutes", planifiee: "Planifiées", en_attente: "En attente", analysee: "Analysées", closes: "Closes" },
     etats: { en_attente: "en attente", planifiee: "planifiée", analysee: "analysée", sans_passage: "sans passage",
       expiree: "expirée", refusee_budget: "refusée", annulee: "annulée" } as Record<string, string>,
@@ -282,7 +293,8 @@ export const L = {
   fil: {
     titre: "Alertes", onglets: { todo: "À traiter", confirmed: "Confirmées", all: "Toutes" },
     type: "Type", gravite: "Gravité",
-    aucune: { todo: "Aucune alerte à traiter sur la plage.", autre: "Aucune alerte sur la plage." },
+    aucune: { todo: "Aucune alerte à traiter sur la plage affichée.", autre: "Aucune alerte sur la plage affichée." },
+    aucuneRaison: "Les alertes des règles (AIS, listes, rendez vous) et des satellites apparaissent ici dès qu'elles tombent dans la plage et la région affichées.",
     surTotal: (n: number, total: number) => `${n} sur ${total}`,
     groupe: (n: number) => `${n} alertes`,
   },
