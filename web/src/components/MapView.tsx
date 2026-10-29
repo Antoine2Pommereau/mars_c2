@@ -7,8 +7,7 @@ import { COULEUR_LISTE, COULEUR_SUIVI, STROKE_ALERTE } from "../registres/alerte
 import { COUCHES, COULEUR_PASSAGE, COULEURS_INFRA } from "../registres/couches";
 import { URGENCE } from "../lib/urgence";
 import { COULEURS_PREUVE as CP } from "../lib/preuve";
-
-const STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+import { FOND_CARTE, teinter, useTheme } from "../lib/theme";
 
 const SHIP_COLOR: any = ["match", ["coalesce", ["get", "ship_type"], ""],
   "Cargo", "#6ea8fe",
@@ -101,6 +100,11 @@ interface Props {
   preuve: FC;                            // preuve du dossier ouvert (lib/preuve.ts), au dessus de tout
 }
 
+// Trajectoire surlignée : couleur portée par l'objet (alerte, liste) ou rôle « encre » et « signal », traduit ici pour
+// que le thème clair le teinte (une couleur venue des données ne passe pas par `teinter`)
+const COULEUR_TRACE = (defaut: string): any => ["case", ["==", ["get", "color"], "encre"], "#e6ecf0",
+  ["==", ["get", "color"], "signal"], "#4fb6c8", ["coalesce", ["get", "color"], defaut]];
+
 // Mode focus : tout ce qui ne concerne pas la sélection s'efface
 const ALERT_OPACITY: any = ["case", ["any", ["==", ["get", "severity"], "faible"],
   ["==", ["get", "status"], "classee"], ["==", ["get", "status"], "acquittee"]], 0.35, 1];
@@ -121,14 +125,37 @@ export default function MapView(p: Props) {
   onTracePoint.current = p.onTracePoint;
   const onContexte = useRef(p.onContexte);
   onContexte.current = p.onContexte;
+  // Thème (lib/theme.ts) : les peintures sont écrites pour le sombre ; `originaux` garde chacune telle qu'écrite pour
+  // la reteindre au changement de thème, `fond` les sources du fond de carte (tout le reste est à nous)
+  const { theme } = useTheme();
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+  const originaux = useRef(new Map<string, Record<string, any>>());
+  const fond = useRef<{ theme: typeof theme; sources: Set<string> }>({ theme, sources: new Set() });
+  const ajouter = (map: MLMap, layer: any) => {
+    originaux.current.set(layer.id, { ...(layer.paint ?? {}) });
+    map.addLayer({ ...layer, paint: teinter(layer.paint ?? {}, themeRef.current) });
+  };
+  const peindre = (map: MLMap, id: string, prop: string, v: any) => {
+    const o = originaux.current.get(id);
+    if (o) o[prop] = v;
+    map.setPaintProperty(id, prop, teinter(v, themeRef.current));
+  };
 
   // Création de la carte et des couches, une seule fois
   useEffect(() => {
-    const map = new maplibregl.Map({ container: container.current!, style: STYLE, center: [1.5, 46.4], zoom: 5.2, boxZoom: false });
+    const map = new maplibregl.Map({ container: container.current!, style: FOND_CARTE[themeRef.current], center: [1.5, 46.4],
+      zoom: 5.2, boxZoom: false });
     map.addControl(new maplibregl.NavigationControl(), "top-right");
     mapRef.current = map;
 
+    // Icônes des navires : perdues quand le fond change de style, rendues à la demande
+    map.on("styleimagemissing", (e) => {
+      if ((e.id === "chevron" || e.id === "dot") && !map.hasImage(e.id)) map.addImage(e.id, makeIcon(e.id), { sdf: true });
+    });
+
     map.on("load", () => {
+      fond.current.sources = new Set(Object.keys(map.getStyle().sources));
       const src = (id: string) => map.addSource(id, { type: "geojson", data: EMPTY as any });
       ["zones", "reception", "trails", "traffic", "aoi", "det", "alerts", "live", "highlight", "passages", "viirs", "s1",
         "vigilance", "trace", "dossiers", "preuve"].forEach(src);
@@ -138,50 +165,50 @@ export default function MapView(p: Props) {
       map.addSource("focus", { type: "geojson", data: EMPTY as any });
 
       // Infrastructures sous marines (sous le trafic), une couche par type
-      map.addLayer({ id: "infra-eoliens-fond", type: "fill", source: "infra", layout: { visibility: "none" },
+      ajouter(map, { id: "infra-eoliens-fond", type: "fill", source: "infra", layout: { visibility: "none" },
         filter: ["==", ["get", "type"], "Parc éolien"],
         paint: { "fill-color": COULEURS_INFRA["Parc éolien"], "fill-opacity": 0.12 } });
-      map.addLayer({ id: "infra-eoliens", type: "line", source: "infra", layout: { visibility: "none" },
+      ajouter(map, { id: "infra-eoliens", type: "line", source: "infra", layout: { visibility: "none" },
         filter: ["==", ["get", "type"], "Parc éolien"],
         paint: { "line-color": COULEURS_INFRA["Parc éolien"], "line-width": 1, "line-opacity": INFRA_OPACITY } });
       for (const c of INFRA_LIGNES) {
-        map.addLayer({ id: c.calques[0], type: "line", source: "infra", layout: { visibility: "none", "line-cap": "round" },
+        ajouter(map, { id: c.calques[0], type: "line", source: "infra", layout: { visibility: "none", "line-cap": "round" },
           filter: ["==", ["get", "type"], c.infra!],
           paint: { "line-color": c.couleur!, "line-width": INFRA_WIDTH, "line-opacity": INFRA_OPACITY } });
       }
       // Noms des infrastructures, à partir du zoom 9
-      map.addLayer({ id: "infra-noms", type: "symbol", source: "infra", minzoom: 9,
+      ajouter(map, { id: "infra-noms", type: "symbol", source: "infra", minzoom: 9,
         layout: { "symbol-placement": "line", "text-field": ["coalesce", ["get", "name"], ""], "text-size": 10.5,
                   "text-font": ["Montserrat Regular", "Open Sans Regular", "Noto Sans Regular"] },
         paint: { "text-color": "#7c8b97", "text-halo-color": "#0e1419", "text-halo-width": 1.2 } });
-      map.addLayer({ id: "couverture-fond", type: "fill", source: "couverture", layout: { visibility: "none" },
+      ajouter(map, { id: "couverture-fond", type: "fill", source: "couverture", layout: { visibility: "none" },
         paint: { "fill-color": "#4fb6c8", "fill-opacity": 0 } });
-      map.addLayer({ id: "couverture", type: "line", source: "couverture", layout: { visibility: "none" },
+      ajouter(map, { id: "couverture", type: "line", source: "couverture", layout: { visibility: "none" },
         paint: { "line-color": "#4fb6c8", "line-width": 1, "line-opacity": 0.5, "line-dasharray": [3, 3] } });
       // Passages satellites : emprise à peine teintée, trait plein acquis, pointillé prévu (pas de pointillé dépendant
       // des données dans MapLibre : deux couches filtrées)
-      map.addLayer({ id: "passages-fond", type: "fill", source: "passages", layout: { visibility: "none" },
+      ajouter(map, { id: "passages-fond", type: "fill", source: "passages", layout: { visibility: "none" },
         paint: { "fill-color": COULEUR_PASSAGE, "fill-opacity": 0.04 } });
-      map.addLayer({ id: "passages", type: "line", source: "passages", layout: { visibility: "none" },
+      ajouter(map, { id: "passages", type: "line", source: "passages", layout: { visibility: "none" },
         filter: ["!=", ["get", "statut"], "prevu"], paint: { "line-color": COULEUR_PASSAGE, "line-width": 1, "line-opacity": 0.6 } });
-      map.addLayer({ id: "passages-prevus", type: "line", source: "passages", layout: { visibility: "none" },
+      ajouter(map, { id: "passages-prevus", type: "line", source: "passages", layout: { visibility: "none" },
         filter: ["==", ["get", "statut"], "prevu"],
         paint: { "line-color": COULEUR_PASSAGE, "line-width": 1, "line-opacity": 0.6, "line-dasharray": [2, 3] } });
       // Objet sélectionné (infrastructure, zone, passage) : surligné au dessus de son groupe
-      map.addLayer({ id: "focus-surface", type: "fill", source: "focus", filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+      ajouter(map, { id: "focus-surface", type: "fill", source: "focus", filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
         paint: { "fill-color": "#e6ecf0", "fill-opacity": 0.05 } });
-      map.addLayer({ id: "focus-ligne", type: "line", source: "focus",
+      ajouter(map, { id: "focus-ligne", type: "line", source: "focus",
         paint: { "line-color": "#e6ecf0", "line-width": 2.5, "line-opacity": 0.85 } });
 
-      map.addLayer({ id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
+      ajouter(map, { id: "zones", type: "fill", source: "zones", layout: { visibility: "none" },
         paint: { "fill-color": "#f0a84b", "fill-opacity": 0.12, "fill-outline-color": "#f0a84b" } });
-      map.addLayer({ id: "reception", type: "fill", source: "reception", layout: { visibility: "none" },
+      ajouter(map, { id: "reception", type: "fill", source: "reception", layout: { visibility: "none" },
         paint: { "fill-color": "#4fb6c8", "fill-opacity": 0.07, "fill-outline-color": "#4fb6c8" } });
-      map.addLayer({ id: "trails", type: "line", source: "trails",
+      ajouter(map, { id: "trails", type: "line", source: "trails",
         paint: { "line-color": "#7c8b97", "line-width": 1, "line-opacity": 0.45 } });
       map.addImage("chevron", makeIcon("chevron"), { sdf: true });
       map.addImage("dot", makeIcon("dot"), { sdf: true });
-      map.addLayer({ id: "traffic", type: "symbol", source: "traffic",
+      ajouter(map, { id: "traffic", type: "symbol", source: "traffic",
         layout: {
           "icon-image": ["case", ["<", ["coalesce", ["get", "sog_kn"], 0], 0.5], "dot", "chevron"],
           "icon-size": ["interpolate", ["linear"], ["zoom"], 5, ["case", IMPORTANT, 0.34, 0.18], 10, ["case", IMPORTANT, 0.42, 0.34],
@@ -197,17 +224,17 @@ export default function MapView(p: Props) {
           "icon-opacity": TRAFFIC_OPACITY,
         } });
       // Dossiers (lot U) : nom des navires à examiner, en Veille ; points sans navire en losange de leur urgence
-      map.addLayer({ id: "dossiers-noms", type: "symbol", source: "traffic", filter: [">=", NIVEAU, 2] as any,
+      ajouter(map, { id: "dossiers-noms", type: "symbol", source: "traffic", filter: [">=", NIVEAU, 2] as any,
         layout: { visibility: "none", "text-field": ["coalesce", ["get", "name"], ""], "text-size": 11.5, "text-offset": [0.9, 0],
                   "text-anchor": "left", "text-font": ["Montserrat Medium", "Open Sans Semibold", "Noto Sans Regular"] },
         paint: { "text-color": "#e6ecf0", "text-halo-color": "#0e1419", "text-halo-width": 1.6 } });
-      map.addLayer({ id: "dossiers-points", type: "circle", source: "dossiers",
+      ajouter(map, { id: "dossiers-points", type: "circle", source: "dossiers",
         paint: { "circle-radius": ["match", NIVEAU, 3, 9, 2, 7, 5], "circle-color": "rgba(0,0,0,0)",
                  "circle-stroke-width": ["match", NIVEAU, 1, 1.2, 2],
                  "circle-stroke-color": ["match", NIVEAU, 3, URGENCE[3], 2, URGENCE[2], URGENCE[1]] } as any });
-      map.addLayer({ id: "aoi", type: "line", source: "aoi",
+      ajouter(map, { id: "aoi", type: "line", source: "aoi",
         paint: { "line-color": "#4fb6c8", "line-width": 1.2, "line-dasharray": [4, 3] } });
-      map.addLayer({ id: "det", type: "circle", source: "det",
+      ajouter(map, { id: "det", type: "circle", source: "det",
         paint: {
           "circle-radius": ["case", ["!=", ["get", "mask_reason"], null], 2, 8],
           "circle-color": ["case", ["!=", ["get", "mask_reason"], null], "#4c5a66", "rgba(0,0,0,0)"],
@@ -218,7 +245,7 @@ export default function MapView(p: Props) {
             "#e85bc7"],
         } as any });
       // Détections nocturnes VIIRS : point lumineux, neutre avec AIS, couleur du navire sombre sans AIS, discret écartée
-      map.addLayer({ id: "viirs", type: "circle", source: "viirs", layout: { visibility: "none" },
+      ajouter(map, { id: "viirs", type: "circle", source: "viirs", layout: { visibility: "none" },
         paint: {
           "circle-radius": ["match", ["get", "statut"], "ecartee", 2, "non_evaluable", 3, "sans_ais", 5.5, 4],
           "circle-color": ["match", ["get", "statut"], "ecartee", "#4c5a66", "non_evaluable", "#7c8b97", "sans_ais", "#e85bc7", "#e6ecf0"],
@@ -227,7 +254,7 @@ export default function MapView(p: Props) {
           "circle-stroke-color": "#e85bc7", "circle-stroke-opacity": 0.25,
         } as any });
       // Échos radar Sentinel 1 : anneau (un écho, pas une lumière), mêmes couleurs que VIIRS selon le statut
-      map.addLayer({ id: "s1", type: "circle", source: "s1", layout: { visibility: "none" },
+      ajouter(map, { id: "s1", type: "circle", source: "s1", layout: { visibility: "none" },
         filter: ["!=", ["get", "source"], "sentinel2"],
         paint: {
           "circle-radius": ["match", ["get", "statut"], "ecartee", 2.5, "non_evaluable", 3.5, "sans_ais", 6, 4.5],
@@ -238,7 +265,7 @@ export default function MapView(p: Props) {
         } as any });
       // Navires vus en optique Sentinel 2 (lot S2) : point plein cerclé de sombre (une image, pas un écho), mêmes
       // couleurs selon le statut ; même source de données que le radar
-      map.addLayer({ id: "s2", type: "circle", source: "s1", layout: { visibility: "none" },
+      ajouter(map, { id: "s2", type: "circle", source: "s1", layout: { visibility: "none" },
         filter: ["==", ["get", "source"], "sentinel2"],
         paint: {
           "circle-radius": ["match", ["get", "statut"], "ecartee", 2.5, "non_evaluable", 3, "sans_ais", 5, 4],
@@ -247,12 +274,12 @@ export default function MapView(p: Props) {
           "circle-stroke-width": 1.5, "circle-stroke-color": "#0e1419",
         } as any });
       // Trajectoires surlignées (traits pleins) et trajet présumé d'une coupure AIS (pointillés)
-      map.addLayer({ id: "highlight", type: "line", source: "highlight", filter: ["!=", ["get", "dashed"], true],
-        paint: { "line-color": ["coalesce", ["get", "color"], "#f0a84b"], "line-width": 2.5 } });
-      map.addLayer({ id: "highlight-dash", type: "line", source: "highlight", filter: ["==", ["get", "dashed"], true],
-        paint: { "line-color": ["coalesce", ["get", "color"], "#ef6461"], "line-width": 2, "line-dasharray": [2, 2] } });
+      ajouter(map, { id: "highlight", type: "line", source: "highlight", filter: ["!=", ["get", "dashed"], true],
+        paint: { "line-color": COULEUR_TRACE("#f0a84b"), "line-width": 2.5 } });
+      ajouter(map, { id: "highlight-dash", type: "line", source: "highlight", filter: ["==", ["get", "dashed"], true],
+        paint: { "line-color": COULEUR_TRACE("#ef6461"), "line-width": 2, "line-dasharray": [2, 2] } });
       for (const id of ["alerts", "live"]) {
-        map.addLayer({ id, type: "circle", source: id,
+        ajouter(map, { id, type: "circle", source: id,
           paint: {
             "circle-radius": 14, "circle-color": "rgba(255,255,255,0.04)", "circle-stroke-width": 2,
             "circle-stroke-color": STROKE_ALERTE,
@@ -261,35 +288,35 @@ export default function MapView(p: Props) {
       }
 
       // Zones de vigilance (lot P) : trait clair en pointillé, surface à peine visible (la couleur reste aux alertes)
-      map.addLayer({ id: "vigilance-fond", type: "fill", source: "vigilance", paint: { "fill-color": "#c2ccd3", "fill-opacity": 0.05 } });
-      map.addLayer({ id: "vigilance", type: "line", source: "vigilance",
+      ajouter(map, { id: "vigilance-fond", type: "fill", source: "vigilance", paint: { "fill-color": "#c2ccd3", "fill-opacity": 0.05 } });
+      ajouter(map, { id: "vigilance", type: "line", source: "vigilance",
         paint: { "line-color": "#c2ccd3", "line-width": 1.4, "line-opacity": 0.8, "line-dasharray": [3, 2] } });
-      map.addLayer({ id: "trace-ligne", type: "line", source: "trace", paint: { "line-color": "#4fb6c8", "line-width": 1.5 } });
-      map.addLayer({ id: "trace-points", type: "circle", source: "trace", filter: ["==", ["geometry-type"], "Point"],
+      ajouter(map, { id: "trace-ligne", type: "line", source: "trace", paint: { "line-color": "#4fb6c8", "line-width": 1.5 } });
+      ajouter(map, { id: "trace-points", type: "circle", source: "trace", filter: ["==", ["geometry-type"], "Point"],
         paint: { "circle-radius": 3.5, "circle-color": "#4fb6c8" } });
 
       // Preuve du dossier ouvert (lot U) : route, silence en tirets jusqu'à l'écho, cercle d'incertitude autour de la
       // position estimée, écart estimée vers écho avec sa distance ; mêmes couleurs que la légende du récit
       const role = (r: string): any => ["==", ["get", "role"], r];
-      map.addLayer({ id: "preuve-route", type: "line", source: "preuve", filter: role("route"),
+      ajouter(map, { id: "preuve-route", type: "line", source: "preuve", filter: role("route"),
         paint: { "line-color": CP.route, "line-width": 1.5, "line-opacity": 0.85 } });
-      map.addLayer({ id: "preuve-cercle-fond", type: "fill", source: "preuve", filter: role("cercle"),
+      ajouter(map, { id: "preuve-cercle-fond", type: "fill", source: "preuve", filter: role("cercle"),
         paint: { "fill-color": CP.cercle, "fill-opacity": 0.05 } });
-      map.addLayer({ id: "preuve-cercle", type: "line", source: "preuve", filter: role("cercle"),
+      ajouter(map, { id: "preuve-cercle", type: "line", source: "preuve", filter: role("cercle"),
         paint: { "line-color": CP.cercle, "line-width": 1, "line-opacity": 0.6 } });
-      map.addLayer({ id: "preuve-silence", type: "line", source: "preuve", filter: role("silence"),
+      ajouter(map, { id: "preuve-silence", type: "line", source: "preuve", filter: role("silence"),
         paint: { "line-color": CP.silence, "line-width": 1.8, "line-dasharray": [2, 2] } });
-      map.addLayer({ id: "preuve-ecart", type: "line", source: "preuve", filter: role("ecart"),
+      ajouter(map, { id: "preuve-ecart", type: "line", source: "preuve", filter: role("ecart"),
         paint: { "line-color": CP.ecart, "line-width": 1, "line-opacity": 0.8 } });
-      map.addLayer({ id: "preuve-ecart-texte", type: "symbol", source: "preuve", filter: role("ecart"),
+      ajouter(map, { id: "preuve-ecart-texte", type: "symbol", source: "preuve", filter: role("ecart"),
         layout: { "symbol-placement": "line-center", "text-field": ["get", "etiquette"], "text-size": 12, "text-offset": [0, -0.8],
                   "text-font": ["Montserrat Medium", "Open Sans Semibold", "Noto Sans Regular"], "text-allow-overlap": true },
         paint: { "text-color": CP.ecart, "text-halo-color": "#0e1419", "text-halo-width": 1.6 } });
-      map.addLayer({ id: "preuve-estimee", type: "circle", source: "preuve", filter: role("estimee"),
+      ajouter(map, { id: "preuve-estimee", type: "circle", source: "preuve", filter: role("estimee"),
         paint: { "circle-radius": 3, "circle-color": "rgba(0,0,0,0)", "circle-stroke-width": 1.2, "circle-stroke-color": CP.cercle } });
-      map.addLayer({ id: "preuve-derniere", type: "circle", source: "preuve", filter: role("derniere"),
+      ajouter(map, { id: "preuve-derniere", type: "circle", source: "preuve", filter: role("derniere"),
         paint: { "circle-radius": 4, "circle-color": CP.derniere, "circle-stroke-width": 1.5, "circle-stroke-color": "#0e1419" } });
-      map.addLayer({ id: "preuve-echo", type: "circle", source: "preuve", filter: role("echo"),
+      ajouter(map, { id: "preuve-echo", type: "circle", source: "preuve", filter: role("echo"),
         paint: { "circle-radius": 7, "circle-color": "rgba(0,0,0,0)", "circle-stroke-width": 2.5, "circle-stroke-color": CP.echo } });
 
       map.on("click", (e) => {
@@ -366,6 +393,22 @@ export default function MapView(p: Props) {
     return () => { taille.disconnect(); map.remove(); };
   }, []);
 
+  // Changement de thème : nouveau fond, nos sources (avec leurs données) et nos calques gardés par dessus, reteints
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map || fond.current.theme === theme) return;
+    const anciennes = fond.current.sources;
+    map.setStyle(FOND_CARTE[theme], {
+      transformStyle: (avant, apres) => {
+        const nos = Object.fromEntries(Object.entries(avant?.sources ?? {}).filter(([k]) => !anciennes.has(k)));
+        fond.current = { theme, sources: new Set(Object.keys(apres.sources)) };
+        const calques = (avant?.layers ?? []).filter((l) => originaux.current.has(l.id))
+          .map((l) => ({ ...l, paint: teinter(originaux.current.get(l.id), theme) })) as any[];
+        return { ...apres, sources: { ...apres.sources, ...nos }, layers: [...apres.layers, ...calques] };
+      },
+    });
+  }, [ready, theme]);
+
   const setData = (id: string, data: FC | Feature | null) => {
     if (!ready || !mapRef.current) return;
     (mapRef.current.getSource(id) as GeoJSONSource | undefined)?.setData((data ?? EMPTY) as any);
@@ -420,10 +463,10 @@ export default function MapView(p: Props) {
     map.setLayoutProperty("infra-noms", "visibility", anyInfra ? "visible" : "none");
     map.setLayoutProperty("live", "visibility", "visible");
     const veille = p.vue === "veille";
-    map.setPaintProperty("traffic", "icon-color", veille ? COULEUR_VEILLE : shipColor(p.byType ? SHIP_COLOR : NEUTRAL));
+    peindre(map, "traffic", "icon-color", veille ? COULEUR_VEILLE : shipColor(p.byType ? SHIP_COLOR : NEUTRAL));
     map.setLayoutProperty("traffic", "icon-size", veille ? TAILLE_VEILLE : TAILLE_TRAFIC);
     map.setLayoutProperty("dossiers-noms", "visibility", veille ? "visible" : "none");
-    for (const id of ["alerts", "live"]) map.setPaintProperty(id, "circle-stroke-color", veille ? ALERTE_URGENCE : STROKE_ALERTE);
+    for (const id of ["alerts", "live"]) peindre(map, id, "circle-stroke-color", veille ? ALERTE_URGENCE : STROKE_ALERTE);
   }, [ready, activesKey, p.byType, p.vue]);
 
   const concernedKey = p.concernedInfra ? p.concernedInfra.join(",") : "tout";
@@ -467,18 +510,18 @@ export default function MapView(p: Props) {
     const ids = ["literal", s?.vesselIds ?? []];
     const dimTraffic = !!s && (s.vesselIds.length > 0 || s.alertId != null);
     const veille = p.vue === "veille";
-    map.setPaintProperty("traffic", "icon-opacity", dimTraffic ? ["case", ["in", ["get", "vessel_id"], ids], 1, 0.12]
+    peindre(map, "traffic", "icon-opacity", dimTraffic ? ["case", ["in", ["get", "vessel_id"], ids], 1, 0.12]
       : s ? opaciteTrafic(0.5) : veille ? OPACITE_VEILLE : TRAFFIC_OPACITY);
     const infraOp = s?.infraId != null ? ["case", ["==", ["get", "id"], s.infraId], 1, 0.12] : s ? 0.25
       : veille ? infraVeille(p.infraProches) : INFRA_OPACITY;
-    for (const c of INFRA_LIGNES) map.setPaintProperty(c.calques[0], "line-opacity", infraOp);
-    map.setPaintProperty("infra-eoliens", "line-opacity", infraOp);
+    for (const c of INFRA_LIGNES) peindre(map, c.calques[0], "line-opacity", infraOp);
+    peindre(map, "infra-eoliens", "line-opacity", infraOp);
     map.setLayoutProperty("traffic", "symbol-sort-key", s ? ["case", ["in", ["get", "vessel_id"], ids], 2, IMPORTANT, 1, 0]
       : ["case", IMPORTANT, 1, 0]);
-    map.setPaintProperty("trails", "line-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 0.9, 0.06] : 0.45);
-    map.setPaintProperty("det", "circle-stroke-opacity", s ? 0.35 : 1);
+    peindre(map, "trails", "line-opacity", s ? ["case", ["in", ["get", "vessel_id"], ids], 0.9, 0.06] : 0.45);
+    peindre(map, "det", "circle-stroke-opacity", s ? 0.35 : 1);
     for (const id of ["alerts", "live"]) {
-      map.setPaintProperty(id, "circle-stroke-opacity", s?.alertId != null ? ["case", ["==", ["get", "id"], s.alertId], 1, 0.15]
+      peindre(map, id, "circle-stroke-opacity", s?.alertId != null ? ["case", ["==", ["get", "id"], s.alertId], 1, 0.15]
         : s?.zone ? ["case", ["==", ["get", "zone"], s.zone], ALERT_OPACITY, 0.12] : s ? 0.3 : ALERT_OPACITY);
     }
   }, [ready, spotKey]);

@@ -104,7 +104,8 @@ export const L = {
       services: "Services", echeances: "Échéances des secrets", demo: "Démonstration", journal: "Actions du panneau", decisions: "Décisions des opérateurs",
       passages: "Passages à venir, 48 h", verifications: "Vérifications en cours", analyses: "Analyses récentes" } as Record<string, string>,
     sources: { sentinel1: "Sentinel 1", sentinel2: "Sentinel 2", viirs: "VIIRS", tip_and_cue: "Vérification satellite" } as Record<string, string>,
-    affichage: { carte: "Carte et fil", vueDefaut: "Vue de carte à l'ouverture", vignettes: "Vignettes des navires dans le fil" },
+    affichage: { carte: "Apparence, carte et fil", theme: "Thème",
+      themes: { sombre: "Sombre", clair: "Clair", systeme: "Comme le système" }, vueDefaut: "Vue de carte à l'ouverture", vignettes: "Vignettes des navires dans le fil" },
     passage: (sat: string, h: string, infra: number, listes: number) =>
       [`${sat}, ${h}`, infra ? nb(infra, "infrastructure") : null, listes ? nb(listes, "navire des listes", "navires des listes") : null].filter(Boolean).join(" · "),
     aucunPassage: "Aucun passage prévu sur 48 h",

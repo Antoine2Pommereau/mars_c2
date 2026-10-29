@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { dayLabel, num } from "../lib/format";
 import { L } from "../lib/libelles";
 import { grouperSources } from "../lib/sources";
@@ -60,8 +60,8 @@ export function Sources({ entries }: { entries?: Props[] }) {
 
 export function Tag({ children, color }: { children: ReactNode; color?: string }) {
   return (
-    <span className="inline-flex items-center rounded border px-1 text-[10.5px] leading-[15px]"
-      style={{ borderColor: color ?? "#26323d", color: color ?? "#7c8b97" }}>{children}</span>
+    <span className={`inline-flex items-center rounded border px-1 text-[10.5px] leading-[15px] ${color ? "teinte" : "text-muted"}`}
+      style={{ borderColor: color ?? "var(--color-hair)", ...(color ? { "--teinte": color } : {}) } as CSSProperties}>{children}</span>
   );
 }
 

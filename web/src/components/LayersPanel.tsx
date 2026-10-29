@@ -44,9 +44,9 @@ function Legende({ c, byType }: { c: Couche; byType: boolean }) {
   if (c.id === "navires") {
     return (
       <div className="px-4 pb-2 pl-8">
-        <Key swatch={<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1 L10 11 L6 8.5 L2 11 Z" fill="#c9d3da" /></svg>}>{C.legende.enRoute}</Key>
-        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da]" />}>{C.legende.immobile}</Key>
-        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#c9d3da] opacity-35" />}>{C.legende.silencieux}</Key>
+        <Key swatch={<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1 L10 11 L6 8.5 L2 11 Z" fill="var(--color-neutre)" /></svg>}>{C.legende.enRoute}</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-neutre" />}>{C.legende.immobile}</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-neutre opacity-35" />}>{C.legende.silencieux}</Key>
         <Key swatch={<span className="h-2 w-2 rounded-full" style={{ background: COULEUR_LISTE }} />}>{C.legende.surListe}</Key>
         <Key swatch={<span className="h-2 w-2 rounded-full bg-gap" />}>{C.legende.enAlerte}</Key>
         {byType && (
@@ -68,7 +68,7 @@ function Legende({ c, byType }: { c: Couche; byType: boolean }) {
   if (c.id === "viirs") {
     return (
       <div className="px-4 pb-2 pl-8">
-        <Key swatch={<span className="h-2 w-2 rounded-full bg-[#e6ecf0] opacity-60" />}>{C.legende.avecAis}</Key>
+        <Key swatch={<span className="h-2 w-2 rounded-full bg-ink opacity-60" />}>{C.legende.avecAis}</Key>
         <Key swatch={<span className="h-2.5 w-2.5 rounded-full bg-dark ring-2 ring-dark/30" />}>{C.legende.sansAis}</Key>
         <Key swatch={<span className="h-1.5 w-1.5 rounded-full bg-faint" />}>{C.legende.ecartee}</Key>
         <Key swatch={<span className="h-2 w-2 rounded-full bg-muted opacity-50" />}>{C.legende.nonEvaluable}</Key>
@@ -78,7 +78,7 @@ function Legende({ c, byType }: { c: Couche; byType: boolean }) {
   if (c.id === "detections") {
     return (
       <div className="px-4 pb-2 pl-8">
-        <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-[#e6ecf0]" />}>{C.legende.avecAis}</Key>
+        <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-ink" />}>{C.legende.avecAis}</Key>
         <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-dark" />}>{C.legende.sansAis}</Key>
         <Key swatch={<span className="h-3 w-3 rounded-full border-[1.5px] border-faint" />}>{C.legende.ecartee}</Key>
       </div>

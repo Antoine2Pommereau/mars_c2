@@ -1,5 +1,5 @@
 import { CalendarRange, Pause, Play } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { type CSSProperties, useMemo, useRef, useState } from "react";
 import type { Timeline } from "../lib/api";
 import { hm, jourHeure, utc } from "../lib/format";
 import { L } from "../lib/libelles";
@@ -7,7 +7,6 @@ import { PRESETS, VITESSES, avecDuree, avecInstant, avecPlage, iso, lecture, res
   type Temps } from "../lib/temps";
 import type { FC, Feature, Props as Objet } from "../lib/types";
 import { couleurAlerte, libelleAlerte } from "../registres/alertes";
-import { COULEUR_PASSAGE } from "../registres/couches";
 import { pistesActives } from "../registres/frise";
 
 interface Props {
@@ -125,9 +124,9 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
         {pistes.some((p) => p.id === "alertes") && marques.map((a) => (
           <span key={a.properties.id} title={`${libelleAlerte(a.properties.type)}, ${utc(a.properties.event_time)}`}
             onPointerDown={(e) => { e.stopPropagation(); onPickAlert(a); }}
-            className="absolute top-0 h-3 w-[3px] -translate-x-1/2 cursor-pointer rounded-sm"
-            style={{ left: `${pct(Date.parse(a.properties.event_time))}%`, background: couleurAlerte(a.properties.type),
-                     opacity: a.properties.status === "classee" || a.properties.severity === "faible" ? 0.45 : 1 }} />
+            className="teinte-fond absolute top-0 h-3 w-[3px] -translate-x-1/2 cursor-pointer rounded-sm"
+            style={{ left: `${pct(Date.parse(a.properties.event_time))}%`, "--teinte": couleurAlerte(a.properties.type),
+                     opacity: a.properties.status === "classee" || a.properties.severity === "faible" ? 0.45 : 1 } as CSSProperties} />
         ))}
         {pistes.some((p) => p.id === "viirs") && nuits.map((n) => {
           const a = Math.max(debut, Date.parse(n.debut)), b = Math.min(fin, Date.parse(n.fin));
@@ -156,7 +155,7 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
                 f.properties.resultat)}
               onPointerDown={(e) => { e.stopPropagation(); onPickPassage(f); }}
               className={`absolute bottom-0 w-[5px] -translate-x-1/2 cursor-pointer rounded-sm border ${prevu ? "border-dashed" : ""} ${analyseOk ? "h-4 ring-1 ring-ink/80" : "h-2.5"}`}
-              style={{ left: `${pct(t)}%`, borderColor: COULEUR_PASSAGE, background: prevu ? "transparent" : COULEUR_PASSAGE,
+              style={{ left: `${pct(t)}%`, borderColor: "var(--color-passage)", background: prevu ? "transparent" : "var(--color-passage)",
                 opacity: nuageux ? 0.35 : undefined }}>
               {demandes > 0 && <span className="absolute -top-2 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-signal" />}
             </span>
@@ -172,7 +171,7 @@ export default function Frise({ temps, now, onChange, alerts, timeline, onPickAl
         <svg className="pointer-events-none absolute inset-x-0 top-4 h-[38px] w-full" viewBox="0 0 1000 38" preserveAspectRatio="none" aria-label={F.densite}>
           {densite.map((d, i) => d.navires == null ? null : (
             <rect key={i} x={(i / densite.length) * 1000} width={Math.max(1, 1000 / densite.length - 0.6)}
-              y={38 - (d.navires / max) * 34} height={(d.navires / max) * 34} fill="#26323d" />
+              y={38 - (d.navires / max) * 34} height={(d.navires / max) * 34} fill="var(--color-hair)" />
           ))}
         </svg>
         {(left > 0 || right > 0) && (

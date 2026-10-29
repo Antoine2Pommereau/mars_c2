@@ -424,11 +424,11 @@ export default function App() {
         } else if (p.type === "WATCHLIST") { ids = [d.navire?.vessel_id].filter(Boolean); start = d.debut; end = d.fin; color = COULEUR_LISTE; }
       } else if (selection?.kind === "vessel") {
         ids = [Number(selection.properties.vessel_id)];
-        color = selection.properties.watch ? COULEUR_LISTE : "#e6ecf0";
+        color = selection.properties.watch ? COULEUR_LISTE : "encre";             // rôle traduit par la carte (thème)
       }
       if (!ids.length || !actives.includes("trajectoires")) { if (!cancelled) setHighlight(EMPTY); return; }
       const tracks = await Promise.all(ids.map((id) => api.track(id, start, end).catch(() => null)));
-      tracks.forEach((t, i) => t && features.push({ ...t, properties: { color: i === 0 ? color : "#4fb6c8" } }));
+      tracks.forEach((t, i) => t && features.push({ ...t, properties: { color: i === 0 ? color : "signal" } }));
       if (!cancelled) setHighlight({ type: "FeatureCollection", features });
     })();
     return () => { cancelled = true; };

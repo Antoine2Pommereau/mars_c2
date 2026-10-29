@@ -93,7 +93,7 @@ export default function DetailPanel(p: PanelProps) {
   // Fiche allégée (lot U) : sections repliées pour un navire, et pour tout objet qui a un dossier (le récit est en tête)
   const replier = selection.kind === "vessel" || !!p.recit;
 
-  let title = "", color = "#4fb6c8", badge: string | null = null, footer: string | null = null, trace: string | null = null;
+  let title = "", color = "var(--color-signal)", badge: string | null = null, footer: string | null = null, trace: string | null = null;
   const ctx: Contexte = { objet: "detection", plage: p.plage, suivis: p.suivis, vessels: p.vessels,
     alerts: p.alerts, onStatus: p.onStatus, onPickAlert: p.onPickAlert, onPickVessel: p.onPickVessel,
     onPickInfra: p.onPickInfra, onSuivre: p.onSuivre, onRejeu: p.onRejeu, onPickDetection: p.onPickDetection };
@@ -122,7 +122,7 @@ export default function DetailPanel(p: PanelProps) {
     badge = passage.data?.statut === "prevu" ? L.fiche.passage.statuts.prevu.split(",")[0] : null;
   } else if (selection.kind === "vigilance") {
     title = selection.properties.nom ?? L.fiche.vigilance.titre;
-    color = "#c2ccd3";
+    color = "var(--color-neutre)";
   } else if (selection.kind === "zone") {
     Object.assign(ctx, { objet: "zone", zone: selection.properties.zone });
     title = L.zones[selection.properties.zone] ?? selection.properties.zone;

@@ -1,5 +1,5 @@
 import { Aperture, Check, CircleHelp, Crosshair, EyeOff, Minus, Radar } from "lucide-react";
-import { useMemo, useState } from "react";
+import { type CSSProperties, useMemo, useState } from "react";
 import { jourHeure } from "../lib/format";
 import { L } from "../lib/libelles";
 import type { Props } from "../lib/types";
@@ -11,13 +11,13 @@ const ALERTE_DU_TIP: Record<string, string> = { viirs: "DARK_SHIP", coupure_ais:
   identite: "IDENTITY_CHANGE", watchlist: "WATCHLIST" };
 const styleTip = (tip: string) => {
   const t = ALERTE_DU_TIP[tip];
-  return t ? { Icone: typeAlerte(t).Icone, couleur: typeAlerte(t).couleur } : { Icone: Crosshair, couleur: "#4fb6c8" };
+  return t ? { Icone: typeAlerte(t).Icone, couleur: typeAlerte(t).couleur } : { Icone: Crosshair, couleur: "var(--color-signal)" };
 };
 
 // Résultat en un signe
 const SIGNES: Record<string, { Icone: typeof Check; couleur: string }> = {
-  present_apparie: { Icone: Check, couleur: "#e6ecf0" }, present_sans_ais: { Icone: EyeOff, couleur: "#e85bc7" },
-  absent: { Icone: Minus, couleur: "#7c8b97" }, non_evaluable: { Icone: CircleHelp, couleur: "#7c8b97" },
+  present_apparie: { Icone: Check, couleur: "var(--color-ink)" }, present_sans_ais: { Icone: EyeOff, couleur: "#e85bc7" },
+  absent: { Icone: Minus, couleur: "var(--color-muted)" }, non_evaluable: { Icone: CircleHelp, couleur: "var(--color-muted)" },
 };
 
 type Filtre = "toutes" | "planifiee" | "en_attente" | "analysee" | "closes";
@@ -47,7 +47,7 @@ export default function ObservationsPanel({ demandes, selectedId, onPick, titre 
         <button onClick={() => onPick(d)} aria-description={motif ?? undefined}
           className={`flex w-full items-center gap-2 border-b border-hair/70 px-4 py-2 text-left hover:bg-raised/60
             ${selectedId === d.id ? "bg-raised" : ""} ${close ? "opacity-60" : ""}`}>
-          <Icone size={13} strokeWidth={2} style={{ color: couleur }} className="shrink-0" />
+          <Icone size={13} strokeWidth={2} style={{ "--teinte": couleur } as CSSProperties} className="teinte shrink-0" />
           {d.flag && <Tag>{d.flag}</Tag>}
           <span className="min-w-0 flex-1 truncate text-ink">{d.vessel_id != null ? (d.navire ?? `MMSI ${d.mmsi ?? ""}`) : O.point}</span>
           <span className="shrink-0 text-right text-[11.5px] leading-tight">
@@ -68,7 +68,7 @@ export default function ObservationsPanel({ demandes, selectedId, onPick, titre 
             )}
           </span>
           <span className="w-4 shrink-0" title={signe ? L.fiche.observation.resultats[d.resultat] : undefined}>
-            {signe && <signe.Icone size={13} strokeWidth={2.2} style={{ color: signe.couleur }} />}
+            {signe && <signe.Icone size={13} strokeWidth={2.2} style={{ "--teinte": signe.couleur } as CSSProperties} className="teinte" />}
           </span>
         </button>
         {motif && (

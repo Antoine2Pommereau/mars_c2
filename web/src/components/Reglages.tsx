@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, LogOut, Minus, Plus } from "lucide-react";
-import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { choisirTheme, PREFERENCES, type Preference, useTheme } from "../lib/theme";
 import { COULEUR_NIVEAU } from "../registres/etat";
 import { api, type PrefsNotification, type BlocRegle, type Echeance, type EtatControle, type Interrupteur, type SystemeControle } from "../lib/api";
 import { jourHeure } from "../lib/format";
@@ -247,8 +248,8 @@ function Echeances({ e }: { e: Echeance[] }) {
         return (
           <li key={x.cle} className="flex justify-between gap-2 text-muted">
             <span className="text-ink">{x.libelle}</span>
-            <span className={`tabular-nums ${q.couleur ? "" : x.expire_le ? "text-muted" : "text-faint"}`}
-              style={q.couleur ? { color: q.couleur } : undefined}>{q.texte}</span>
+            <span className={`tabular-nums ${q.couleur ? "teinte" : x.expire_le ? "text-muted" : "text-faint"}`}
+              style={q.couleur ? { "--teinte": q.couleur } as CSSProperties : undefined}>{q.texte}</span>
           </li>
         );
       })}
@@ -708,10 +709,18 @@ export function RubriqueBudget() {
 export function RubriqueAffichage(pp: Pick<PanneauProps, "masquage" | "rejeuFidele" | "onRejeuFidele"> & {
   vueDefaut: VueCarte; onVueDefaut: (v: VueCarte) => void; vignettes: boolean; onVignettes: (v: boolean) => void }) {
   const actif = useSession().data?.operateur != null;
+  const { preference } = useTheme();
   const A = C.affichage;
   return (
     <>
       <Partie id="aff-carte" titre={A.carte} ouverte>
+        <label className="flex items-center justify-between gap-2 py-0.5 text-[12px]">
+          <span className="text-muted">{A.theme}</span>
+          <select value={preference} onChange={(e) => choisirTheme(e.target.value as Preference)} aria-label={A.theme}
+            className="rounded border border-hair bg-abyss px-1 py-0.5 text-[11.5px] text-ink">
+            {PREFERENCES.map((t) => <option key={t} value={t}>{A.themes[t]}</option>)}
+          </select>
+        </label>
         <label className="flex items-center justify-between gap-2 py-0.5 text-[12px]">
           <span className="text-muted">{A.vueDefaut}</span>
           <select value={pp.vueDefaut} onChange={(e) => pp.onVueDefaut(e.target.value as VueCarte)} aria-label={A.vueDefaut}

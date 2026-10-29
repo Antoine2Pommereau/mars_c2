@@ -195,6 +195,10 @@ L'instant est tenu par le navigateur (routes `?at=`) ; l'horloge partagée a ét
   `#e6ecf0`, secondaire `#7c8b97`, signal `#4fb6c8` ; navire sombre `#e85bc7` ; IBM Plex Sans, chiffres tabulaires.
   **La couleur est réservée à ce qui demande l'attention.** Échelle d'urgence (`lib/urgence.ts`) : 3 `#ef6461`,
   2 `#f0a84b`, 1 `#aab6bf` ; couleurs par type seulement dans la vue Trafic complet.
+* **Thème** (`lib/theme.ts`) : sombre par défaut, clair ou celui du système (Coulisses, Affichage ; gardé par
+  navigateur) ; jetons redéfinis sous `[data-theme="light"]` ; carte : fond Positron, couleurs écrites pour le sombre
+  et teintes par `teinter` (calques par `ajouter` et `peindre` dans `MapView`), jamais de variable CSS dans MapLibre ;
+  texte d'une couleur posée en ligne : classe `teinte` (`--teinte`).
 * Barre d'état : région affichée (un seul réglage pour tout l'écran), voyant Système unique, recherche (Cmd + K).
 * Rail à deux espaces : **Veille** (dossiers par navire ou par point, « à examiner », « à noter » repliés ; onglets À
   examiner, Alertes, Suivis) et **Coulisses** (quatre groupes, dix rubriques : Compte, Notifications, Affichage et
