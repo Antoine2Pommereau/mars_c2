@@ -1,0 +1,8 @@
+{
+  "name": "mars-c2-signalement",
+  "private": true,
+  "type": "module",
+  "description": "Fiches de signalement d'exemple en PDF (mode démonstration), à partir d'une interface servie par nginx",
+  "scripts": { "pdf": "node pdf.mjs" },
+  "devDependencies": { "playwright": "1.56.1" }
+}

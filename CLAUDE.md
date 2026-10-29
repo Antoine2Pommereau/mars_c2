@@ -206,6 +206,11 @@ L'instant est tenu par le navigateur (routes `?at=`) ; l'horloge partagée a ét
   suffixé Z, groupe date heure en option, `texteMarin` pour les phrases de l'API) et `<Heure>` (Paris au survol) ;
   glossaire (`Glose`, `L.glossaire`) ; `Squelette` et `Vide` ; API arrêtée : page « Mise à jour en cours » qui revient
   seule (`lib/maj.ts`) ; contraste du texte 4,5:1 mesuré par `web/tests/contraste.test.mjs`.
+* **Fiche de signalement (lot UX2)** : `components/Signalement.tsx`, page `/signalement?cle=…&instant=…` ouverte du
+  récit (bouton ou touche P), imprimable en A4 (`@media print`), toujours claire ; mêmes faits que le récit
+  (`chronologie`, `Legende`), carte statique exportée de MapLibre (hors écran, `preserveDrawingBuffer`), vignettes et
+  légendes, traçabilité, mentions ; démonstration : noms et numéros masqués par l'API, aucune photo. Exemples en PDF :
+  `docs/images/fiche_signalement_exemple_*.pdf` (`web/outils/signalement/pdf.mjs`).
 * Barre d'état : région affichée (un seul réglage pour tout l'écran), voyant Système unique, recherche (Cmd + K).
 * Rail à deux espaces : **Veille** (dossiers par navire ou par point, « à examiner », « à noter » repliés ; onglets À
   examiner, Alertes, Suivis) et **Coulisses** (quatre groupes, dix rubriques : Compte, Notifications, Affichage et

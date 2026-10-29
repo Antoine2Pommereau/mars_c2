@@ -62,6 +62,14 @@ body { background: var(--color-abyss); color: var(--color-ink); font-family: var
 :root[data-theme="light"] .teinte-fond { background: color-mix(in srgb, var(--teinte) 72%, #000); }
 /* Glossaire (components/Glose.tsx) : bulle au survol et au focus du clavier */
 .glose:hover > .glose-bulle, .glose:focus-visible > .glose-bulle { display: block; }
+/* Fiche de signalement (lot UX2) : impression A4, marges, fond blanc, sections non coupées */
+@media print {
+  @page { size: A4; margin: 14mm 14mm 16mm; }
+  html, body, #root { height: auto; background: #ffffff !important; }
+  .signalement { color: #17222b; }
+  .signalement-section { break-inside: auto; }
+  .signalement img { break-inside: avoid; }
+}
 :focus-visible { outline: 1.5px solid var(--color-signal); outline-offset: 2px; }
 .maplibregl-ctrl-attrib { font-size: 10.5px; background: color-mix(in srgb, var(--color-abyss) 60%, transparent) !important;
                          color: var(--color-muted); }

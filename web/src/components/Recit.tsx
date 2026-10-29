@@ -5,8 +5,10 @@ import { toucheLibre } from "../lib/clavier";
 import { hm, jourHeure } from "../lib/format";
 import { gdh, reglagesUnites } from "../lib/unites";
 import { L } from "../lib/libelles";
-import { COULEURS_PREUVE as CP, distance, type Preuve } from "../lib/preuve";
+import { COULEURS_PREUVE, distance, type Preuve } from "../lib/preuve";
+import { teinter, type Theme, useTheme } from "../lib/theme";
 import type { Feature, Props } from "../lib/types";
+import { adresseSignalement } from "../lib/signalement";
 import { URGENCE } from "../lib/urgence";
 import PreuveImage from "./PreuveImage";
 import { IconeSignal } from "./VeillePanel";
@@ -15,9 +17,9 @@ const R = L.recit;
 const MOTIFS = Object.keys(L.decisions.motifs);
 
 /** Ligne de la chronologie : signal, vérification satellite ou décision */
-interface Fait { t: string; icone?: string; texte: string; detail?: string; alerte?: number; detection?: number; source?: string }
+export interface Fait { t: string; icone?: string; texte: string; detail?: string; alerte?: number; detection?: number; source?: string }
 
-function chronologie(d: Dossier, recit: Props | undefined): Fait[] {
+export function chronologie(d: Dossier, recit: Props | undefined): Fait[] {
   const faits: Fait[] = d.signaux.map((s) => ({ t: s.t, icone: s.icone, texte: s.fragment, alerte: s.alerte,
     detail: L.statut[s.statut] && s.statut !== "nouvelle" ? L.statut[s.statut] : undefined }));
   for (const v of recit?.verifications ?? []) {
@@ -38,8 +40,10 @@ function chronologie(d: Dossier, recit: Props | undefined): Fait[] {
 }
 
 /** Légende de la preuve dessinée sur la carte, avec les mêmes chiffres et les mêmes couleurs que le dessin */
-function Legende({ preuve }: { preuve: Preuve }) {
+export function Legende({ preuve, theme }: { preuve: Preuve; theme?: Theme }) {
   const { derniere_position: d, estimee: e, echo } = preuve;
+  const actuel = useTheme().theme;
+  const CP = teinter(COULEURS_PREUVE, theme ?? actuel);          // mêmes couleurs que la carte du thème affiché
   const ligne = (couleur: string, forme: "point" | "anneau" | "tirets" | "cercle", texte: string) => (
     <li className="flex items-center gap-2">
       <svg width="18" height="10" className="shrink-0" aria-hidden>
@@ -89,8 +93,11 @@ export default function Recit({ dossier: d, recit, instant, suivi, onSuivre, onP
     onError: (e: Error) => setMessage(e.message),
   });
   // Gestes au clavier : F, C puis 1 2 3, S, V (Entrée demande, Échap annule) ; écoute en capture, avant la Veille
-  const gestes = useRef({ classer, devis, occupe: false, suivi, onSuivre });
-  gestes.current = { classer, devis, occupe: decider.isPending || devisM.isPending || demander.isPending, suivi, onSuivre };
+  // Fiche de signalement (lot UX2) : page imprimable du dossier, dans un nouvel onglet
+  const ouvrirSignalement = () => window.open(adresseSignalement(d.cle, instant), "_blank", "noopener");
+  const gestes = useRef({ classer, devis, occupe: false, suivi, onSuivre, ouvrirSignalement });
+  gestes.current = { classer, devis, occupe: decider.isPending || devisM.isPending || demander.isPending, suivi, onSuivre,
+    ouvrirSignalement };
   const { mutate: decide } = decider, { mutate: demande } = demander, { mutate: chiffre } = devisM;
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
@@ -104,6 +111,7 @@ export default function Recit({ dossier: d, recit, instant, suivi, onSuivre, onP
       else if (t === "c") { pris(); setClasser((x) => !x); }
       else if (t === "s" && d.vessel_id != null) { pris(); g.onSuivre(d.vessel_id, !g.suivi); }
       else if (t === "v") { pris(); chiffre(); }
+      else if (t === "p") { pris(); g.ouvrirSignalement(); }
     };
     window.addEventListener("keydown", k, true);
     return () => window.removeEventListener("keydown", k, true);
@@ -134,6 +142,7 @@ export default function Recit({ dossier: d, recit, instant, suivi, onSuivre, onP
           <button className={btn} onClick={() => onSuivre(d.vessel_id!, !suivi)} aria-pressed={suivi}>{suivi ? R.gestes.suivi : R.gestes.suivre}{touche("suivre")}</button>
         )}
         <button className={btn} disabled={occupe} onClick={() => devisM.mutate()}>{R.gestes.verifier}{touche("verifier")}</button>
+        <button className={btn} onClick={() => ouvrirSignalement()}>{L.signalement.bouton}{touche("signalement")}</button>
       </div>
       {classer && (
         <div>

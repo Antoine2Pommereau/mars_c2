@@ -1,10 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "entry": [
-    "outils/icones/generer.mjs"
+    "outils/icones/generer.mjs",
+    "outils/signalement/pdf.mjs"
   ],
   "ignoreDependencies": [
-    "@resvg/resvg-js"
+    "@resvg/resvg-js",
+    "playwright"
   ],
   "ignore": [
     "public/**"

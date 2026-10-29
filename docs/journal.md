@@ -1549,3 +1549,23 @@ démonstration, base de test du 08 et 09/10 servie par les images de production 
   (#97a4af, #828c94 : `faint` était à 2,4:1), clair assombri (signal, alertes) ; test `web/tests/contraste.test.mjs`.
 * Image d'aperçu du dépôt GitHub : à déposer à la main (Settings, General, Social preview), aucune API ne le permet.
 * Tests : 583 réussis avec la base ; interface : typecheck, knip, 41 tests.
+
+## 29/10/2026 : lot UX2, fiche de signalement
+
+Aucune règle changée, aucune migration, aucune dépense.
+* Depuis un dossier, bouton « Fiche de signalement » ou touche P : page dédiée `/signalement` dans un nouvel onglet,
+  imprimable en A4 (marges, fond blanc, sections non coupées), bouton « Imprimer ou enregistrer en PDF » (impression du
+  navigateur, aucune dépendance serveur nouvelle). Dans l'ordre : en tête (logotype, dossier, groupe date heure
+  d'édition, opérateur connecté, bandeau « Données ouvertes · Projet personnel »), identité (noms actuel et anciens,
+  MMSI, OMI, pavillon, type, longueur, listes regroupées par autorité, photo hors démonstration, autre navire d'un
+  rendez vous), résumé et niveau, chronologie en UTC, preuves (carte statique exportée de MapLibre au moment de
+  l'édition, légende, vignettes avec capteur, heure, AIS le plus proche, score, longueur), traçabilité (version des
+  règles, trace, empreinte du panneau par alerte, sources des données), mentions (dont « un écho sans AIS n'est pas une
+  preuve d'intention »).
+* Défaut corrigé en chemin : la légende de la preuve gardait les couleurs du sombre (point de dernière position blanc,
+  invisible en thème clair) ; elle suit désormais le thème.
+* Essais : fiche d'un écho sans AIS de la base de test, puis, sur les données du serveur (lecture par le tunnel ; seule
+  écriture, le passage en démonstration, route libre qui pose un cookie et une ligne « visiteur » au journal du
+  panneau), SMYRTOS au 25/10 18:30 (analyse 105 du passage du 23/10) et le rendez vous de l'alerte 125730 : aucune
+  erreur, PDF lus page par page, aucun vrai nom ni vrai numéro (OMI pseudonymisé 9470868 pour 9389100, MMSI de même).
+  Exemples : `docs/images/fiche_signalement_exemple_navire_des_listes.pdf` et `…_rendez_vous.pdf`.

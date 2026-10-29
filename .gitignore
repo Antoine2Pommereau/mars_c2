@@ -26,3 +26,4 @@ logs/
 mars_c2/
 .gstack/
 web/outils/icones/node_modules/
+web/outils/signalement/node_modules/
