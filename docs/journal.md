@@ -1476,3 +1476,19 @@ Règles 2026.10.64, aucune migration.
   l'estime reste bornée à 20 min ; COSTA TOSCANA (385 m à 55 min) est un cas favorable.
 * E06 : CLAUDE.md (état au 29/10), pièges (union des cellules, `docker compose exec` qui avale un bloc SSH, chemin du
   dépôt avec une espace, profondeur des résumés d'épisodes), calibration.
+
+## 29/10/2026 : mission socle A, publication groupée de l'étape 8, étape 7 reportée
+
+* `9f68925` publiée et déployée (72 s), VERDICT à OK partout, règles 2026.10.64. Premier cycle des règles : 7 silences
+  déclassés au bord de la zone (E01), élevés hypothétiques de 14 à 8 sur la fenêtre de 24 h ; coupures en 2,96 s
+  (2,8 s avant).
+* Sélection automatique de Sentinel 1 reprise avec la boucle : analyse 109 (passage 653, ALTAI près de
+  l'infrastructure 619, travailleur 47, 0,19 €). Dépense de la mission : 0,38 € engagés.
+* Étape 7 : critère écrit avant (passage 1330, S2A du 27/10 11:27 UTC, tuile T30UWB, 12 % de nuages annoncés, seul
+  candidat sous 20 % sur 96 h ; SMYRTOS au mouillage de Weymouth, 4 navires AIS à moins de 12 km à 5 min près ; après :
+  au moins trois détections appariées à leur AIS dont SMYRTOS, vignettes présentes, aucun travailleur en vie). La voie
+  « demande manuelle d'un point » est impraticable tant que Sentinel 2 est en pause (le tip and cue n'attache aucune
+  demande à un passage d'une source en pause) : l'essai passe par les navires des listes de l'emprise
+  (`points_liste`, repli prévu pour un passage choisi à la main). **Reporté au 30/10** : aujourd'hui, l'essai prendrait
+  la troisième place du plafond de 4 travailleurs par jour, et le remasquage VIIRS de 18:30 la quatrième, au risque de
+  refuser la demande 51 (passage S1C de 17:54), preuve de l'étape 6.
