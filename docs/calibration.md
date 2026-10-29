@@ -154,6 +154,26 @@ Constantes codées en dur, même problème :
   3. **bords de réception** : cellules de la zone fiable où des navires sans lien cessent régulièrement d'être reçus,
      à retirer de la zone.
   Puis `min_prior_messages`, et la sortie de l'observation seulement après un test par injection satisfaisant.
+* **Gravité d'un silence sans réapparition** (`ais_gap.high_duration_min`, 360 min, E02, mesure du 29/10/2026) :
+  épisodes du 27 au 29/10 (résumés des cycles, 30 plus longs par cycle, 117 épisodes ; flux coupé négligeable,
+  15 minutes en tout, durées corrigées égales aux brutes). 66 sont passés en élevé pendant qu'ils étaient ouverts, dont
+  26 ont réapparu ensuite (39 %, 8 avec la route poursuivie) :
+
+  | Seuil | Élevés ouverts | dont réapparus ensuite | dont toujours ouverts |
+  |---|---|---|---|
+  | 360 min (en service) | 66 | 26 | 40 |
+  | 480 min | 57 | 21 | 36 |
+  | 600 min | 48 | 17 | 31 |
+  | 720 min | 44 | 14 | 30 |
+  | 960 min | 34 | 6 | 28 |
+
+  **Proposition : 720 min**, qui retire un tiers des élévations et près de la moitié de celles qui se démentent ; les
+  silences toujours ouverts sous 720 min sont surtout ceux que la fin de la fenêtre a tronqués (élévation retardée,
+  pas perdue). **Valeur inchangée** : le critère « sans perdre de cas retrouvé par injection » ne juge rien ici (une
+  coupure injectée réapparaît toujours, ce seuil ne la touche pas), la mesure couvre 2,4 jours et précède E01
+  (15 des 36 silences élevés sans réapparition déclassés au bord de la zone). À refaire après une semaine avec E01 en
+  service, et avec une injection de silences sans réapparition (messages effacés jusqu'à la fin de la fenêtre) pour
+  que le critère puisse trancher.
 * **Zone de réception fiable** : seuils définitifs sur dix jours, qui décident aussi de l'évaluation des détections
   VIIRS et Sentinel.
 * **Rendez vous** : seuils danois (500 m, 2 nœuds, 120 min, tranches de 10 et 20 min) contre les épisodes réels.
@@ -224,3 +244,4 @@ Les épisodes décrits un par un (30 plus longs par cycle) sont dans `details->'
 | 27/10/2026 | 2026.10.60 | Sentinel 1 : historique choisi sur la part de chaque fenêtre dans l'image du jour (`historique.couverture_min` 0,98), par fenêtre si besoin, motif exact ; garde des analyses retombées sans historique ; absence jamais déclarée là où l'image n'a pas de données |
 | 27/10/2026 | 2026.10.61 | Coupures : `min_prior_messages` à 8 (injection, 358 essais : 8 à 9 messages à 54,8 % contre 62,3 % à 10 et plus) ; zone fiable : `min_pairs` proportionnel au nombre de jours (50 pour 18) ; tip and cue : place gardée sous le plafond pour une demande planifiée |
 | 27/10/2026 | 2026.10.62 | Fusion radar : écho voisin du même navire (300 m, longueur à 40 % près) expliqué par lui |
+| 29/10/2026 | 2026.10.63 | Coupures (E01) : silence sans réapparition à moins de 10 km du bord en mer de la zone fiable déclassé en faible, comme un point collectif |

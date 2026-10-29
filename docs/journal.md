@@ -1452,7 +1452,7 @@ mission : 0,19 €.
   l'étape 7), travailleur en vie depuis plus d'une heure (détruit par le code), analyse sans historique, alerte
   élevée ou critique d'une analyse postérieure à 108, ou 72 h écoulées (01/11 à 11:28 UTC).
 * E01, règles 2026.10.63 : silence sans réapparition à moins de 10 km du bord en mer de la zone fiable déclassé en
-  faible comme un point collectif, sauf indice propre au navire. Mesure sur les épisodes du 20 au 29/10 (résumés des
+  faible comme un point collectif, sauf indice propre au navire. Mesure sur les épisodes du 27 au 29/10 (les résumés des cycles ne remontent qu'au 27/10 à 02:32 UTC ; résumés des
   cycles, 30 plus longs par cycle) : 36 silences élevés sans réapparition, médiane à 6,8 km du bord de la zone ;
   15 à moins de 10 km d'un bord en mer (déclassés), 21 restent élevés ; témoin, 7 réapparus moyens ou élevés sur 31
   aussi près. Un groupe revient chaque jour vers 0° E 50,5° N (face à Newhaven) sans former de point collectif (à
