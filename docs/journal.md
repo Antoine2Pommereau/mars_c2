@@ -1435,3 +1435,27 @@ mission : 0,19 €.
 * Alertes réelles à décider : 76467 (écho 6, 52 m, aucun AIS à 5 km), 92603 (écho de 30 m à 0,969, aucun AIS à 3,4 km),
   92602 (KATRE, longueur mesurée 34 m contre 119 m : sous estimation ou autre petit navire, ambigu).
 
+
+## 29/10/2026 : mission socle A, reprise (correctif 2026.10.62 déployé, refusion de 108, étape 6 lancée, E01)
+
+* État trouvé : étapes 1 à 5 faites le 27/10, correctif 2026.10.62 (écho voisin, analyse 108) fusionné mais pas
+  publié ; serveur en 02b660e ; aucun travailleur en vie ; dépense de la mission 0,19 € (travailleur 44).
+* Commande `taches.py plafond sentinel1 N --motif TEXTE` : le plafond ne se réglait que par le panneau (session
+  d'opérateur) ; même borne, même journal, test en base. Publiée et déployée avec le correctif : `59a526c`, VERDICT
+  à OK partout, règles 2026.10.62. Tests : 580 réussis avec la base, typecheck, knip, 25 tests de l'interface.
+* Refusion de 108, critères écrits avant (92604 expliquée par VICTORINE, 76467, 92602 et 92603 inchangées, aucune
+  nouvelle alerte) : simulation conforme, puis réelle : 92604 classée avec le motif « second écho du même navire,
+  VICTORINE (MMSI 256274000), à 107 m », 7 échos appariés au lieu de 6.
+* Étape 6 lancée le 29/10 à 11:28 UTC par claude-code (motif « mission socle A, boucle tip and cue ») : plafond
+  Sentinel 1 à 2, Sentinel 1 et tip and cue repris. Garde fou sur le serveur (`/tmp/z7/garde_tip.sh`, journal
+  `/tmp/z7/garde_tip.txt`), qui ne fait que remettre en pause : dépense de la mission à 2,81 € (0,19 € gardés pour
+  l'étape 7), travailleur en vie depuis plus d'une heure (détruit par le code), analyse sans historique, alerte
+  élevée ou critique d'une analyse postérieure à 108, ou 72 h écoulées (01/11 à 11:28 UTC).
+* E01, règles 2026.10.63 : silence sans réapparition à moins de 10 km du bord en mer de la zone fiable déclassé en
+  faible comme un point collectif, sauf indice propre au navire. Mesure sur les épisodes du 20 au 29/10 (résumés des
+  cycles, 30 plus longs par cycle) : 36 silences élevés sans réapparition, médiane à 6,8 km du bord de la zone ;
+  15 à moins de 10 km d'un bord en mer (déclassés), 21 restent élevés ; témoin, 7 réapparus moyens ou élevés sur 31
+  aussi près. Un groupe revient chaque jour vers 0° E 50,5° N (face à Newhaven) sans former de point collectif (à
+  cheval sur la maille du méridien 0, jours différents). Bord le long de la côte écarté (baie de Seine, abords
+  d'Ouessant gardés élevés). Défaut trouvé en chemin : l'union des géométries des cellules laisse des frontières
+  internes ; cellules refaites depuis leurs indices. Les coupures injectées réapparaissent : taux inchangé.
