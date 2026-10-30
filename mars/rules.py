@@ -15,7 +15,7 @@ import re
 import statistics
 from datetime import datetime, timedelta, timezone
 
-from mars.ais.live import ZONES
+from mars.ais.live import ZONES, valid_imo
 from mars.ais.mid import flag_of
 from mars.evaluation import GARDE_VERIFICATION
 from mars.geo import distance_m
@@ -1243,6 +1243,9 @@ async def run_identity(c, start, end, rules: dict) -> dict:
                        "motif": "Le navire émet sous un nouveau nom, confirmé dans la durée"}
             items.append({"key": f"nom:{vid}:{b['id']}", "severity": severity, "event_time": b["first_seen"],
                           "lon": pos["lon"], "lat": pos["lat"], "details": details, "vessels": [vid]})
+    # OMI à clé fausse ou de remplissage (1234567) : jamais un identifiant, aucun rapprochement de MMSI (identités
+    # enregistrées avant le contrôle encore en base)
+    imo_rows = [r for r in imo_rows if valid_imo(r["imo"])]
     for ch in imo_changes([dict(r) for r in imo_rows if r["mmsi"] not in ignored], end, conf):
         new = ch["nouveau"]
         if new["first_seen"] < start:
@@ -1280,6 +1283,42 @@ async def run_identity(c, start, end, rules: dict) -> dict:
                       "vessels": involved})
     saved = await save_alerts(c, "IDENTITY_CHANGE", items, rule_version=rules["version"], rules=rules)
     return {"changements": len(items), "sans_position": skipped, **saved}
+
+
+MOTIF_OMI_FACTICE = ("numéro OMI invalide ou de remplissage ({omi}) : jamais un identifiant, aucun changement "
+                     "d'identité à en tirer")
+
+
+def classer_omi_factices(conn, simulation: bool = False) -> dict:
+    """Alertes IDENTITY_CHANGE passées fondées sur un OMI invalide ou de remplissage : classées avec leur motif si
+    personne n'a encore décidé (statut « nouvelle ») ; une décision d'un opérateur reste, le motif est noté à côté.
+    Connexion psycopg ; `simulation` : tout est annulé à la fin."""
+    rows = conn.execute("SELECT id, status, (details->>'omi')::bigint FROM alerts WHERE type = 'IDENTITY_CHANGE' "
+                        "AND details ? 'omi' ORDER BY id").fetchall()
+    cibles = [(a, st, omi) for a, st, omi in rows if omi is not None and valid_imo(omi) is None]
+    quand = datetime.now(timezone.utc).isoformat()
+    classees, gardees = [], []
+    import psycopg
+    out = {}
+    with conn.transaction():
+        for a, st, omi in cibles:
+            motif = MOTIF_OMI_FACTICE.format(omi=omi)
+            note = {"le": quand, "motif": motif}
+            if st == "nouvelle":
+                conn.execute("UPDATE alerts SET status = 'classee', details = details || jsonb_build_object("
+                             "'omi_factice', %s::jsonb) WHERE id = %s", (json.dumps(note), a))
+                conn.execute("INSERT INTO alert_actions (alert_id, action, motif, note, author) VALUES "
+                             "(%s, 'classer', 'faux_positif', %s, 'MARS C2')", (a, motif))
+                classees.append(a)
+            else:                                     # décision d'un opérateur : elle reste
+                conn.execute("UPDATE alerts SET details = details || jsonb_build_object('omi_factice', %s::jsonb) "
+                             "WHERE id = %s", (json.dumps({**note, "decision_gardee": st}), a))
+                gardees.append(a)
+        out = {"examinees": len(rows), "fondees_sur_un_omi_factice": [a for a, _s, _o in cibles],
+               "classees": classees, "decisions_gardees": gardees}
+        if simulation:
+            raise psycopg.Rollback()                  # rien n'est écrit
+    return {**out, **({"simulation": "rien n'est écrit : transaction annulée"} if simulation else {})}
 
 
 # Évaluation continue

@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.64"
+version: "2026.10.65"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -202,6 +202,8 @@ identite:
   # Un nouveau nom n'est signalé qu'après 6 h sans retour à un nom antérieur : les alternances (deux émetteurs,
   # comme MUTIN et FS MUTIN) ne sont jamais signalées
   confirmation_min: 360
+  # Numéro OMI à clé fausse ou de remplissage (1234567, mars.ais.live.OMI_FACTICES) : jamais un identifiant, aucun
+  # changement d'identité ni rapprochement de listes (2026.10.65)
   # MMSI écartés en plus des MMSI génériques (code pays suivi de six zéros, comme 227000000, Marine nationale)
   mmsi_ignores: []
   # Bâtiments militaires : gravité minimale et étiquette « militaire » (un navire des listes garde sa gravité).

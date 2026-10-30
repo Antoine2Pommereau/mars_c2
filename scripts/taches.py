@@ -46,6 +46,7 @@ Usage :
     python scripts/taches.py sentinel-analyser ID      # analyse d'un passage choisi à la main (identifiant sar_passes)
     python scripts/taches.py sentinel-refusionner ID   # fusion refaite sur les détections en base (gratuit)
     python scripts/taches.py sentinel-refusionner ID --simulation   # ce que la refusion changerait (rien écrit)
+    python scripts/taches.py identite-omi-factices --simulation   # alertes d'identité fondées sur un OMI de remplissage
     python scripts/taches.py viirs-refusionner --toutes --simulation   # appariement VIIRS refait (lecture seule)
     python scripts/taches.py viirs-expliquer ALERTE [ALERTE…]   # pourquoi une alerte VIIRS tient (lecture seule)
     python scripts/taches.py viirs-reevaluer [DEBUT] --simulation   # changements de la réévaluation (rien écrit)
@@ -1165,6 +1166,17 @@ def _controle_diagnostic(_conn, _a):
 
 commande("sentinel")(_sentinel(False))
 commande("sentinel-analyser")(_sentinel(True))
+
+
+@commande("identite-omi-factices")                   # alertes IDENTITY_CHANGE fondées sur un OMI de remplissage
+def _identite_omi_factices(conn, a):
+    """taches.py identite-omi-factices [--simulation] : classe avec leur motif les alertes IDENTITY_CHANGE passées dont
+    l'OMI est invalide ou de remplissage (1234567) ; décisions des opérateurs gardées, motif noté à côté."""
+    from mars.rules import classer_omi_factices
+    res = classer_omi_factices(conn, simulation=getattr(a, "simulation", False))
+    traces.attributs(**{"identite.omi_factices": len(res["fondees_sur_un_omi_factice"]),
+                        "identite.classees": len(res["classees"]), "identite.simulation": "simulation" in res})
+    print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
 @commande("sentinel-refusionner")                    # gratuit : fusion refaite sur les détections en base

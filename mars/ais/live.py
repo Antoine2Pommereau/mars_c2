@@ -63,9 +63,16 @@ def ship_type_label(code) -> str | None:
     return None          # 0 (non renseigné) et codes réservés
 
 
+# Numéros de remplissage dont la clé est juste par hasard : jamais un identifiant. Mesure du 31/10/2026 sur le serveur :
+# aucun OMI à clé fausse en base (contrôle déjà fait à l'ingestion et à l'import des listes) ; 1234567 seul partagé par
+# plus de deux MMSI (cinq noms, dont TEST et TEST1), à l'origine des fausses alertes 47064 et 63928.
+OMI_FACTICES = frozenset({1234567})
+
+
 def valid_imo(v) -> int | None:
     """Numéro OMI à sept chiffres dont la clé est juste, sinon None (l'AIS transporte souvent 0 ou un nombre
-    quelconque dans ce champ). Clé : somme des six premiers chiffres pondérés de 7 à 2, modulo 10."""
+    quelconque dans ce champ). Clé : somme des six premiers chiffres pondérés de 7 à 2, modulo 10. Un numéro de
+    remplissage (OMI_FACTICES) n'est jamais retenu."""
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return None
     try:
@@ -78,6 +85,8 @@ def valid_imo(v) -> int | None:
     if not 1_000_000 <= n <= 9_999_999:
         return None
     d = [int(c) for c in str(n)]
+    if n in OMI_FACTICES:
+        return None
     return n if sum(x * w for x, w in zip(d[:6], range(7, 1, -1))) % 10 == d[6] else None
 
 

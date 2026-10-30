@@ -230,3 +230,19 @@ def test_command_refuses_with_its_reason_and_reports_the_refusion(conn, capsys):
     st, details = conn.execute("SELECT status, details FROM task_runs WHERE task = 'sentinel_refusion' ORDER BY id DESC "
                                "LIMIT 1").fetchone()
     assert st == "ok" and details["appariees"] == 1
+
+
+def test_smyrtos_under_way_at_the_sentinel2_pass_is_not_held():
+    """Analyse 112 (Sentinel 2, 27/10/2026 11:27:09) : écho de 238 m à la position de SMYRTOS, non apparié. Le
+    maintien à l'arrêt ne s'applique pas, à raison : à 11:06 SMYRTOS déclarait 3,5 nœuds en route (statut 0), à 993 m
+    de l'écho ; aucun message entre 11:06 et 11:37 (31 min, au delà des 10 min de l'interpolation). Positions réelles."""
+    t0 = datetime(2026, 10, 27, 11, 27, 9, tzinfo=timezone.utc)
+    pts = [(datetime(2026, 10, 27, 10, 38, 23, tzinfo=timezone.utc), -2.36060, 50.57955, 2.7, 223.9),
+           (datetime(2026, 10, 27, 11, 6, 23, tzinfo=timezone.utc), -2.38669, 50.56080, 3.5, 217.6),
+           (datetime(2026, 10, 27, 11, 37, 52, tzinfo=timezone.utc), -2.38393, 50.55545, 1.6, 349.3),
+           (datetime(2026, 10, 27, 11, 46, 53, tzinfo=timezone.utc), -2.38320, 50.55960, 1.7, 2.8)]
+    arret = arret_params(RULES)
+    assert maintien_arret([{"ts": t, "lon": x, "lat": y, "sog": v} for t, x, y, v, _c in pts], t0, arret) is None
+    pos = pd.DataFrame([{"vessel_id": 1, "mmsi": 613411302, "name": "SMYRTOS", "length_m": 244.0, "ts": pd.Timestamp(t),
+                         "lon": x, "lat": y, "sog": v, "cog": c} for t, x, y, v, c in pts])
+    assert positions_at(pos, pd.Timestamp(t0), pd.Timedelta(minutes=RULES["fusion"]["max_gap_min"]), arret).empty

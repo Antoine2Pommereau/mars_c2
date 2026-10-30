@@ -52,6 +52,8 @@ def test_valid_imo():
     assert valid_imo("IMO9427366") == 9427366
     assert valid_imo(9074728) is None               # clé fausse
     assert valid_imo(0) is None and valid_imo(None) is None and valid_imo(884717900) is None
+    # Numéro de remplissage à clé juste (7 + 12 + 15 + 16 + 15 + 12 = 77, clé 7) : jamais un identifiant
+    assert valid_imo(1234567) is None and valid_imo("IMO1234567") is None
 
 
 def test_flag_and_ship_type():
