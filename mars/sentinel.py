@@ -850,11 +850,18 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
         tip_and_cue.refuser(conn, toutes, motif)                       # plafond ou budget : refus avec son motif
         return {"refus": motif, "scenes_demandees": asked}
     import psycopg
+    from mars import travailleurs
     # Paire dédiée aux travailleurs : présente, non expirée, et acceptée par Copernicus (lecture réelle de 16 octets),
     # avant tout appel à Scaleway
     with traces.span("sentinel.verification_cles"):
         motif = pair_expired(TRAVAILLEUR, now) or check_cdse(session, selected[0]["scenes"][0]["vv"], TRAVAILLEUR)
     if motif:
+        return {"refus": motif}
+    # Plafond quotidien des travailleurs vérifié avant d'écrire l'analyse : un refus connu d'avance n'est pas une
+    # analyse en échec, et les demandes d'observation qu'elle aurait portées sont refusées avec leur motif
+    motif = travailleurs.quota_du_jour(conn, rules, now, "sentinel")
+    if motif:
+        tip_and_cue.refuser(conn, toutes, motif)
         return {"refus": motif}
     analyses = []
     try:
@@ -914,7 +921,7 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
     """Lance le travailleur sur processeur, premier type disponible de la liste, avec un lot de fenetres_max_cpu
     fenêtres au plus (les suivantes partent au cycle d'après). Chaque décision est un span de la trace de l'analyse :
     disponibilités, type retenu et motif, rupture de stock, budget, mise en attente."""
-    from mars import travailleurs
+    from mars import tip_and_cue, travailleurs
     from mars.viirs import regions_boxes
     ids = [a for a, _ in analyses]
     faites = dict(conn.execute("SELECT id, fenetres_faites FROM analyses WHERE id = ANY(%s)", (ids,)).fetchall())
@@ -973,8 +980,10 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
                     essais.append(r["refus"])
                     continue
             if "travailleur" not in r:
+                motif = r.get("refus") or f"travailleur occupé ({r.get('occupe')})"
                 conn.execute("UPDATE analyses SET status = 'failed', error = %s, completed_at = now() WHERE id = ANY(%s)",
-                             (r.get("refus") or f"travailleur occupé ({r.get('occupe')})", ids))
+                             (motif, ids))
+                tip_and_cue.liberer(conn, ids, motif)
                 return r
             motif = (f"{MOTIF_LOTS} : lot de {n_lot} fenêtre(s) sur {n_fen}" if n_lot < n_fen
                      else f"{MOTIF_PETIT} ({n_fen} fenêtre(s))")

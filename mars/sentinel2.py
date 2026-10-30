@@ -427,6 +427,11 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
                                                               TRAVAILLEUR)
     if motif:
         return {"refus": motif}
+    from mars import travailleurs
+    motif = travailleurs.quota_du_jour(conn, rules, now, "sentinel2")    # avant d'écrire l'analyse (cf. Sentinel 1)
+    if motif:
+        tip_and_cue.refuser(conn, toutes, motif)
+        return {"refus": motif}
     import psycopg
     analyses = []
     try:
@@ -508,8 +513,11 @@ def _calculer(conn, scw, rules: dict, s2: dict, now: datetime, analyses: list, s
                     essais.append(r["refus"])
                     continue
             if "travailleur" not in r:
+                motif = r.get("refus") or f"travailleur occupé ({r.get('occupe')})"
                 conn.execute("UPDATE analyses SET status = 'failed', error = %s, completed_at = now() WHERE id = ANY(%s)",
-                             (r.get("refus") or f"travailleur occupé ({r.get('occupe')})", ids))
+                             (motif, ids))
+                from mars import tip_and_cue
+                tip_and_cue.liberer(conn, ids, motif)
                 return r
             motif = f"processeur {t['commercial_type']} ({n_fen} fenêtre(s))" + (f" ({' ; '.join(essais)})" if essais else "")
             sp.set_attributes({"sentinel2.type": t["commercial_type"], "sentinel2.motif": motif[:300]})

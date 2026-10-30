@@ -469,6 +469,72 @@ def test_result_is_attached_to_the_alert_and_severity_adjusted(conn, cas, attend
     assert conn.execute("SELECT count(*) FROM alerts WHERE id = %s", (aid_alerte,)).fetchone()[0] == 1   # jamais retirée
 
 
+# Demande 51 du 29/10/2026 : EEMS DOVER au mouillage en baie de Seine, tip rendez vous, planifiée sur le passage 655
+# (S1C, 17:54:46) ; trois minutes après la prise de vue, le passage encore « prevu » (marqué acquis par la mise à jour
+# de la nuit, à 02:31) sortait des candidats et la demande partait sur le passage 1204 du lendemain ; l'analyse 110 du
+# passage 655, lancée à 02:37, ne la portait pas
+UTC = timezone.utc
+T655, T1204 = datetime(2026, 10, 29, 17, 54, 46, tzinfo=UTC), datetime(2026, 10, 30, 17, 46, 16, tzinfo=UTC)
+SEINE = {"type": "Polygon", "coordinates": [[[-1.6, 49.0], [0.6, 49.0], [0.6, 50.6], [-1.6, 50.6], [-1.6, 49.0]]]}
+EEMS = (-0.53457, 49.46955)
+
+
+def _demande_51(conn):
+    p655, p1204 = _passage(conn, "TIP_655", T655, SEINE), _passage(conn, "TIP_1204", T1204, SEINE)
+    t_pos = datetime(2026, 10, 29, 11, 29, tzinfo=UTC)
+    vid = _navire(conn, 636999751, *EEMS, sog=0.2, cog=180.0, t=t_pos)
+    alerte = _alerte(conn, "RENDEZVOUS", "moyenne", *EEMS, {"navires": [{"vessel_id": vid}]}, vid, t=t_pos)
+    did = tc.creer(conn, RULES, datetime(2026, 10, 29, 11, 31, 43, tzinfo=UTC), cle=f"alerte:{alerte}", tip="rendezvous",
+                   lon=EEMS[0], lat=EEMS[1], position_le=t_pos, vessel_id=vid, sog=0.2, cog=180.0,
+                   alerte_id=alerte)["demande"]
+    return p655, p1204, vid, alerte, did
+
+
+def _replanifier(conn, quand):
+    return tc.planifier(conn, RULES, quand, cote=lambda _lon, _lat: None)
+
+
+def test_request_51_stays_on_its_pass_until_the_scene_is_published_then_gets_its_result(conn):
+    p655, p1204, vid, alerte, did = _demande_51(conn)
+    _replanifier(conn, datetime(2026, 10, 29, 11, 31, 43, tzinfo=UTC))
+    assert _demande(conn, did)["pass_id"] == p655
+    # 17:57:43, puis 02:31 : passage passé, toujours « prevu », scène pas encore publiée : la demande reste
+    for quand in (datetime(2026, 10, 29, 17, 57, 43, tzinfo=UTC), datetime(2026, 10, 30, 2, 31, tzinfo=UTC)):
+        _replanifier(conn, quand)
+        d = _demande(conn, did)
+        assert (d["etat"], d["pass_id"], d["retro"]) == ("planifiee", p655, False)
+    assert [p["demande"] for p in tc.points_passage(conn, RULES, p655)] == [did]          # portée par la sélection
+    # 02:37 : analyse du passage avec la fenêtre de la demande, écho apparié au navire à 300 m
+    conn.execute("UPDATE sar_passes SET statut = 'acquis' WHERE id = %s", (p655,))
+    an = _analyse(conn, p655, T655, [(*tc.destination(*EEMS, 90, 300), vid, None)])
+    assert tc.rattacher(conn, p655, an, [did]) == 1
+    assert tc.evaluer(conn, an, RULES) == [{"alerte": alerte, "gravite_avant": "moyenne", "gravite_apres": "moyenne"}]
+    etat, res = conn.execute("SELECT etat, resultat FROM demandes_observation WHERE id = %s", (did,)).fetchone()
+    assert (etat, res) == ("analysee", "present_apparie")
+    v = conn.execute("SELECT details FROM alerts WHERE id = %s", (alerte,)).fetchone()[0]["verification_satellite"]
+    assert v["demande"] == did and v["analyse"] == an and v["passage"] == p655
+
+
+def test_request_51_leaves_a_pass_whose_scene_never_comes(conn):
+    """Scène jamais publiée : passé attente_publication_h (12 h), la demande part sur le passage suivant."""
+    p655, p1204, *_r, did = _demande_51(conn)
+    _replanifier(conn, datetime(2026, 10, 29, 11, 31, 43, tzinfo=UTC))
+    _replanifier(conn, T655 + timedelta(hours=S["attente_publication_h"], minutes=1))
+    assert _demande(conn, did)["pass_id"] == p1204
+
+
+def test_request_on_a_past_pass_already_analysed_elsewhere_waits_for_the_next(conn):
+    """Passage passé encore « prevu » mais déjà analysé sans fenêtre sur le cercle : le suivant, pas une demande
+    accrochée à un passage que la sélection ne reprendra plus."""
+    p655, p1204, *_r, did = _demande_51(conn)
+    _replanifier(conn, datetime(2026, 10, 29, 11, 31, 43, tzinfo=UTC))
+    an = _analyse(conn, p655, T655, [])
+    conn.execute("UPDATE analyses SET fenetres = %s WHERE id = %s",
+                 (json.dumps({"SC": [{"bbox": [-0.32348, 50.172, 0.0139, 50.38904]}]}), an))   # fenêtre de 110
+    _replanifier(conn, datetime(2026, 10, 30, 2, 40, tzinfo=UTC))
+    assert _demande(conn, did)["pass_id"] == p1204
+
+
 def test_rules_cycle_keeps_the_satellite_verification(conn):
     """Une alerte mise à jour en place par sa règle (toutes les 5 minutes) garde sa vérification et sa gravité."""
     from mars.rules import save_alerts

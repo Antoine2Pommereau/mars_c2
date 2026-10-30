@@ -469,6 +469,18 @@ def quota(rules: dict, today: list[dict], now: datetime, tache: str = "viirs") -
     return None
 
 
+def quota_du_jour(conn, rules: dict, now: datetime, tache: str) -> str | None:
+    """`quota` sur les travailleurs du jour (UTC) dont une instance a vraiment été créée chez Scaleway (scw_server_id
+    renseigné dès la création) : un lancement refusé avant (image, quota, clés) ne coûte rien et n'entame pas le
+    plafond. Appelé aussi avant toute écriture d'analyse (analyse 113 du 30/10/2026 : analyse créée, puis refusée
+    par le plafond de travailleurs, demandes rattachées laissées sans issue)."""
+    today = [dict(zip(("cree_le", "fini_le", "tache"), r)) for r in conn.execute(
+        "SELECT cree_le, fini_le, tache FROM travailleurs WHERE cree_le >= %s AND scw_server_id IS NOT NULL "
+        "AND NOT rupture_stock",
+        (now.replace(hour=0, minute=0, second=0, microsecond=0),)).fetchall()]
+    return quota(rules, today, now, tache)
+
+
 def cost(minutes: float, prix_heure: float, granularite_min: int) -> float:
     """Coût estimé hors taxes : durée arrondie à la granularité de facturation (une heure entamée pour les instances
     CPU, une minute pour les GPU), au moins une unité."""
@@ -635,13 +647,7 @@ def eprouves(conn) -> set:
 def _launch(conn, scw, rules, tache, parametres, env, now, sleep, log, variante=None) -> dict:
     now = now or datetime.now(timezone.utc)
     p, t = rules["travailleurs"], type_params(rules, tache, variante)
-    # Seuls comptent les travailleurs dont une instance a été créée chez Scaleway (scw_server_id renseigné dès la
-    # création) : un lancement refusé avant (image, quota, clés) ne coûte rien et n'entame pas le plafond
-    today = [dict(zip(("cree_le", "fini_le", "tache"), r)) for r in conn.execute(
-        "SELECT cree_le, fini_le, tache FROM travailleurs WHERE cree_le >= %s AND scw_server_id IS NOT NULL "
-        "AND NOT rupture_stock",
-        (now.replace(hour=0, minute=0, second=0, microsecond=0),)).fetchall()]
-    refus = quota(rules, today, now, tache)
+    refus = quota_du_jour(conn, rules, now, tache)
     if refus:
         return {"refus": refus}
     if ESSAI_EPROUVES_SEULS or tache in (p.get("types_eprouves_seuls") or []):

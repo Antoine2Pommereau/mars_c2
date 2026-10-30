@@ -478,6 +478,45 @@ def test_planned_request_keeps_its_place_under_the_cap(conn, monkeypatch):
     assert sentinel.places_reservees(conn, now + timedelta(days=1), [pid]) == []
 
 
+def _demande_planifiee(conn, pid, now):
+    return conn.execute(
+        "INSERT INTO demandes_observation (tip, priorite, position, position_le, etat, expire_le, pass_id, fenetres) "
+        "VALUES ('viirs', 4, ST_SetSRID(ST_MakePoint(-6.0, 48.1), 4326)::geography, %s, 'planifiee', %s, %s, "
+        "'[[-6.0, 48.1]]') RETURNING id", (now, now + timedelta(days=1), pid)).fetchone()[0]
+
+
+def test_daily_worker_cap_is_checked_before_writing_the_analysis(conn, monkeypatch):
+    """Analyse 113 du 30/10/2026 : plafond de 4 travailleurs atteint (essais Sentinel 2 du jour) ; l'analyse était
+    écrite puis mise en échec, et une demande qu'elle aurait portée restait planifiée sur une analyse morte. Désormais
+    refus sans analyse, demande refusée avec le motif ; même chose si le refus n'arrive qu'au lancement."""
+    from mars import sentinel, travailleurs
+    now = datetime(2026, 10, 11, 18, 47, tzinfo=timezone.utc)
+    pid, _ids, t0 = _setup(conn, now)
+    did = _demande_planifiee(conn, pid, now)
+    for tache in ("sentinel", "viirs", "sentinel2", "sentinel2"):
+        conn.execute("INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, etat, cree_le, "
+                     "fini_le, detruit_le, scw_server_id) VALUES (%s, 'GP1-S', 'fr-par-2', 'x', '{}', 'termine', %s, %s, "
+                     "%s, 'srv')", (tache, now - timedelta(hours=8), now - timedelta(hours=7, minutes=50),
+                                    now - timedelta(hours=7, minutes=50)))
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_ACCESS_KEY", "k")
+    monkeypatch.setenv("CDSE_TRAVAILLEUR_SECRET_KEY", "s")
+    monkeypatch.setattr(travailleurs, "launch", lambda *_a, **_k: pytest.fail("lancement malgré le plafond"))
+    stac = FakeStac([_scene(t0)])
+    r = sentinel.launch(conn, None, RULES, now, stac)
+    assert r == {"refus": "plafond de 4 travailleurs par jour atteint"}
+    assert conn.execute("SELECT count(*) FROM analyses WHERE pass_id = %s", (pid,)).fetchone()[0] == 0
+    assert conn.execute("SELECT etat, motif, analysis_id FROM demandes_observation WHERE id = %s", (did,)).fetchone() == (
+        "refusee_budget", "plafond de 4 travailleurs par jour atteint", None)
+    # Refus qui n'arrive qu'au lancement (course avec un autre travailleur) : analyse en échec, demande libérée
+    conn.execute("DELETE FROM travailleurs WHERE scw_server_id = 'srv'")
+    conn.execute("UPDATE demandes_observation SET etat = 'planifiee', motif = NULL, fini_le = NULL WHERE id = %s", (did,))
+    monkeypatch.setattr(travailleurs, "launch", lambda *_a, **_k: {"refus": "plafond de 4 travailleurs par jour atteint"})
+    r = sentinel.launch(conn, None, RULES, now, stac)
+    aid = conn.execute("SELECT id FROM analyses WHERE pass_id = %s AND status = 'failed'", (pid,)).fetchone()[0]
+    assert conn.execute("SELECT etat, analysis_id FROM demandes_observation WHERE id = %s", (did,)).fetchone() == (
+        "refusee_budget", aid)
+
+
 def _scene(t0, sid="S1C_IW_GRDH_1SDV_A_COG"):
     return {"id": sid, "debut": t0.isoformat(), "fin": (t0 + timedelta(seconds=25)).isoformat(), "emprise": SQUARE}
 

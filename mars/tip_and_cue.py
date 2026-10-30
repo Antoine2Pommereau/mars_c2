@@ -464,11 +464,23 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
     p = tc["prediction"]
     cote = cote or (lambda lon, lat: distance_cote_m(conn, lon, lat, s["point_cote_min_km"] * 1000.0))
     debut = max(d["position_le"] - timedelta(minutes=30), now - timedelta(hours=tc["heures_retro"]))
+    # Passage passé encore « prevu » au calendrier (marqué acquis par la mise à jour de la nuit) : gardé tant que sa
+    # scène peut encore être publiée (attente_publication_h), comme le fait la sélection Sentinel. Le passage déjà
+    # retenu par la demande est gardé jusque là même au delà de heures_retro. Avant (demande 51 du 29/10/2026) : la
+    # demande quittait le passage 655 trois minutes après sa prise de vue, et l'analyse 110 de ce passage, lancée à la
+    # publication de la scène, ne la portait pas.
+    retenu = d.get("pass_id") if d.get("etat") == "planifiee" else None
     rows = conn.execute(
         """SELECT id, satellite, acquired_at, statut, ST_AsGeoJSON(footprint)::json, mission, nuages FROM sar_passes
-           WHERE mission = ANY(%s) AND (mission = 'S2' OR coalesce(mode, 'IW') = 'IW') AND footprint IS NOT NULL
-             AND acquired_at BETWEEN %s AND %s AND (statut = 'acquis' OR acquired_at > %s)
-           ORDER BY acquired_at""", (missions, debut, d["expire_le"], now)).fetchall()
+           WHERE mission = ANY(%(m)s) AND (mission = 'S2' OR coalesce(mode, 'IW') = 'IW') AND footprint IS NOT NULL
+             AND acquired_at <= %(fin)s
+             AND (acquired_at >= %(debut)s OR (id = %(retenu)s AND acquired_at > %(now)s - make_interval(
+                    hours => CASE WHEN mission = 'S2' THEN %(pub2)s ELSE %(pub1)s END)))
+             AND (statut = 'acquis' OR acquired_at > %(now)s - make_interval(
+                    hours => CASE WHEN mission = 'S2' THEN %(pub2)s ELSE %(pub1)s END))
+           ORDER BY acquired_at""",
+        {"m": missions, "debut": debut, "fin": d["expire_le"], "now": now, "retenu": retenu,
+         "pub1": s["attente_publication_h"], "pub2": rules["sentinel2"]["attente_publication_h"]}).fetchall()
     motif = transit = None           # raisons terminales
     proche = deja = nuageux = None   # raisons d'attendre : emprise la plus proche, passage déjà analysé, nuages
     navire = d.get("vessel_id") is not None
@@ -516,7 +528,7 @@ def choisir_passage(conn, rules: dict, d: dict, now: datetime, cote=None) -> dic
                      f"de {100 * float(tc['prediction']['cercle_appris']['contenance_min']):.0f} %")
             continue
         retro = statut == "acquis" and t <= now
-        if retro:
+        if t <= now:
             source = "sentinel2" if mission == "S2" else "sentinel1"
             an = conn.execute("SELECT id, status, fenetres FROM analyses WHERE pass_id = %s AND source = %s "
                               "AND status <> 'failed'", (pid, source)).fetchone()
@@ -715,6 +727,18 @@ def refuser(conn, demandes: list[int], motif: str) -> int:
     n = conn.execute("UPDATE demandes_observation SET etat = 'refusee_budget', motif = %s, fini_le = now(), "
                      "mis_a_jour_le = now() WHERE id = ANY(%s) AND etat = 'planifiee' AND analysis_id IS NULL",
                      (motif[:500], demandes)).rowcount
+    traces.attributs(**{"tip.refusees": n})
+    return n
+
+
+def liberer(conn, analyses: list[int], motif: str) -> int:
+    """Analyses refusées au lancement (aucun travailleur créé) : les demandes qu'elles portaient sont refusées avec le
+    motif, au lieu de rester planifiées sur une analyse qui ne finira jamais (analyse 113 du 30/10/2026)."""
+    if not analyses:
+        return 0
+    n = conn.execute("UPDATE demandes_observation SET etat = 'refusee_budget', motif = %s, fini_le = now(), "
+                     "mis_a_jour_le = now() WHERE analysis_id = ANY(%s) AND etat = 'planifiee'",
+                     (motif[:500], analyses)).rowcount
     traces.attributs(**{"tip.refusees": n})
     return n
 
