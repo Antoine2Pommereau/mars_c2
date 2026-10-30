@@ -1569,3 +1569,30 @@ Aucune règle changée, aucune migration, aucune dépense.
   panneau), SMYRTOS au 25/10 18:30 (analyse 105 du passage du 23/10) et le rendez vous de l'alerte 125730 : aucune
   erreur, PDF lus page par page, aucun vrai nom ni vrai numéro (OMI pseudonymisé 9470868 pour 9389100, MMSI de même).
   Exemples : `docs/images/fiche_signalement_exemple_navire_des_listes.pdf` et `…_rendez_vous.pdf`.
+
+## 30/10/2026 : mission socle A, étape 7 (C01) et point de l'étape 6
+
+* Étape 6 : aucune demande de tip and cue analysée (12 créées depuis le 27/10). La demande 51 (passage S1C du 29/10
+  17:54) a été replanifiée sur le passage du 30/10 17:46 puis close « sans passage » (position prédite au quai). Les
+  analyses 109 et 110 viennent de la sélection automatique (navires des listes sur corridor), sans alerte élevée. Le
+  remasquage VIIRS (D02) a tourné pour la première fois le 29/10 à 18:30 (travailleur 48).
+* Étape 7, premier essai (travailleur 51, 09:07 UTC, 0,19 €) : analyse réussie sur le travailleur (code 0), mais le
+  serveur a refusé tout le lot : « détection 1 : cap_deg hors de [0, 360] ». Cause lue dans le code d'AI2
+  (`rslp/vessel_attribute/train.py`, ligne 328) : le cap publié vaut 90 moins l'angle trigonométrique, jamais ramené
+  dans [0, 360), donc négatif pour toute route au nord ouest. Second défaut : un refus de résultats laissait l'analyse
+  « en cours » (111). Correctifs (`816697f`, déployé, VERDICT à OK) : cap ramené dans [0, 360) par le travailleur,
+  refus traité comme un échec signalé, filet de la surveillance qui clôt toute analyse en cours d'un travailleur
+  détruit (111 close à la première minute, avec son motif). Vérifié dans l'image d'AI2 (`verifier_images.sh s2` :
+  4 navires détectés, décrits et illustrés). Tests : 585 réussis avec la base.
+* Étape 7, second essai (travailleur 52, 13:12 UTC, 10 min, 0,19 €, détruit) : résultats acceptés, analyse 112, tuile
+  T30UWB du 27/10 11:27, 10 navires AIS dans la tuile, 2 détections, 2 vignettes.
+  * Détection 42 : HERMES CENTURY appariée, 231 m mesurés pour 229 m déclarés, score 0,998 : vrai positif net.
+  * Détection 41 : écho de 238 m exactement à la position de SMYRTOS (244 m déclarés), **non apparié** : AIS de
+    SMYRTOS clairsemé à Weymouth (aucune position entre 11:06 et 11:37, navire à 1,6 à 3,5 nœuds), trou au delà de
+    l'interpolation, position la plus proche à 367 m et 10 min après, hors de la tolérance. Hors de la zone de
+    réception fiable : « non évaluable », aucune alerte (prudence voulue).
+  * Les 4 navires AIS à moins de 12 km étaient au port de Portland, sous la côte (4 km).
+  * **Critère écrit non atteint** (au moins trois appariements dont SMYRTOS) : un seul appariement. Pas de troisième
+    essai payant pour l'atteindre. Ce que l'essai prouve : la chaîne Sentinel 2 réelle de bout en bout (lecture,
+    modèle, validation, fusion, vignettes, destruction) et un vrai positif à 1 % près sur la longueur.
+* Dépense de la mission : 0,95 € sur 3,00 € (travailleurs 44, 47, 49, 51, 52). Sentinel 2 reste en pause.
