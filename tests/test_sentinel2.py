@@ -532,3 +532,11 @@ def test_nothing_to_analyse_is_said_plainly():
     assert m == ("tuile 30UVU (2 point(s)) : nuages annoncés : 64 % sur la tuile ; SMYRTOS : à quai ou au mouillage "
                  "près de la côte").replace(" ; ", "; ")
     assert "{" not in m and motif_rien({}, 9).startswith("aucun navire des listes")
+
+
+def test_ai2_heading_is_brought_back_to_a_compass_bearing():
+    """rslearn publie 90 moins l'angle trigonométrique, de moins 270 à 270 : ramené dans [0, 360) (essai réel du
+    passage 1330 du 30/10/2026, lot entier refusé pour un cap négatif)."""
+    w = _travailleur()
+    assert [w.cap(h) for h in (-45.0, 270.0, 360.0, 12.34, -270.0)] == [315.0, 270.0, 0.0, 12.3, 90.0]
+    assert w.cap(None) is None and w.cap("n.d.") is None

@@ -222,9 +222,12 @@ async def worker_results(request: Request, wid: int, authorization: str | None =
             motif = f"résultats refusés : {e}"[:1000]
             traces.erreur(motif)
             log.warning("travailleur %s : %s", wid, motif)
+            # Comme un échec signalé (fin_signalee) : la surveillance met aussitôt ses analyses en échec et détruit
+            # l'instance (30/10/2026 : l'analyse 111 restait « en cours » après un refus)
             await c.execute(
                 "UPDATE travailleurs SET etat = 'echec', erreur = $2, fini_le = now(), mesures = coalesce(mesures, "
-                "'{}'::jsonb) || jsonb_build_object('resultats_refuses', $2::text) WHERE id = $1", wid, motif)
+                "'{}'::jsonb) || jsonb_build_object('resultats_refuses', $2::text, 'fin_signalee', 'echec', "
+                "'etape_echec', 'resultats') WHERE id = $1", wid, motif)
             raise HTTPException(422, motif)
         await c.execute(
             "UPDATE travailleurs SET etat = 'resultats', resultats_le = now(), resultat = $2, "

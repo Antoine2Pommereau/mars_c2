@@ -49,6 +49,18 @@ class Arret(Exception):
     """Cause commune à toutes les fenêtres (clés, poids, chaîne d'AI2) : arrêt avec son motif."""
 
 
+
+def cap(h):
+    """Cap du modèle d'AI2 ramené dans [0, 360) : rslearn publie 90 moins l'angle trigonométrique (vessel_attribute,
+    train.py), soit de moins 270 à 270 selon le mode ; une route au nord ouest sortait négative et le serveur refusait
+    tout le lot (essai réel du passage 1330, 30/10/2026)."""
+    if h is None:
+        return None
+    try:
+        return round(float(h) % 360.0, 1)
+    except (TypeError, ValueError):
+        return None
+
 def rss_mo() -> float:
     return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
 
@@ -559,7 +571,7 @@ def analyser(task: dict, tr) -> dict:
                         continue
                     det = {"lon": round(lon, 6), "lat": round(lat, 6), "score": round(float(pr["score"]), 3),
                            "longueur_m": at.get("length"), "largeur_m": at.get("width"), "vitesse_kn": at.get("speed"),
-                           "cap_deg": at.get("heading"), "type": at.get("vessel_type")}
+                           "cap_deg": cap(at.get("heading")), "type": at.get("vessel_type")}
                     if masque is not None:
                         # Part masquée dans le carré de 2 × masque_voisinage_m autour du navire (le serveur l'écarte,
                         # « nuages », au delà de masque_part_max_pct : le navire et son sillage en font quelques %)

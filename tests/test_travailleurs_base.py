@@ -448,3 +448,33 @@ def test_destruction_journal_names_the_deleted_block_volumes(conn):
     details = conn.execute("SELECT details FROM task_runs WHERE task = 'travailleur_sentinel' "
                            "AND (details->>'travailleur')::int = %s", (wid,)).fetchone()[0]
     assert details["volumes_bloc_supprimes"] == ["blk-19"]
+
+
+def test_running_analysis_of_a_destroyed_worker_is_closed_with_its_reason(conn):
+    """30/10/2026, essai Sentinel 2 du passage 1330 : résultats refusés, instance détruite comme orpheline, analyse
+    restée « en cours ». La surveillance la met en échec avec le motif du travailleur ; celle d'un travailleur vivant
+    reste en cours."""
+    ids = {}
+    for nom, etat, fini in (("mort", "echec", "now()"), ("vivant", "demarre", "NULL")):
+        ids[nom] = conn.execute(
+            "INSERT INTO travailleurs (tache, commercial_type, zone, jeton_hash, parametres, etat, erreur, cree_le, "
+            f"fini_le, detruit_le) VALUES ('sentinel2', 'GP1-S', 'fr-par-2', 'x', '{{}}', %s, %s, now(), {fini}, {fini}) "
+            "RETURNING id", (etat, "résultats refusés : scène 0, détection 1 : cap_deg hors de [0, 360]"
+                             if nom == "mort" else None)).fetchone()[0]
+    pid = conn.execute("INSERT INTO sar_passes (product_name, satellite, acquired_at, mission, statut) VALUES (%s, 'S2A', now(), 'S2', "
+                       "'acquis') RETURNING id", (f"essai_cap_{time.time_ns()}",)).fetchone()[0]
+    an = {nom: conn.execute("INSERT INTO analyses (pass_id, aoi, mode, status, source, travailleur_id) VALUES "
+                            "(%s, ST_MakeEnvelope(-3, 50, -2, 51, 4326)::geography, 'full', 'running', %s, %s) RETURNING id",
+                            (pid, "sentinel2" if nom == "mort" else "sentinel1", wid)).fetchone()[0]
+          for nom, wid in ids.items()}                     # une analyse Sentinel 2 par passage au plus
+    try:
+        out = T.supervise(conn, None, load_rules(), {}, log=lambda *_a: None)
+        assert out["analyses_closes"] == [an["mort"]]
+        st = dict(conn.execute("SELECT id, status FROM analyses WHERE id = ANY(%s)", (list(an.values()),)).fetchall())
+        assert st == {an["mort"]: "failed", an["vivant"]: "running"}
+        err = conn.execute("SELECT error FROM analyses WHERE id = %s", (an["mort"],)).fetchone()[0]
+        assert err.startswith(f"travailleur {ids['mort']} détruit sans résultat : résultats refusés")
+        assert "analyses_closes" not in T.supervise(conn, None, load_rules(), {}, log=lambda *_a: None)   # une fois
+    finally:
+        conn.execute("DELETE FROM analyses WHERE id = ANY(%s)", (list(an.values()),))
+        conn.execute("DELETE FROM sar_passes WHERE id = %s", (pid,))

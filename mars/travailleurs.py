@@ -809,6 +809,18 @@ def supervise(conn, scw: Scaleway | None, rules: dict, handlers: dict, log=print
                         continue
                 out["orphelins"] += 1
                 log(f"instance orpheline {sid} ({zone}) : destruction")
+    # Filet (30/10/2026, essai Sentinel 2 du passage 1330) : une analyse ne reste jamais « en cours » quand son
+    # travailleur est détruit (résultats refusés, instance détruite comme orpheline) ; en échec, avec le motif
+    closes = [r[0] for r in conn.execute(
+        """UPDATE analyses a SET status = 'failed', completed_at = now(),
+                  error = coalesce(a.error, 'travailleur ' || t.id || ' détruit sans résultat : ' || coalesce(t.erreur, 'motif inconnu'))
+           FROM travailleurs t
+           WHERE a.travailleur_id = t.id AND t.detruit_le IS NOT NULL AND a.status IN ('pending', 'running')
+           RETURNING a.id""").fetchall()]
+    if closes:
+        out["analyses_closes"] = closes
+        traces.attributs(**{"travailleur.analyses_closes": len(closes)})
+        log(f"analyses {closes} : travailleur détruit sans résultat, en échec")
     return out
 
 
