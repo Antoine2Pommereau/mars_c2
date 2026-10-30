@@ -14,6 +14,7 @@ Index des documents de `docs/` au 24/10/2026 (lot Z3). La mémoire du projet est
 | Document | Sujet | État |
 |---|---|---|
 | `journal.md` | Journal daté des jalons du projet | à jour au 24/10/2026 |
+| `rapport_mission_socle_a.md` | Rapport final de la mission socle A (27 au 31/10/2026) : étapes, dépense, verdicts, décisions | à jour au 31/10/2026 |
 | `bilan.md` | Bilan et plan de consolidation du lot Z (audit du 22/10/2026) | à jour au 24/10/2026 |
 | `exploitation.md` | Publier, déployer, restaurer, échéances des secrets, reprise après sinistre | à jour au 24/10/2026 |
 | `deploiement.md` | Installation du serveur Scaleway, R2, vérification, opérations ponctuelles | à jour au 24/10/2026 |

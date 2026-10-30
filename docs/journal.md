@@ -1596,3 +1596,34 @@ Aucune règle changée, aucune migration, aucune dépense.
     essai payant pour l'atteindre. Ce que l'essai prouve : la chaîne Sentinel 2 réelle de bout en bout (lecture,
     modèle, validation, fusion, vignettes, destruction) et un vrai positif à 1 % près sur la longueur.
 * Dépense de la mission : 0,95 € sur 3,00 € (travailleurs 44, 47, 49, 51, 52). Sentinel 2 reste en pause.
+
+## 30/10/2026 au soir : mission socle A, défaut bloquant de l'étape 6 (B05), échecs 111 et 113, prolongation
+
+* Demande 51 (EEMS DOVER au mouillage en baie de Seine, tip rendez vous, alertes 119249 et 121096) : planifiée sur le
+  passage 655 (S1C du 29/10 17:54) de 11:31 à 17:57, puis replanifiée sur le passage 1204 du lendemain (spans
+  `tip_and_cue.planification` relus dans Tempo). Cause : `choisir_passage` ne gardait un passage passé que s'il était
+  « acquis », or le calendrier ne marque acquis qu'à sa mise à jour de la nuit (02:31) ; trois minutes après la prise
+  de vue, la demande quittait son passage. L'analyse 110 du même passage, lancée à 02:37 à la publication de la scène,
+  ne portait donc que le navire des listes ZARDIS (motif `corridor_liste`), sans la demande ni son évaluation.
+* Les points de la demande n'étaient pas dans les fenêtres lues par 110 : navire à 80 km de la seule fenêtre (autour
+  de ZARDIS) et à 88 km de son unique détection. Critère préalable non rempli : aucune évaluation écrite à partir de
+  110. La preuve de B05 reste à obtenir sur une prochaine demande.
+* Correctif (`4cc4063`) : une demande planifiée garde son passage passé tant que sa scène peut encore être publiée
+  (`attente_publication_h`, 12 h, comme la sélection Sentinel), même au delà de `heures_retro` ; un passage passé déjà
+  analysé sans fenêtre sur le cercle est écarté, qu'il soit acquis ou encore prévu. Tests sur le cas exact (mêmes
+  heures, même position, même passage suivant) : le test échoue sans le correctif (demande partie sur 1204) et passe
+  avec ; scène jamais publiée : départ sur le passage suivant après 12 h.
+* Analyse 111 (Sentinel 2, travailleur 51) : le cap négatif déjà corrigé en `816697f` ; close par le filet de la
+  surveillance à 13:10.
+* Analyse 113 (passage 1204, 30/10 18:47) : « plafond de 4 travailleurs par jour atteint » (travailleurs 49, 50, 51 et
+  52 ce jour là : Sentinel 1 de 02:37, VIIRS de 06:30, deux essais Sentinel 2). Défaut : l'analyse était écrite avant
+  la vérification du plafond, puis mise en échec ; une demande qu'elle aurait portée serait restée planifiée sur une
+  analyse morte, sans expiration possible. Correctif dans `4cc4063` : plafond vérifié avant d'écrire une analyse
+  Sentinel 1 ou 2, demandes refusées avec le motif ; si le refus n'arrive qu'au lancement, demandes de l'analyse
+  refusées au lieu d'être laissées planifiées. Test sur le cas de 113.
+* `4cc4063` publiée (toutes les vérifications OK) et déployée en 59 s, VERDICT à OK partout. Tests : 589 réussis avec la
+  base.
+* Prolongation demandée par Antoine : étape 6 jusqu'au 05/11 à 12:00 UTC. Garde fou remplacé à 23:01 UTC
+  (`/tmp/z7/garde_tip2.sh`, même journal) : mêmes arrêts de sécurité, échéance repoussée, arrêt à la première demande
+  analysée, dépense de la mission plafonnée à 2,81 € pour ne jamais dépasser 3,00 € avec une session de plus.
+* Dépense de la mission : 0,95 € sur 3,00 €, inchangée.
