@@ -169,14 +169,6 @@ GSHHG coastlines. Models from the Allen Institute for AI under Apache 2.0. Histo
 are not redistributed, nor are any derived datasets or weights. Vessel photos, shown only outside demonstration mode,
 are fetched on demand from VesselFinder for personal use.
 
-## En français
 
-MARS C2 est une plateforme de surveillance maritime pour les eaux françaises : elle confronte l'AIS déclaratif au
-comportement des navires et à des capteurs satellitaires indépendants (radar Sentinel 1, optique Sentinel 2, lumières
-nocturnes VIIRS) pour protéger les infrastructures sous marines et suivre la flotte fantôme. Projet personnel
-d'Antoine de Pommereau, mené jusqu'à un prototype complet en service réel pendant un mois ; la documentation détaillée
-du dossier `docs/` est en français, à commencer par `docs/rapport_final.md`.
-
----
 
 <sub>Built by Antoine de Pommereau. Not affiliated with any French government agency.</sub>
