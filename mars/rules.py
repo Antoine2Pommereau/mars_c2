@@ -207,6 +207,19 @@ async def travaux_offshore(c, x: dict, navires: list, cfg: dict | None, suivis: 
     return None
 
 
+def flottille(a: dict | None, b: dict | None, classes: dict, suivis: set, p: dict | None) -> bool:
+    """Deux unités d'un même armement (cas 125730 : MMSI 227632082 et 227632085, série de cinq) : même code pays,
+    MMSI à moins de `ecart_mmsi_max` l'un de l'autre, toutes deux en classe B sans type ni longueur déclarés, aucune
+    des listes. Proposition de calibration.md (section 6), en observation."""
+    if not p or not a or not b:
+        return False
+    ma, mb = int(a["mmsi"]), int(b["mmsi"])
+    return (str(ma)[:3] == str(mb)[:3] and abs(ma - mb) < p["ecart_mmsi_max"]
+            and all(classes.get(x["vessel_id"]) == "B" and not x.get("ship_type") and not x.get("length_m")
+                    for x in (a, b))
+            and a["vessel_id"] not in suivis and b["vessel_id"] not in suivis)
+
+
 async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
     """Évalue la règle sur [day_start, day_end[ et met à jour les alertes RENDEZVOUS de cette période."""
     from mars import controle
@@ -218,17 +231,20 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
                          r["max_gap_min"], r["stationary_zone_buffer_m"], r["excluded_ship_types"],
                          int(duree_min), r["excluded_nav_status"], r["min_coast_km"] * 1000.0,
                          float(r.get("coast_prefilter_m", 0)))
-    names = {}
+    names, classes = {}, {}
     if rows:
         ids = list({x["v1"] for x in rows} | {x["v2"] for x in rows})
-        for v in await c.fetch("SELECT id, mmsi, name, ship_type, length_m FROM vessels WHERE id = ANY($1)", ids):
+        for v in await c.fetch("SELECT id, mmsi, name, ship_type, length_m, ais_class FROM vessels WHERE id = ANY($1)",
+                               ids):
             names[v["id"]] = {"vessel_id": v["id"], "mmsi": v["mmsi"], "name": v["name"],
                               "ship_type": v["ship_type"],
                               "length_m": None if v["length_m"] is None or v["length_m"] != v["length_m"] else v["length_m"]}
+            classes[v["id"]] = v["ais_class"]
 
     items, excluded, anchorage, travaux_n = [], {"cote": 0}, 0, 0
     suivis = set()                                     # navires des listes : jamais abaissés pour travaux
-    if rows and r.get("travaux_offshore"):
+    flottilles = []                                    # rendez vous d'une flottille, en observation (31/10/2026)
+    if rows and (r.get("travaux_offshore") or r.get("flottille")):
         suivis = {w["vessel_id"] for w in await c.fetch(
             "SELECT vessel_id FROM vessel_watch WHERE level <> 'autre_risque'")}
     for x in rows:
@@ -265,6 +281,10 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
                            "de la rencontre : amarrage probable à l'autre navire")
         if x["anchored_share"] and x["anchored_share"] > 0:
             context.append(f"Statut déclaré « au mouillage » sur {round(100 * x['anchored_share'])} % de la rencontre")
+        if flottille(names.get(x["v1"]), names.get(x["v2"]), classes, suivis, r.get("flottille")):
+            # Observation : compté et décrit dans task_runs, gravité inchangée (accord d'Antoine du 31/10/2026)
+            flottilles.append({"mmsi": [names[x["v1"]]["mmsi"], names[x["v2"]]["mmsi"]],
+                               "debut": x["t_start"].isoformat(), "lon": round(x["lon"], 4), "lat": round(x["lat"], 4)})
         if in_zone or travaux:
             severity = "faible"
         elif (duration_min >= r["high_duration_min"] or alongside or moored_offshore
@@ -316,7 +336,8 @@ async def run_rendezvous(c, day_start, day_end, rules: dict) -> dict:
         else:
             it["key"] = f"{it['v1']}:{it['v2']}:{stamp(it['t_start'])}"
     saved = await save_alerts(c, "RENDEZVOUS", items, day_start, day_end, "debut", rules["version"], rules=rules)
-    return {"episodes_detectes": len(rows), "alertes": len(items), "dont_zone_de_mouillage": anchorage,
+    return {"flottilles_observees": flottilles,
+            "episodes_detectes": len(rows), "alertes": len(items), "dont_zone_de_mouillage": anchorage,
             "dont_travaux_offshore": travaux_n, "exclus_balises": excluded.get("balise", 0), "exclus": excluded,
             **saved}
 

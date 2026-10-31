@@ -119,3 +119,24 @@ def test_feed_outage_minutes_do_not_count_as_silence():
 def test_stamp_is_utc_and_stable():
     paris = timezone(timedelta(hours=2))
     assert stamp(datetime(2026, 10, 6, 14, 5, 7, 123456, tzinfo=paris)) == "20261006T120507"
+
+
+def test_flotilla_pair_is_recognised_for_observation_only():
+    """Cas 125730 (29/10/2026) : 227632082 et 227632085, classe B, sans type ni longueur, série de cinq MMSI devant
+    Fos. Reconnu en observation ; une unité en classe A, déclarée, d'un autre pays, trop éloignée dans la série ou des
+    listes ne l'est pas."""
+    from mars.config import load_rules
+    from mars.rules import flottille
+    p = load_rules()["rendezvous"]["flottille"]
+    assert p["mode"] == "observation"
+    a = {"vessel_id": 1, "mmsi": 227632082, "ship_type": None, "length_m": None}
+    b = {"vessel_id": 2, "mmsi": 227632085, "ship_type": None, "length_m": None}
+    classes = {1: "B", 2: "B"}
+    assert flottille(a, b, classes, set(), p)
+    assert not flottille(a, b, {1: "B", 2: "A"}, set(), p)                       # classe A
+    assert not flottille(a, {**b, "length_m": 12.0}, classes, set(), p)          # longueur déclarée
+    assert not flottille(a, {**b, "ship_type": "Fishing"}, classes, set(), p)    # type déclaré
+    assert not flottille(a, {**b, "mmsi": 227632095}, classes, set(), p)         # écart de 13
+    assert not flottille(a, {**b, "mmsi": 228632085}, classes, set(), p)         # autre code pays
+    assert not flottille(a, b, classes, {2}, p)                                  # navire des listes
+    assert not flottille(a, b, classes, set(), None)                             # réglage absent

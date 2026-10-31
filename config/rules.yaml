@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.66"
+version: "2026.10.67"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -82,6 +82,13 @@ rendezvous:
     noms: ['BUOY', 'BOU[EÉ]E', 'BALISE', '\bNET\b', '\bFILET\b', '\d+ ?%']   # où qu'ils soient dans le nom
     codes: '^[A-Z]{1,2} ?[0-9]{1,3}$'    # nom réduit à un code (B1, M2) : balise seulement sans longueur déclarée
     longueur_max_m: 6                    # ou plus courte que ceci
+  # Flottille (31/10/2026, en observation une semaine avec l'accord d'Antoine) : deux unités de même code pays, MMSI
+  # à moins de 10 l'un de l'autre, toutes deux en classe B sans type ni longueur, aucune des listes (cas 125730 devant
+  # Fos, série 22763208x). Comptées dans task_runs (flottilles_observees), gravité inchangée. Proposition et mesure :
+  # docs/calibration.md, section 6
+  flottille:
+    mode: observation
+    ecart_mmsi_max: 10
   # Travaux offshore (lot Z7) : rendez vous à moins de parc_m d'un parc éolien, avec un navire du chantier (type
   # déclaré dans types, ou présent dans ce parc au moins presence_jours jours distincts sur les presence_fenetre_j
   # précédents) : gardé, marqué « travaux offshore », gravité faible, comme un mouillage connu. Jamais pour un navire
