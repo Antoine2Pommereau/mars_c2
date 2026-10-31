@@ -194,6 +194,24 @@ Constantes codées en dur, même problème :
 * **Zone de réception fiable** : seuils définitifs sur dix jours, qui décident aussi de l'évaluation des détections
   VIIRS et Sentinel.
 * **Rendez vous** : seuils danois (500 m, 2 nœuds, 120 min, tranches de 10 et 20 min) contre les épisodes réels.
+* **Rendez vous d'une flottille** (proposition du 31/10/2026, **non appliquée**, en attente de l'accord d'Antoine) :
+  cas 125730, deux unités sans nom aux MMSI 227632082 et 227632085, bord à bord (3 m) au large du golfe de Fos.
+  Mesure sur le serveur (toutes les alertes RENDEZVOUS, du 06 au 31/10/2026) : 10 alertes, dont 2 entre MMSI à moins
+  de 10 d'écart et de même pays, aucune décision d'opérateur sur ces deux là :
+
+  | Alerte | MMSI | Unités | Gravité |
+  |---|---|---|---|
+  | 125730 | 227632082 et 227632085 | série de 5 MMSI 22763208x, toutes en classe B, sans type ni longueur, apparues le 29/10 ensemble devant Fos, 0,9 à 2,6 nœuds en moyenne (une seule nommée, MIMOSETTE II) | élevée |
+  | 56150 | 241100324 et 241100325 | série de 4 MMSI grecs 24110032x nommés B1, B2, M1 et M2, classe B, sans type ni longueur, 1,2 à 1,4 nœud en moyenne pendant trois semaines au large de Santander : balises d'engins de pêche probables | moyenne |
+
+  Règle proposée (`rendezvous.flottille`) : paire dont les deux MMSI ont le même code pays et moins de 10 d'écart,
+  **les deux en classe B, sans type ni longueur déclarés**, et aucun navire des listes : gravité **faible**, étiquette
+  « flottille ou balises d'un même armement » dans le fil et la fiche (déclasser plutôt qu'exclure : l'alerte reste
+  visible). Une paire en classe A, un type ou une longueur déclarés, ou un navire des listes : règle inchangée, car un
+  transbordement réel met en jeu de grands navires en classe A. Effet mesuré : 125730 de élevée à faible, 56150 de
+  moyenne à faible, les 8 autres inchangées. Limites : deux cas seulement en 25 jours ; un écart de 10 est un choix
+  (les deux séries observées tiennent dans 6). Mise en service proposée en observation une semaine (compte des paires
+  concernées dans `task_runs`, sans changer la gravité), puis appliquée si rien d'autre n'y tombe.
 * **Zones de mouillage** : cellules et `min_slow_positions` adaptés à l'allègement.
 * **Trajectoire** : table du cercle appris sur une archive plus longue, et décision sur l'étape 2.
 
