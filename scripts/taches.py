@@ -1285,8 +1285,8 @@ def _essai_reel(conn, a):
         raise SystemExit(f"REFUS : {refus}")
     if r.get("refait"):
         print(f"Réanalyse du passage {pid}, liée à l'analyse {r['refait']} (gardée telle quelle avec ses détections)")
-    if r.get("attente_gpu"):
-        print(f"Analyse(s) {r['attente_gpu']} en attente d'un processeur, aucun travailleur créé, aucun coût : "
+    if r.get("attente_calcul"):
+        print(f"Analyse(s) {r['attente_calcul']} en attente d'un processeur, aucun travailleur créé, aucun coût : "
               f"{r.get('motif')} ; nouvel essai par la boucle dans {r.get('prochain_essai_min')} min")
         return
     print(f"Essai lancé : travailleur {r.get('travailleur')}, {r.get('type')} en {r.get('zone') or 'fr-par-2'}, "

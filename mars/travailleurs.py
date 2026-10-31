@@ -929,7 +929,7 @@ def remettre_en_attente(conn, w: dict, motif: str) -> int:
     """Analyses du travailleur remises en attente d'un calcul, reprises au cycle suivant avec le type suivant : pas
     d'échec, pas de nouvelle analyse (le plafond de scènes n'est pas entamé une seconde fois)."""
     n = conn.execute(
-        "UPDATE analyses SET status = 'attente_gpu', attente_depuis = coalesce(attente_depuis, requested_at), "
+        "UPDATE analyses SET status = 'attente_calcul', attente_depuis = coalesce(attente_depuis, requested_at), "
         "prochain_essai = now(), calcul_motif = %s WHERE travailleur_id = %s AND status IN ('pending', 'running')",
         (motif[:1000], w["id"])).rowcount
     traces.attributs(**{"travailleur.analyses_en_attente": n})

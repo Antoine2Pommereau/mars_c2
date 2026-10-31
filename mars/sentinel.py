@@ -714,20 +714,20 @@ def _abandonner(conn, rules: dict, now: datetime) -> list[int]:
                   error = 'processeur indisponible pendant toute la fenêtre utile de ' || %(h)s || ' h ('
                           || a.essais_calcul || ' essais) : analyse abandonnée'
            FROM sar_passes sp
-           WHERE sp.id = a.pass_id AND a.source = 'sentinel1' AND a.status = 'attente_gpu'
+           WHERE sp.id = a.pass_id AND a.source = 'sentinel1' AND a.status = 'attente_calcul'
              AND sp.acquired_at + make_interval(hours => %(h)s) < %(now)s
            RETURNING a.id""", {"h": h, "now": now}).fetchall()]
 
 
 def _en_attente(conn, now: datetime) -> list[tuple]:
     """Analyses en attente d'un calcul (rupture de stock, lot suivant) dont le nouvel essai est dû : (id, scènes,
-    attente_depuis, déclenchement). L'état garde son nom historique « attente_gpu »."""
+    attente_depuis, déclenchement)."""
     return conn.execute(
         "SELECT id, scenes, attente_depuis, declenchement FROM analyses WHERE source = 'sentinel1' "
-        "AND status = 'attente_gpu' AND (prochain_essai IS NULL OR prochain_essai <= %s) ORDER BY id", (now,)).fetchall()
+        "AND status = 'attente_calcul' AND (prochain_essai IS NULL OR prochain_essai <= %s) ORDER BY id", (now,)).fetchall()
 
 
-ACTIFS = ("pending", "running", "attente_gpu")
+ACTIFS = ("pending", "running", "attente_calcul")
 
 
 def garde_passage(conn, pass_id: int, source: str = "sentinel1", refaire: bool = False) -> tuple[str | None, int | None]:
@@ -755,7 +755,7 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
     lot suivant, tant que leur scène reste utile), sinon passages nouveaux. Plafond de scènes et budget vérifiés, une
     analyse par passage (index unique), clés des travailleurs vérifiées, puis le premier type disponible de la liste
     (GP1-S, puis POP2-8C-32G), sur les seules fenêtres utiles, par lots de fenetres_max_cpu. Rupture de stock :
-    analyses en « attente_gpu » (nom historique), nouvel essai au cycle suivant. Retourne le résumé ; {"refus": motif}
+    analyses en « attente_calcul », nouvel essai au cycle suivant. Retourne le résumé ; {"refus": motif}
     si un garde fou l'interdit."""
     s = dict(rules["sentinel"])
     essai = os.environ.get("SENTINEL_PLAFOND_ESSAI")
@@ -1003,11 +1003,11 @@ def _calculer(conn, scw, rules: dict, s: dict, now: datetime, analyses: list, at
         motif = f"{motif_strategie}, indisponible chez Scaleway (" + " ; ".join(attente) + ")"
         prochain = now + timedelta(minutes=s["intervalle_min"])
         sp.set_attributes({"sentinel.calcul": "attente", "sentinel.motif": motif[:300]})
-        conn.execute("UPDATE analyses SET status = 'attente_gpu', attente_depuis = coalesce(attente_depuis, %s), "
+        conn.execute("UPDATE analyses SET status = 'attente_calcul', attente_depuis = coalesce(attente_depuis, %s), "
                      "essais_calcul = essais_calcul + 1, prochain_essai = %s, calcul_motif = %s WHERE id = ANY(%s)",
                      (attente_depuis, prochain, motif[:1000], ids))
         log(f"Sentinel 1 : {motif} ; nouvel essai dans {s['intervalle_min']} min")
-        return {"attente_gpu": ids, "motif": motif, "prochain_essai_min": s["intervalle_min"]}
+        return {"attente_calcul": ids, "motif": motif, "prochain_essai_min": s["intervalle_min"]}
 
 
 def _envelope(scenes: list[dict]) -> tuple[float, float, float, float]:
@@ -1090,7 +1090,7 @@ def ingest(conn, w: dict, rules: dict) -> dict:
         octets = (sum(int(sc.get("octets_lus") or 0) for sc in scenes) + int((prev[3] or 0) if prev else 0)) or None
         if reste and not errors:
             fait = sum(len(v) for v in faites.values())
-            conn.execute("UPDATE analyses SET status = 'attente_gpu', fenetres_faites = %s, timings = %s, octets_lus = %s, "
+            conn.execute("UPDATE analyses SET status = 'attente_calcul', fenetres_faites = %s, timings = %s, octets_lus = %s, "
                          "prochain_essai = NULL, calcul_motif = %s WHERE id = %s",
                          (json.dumps(faites), json.dumps(mes), octets,
                           f"{MOTIF_LOTS} : {fait} fenêtre(s) faite(s), {reste} restante(s), lot suivant au prochain "

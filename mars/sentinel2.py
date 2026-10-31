@@ -369,7 +369,7 @@ def launch(conn, scw, rules: dict, now: datetime, session, pass_id: int | None =
         return {"refus": "Sentinel 2 coupé (sentinel2.scenes_max_par_jour: 0) : essai réel avec "
                          "SENTINEL_PLAFOND_ESSAI=1 sur la commande manuelle"}
     attente = conn.execute("SELECT id, scenes, cout_estime_eur FROM analyses WHERE source = 'sentinel2' "
-                           "AND status = 'attente_gpu' AND (prochain_essai IS NULL OR prochain_essai <= %s) ORDER BY id",
+                           "AND status = 'attente_calcul' AND (prochain_essai IS NULL OR prochain_essai <= %s) ORDER BY id",
                            (now,)).fetchall() if pass_id is None else []
     if attente:
         _s, spent = usage(conn, now, "sentinel2")
@@ -528,7 +528,7 @@ def _calculer(conn, scw, rules: dict, s2: dict, now: datetime, analyses: list, s
             return {**r, "type": t["commercial_type"], "zone": zone, "motif": motif, "cout_estime_eur": est}
         motif = "processeur indisponible chez Scaleway (" + " ; ".join(essais) + ")"
         sp.set_attributes({"sentinel2.calcul": "attente", "sentinel2.motif": motif[:300]})
-        conn.execute("UPDATE analyses SET status = 'attente_gpu', essais_calcul = essais_calcul + 1, prochain_essai = %s, "
+        conn.execute("UPDATE analyses SET status = 'attente_calcul', essais_calcul = essais_calcul + 1, prochain_essai = %s, "
                      "calcul_motif = %s WHERE id = ANY(%s)",
                      (now + timedelta(minutes=rules["sentinel"]["intervalle_min"]), motif[:1000], ids))
         log(f"Sentinel 2 : {motif} ; nouvel essai au cycle suivant")

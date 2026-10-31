@@ -42,7 +42,8 @@ SELECT nom, true FROM (VALUES
     ('26_supervision.sql', to_regclass('public.signes_de_vie') IS NOT NULL),
     ('27_traces.sql', to_regclass('public.mesures_otel') IS NOT NULL),
     ('28_sentinel_robuste.sql', EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'travailleurs' AND column_name = 'rupture_stock')),
-    ('29_gpu_inutilisable.sql', to_regclass('public.types_incompatibles') IS NOT NULL),
+    -- types_incompatibles est supprimée par la 47 (voie GPU retirée) : la 30, toujours appliquée après, en tient lieu
+    ('29_gpu_inutilisable.sql', to_regclass('public.types_incompatibles') IS NOT NULL OR EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'travailleurs' AND column_name = 'cout_reel_eur')),
     ('30_stats_processeur.sql', EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'travailleurs' AND column_name = 'cout_reel_eur')),
     ('31_tip_and_cue.sql', to_regclass('public.demandes_observation') IS NOT NULL),
     ('32_sentinel2.sql', EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'sar_passes' AND column_name = 'heure_tuiles')),

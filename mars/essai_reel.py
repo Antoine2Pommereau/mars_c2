@@ -114,7 +114,7 @@ def verifier_lancement(conn, rules: dict, pass_id: int) -> tuple[str | None, str
 def refus_lancement(r: dict) -> str | None:
     """Motif quand le lancement n'a créé aucun travailleur : refus, pause, travailleur ou passage occupé, rien à
     analyser. None quand un travailleur est lancé (ou mis en attente d'un processeur, sans coût)."""
-    if r.get("travailleur") or r.get("attente_gpu"):
+    if r.get("travailleur") or r.get("attente_calcul"):
         return None
     if r.get("occupe"):
         return f"travailleur {r['occupe']} encore en vie, un seul à la fois"

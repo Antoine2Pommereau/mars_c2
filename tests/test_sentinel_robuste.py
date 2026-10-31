@@ -210,15 +210,15 @@ def test_stock_out_waits_retries_then_runs_by_lots_until_every_window_is_done(co
     # 1. GP1-S et POP2 en rupture : l'analyse attend, sans échec ; ses fenêtres sont calculées et gardées
     r = sentinel.launch(conn, None, rules, NOW, stac)
     aid = r["analyses"][0]
-    assert r["attente_gpu"] == [aid] and r["prochain_essai_min"] == S["intervalle_min"] and r["fenetres"] >= 1
+    assert r["attente_calcul"] == [aid] and r["prochain_essai_min"] == S["intervalle_min"] and r["fenetres"] >= 1
     assert lances == ["GP1-S", "POP2-8C-32G"]                                     # aucun GPU essayé
     st = conn.execute("SELECT status, essais_calcul, fenetres, calcul_motif FROM analyses WHERE id = %s", (aid,)).fetchone()
-    assert st[0] == "attente_gpu" and st[1] == 1 and st[2] and "rupture de stock" in st[3]
+    assert st[0] == "attente_calcul" and st[1] == 1 and st[2] and "rupture de stock" in st[3]
     assert sentinel.plan(conn, stac, rules, NOW)["passages"] == []               # le passage n'est pas relancé à neuf
     # 2. Cycle suivant : reprise de la même analyse, toujours en attente
     lances.clear()
     r = sentinel.launch(conn, None, rules, NOW + timedelta(minutes=30), stac)
-    assert r.get("reprise") and r["attente_gpu"] == [aid] and lances == ["GP1-S", "POP2-8C-32G"]
+    assert r.get("reprise") and r["attente_calcul"] == [aid] and lances == ["GP1-S", "POP2-8C-32G"]
     # 3. Stock revenu : GP1-S, lot d'une fenêtre sur deux
     lances.clear()
     stock["epuise"] = False
@@ -239,7 +239,7 @@ def test_stock_out_waits_retries_then_runs_by_lots_until_every_window_is_done(co
     # 4. Premier lot reçu : une fenêtre faite, l'analyse repart en attente du lot suivant, sans fusion
     sentinel.ingest(conn, w, rules)
     st = conn.execute("SELECT status, fenetres_faites, calcul_motif, summary FROM analyses WHERE id = %s", (aid,)).fetchone()
-    assert st[0] == "attente_gpu" and list(st[1].values()) == [[premier]] and "1 restante" in st[2] and not st[3]
+    assert st[0] == "attente_calcul" and list(st[1].values()) == [[premier]] and "1 restante" in st[2] and not st[3]
     conn.execute("UPDATE travailleurs SET detruit_le = now(), etat = 'termine' WHERE id = %s", (r["travailleur"],))
     # 5. Lot suivant : l'autre fenêtre seulement, puis fusion et analyse terminée
     lances.clear()
@@ -326,7 +326,7 @@ def test_manual_trial_ceiling_applies_to_the_manual_command_only(conn, monkeypat
     monkeypatch.setenv("SENTINEL_PLAFOND_ESSAI", "1")                             # essai réel : commande manuelle
     assert "plafond de 0 scènes" in sentinel.launch(conn, None, ARRET, NOW, stac)["refus"]   # la boucle : toujours 0
     r = sentinel.launch(conn, None, ARRET, NOW, stac, pass_id=pid)
-    assert "attente_gpu" in r and r["fenetres"] >= 1                              # passage choisi : fenêtres seules
+    assert "attente_calcul" in r and r["fenetres"] >= 1                              # passage choisi : fenêtres seules
 
 
 def test_done_analysis_without_any_analysed_scene_is_reclassified(conn):
@@ -367,7 +367,7 @@ def _travailleur(conn, scw, etat: str, ctype="GP1-S", zone="fr-par-2", mesures=N
     return wid, aid, sid
 
 
-@pytest.mark.parametrize("etape,attendu", [("analyse_docker", "attente_gpu"), ("telechargement_image", "attente_gpu"),
+@pytest.mark.parametrize("etape,attendu", [("analyse_docker", "attente_calcul"), ("telechargement_image", "attente_calcul"),
                                            ("analyse", "failed")])
 def test_signalled_failure_is_handled_at_once(conn, spans, etape, attendu):
     from test_travailleurs_base import FakeScw
@@ -392,7 +392,7 @@ def test_instance_stopped_by_itself_is_treated_as_a_machine_failure(conn):
     T.supervise(conn, scw, RULES, {})
     assert sid in scw.destroyed
     assert conn.execute("SELECT etat FROM travailleurs WHERE id = %s", (wid,)).fetchone()[0] == "echec"
-    assert conn.execute("SELECT status FROM analyses WHERE id = %s", (aid,)).fetchone()[0] == "attente_gpu"
+    assert conn.execute("SELECT status FROM analyses WHERE id = %s", (aid,)).fetchone()[0] == "attente_calcul"
 
 
 def test_polling_is_one_span_with_its_count_and_states(spans):
@@ -471,9 +471,9 @@ def test_gp1s_out_of_stock_never_falls_back_on_an_unproven_pop2(conn, monkeypatc
         return r
     monkeypatch.setattr(T, "launch", lancement)
     r = sentinel.launch(conn, FakeScw(), garde, NOW, stac, pass_id=pid)
-    assert "attente_gpu" in r and "POP2-8C-32G en fr-par-2 jamais éprouvé" in r["motif"]
+    assert "attente_calcul" in r and "POP2-8C-32G en fr-par-2 jamais éprouvé" in r["motif"]
     assert crees and all(x.get("non_eprouve") for x in crees)
-    st = conn.execute("SELECT status FROM analyses WHERE id = ANY(%s)", (r["attente_gpu"],)).fetchall()
-    assert st and all(s[0] == "attente_gpu" for s in st)
+    st = conn.execute("SELECT status FROM analyses WHERE id = ANY(%s)", (r["attente_calcul"],)).fetchall()
+    assert st and all(s[0] == "attente_calcul" for s in st)
     assert conn.execute("SELECT count(*) FROM travailleurs WHERE commercial_type = 'POP2-8C-32G' AND cree_le >= %s",
                         (NOW - timedelta(minutes=1),)).fetchone()[0] == 0

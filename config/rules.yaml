@@ -346,7 +346,7 @@ sentinel:
   # Processeur seul (lot Z4) : au plus 4 fenêtres par session ; au delà, lots de 4, le suivant au cycle d'après. Une
   # scène entière (passage choisi à la main sans aucun point d'intérêt) est refusée avec son motif
   fenetres_max_cpu: 4
-  # Rupture de stock (GP1-S et POP2) : l'analyse attend en « attente_gpu » (nom historique de l'état) et un nouvel
+  # Rupture de stock (GP1-S et POP2) : l'analyse attend en « attente_calcul » et un nouvel
   # essai a lieu à chaque cycle (intervalle_min), tant que la scène reste utile
   fenetre_utile_h: 24           # après l'acquisition ; au delà, analyse abandonnée et alerte ntfy
   # Modèle d'AI2 (paramètres de sa chaîne)

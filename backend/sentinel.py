@@ -156,7 +156,7 @@ async def sentinel_status(c) -> dict:
         a = await c.fetchrow(
             """SELECT count(*) AS analyses, min(attente_depuis) AS depuis, min(prochain_essai) AS prochain_essai,
                       (array_agg(calcul_motif ORDER BY id DESC))[1] AS motif
-               FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu'""")
+               FROM analyses WHERE source = 'sentinel1' AND status = 'attente_calcul'""")
         attente = _row(a) if a and a["analyses"] else None
         if w is not None:
             w = {**dict(w), "rupture_stock": await c.fetchval("SELECT rupture_stock FROM travailleurs WHERE id = $1",

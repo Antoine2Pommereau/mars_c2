@@ -401,7 +401,7 @@ def satellites() -> Tableau:
             unites={"Durée": "s", "Coût prévu": "currencyEUR", "Coût réel": "currencyEUR"}, trace="Trace")
     t.section("Analyses Sentinel 1 (lot C3)")
     t.chiffre("En attente d'un calcul",
-              "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu'",
+              "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'attente_calcul'",
               seuils=((None, NEUTRE), (1, ORANGE)), w=6,
               description="Rupture de stock chez Scaleway ou lot suivant : nouvel essai à chaque cycle, abandon (et "
                           "alerte) au delà de fenetre_utile_h.")
@@ -418,7 +418,7 @@ def satellites() -> Tableau:
                  AND requested_at > now() - interval '30 days'""", seuils=((None, NEUTRE), (1, ROUGE)), w=6)
     t.courbe("Analyses par mode",
              """SELECT date_trunc('day', requested_at) AS time,
-                       CASE WHEN status = 'attente_gpu' THEN 'attente' WHEN calcul = 'cpu' THEN 'processeur'
+                       CASE WHEN status = 'attente_calcul' THEN 'attente' WHEN calcul = 'cpu' THEN 'processeur'
                             WHEN calcul = 'gpu' THEN 'GPU' ELSE 'sans calcul' END AS metric, count(*) AS value
                 FROM analyses WHERE source = 'sentinel1' AND $__timeFilter(requested_at) GROUP BY 1, 2 ORDER BY 1""",
              w=12, barres=True, empile=True,
@@ -430,7 +430,7 @@ def satellites() -> Tableau:
                       left(coalesce(a.calcul_motif, a.error, ''), 140) AS "Motif", a.trace_id AS "Trace"
                FROM analyses a WHERE a.source = 'sentinel1' AND $__timeFilter(a.requested_at)
                ORDER BY 1 DESC LIMIT 100""", w=12,
-            etats={"failed": ("échec", ROUGE), "attente_gpu": ("en attente", ORANGE), "running": ("en cours", SIGNAL),
+            etats={"failed": ("échec", ROUGE), "attente_calcul": ("en attente", ORANGE), "running": ("en cours", SIGNAL),
                    "done": ("analysée", NEUTRE), "pending": ("demandée", SIGNAL)},
             colonne_etat="Statut", unites={"Octets lus": "bytes", "Coût estimé": "currencyEUR"}, trace="Trace")
     t.table("Passages Sentinel 1",
@@ -488,7 +488,7 @@ def satellites() -> Tableau:
                       left(coalesce(a.calcul_motif, a.error, ''), 140) AS "Motif", a.trace_id AS "Trace"
                FROM analyses a WHERE a.source = 'sentinel2' AND $__timeFilter(a.requested_at)
                ORDER BY 1 DESC LIMIT 100""", w=24, h=8,
-            etats={"failed": ("échec", ROUGE), "attente_gpu": ("attente processeur", ORANGE), "running": ("en cours", SIGNAL),
+            etats={"failed": ("échec", ROUGE), "attente_calcul": ("attente processeur", ORANGE), "running": ("en cours", SIGNAL),
                    "done": ("analysée", NEUTRE), "pending": ("demandée", SIGNAL)},
             colonne_etat="Statut", unites={"Octets lus": "bytes", "Coût estimé": "currencyEUR"}, trace="Trace")
     t.section("Tip and cue (lot T1)")
@@ -684,7 +684,7 @@ TUILE_SATELLITES = f"""SELECT now() AS time,
                  EXISTS (SELECT 1 FROM travailleurs WHERE etat = 'echec' AND NOT rupture_stock
                          AND cree_le > now() - interval '24 hours') AS echec,
                  (SELECT ceil(extract(epoch FROM min(prochain_essai) - now()) / 60)::int FROM analyses
-                   WHERE source = 'sentinel1' AND status = 'attente_gpu') AS attente_min) x"""
+                   WHERE source = 'sentinel1' AND status = 'attente_calcul') AS attente_min) x"""
 TUILE_TRACES = f"""SELECT now() AS time,
       CASE WHEN NOT mesure THEN 'aucune mesure du collecteur'
            ELSE replace(to_char(coalesce(recus, 0), 'FM999,999,990'), ',', ' ') || ' spans en 1 h' END AS metric,

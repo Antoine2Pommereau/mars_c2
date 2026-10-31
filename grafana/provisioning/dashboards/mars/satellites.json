@@ -979,7 +979,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "table",
-     "rawSql": "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'attente_gpu'"
+     "rawSql": "SELECT count(*) AS analyses FROM analyses WHERE source = 'sentinel1' AND status = 'attente_calcul'"
     }
    ],
    "fieldConfig": {
@@ -1250,7 +1250,7 @@
      "editorMode": "code",
      "rawQuery": true,
      "format": "time_series",
-     "rawSql": "SELECT date_trunc('day', requested_at) AS time, CASE WHEN status = 'attente_gpu' THEN 'attente' WHEN calcul = 'cpu' THEN 'processeur' WHEN calcul = 'gpu' THEN 'GPU' ELSE 'sans calcul' END AS metric, count(*) AS value FROM analyses WHERE source = 'sentinel1' AND $__timeFilter(requested_at) GROUP BY 1, 2 ORDER BY 1"
+     "rawSql": "SELECT date_trunc('day', requested_at) AS time, CASE WHEN status = 'attente_calcul' THEN 'attente' WHEN calcul = 'cpu' THEN 'processeur' WHEN calcul = 'gpu' THEN 'GPU' ELSE 'sans calcul' END AS metric, count(*) AS value FROM analyses WHERE source = 'sentinel1' AND $__timeFilter(requested_at) GROUP BY 1, 2 ORDER BY 1"
     }
    ],
    "fieldConfig": {
@@ -1433,7 +1433,7 @@
             "color": "#ef6461",
             "index": 0
            },
-           "attente_gpu": {
+           "attente_calcul": {
             "text": "en attente",
             "color": "#f0a84b",
             "index": 1
@@ -2180,7 +2180,7 @@
             "color": "#ef6461",
             "index": 0
            },
-           "attente_gpu": {
+           "attente_calcul": {
             "text": "attente processeur",
             "color": "#f0a84b",
             "index": 1

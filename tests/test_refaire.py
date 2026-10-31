@@ -33,7 +33,7 @@ def test_every_launch_without_a_worker_is_a_refusal_with_its_reason(r, motif):
     assert motif in essai_reel.refus_lancement({"passage": 779, "mission": "S1", **r})
 
 
-@pytest.mark.parametrize("r", [{"travailleur": 7, "type": "GP1-S"}, {"attente_gpu": [120], "motif": "rupture"}])
+@pytest.mark.parametrize("r", [{"travailleur": 7, "type": "GP1-S"}, {"attente_calcul": [120], "motif": "rupture"}])
 def test_a_worker_or_a_wait_for_a_processor_is_not_a_refusal(r):
     assert essai_reel.refus_lancement(r) is None
 
