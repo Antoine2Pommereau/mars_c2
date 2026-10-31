@@ -1385,10 +1385,6 @@ def dans_coeur(fenetres_scene: list[dict], lon: float, lat: float) -> bool:
     return False
 
 
-MOTIF_HORS_FENETRE = ("Navire hors des fenêtres lues de la scène radar : son absence d'écho ne prouve rien (alerte émise "
-                      "à tort avant la correction du 21/10/2026)")
-
-
 def flux_coupe(conn, t0: datetime, rules: dict) -> bool:
     """Flux AIS coupé à l'instant du passage, lu dans stats_minute (3 h avant, 1 h après) : même définition que VIIRS
     (mars/viirs.py, feed_cut). Une minute absente de stats_minute compte pour zéro : un trou des statistiques (18/10/2026)

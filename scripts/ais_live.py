@@ -33,10 +33,10 @@ OUT = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
 URL = "wss://stream.aisstream.io/v0/stream"
 POSITION_TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport"]
 STATIC_TYPES = ["ShipStaticData", "StaticDataReport"]
-FLUSH_S = int(os.environ.get("AIS_FLUSH_S", 60))
+FLUSH_S = int(os.environ.get("AIS_FLUSH_S", "60"))
 # Messages gardés en mémoire quand l'écriture échoue (disque plein), en attendant la place : environ trois heures
 # au rythme du 06/10/2026 (680 messages par minute) ; au delà, les plus anciens sont abandonnés, et le journal le dit
-MAX_EN_ATTENTE = int(os.environ.get("AIS_MAX_EN_ATTENTE", 120_000))
+MAX_EN_ATTENTE = int(os.environ.get("AIS_MAX_EN_ATTENTE", "120000"))
 ECHEC_ECRITURE = ".echec_ecriture_collecte"      # lu par le contrôle de santé (scripts/sante.py)
 
 

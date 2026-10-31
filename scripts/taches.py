@@ -93,9 +93,9 @@ from mars.config import ROOT, database_url, load_env, load_rules
 LIVE = Path(os.environ.get("AIS_LIVE_DIR", ROOT / "data" / "ais_live"))
 HOUR = os.environ.get("TACHES_HEURE", "02:30")
 VIIRS_HOUR = os.environ.get("VIIRS_HEURE", "06:30")
-KEEP_DAYS = int(os.environ.get("CONSERVATION_JOURS", 30))
-KEEP_BACKUPS = int(os.environ.get("SAUVEGARDES_GARDEES", 7))
-DISK_PCT = float(os.environ.get("ALERTE_DISQUE_PCT", 15))
+KEEP_DAYS = int(os.environ.get("CONSERVATION_JOURS", "30"))
+KEEP_BACKUPS = int(os.environ.get("SAUVEGARDES_GARDEES", "7"))
+DISK_PCT = float(os.environ.get("ALERTE_DISQUE_PCT", "15"))
 DISK_PATHS = ["/", str(LIVE)]
 DISK_EVERY_S = 600
 RETRY_S = 3600

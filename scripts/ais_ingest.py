@@ -52,7 +52,7 @@ def show(totals: dict, elapsed: float) -> str:
 def main():
     ap = argparse.ArgumentParser(description="Ingestion continue de l'AIS en direct")
     ap.add_argument("--root", default=str(ROOT / "data" / "ais_live"), help="Dossier de la collecte")
-    ap.add_argument("--interval", type=float, default=float(os.environ.get("AIS_INGEST_INTERVAL_S", 15)))
+    ap.add_argument("--interval", type=float, default=float(os.environ.get("AIS_INGEST_INTERVAL_S", "15")))
     ap.add_argument("--once", action="store_true")
     args = ap.parse_args()
     load_env()
