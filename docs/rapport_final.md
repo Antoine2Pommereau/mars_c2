@@ -73,7 +73,7 @@ restauration réussie.
 | Paquet de l'interface | un fichier de 1 291 Ko (363 Ko compressé) | code de l'application 242 Ko ; MapLibre (802 Ko) et React (183 Ko) à part, en cache d'une version à l'autre |
 | Premier chargement, mesuré sur le serveur | 1 395 Ko, sans compression ni cache | environ 363 Ko, gzip, fichiers gardés un an ; visites suivantes : la page seule |
 | Infrastructures de la carte (API) | 210 Ko | 20 Ko (gzip) |
-| Branches distantes fusionnées | 79 (puis 81 avec `flottille-observation` et `readme-vitrine`) | supprimées (liste en annexe) |
+| Branches distantes fusionnées | 79, dont `flottille-observation` et `readme-vitrine` | supprimées après vérification une à une (liste en annexe) ; restent `main`, `calibration-z7`, `xview3-section-17-eval-57d052b3` |
 
 Non faits, avec leur raison (`audit_final.md`, section 7) : découpage des fonctions complexes et mises en commun du
 lot Z4 (risque sans gain avant la clôture, harnais de rejeu à l'identique à construire), style ruff (1 254 remarques
