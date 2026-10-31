@@ -26,7 +26,7 @@
 
 Ce fichier est la mémoire du projet. Lis le en entier avant toute tâche, et tiens le à jour à chaque jalon. Le
 document de référence de la direction est la Claude Doc « MARS C2, mise à jour du projet » :
-https://claude.ai/code/artifact/00f50730-d117-4ad4-94ac-0cb9b967f002 (sinon, demander à Antoine de la déposer dans
+(document privé, lien retiré à la clôture) (sinon, demander à Antoine de la déposer dans
 `docs/`). L'interface cible des étapes 2 à 4 est décrite dans `docs/vision_interface.md` (lot 1, la charpente, et
 lot 2, le contenu, faits). L'historique de la première version (rejeu de journées danoises) et ses enseignements de calibration
 sont dans `docs/historique_danemark.md` ; l'état du code est audité dans `docs/audit_code.md`.

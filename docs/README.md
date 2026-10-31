@@ -1,10 +1,11 @@
 # Documentation de MARS C2
 
-Index des documents de `docs/` au 24/10/2026 (lot Z3). La mémoire du projet est `CLAUDE.md`, à la racine du dépôt.
+Index des documents de `docs/` au 31/10/2026, à la clôture du projet. La mémoire du projet est `CLAUDE.md`, à la
+racine du dépôt.
 
 ## Ordre de lecture conseillé
 
-1. `CLAUDE.md` puis `bilan.md` : le projet, son état et ce qui reste à faire.
+1. `rapport_final.md`, puis `CLAUDE.md` : ce qui a été fait, l'état final et ce qui reste à décider.
 2. `exploitation.md`, `deploiement.md` et `supervision.md` : faire tourner, publier, surveiller et restaurer.
 3. `regles_alertes.md`, `calibration.md`, puis le document de chaque sujet (`travailleurs.md`, `sentinel.md`,
    `ux_refonte.md`…) ; `journal.md` pour l'historique daté.
@@ -13,15 +14,17 @@ Index des documents de `docs/` au 24/10/2026 (lot Z3). La mémoire du projet est
 
 | Document | Sujet | État |
 |---|---|---|
-| `journal.md` | Journal daté des jalons du projet | à jour au 24/10/2026 |
+| `rapport_final.md` | Rapport de clôture : ce qui a été fait, audit avant et après, dépense des essais, ce qui revient à Antoine | à jour au 31/10/2026 |
+| `audit_final.md` | Audit final en lecture seule : code, interface, dépendances, tests, base du serveur, sauvegarde, branches | à jour au 31/10/2026 |
+| `journal.md` | Journal daté des jalons du projet, clos par l'entrée de fin de projet | à jour au 31/10/2026 |
 | `rapport_mission_socle_a.md` | Rapport final de la mission socle A (27 au 31/10/2026) : étapes, dépense, verdicts, décisions | à jour au 31/10/2026 |
 | `bilan.md` | Bilan et plan de consolidation du lot Z (audit du 22/10/2026) | à jour au 24/10/2026 |
-| `exploitation.md` | Publier, déployer, restaurer, échéances des secrets, reprise après sinistre | à jour au 24/10/2026 |
+| `exploitation.md` | Publier, déployer, restaurer, échéances des secrets, reprise après sinistre, mise en veille et réveil | à jour au 31/10/2026 |
 | `deploiement.md` | Installation du serveur Scaleway, R2, vérification, opérations ponctuelles | à jour au 24/10/2026 |
 | `supervision.md` | Grafana, notifications sur le téléphone, fin des pannes silencieuses (étape D) | à jour au 24/10/2026 |
 | `opentelemetry.md` | Traces OpenTelemetry de tout le système, Grafana Tempo (étape D2) | à jour au 24/10/2026 |
 | `regles_alertes.md` | Chaque type d'alerte : mode, seuils, origine | à jour au 24/10/2026 |
-| `calibration.md` | Plan de calibration vivant des seuils pour la France | à jour au 24/10/2026 |
+| `calibration.md` | Plan de calibration des seuils pour la France, flottilles en observation | à jour au 31/10/2026 |
 | `pieges.md` | Pièges vivants en détail (résumés dans `CLAUDE.md`, section 11) | à jour au 24/10/2026 |
 | `pieges_archives.md` | Pièges résolus, sortis de `CLAUDE.md` | à jour au 24/10/2026 |
 | `reference.md` | Référence technique détaillée : démarrage, architecture, arborescence, base et API, interface, modèle radar | à jour au 24/10/2026 |
@@ -33,7 +36,7 @@ Index des documents de `docs/` au 24/10/2026 (lot Z3). La mémoire du projet est
 | `controle.md` | Panneau de contrôle : capteurs, dépenses, règles, notifications, zones, démonstration (lot P) | à jour au 24/10/2026 |
 | `ux_refonte.md` | Interface de référence : refonte du lot U (dossiers, Veille, Coulisses), registres et principes | à jour au 24/10/2026 |
 | `trajectoire.md` | Prévision de trajectoire, phase 1 : données, faisabilité, référence (lot T) | à jour au 24/10/2026 |
-| `images/` | Captures du README de la vitrine, en mode démonstration (pseudonymes, aucune photo) | à jour au 24/10/2026 |
+| `images/` | Captures du README de la vitrine, en mode démonstration (pseudonymes, aucune photo), vignettes satellites, fiches de signalement d'exemple | à jour au 31/10/2026 |
 
 `mesures_calibration.md` n'est plus versionné : `taches.py mesures` le réécrit dans `docs/` à chaque exécution
 (rapport de mesures pour la recalibration, voir `calibration.md`).

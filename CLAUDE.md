@@ -1,10 +1,10 @@
 # MARS C2 : contexte du projet pour Claude Code
 
 Fichier de travail, lu en entier avant toute tâche et tenu à jour à chaque jalon ; l'historique va dans
-`docs/journal.md`, pas ici. Direction : Claude Doc « MARS C2, mise à jour du projet »
-(https://claude.ai/code/artifact/00f50730-d117-4ad4-94ac-0cb9b967f002). Index de la documentation : `docs/README.md` ;
-détail technique (démarrage, API, interface) :
-`docs/reference.md` ; pièges en détail : `docs/pieges.md`, résolus : `docs/pieges_archives.md` ; ancienne version complète :
+`docs/journal.md`, pas ici. **Projet clos le 31/10/2026** (mission finale) : bilan dans `docs/rapport_final.md`,
+audit dans `docs/audit_final.md`, mise en veille et réveil dans `docs/exploitation.md` (section 11). Index de la
+documentation : `docs/README.md` ; détail technique (démarrage, API, interface) : `docs/reference.md` ; pièges en
+détail : `docs/pieges.md`, résolus : `docs/pieges_archives.md` ; ancienne version complète :
 `docs/archives/CLAUDE_avant_Z3.md`.
 
 ## 1. Le projet
@@ -97,38 +97,32 @@ indice, jamais une excuse).
   `( cd /opt/mars_c2 || { echo "PAS SUR LE SERVEUR : arrêt"; exit 1; } ; … )`, empreinte lue par
   `git rev-parse --short HEAD`. Serveur : jamais d'action sur les alertes depuis un essai, l'API par le tunnel en GET.
 
-## 4. État actuel (29/10/2026)
+## 4. État final (31/10/2026)
 
-`main` au 29/10/2026 : lots Z1 à Z7, historique Sentinel 1 (choisi sur la part de chaque fenêtre dans l'image),
-mission socle A (zone fiable proportionnelle à la durée, `min_prior_messages` 8, échos faibles et cases sans données
-pour juger l'absence, écho voisin du même navire, place gardée d'une demande planifiée, E01 bord de zone, D02 VIIRS
-remasqué) ; règles 2026.10.64, migrations 01 à 46 (44 et 46 : granules VIIRS non évaluables, 45 : analyses refaites).
-Suivi de la mission : `docs/journal.md` ; calibration : `docs/calibration.md` (E02 et D03 : mesures sans changement).
+`main` : lots Z1 à Z7, missions socle A et finale ; règles 2026.10.67, migrations 01 à 48 (47 : voie GPU retirée,
+48 : clés étrangères de traçabilité). Bilan : `docs/rapport_final.md` ; audit : `docs/audit_final.md` ; suivi daté :
+`docs/journal.md` ; calibration : `docs/calibration.md`. État des sources : en base (panneau), pas dans le fichier.
 Plafond de scènes sans le panneau : `taches.py plafond sentinel1 N --motif TEXTE`. Essais réels : `taches.py essai-reel`
-(préparation), `essai-reel --lancer ID` (un essai, types éprouvés seulement), `viirs-bilan` ; procédure dans
-`docs/travailleurs.md`, section 11. État des sources : en base (panneau), pas
-dans le fichier. Détail des alertes : `docs/regles_alertes.md` ; plan de calibration : `docs/calibration.md`.
+(préparation), `essai-reel --lancer ID` (types éprouvés seulement) ; procédure dans `docs/travailleurs.md`, section 11.
 
-| Capteur ou fonction | État | Dernier essai réel | Coût unitaire mesuré |
+| Capteur ou fonction | État de fin de projet | Dernier essai réel | Coût unitaire mesuré |
 |---|---|---|---|
-| Collecte AIS, ingestion | en service | continu ; environ 680 messages par minute (06/10) | inclus au serveur |
-| Archive R2, purge, sauvegarde | en service | chaque nuit ; restauration essayée le 24/10 | R2 gratuit (moins de 10 Go) |
-| Règles WATCHLIST, IDENTITY_CHANGE, RENDEZVOUS | en service | cycle de 5 min, 18,8 s (22/10) | inclus |
-| Règle AIS_GAP | observation (fichier) | injection du 24/10 : 65 sur 100 ; bord de zone déclassé (E01, 29/10) | inclus |
-| VIIRS (travailleur DEV1-M) | en service ; à 18:30 UTC, granules sans masque refaites (D02) | chaque nuit (travailleur 46, 29/10) | environ 0,02 € la nuit, 0,04 € avec le remasquage |
-| Sentinel 1 sur processeur seul (GP1-S, lots de 4 fenêtres ; POP2 jamais) | boucle tip and cue de la mission socle A depuis le 29/10 11:28 UTC, plafond 2 | 27/10, analyse 108, historique lu, 11 détections | 0,19 € l'analyse |
-| Sentinel 2 (GP1-S, rslearn) | en pause depuis le 21/10 | 20/10 : 3 échecs, correctif livré non rejoué | 0,19 € la session |
-| Tip and cue, vérification satellite | en service pour la preuve de la mission (étape 6), garde fou `/tmp/z7/garde_tip.sh` sur le serveur, pause au plus tard le 01/11 11:28 UTC | demande 51, passage S1C du 29/10 17:54 | selon le capteur |
-| Alertes radar (DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH) | éprouvées (analyses 106 et 108) | 76467 et 92603 (DARK_SHIP critiques, à décider), 92602 (KATRE, ambiguë) | inclus |
-| Trajectoire, étape 2 (analogues) | hors production | mesures sur l'archive à faire | inclus |
+| Collecte AIS, ingestion | en service | continu ; environ 250 000 positions gardées par jour | inclus au serveur |
+| Archive R2, purge, sauvegarde | en service | chaque nuit ; restauration complète essayée le 31/10 (4,9 s) | R2 gratuit (moins de 10 Go) |
+| Règles WATCHLIST, IDENTITY_CHANGE, RENDEZVOUS | en service | cycle de 5 min, 18,6 s en médiane (31/10) | inclus |
+| Règle AIS_GAP | observation (fichier) | injection du 24/10 : 65 sur 100 ; bord de zone déclassé (E01) | inclus |
+| Rendez vous d'une flottille | observation une semaine depuis le 31/10 (`flottilles_observees` dans `task_runs`) | cas 125730 | inclus |
+| VIIRS (travailleur DEV1-M) | en service ; à 18:30 UTC, granules sans masque refaites | chaque nuit | environ 0,02 € la nuit |
+| Sentinel 1 (GP1-S, lots de 4 fenêtres) | en pause, motif « fin du projet » (au plus tard le 05/11 12:00 UTC) | 31/10, analyses 114 et 115 | 0,19 € l'analyse |
+| Sentinel 2 (GP1-S, rslearn) | en pause | 30/10, analyse 112 : un vrai positif (231 m pour 229 m) | 0,19 € la session |
+| Tip and cue | en pause, motif « fin du projet » (au plus tard le 05/11 12:00 UTC) | 60 demandes réelles ; aucune encore évaluée (voir le rapport final) | selon le capteur |
+| Alertes radar (DARK_SHIP radar, AIS_UNCONFIRMED, IDENTITY_MISMATCH) | éprouvées ; gravité des échos sans AIS 2026.10.66 (navire des listes à 2 km, petite unité sous 25 m) | 146448 faible, 76467 et 92603 élevées | inclus |
 | Supervision (Grafana, ntfy, Tempo) | en service | continu | inclus |
-| Échéances des secrets | en service après déploiement de 29bcfff | clés Copernicus des travailleurs : 14/11/2026 | inclus |
-| Interface (Veille, Enquête, Coulisses, démonstration) | en service | lot U du 21/10 | inclus |
+| Interface (Veille, Enquête, Coulisses, démonstration, signalement) | en service | lots U, UX1, UX2 | inclus |
 
 Coût mesuré (facture Scaleway du 1er au 23/10) : environ 19 € par mois hors taxes en régime permanent (serveur DEV1-M
-0,0202 € l'heure, réseau et stockage environ 4 € par mois). Prochaines étapes : déployer Z3 puis Z4, mesure des coupures
-AIS le 29/10 (`docs/calibration.md`), Z6 (satellites en réel), Z7 (calibration), trajectoire étape 2 et TrAISformer.
-Mises en commun listées pour plus tard (travailleurs, évaluation, squelette Sentinel) : `docs/journal.md`, lot Z4.
+0,0202 € l'heure, réseau et stockage environ 4 € par mois). Travailleurs, tous essais réels du 07 au 31/10 : 5,03 €.
+Pistes si le projet reprend : `docs/rapport_final.md`, section « Si le projet reprend ».
 
 ## 5. Architecture
 
