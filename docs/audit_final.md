@@ -15,7 +15,7 @@ laisser**. Rien n'a été modifié pendant l'audit.
 | Code mort | 2 symboles réellement inutilisés, 1 paramètre d'API inutilisé |
 | Complexité | 50 fonctions au dessus de C (radon), dont 22 en E ou F |
 | Interface | typecheck et knip propres ; un seul paquet JavaScript de 1,29 Mo (363 Ko compressé) |
-| Dépendances Python | pip-audit : aucune vulnérabilité connue (backend et scripts) |
+| Dépendances Python | `pip-audit` : aucune vulnérabilité connue (backend et scripts) |
 | Dépendances web | npm audit : 3 alertes (MapLibre 4.7.1, Vite 5, esbuild), aucune atteignable en production |
 | Images | backend 714 Mo, scripts 836 Mo, web 94,5 Mo ; images de base épinglées par étiquette, pas par empreinte |
 | Base | 1,93 Go ; positions 1,77 Go (6,8 millions de lignes) ; données saines ; une table morte |
@@ -88,7 +88,7 @@ stock.
 
 ## 3. Dépendances et images
 
-* pip-audit sur `backend/requirements.lock` et `scripts/requirements.lock` : aucune vulnérabilité connue. Versions
+* `pip-audit` sur `backend/requirements.lock` et `scripts/requirements.lock` : aucune vulnérabilité connue. Versions
   figées par fichier de verrouillage, sans empreintes (`--require-hashes`) : à documenter.
 * Images de base : `python:3.12-slim`, `node:22-alpine`, `nginx:1.28-alpine`, épinglées par étiquette seulement.
   **À corriger** : empreinte `@sha256` sur chaque `FROM` (reproductible, risque nul).
