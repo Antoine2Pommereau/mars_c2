@@ -5,7 +5,6 @@
 **Maritime surveillance for French waters: spot the strange ship before it matters.**
 
 AIS tracking, behavioural rules and satellite cross checks (Sentinel 1 radar, Sentinel 2 optical, VIIRS night lights)
-fused into one operator console, run live for a month on a single small cloud server.
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
