@@ -1,5 +1,5 @@
 # Règles de MARS C2. Toute alerte enregistre la version ci dessous.
-version: "2026.10.65"
+version: "2026.10.66"
 
 # Seuils lus par la fusion (mars/fusion/pipeline.py). Le reste de ces deux sections servait la chaîne radar du Mac
 # (CircleNet), retirée au lot Z4 (règles 2026.10.48) : voir docs/journal.md pour la retrouver dans l'historique.
@@ -292,6 +292,19 @@ sentinel:
   viirs_gravite_min: moyenne
   viirs_fenetre_h: 24           # alerte VIIRS de moins de 24 heures avant le passage
   interet_rayon_m: 10000        # une scène est retenue si elle couvre un point d'intérêt à 10 km près
+  # Gravité d'un écho sans AIS, radar et optique (2026.10.66 ; VIIRS inchangé). Mesure du 31/10/2026 sur les analyses
+  # réelles depuis le 19/10 (10 analyses, 58 détections, 41 appariées) :
+  # * longueur : les 3 échos appariés mesurés sous 25 m sont des navires de 13 à 37 m (LALFA II 13 m lu 22 m, GROS
+  #   MINET 16 m lu 18 m, LOUWE SENIOR 37 m lu 21 m) ; aucun des 38 navires de plus de 50 m n'est lu sous 25 m (le
+  #   plus court lu : KATRE, 119 m lu 34 m). Sous 25 m, sans autre indice : faible, « petite unité » ;
+  # * navire des listes : 4 alertes sur 6 relevées par un navire des listes à 3,5 à 6,3 km, aucune rencontre ; un
+  #   transbordement se fait bord à bord (rendezvous, 500 m), et 2 km couvrent l'approche (deux navires à 6 nœuds
+  #   l'un vers l'autre la franchissent en 10 min) et l'écart de position de l'AIS (300 m de base) ; au delà, la
+  #   proximité est notée sans relever la gravité ;
+  # * une petite unité garde l'effet d'une infrastructure à moins de 500 m (ancre traînante, mouillage sur un câble).
+  liste_rencontre_km: 2
+  petite_unite_m: 25
+  petite_unite_infra_m: 500
   # Lot C5 : point de déclenchement d'un navire des listes en mer seulement. À quai ou dans un bassin portuaire, un
   # navire se confond au radar avec les quais et les autres coques (essai du 19/10/2026 : VICTOR ANDRYUKHIN dans les
   # bassins nord de Marseille). Retenu à plus de 2 km de la côte (masque des terres), ou au mouillage hors port (zone

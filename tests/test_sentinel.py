@@ -729,3 +729,23 @@ def test_worker_imports_the_ai2_chain_as_src_modules():
     assert "int(round(float(task.get(\"nms_m\"" in src                  # seuil entier pour la grille d'AI2
 
 
+
+
+@pytest.mark.parametrize("cas, longueur, infra_m, liste_km, cote_km, attendu", [
+    ("146448 : 23 m, ALTAI à 6,3 km, sans infrastructure", 23, None, 6.3, 21.0, ("faible", True)),
+    ("92603 : 30 m, câble à 592 m, NOSTOS à 3,5 km", 30, 592, 3.5, 14.9, ("elevee", False)),
+    ("76467 : 52 m, câble à 487 m, ALTAI à 6,2 km", 52, 487, 6.2, 20.9, ("elevee", False)),
+    ("petite unité à 400 m d'un câble : l'infrastructure garde son effet", 20, 400, None, 10.0, ("elevee", False)),
+    ("petite unité à 1 500 m d'un câble : faible", 20, 1500, None, 10.0, ("faible", True)),
+    ("petite unité très au large, sans indice : faible", 20, None, None, 40.0, ("faible", True)),
+    ("petite unité à 1,5 km d'un navire des listes : rencontre plausible", 20, None, 1.5, 10.0, ("elevee", False)),
+    ("grand écho, navire des listes à 1,9 km et câble : critique", 120, 900, 1.9, 10.0, ("critique", False)),
+    ("grand écho très au large, navire des listes à 8 km : moyenne", 120, None, 8.0, 40.0, ("moyenne", False)),
+])
+def test_dark_echo_severity_rules_2026_10_66(cas, longueur, infra_m, liste_km, cote_km, attendu):
+    """Gravité d'un écho sans AIS (règles 2026.10.66), cas réels 146448, 92603 et 76467 et bornes : navire des listes
+    sous 2 km seulement, petite unité sous 25 m faible sauf infrastructure à moins de 500 m."""
+    from mars import sentinel
+    infra = {"distance_m": infra_m} if infra_m is not None else None
+    liste = {"distance_km": liste_km} if liste_km is not None else None
+    assert sentinel.gravite_echo(infra, liste, longueur, cote_km, VERSIONNEES)[:2] == attendu, cas

@@ -1465,7 +1465,6 @@ RADAR = {
 
 def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading, rules, capteur=None) -> dict:
     """Écriture de la fusion sur les détections, éoliennes, côtes, évaluation, puis alertes de la scène."""
-    from mars.viirs import severity
     cap = {**RADAR, **(capteur or {})}
     s, v = rules["sentinel"], rules["viirs"]
     out = {"alertes_dark_ship": 0, "alertes_non_confirme": 0, "alertes_incoherence": 0, "non_evaluables": 0,
@@ -1512,7 +1511,7 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
             # Écho sans AIS compatible, évaluable : DARK_SHIP de source radar, gravité comme pour VIIRS
             infra, liste = _context(conn, did, t0, v)
             coast_km = None if cote_m is None else cote_m / 1000
-            sev, to_confirm = severity(bool(infra), bool(liste), coast_km, rules)
+            sev, to_confirm, infra_eff, liste_eff, petite = gravite_echo(infra, liste, _r(d.length_m), coast_km, rules)
             to_confirm = to_confirm or cap["a_confirmer"]
             ctx = list(cap["contexte"])
             doute = getattr(d, "doute", None)
@@ -1523,17 +1522,26 @@ def _screen_and_alert(conn, aid, scene, t0, sc, det, extras, cut, cells, heading
                 doute["name"] = nom and nom[0]
                 sev, to_confirm = "faible", True
                 ctx.append(motif_doute(doute, doute["name"]))
+            if petite and not infra_eff and not liste_eff and not doute:
+                ctx.append(f"Petite unité (écho de {_r(d.length_m)} m, sous {s['petite_unite_m']} m) : AIS non "
+                           "obligatoire sous 15 m")
             if to_confirm:
                 ctx.append("À confirmer : l'AIS peut être incomplet (un point par minute, réception partielle) et la "
                            "petite pêche n'a pas l'obligation d'AIS")
             if infra:
-                ctx.append(f"À {infra['distance_m']:.0f} m d'une infrastructure ({infra.get('name') or infra.get('type')})")
+                ctx.append(f"À {infra['distance_m']:.0f} m d'une infrastructure ({infra.get('name') or infra.get('type')})"
+                           + ("" if infra_eff else f" : au delà de {s['petite_unite_infra_m']} m pour une petite "
+                                                   "unité, sans effet sur la gravité"))
             if liste:
                 ctx.append(f"Navire des listes à {str(liste['distance_km']).replace('.', ',')} km : "
-                           f"{liste.get('name') or liste.get('mmsi')}")
+                           f"{liste.get('name') or liste.get('mmsi')}"
+                           + ("" if liste_eff else f" (au delà de {s['liste_rencontre_km']} km, aucune rencontre "
+                                                   "plausible : sans effet sur la gravité)"))
             cands = d.candidates if isinstance(d.candidates, list) else []
             details = {**common, **attrs, "distance_cote_km": None if coast_km is None else round(coast_km, 1),
                        "infrastructure": infra, "navire_liste": liste, "candidats_ais": cands, "contexte": ctx,
+                       "indices_gravite": {"infrastructure": bool(infra_eff), "navire_liste": bool(liste_eff),
+                                           "petite_unite": petite},
                        "a_confirmer": to_confirm, "critere_evaluation": critere(cells), "ais_navires_rayon": around,
                        "navire_compatible": doute,
                        "motif": cap["dark"],
@@ -1603,6 +1611,22 @@ def _r(v, nd=0):
     except (TypeError, ValueError):
         return None
     return None if v != v else (round(v) if nd == 0 else round(v, nd))
+
+
+def gravite_echo(infra: dict | None, liste: dict | None, longueur_m, coast_km: float | None, rules: dict) -> tuple:
+    """Gravité d'un écho sans AIS, radar ou optique (règles 2026.10.66) : seuls relèvent la gravité un navire des
+    listes à distance de rencontre plausible (liste_rencontre_km) et une infrastructure du corridor, à moins de
+    petite_unite_infra_m pour une petite unité (écho mesuré sous petite_unite_m) ; une petite unité sans indice reste
+    faible, même très au large. Retourne (gravité, à confirmer, infrastructure retenue, navire retenu, petite)."""
+    from mars.viirs import severity
+    s = rules["sentinel"]
+    petite = longueur_m is not None and longueur_m < s["petite_unite_m"]
+    liste_eff = liste if liste and float(liste["distance_km"]) <= s["liste_rencontre_km"] else None
+    infra_eff = infra if infra and (not petite or float(infra["distance_m"]) <= s["petite_unite_infra_m"]) else None
+    sev, to_confirm = severity(bool(infra_eff), bool(liste_eff), coast_km, rules)
+    if petite and not infra_eff and not liste_eff:
+        sev, to_confirm = "faible", True
+    return sev, to_confirm, infra_eff, liste_eff, petite
 
 
 def _context(conn, did: int, t0: datetime, v: dict):
