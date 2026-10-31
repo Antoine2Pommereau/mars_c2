@@ -1,190 +1,250 @@
+<div align="center">
+
 # MARS C2
 
-Maritime Autonomous Reconnaissance and Surveillance, Command and Control.
-Surveillance maritime par fusion des données AIS et de l'imagerie radar Sentinel 1.
-La spécification complète décrit la vision, l'architecture et la feuille de route.
+**Maritime surveillance for French waters: spot the strange ship before it matters.**
 
-Journal historique des premières phases (Danemark). La chaîne radar du Mac qu'il décrit (service d'inférence,
-CircleNet, Sentinel Hub, `scripts/run_rules.py`, `scripts/analyze_zone.py`) est retirée au lot Z4 (24/10/2026) ;
-l'état actuel est dans `CLAUDE.md` et `docs/README.md`.
+AIS tracking, behavioural rules and satellite cross checks (Sentinel 1 radar, Sentinel 2 optical, VIIRS night lights)
+fused into one operator console, run live for a month on a single small cloud server.
 
-## État : phase 4 en cours, masques, rendez vous suspects et coupures AIS
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![PostGIS](https://img.shields.io/badge/PostgreSQL%2016-PostGIS%203.4-336791?logo=postgresql&logoColor=white)
+![React](https://img.shields.io/badge/React-MapLibre-61DAFB?logo=react&logoColor=black)
+![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-traced%20end%20to%20end-425CC7?logo=opentelemetry&logoColor=white)
+![Status](https://img.shields.io/badge/status-completed%20prototype-4fb6c8)
 
-**Coupures AIS** (`backend/rules.py`) : navire de classe A faisant route (au moins 1 nœud) qui cesse d'émettre
-pendant au moins deux heures, à plus de 3 km des côtes, loin du bord des données chargées, et dans la **zone de
-réception fiable** : cellules d'environ 6 km reçues pendant au moins 22 heures sur 24, pour au moins 20 navires.
-Cette dernière condition évite de confondre un silence avec une sortie de la couverture des stations côtières.
-Chaque alerte indique la dernière position et la réapparition, le déplacement pendant le silence, et les navires
-restés lents à moins de 3 km du trajet présumé : des partenaires possibles d'une rencontre dissimulée.
+![MARS C2, the watch screen](docs/images/veille.png)
 
-```bash
-docker compose exec -T db psql -U mars -d mars < db/init/06_ais_gap.sql
-docker compose up -d --build backend
-python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 8.5 56.0 13.0 58.6
-python scripts/build_masks.py --skip-land
-python scripts/run_rules.py --day 2024-06-05
-```
+<sub>Demonstration mode: vessel names are replaced by stable pseudonyms, no vessel photos.</sub>
 
+</div>
 
-**Masques géographiques** (`scripts/build_masks.py`) : terres émergées issues de GSHHG en pleine résolution, qui
-contient les petites îles (découpées sur la région et subdivisées pour accélérer les calculs de distance), et zones de
-mouillage déduites de l'AIS : cellules d'environ 2 km où au moins quatre navires distincts sont restés immobiles. Une
-détection radar à moins de 500 m de la terre est masquée.
+## Why
 
-**Rendez vous suspects** (`backend/rules.py`) : deux navires à moins de 500 m l'un de l'autre, à moins de 2 nœuds,
-pendant au moins deux heures, à plus de 5 km des côtes ; tranches où l'un des navires se déclare amarré exclues ;
-navires de service (remorqueurs, pilotes, secours…) exclus. Dans une zone de mouillage, l'alerte est conservée mais
-déclassée en sévérité faible, avec son contexte ; un rendez vous bord à bord (moins de 50 m) est signalé comme tel. La règle est évaluée en SQL sur toute la journée, et chaque alerte est
-horodatée à l'instant où les deux heures sont atteintes : elle n'apparaît qu'une fois cet instant franchi par le rejeu.
-Tous les paramètres sont dans `config/rules.yaml`.
+Undersea cables, power interconnectors, pipelines and offshore wind farms are critical infrastructure, and a ship
+dragging its anchor over them looks, on a map, like any other ship. Meanwhile a "shadow fleet" of ageing tankers moves
+sanctioned cargo under changing names and flags, sometimes with its transponder switched off.
 
-### Mise en route de la phase 4
+AIS, the system ships use to broadcast their identity and position, is **declarative**: a ship says who and where it
+is. MARS C2 treats every AIS message as a claim to be checked, against behaviour over time and against sensors the
+ship does not control.
 
-```bash
-pip install -e ".[test]"
-docker compose exec -T db psql -U mars -d mars < db/init/04_masks.sql
-docker compose exec -T db psql -U mars -d mars < db/init/05_nav_status.sql
-docker compose up -d --build backend
-python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 8.5 56.0 13.0 58.6
-python -m pytest tests
-python scripts/build_masks.py --region 4 53 17 60
-python scripts/run_rules.py --day 2024-06-05
-```
+The imagined user is a French maritime authority watch officer. The question the whole interface is built around:
+**which ship should I look at right now, and why?**
 
-## Phase 3, analyse à la demande
+## What it does
 
-L'opérateur trace une zone sur la carte (Maj + glisser), choisit un passage Sentinel 1 parmi ceux qui couvrent la
-zone sur les journées AIS chargées, et suit l'analyse étape par étape : extrait radar, détection, fusion avec l'AIS.
-Les détections et les alertes s'affichent à la fin, avec la durée de chaque étape.
+**1. Watches four French sea areas live.** Brittany (Ushant traffic separation scheme), the Channel, the Bay of Biscay
+and the Mediterranean coast including Corsica: about 250 000 kept positions a day, ingested every 15 seconds, kept 30
+days in PostGIS and archived every night to object storage.
 
-Architecture : le **service d'inférence** (dossier `inference`) porte l'accès à Sentinel Hub et le modèle, chargé et
-préchauffé une seule fois au démarrage ; il traite les analyses l'une après l'autre. Le **backend** orchestre :
-il crée l'analyse, confie l'extrait et la détection au service d'inférence, puis exécute la fusion et enregistre
-détections, alertes et preuves. L'adresse du service d'inférence est un paramètre (`INFERENCE_URL`) : sur un Mac,
-il tourne hors de Docker pour utiliser le GPU Apple ; ailleurs, il peut tourner en conteneur ou sur un GPU distant.
+**2. Runs behavioural rules every five minutes** over a sliding 24 hour window:
 
-**Critère de sortie** : une zone et un passage soumis depuis l'interface produisent leurs détections en base en
-quelques secondes, sans intervention manuelle.
-
-### Passer de la phase 2 à la phase 3
-
-```bash
-docker compose exec -T db psql -U mars -d mars < db/init/02_simulation.sql
-docker compose exec -T db psql -U mars -d mars < db/init/03_analyses.sql
-pip install -e ".[test]"
-docker compose up -d --build backend
-docker compose restart frontend
-```
-
-Puis, dans un **second onglet du Terminal**, depuis `mars_c2` et avec l'environnement Python activé, démarrer le
-service d'inférence et le laisser tourner :
-
-```bash
-uvicorn inference.service:app --host 0.0.0.0 --port 8001
-```
-
-Il affiche l'accélérateur utilisé et la durée du préchauffage. Vérifier enfin le contrat du modèle :
-
-```bash
-pytest tests
-```
-
-## Phase 2, flux AIS et simulation
-
-La phase 2 met le trafic en mouvement. Le rejeu repose sur une horloge simulée stockée en base (table `sim_clock`,
-fonction `sim_now()`, retirées au lot Z4 le 24/10/2026 : l'instant est désormais tenu par le navigateur) : l'API, l'interface et, plus tard, les règles raisonnent toutes sur le même « maintenant ».
-Les positions importées constituent l'archive ; le rejeu révèle celles dont l'horodatage est dépassé par l'horloge.
-L'interface reçoit le trafic par SSE une fois par seconde, avec la traînée récente de chaque navire.
-
-**Critère de sortie** : les navires se déplacent sur la carte au rythme choisi.
-
-### Passer de la phase 1 à la phase 2
-
-```bash
-docker compose exec -T db psql -U mars -d mars < db/init/02_simulation.sql
-docker compose up -d --build backend
-docker compose restart frontend
-python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 8.5 56.0 13.0 58.6
-```
-
-La première commande ajoute l'horloge et la table des journées AIS à la base existante. L'import élargi couvre le
-Skagerrak et le Kattegat, et affiche le détail du nettoyage ainsi que le débit d'insertion. Ouvrir ensuite
-http://localhost:8080 et cliquer sur Lecture.
-
-## Phase 1, tranche verticale
-
-Chaîne complète minimale, sur une zone et un passage fixes :
-
-1. une base PostgreSQL et PostGIS avec le schéma initial ;
-2. l'import d'une journée AIS de la Danish Maritime Authority ;
-3. l'analyse radar d'une zone : extrait Sentinel Hub (sigma0, rééchantillonnage bilinéaire), détection par le
-   modèle CircleNet V2S, filtre de contraste local, appariement avec l'AIS, alertes « navire sombre » et leurs preuves ;
-4. une API FastAPI et une carte minimale.
-
-**Critère de sortie** : une commande démarre le système, et un navire sombre apparaît sur la carte.
-
-## Organisation du dépôt
-
-| Dossier | Contenu |
+| Rule | What it catches |
 |---|---|
-| `db/init` | Schéma SQL, appliqué automatiquement au premier démarrage de la base |
-| `config/rules.yaml` | Seuils et paramètres des règles, versionnés |
-| `mars` | Code partagé : accès Sentinel Hub, inférence, lecture AIS, appariement |
-| `scripts` | Import AIS et analyse d'une zone, exécutés depuis le Mac |
-| `backend` | API FastAPI |
-| `frontend` | Carte MapLibre servie par nginx |
-| `data`, `models` | Données et modèle, non suivis par Git |
+| `WATCHLIST` | A sanctioned or shadow fleet vessel (OpenSanctions, GUR catalogue) in our waters, matched by IMO number (or by MMSI alone, at a lower severity), with time spent stopped away from port |
+| `IDENTITY_CHANGE` | New name confirmed, or the same IMO under another MMSI (flag hopping, simultaneous use) |
+| `RENDEZVOUS` | Two ships slow and close for an hour or more, away from the coast: possible ship to ship transfer |
+| `AIS_GAP` | A ship under way goes silent inside the area where reception is proven reliable |
+| `DARK_SHIP` | A satellite sees a vessel where no AIS was broadcasting |
+| `AIS_UNCONFIRMED` | AIS says a ship is here, the satellite sees nothing in a clear, fully read window |
+| `IDENTITY_MISMATCH` | The measured length contradicts the declared one |
 
-## Mise en route
+Every alert links to its evidence, the rules version that produced it and the trace of the computation. Operator
+decisions (confirm, dismiss with a reason, follow) survive every recomputation.
 
-**Prérequis** : Docker Desktop, Python 3.11 ou 3.12, un client OAuth Sentinel Hub (CDSE).
+**3. Tips and cues satellites.** A suspicious signal (a silence near a cable, a night light with no AIS, an offshore
+rendezvous) becomes an observation request. MARS C2 predicts where the ship will be at each upcoming Sentinel pass,
+with an uncertainty circle **learned from the archive** (how far ships actually drift from dead reckoning, by speed and
+horizon), and only books a pass when the ship is likely enough to be inside the image. An ephemeral cloud worker then
+reads just the useful windows of the scene, runs the detector and is destroyed.
 
-**1. Configuration.** Copier `.env.example` en `.env` et renseigner l'identifiant et le secret Sentinel Hub.
+**4. Turns alerts into cases.** Alerts are grouped into one case per vessel (or per unidentified echo) with three
+urgency levels, a one sentence explanation and the evidence drawn on the map. Keyboard triage: `J` `K` to move, `F`
+confirm, `C` dismiss, `S` follow, `V` request a satellite check, `P` print a reporting sheet.
 
-**2. Modèle et données.**
+## Screenshots
 
-* Copier `xview3_membre4_v2s.jit` (Drive, `mars_c2/phase0/results`) dans `models/`.
-* Télécharger `aisdk-2024-06-05.zip` sur aisdata.ais.dk et le décompresser dans `data/ais/`. Si le Finder échoue
-  sur cette archive volumineuse, utiliser `ditto -x -k aisdk-2024-06-05.zip data/ais/` dans un terminal.
+| | |
+|---|---|
+| ![A case: last AIS position, the silence, then the radar echo, drawn on the map](docs/images/dossier.png) | ![A satellite check request with its learned uncertainty circle](docs/images/verification.png) |
+| A case opened from the watch list: last AIS position, the silence, the radar echo 4.2 km away. | A satellite check: estimated position at the pass and its uncertainty circle learned from the archive. |
 
-**3. Démarrer le système.**
+![The same sanctioned tanker seen by the Sentinel 1 radar and by the Sentinel 2 optical sensor](docs/images/radar_optique.png)
 
-```bash
-docker compose up -d
+<sub>The same sanctioned tanker at anchor, four days apart: Sentinel 1 radar (left) and Sentinel 2 optical (right).
+Thumbnails produced by the workers, exactly as shown to the operator.</sub>
+
+![Keyboard triage: J and K move through the cases, Enter opens one](docs/images/tri_clavier.gif)
+
+<sub>Demonstration mode: pseudonyms, no vessel photos.</sub>
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Sources
+        AIS[AISStream<br/>live AIS]
+        LISTS[OpenSanctions<br/>GUR catalogue]
+        CDSE[Copernicus<br/>Sentinel 1 and 2]
+        NASA[NASA LANCE<br/>VIIRS]
+        EMOD[EMODnet<br/>cables, pipelines, wind farms]
+    end
+
+    subgraph Server["Scaleway server, 4 GB"]
+        COL[collector] --> PQ[(Parquet)] --> ING[ingest]
+        ING --> DB[(PostgreSQL 16<br/>PostGIS)]
+        TASKS[taches<br/>rules every 5 min<br/>tip and cue, nightly jobs] <--> DB
+        API[FastAPI] <--> DB
+        WEB[React + MapLibre<br/>behind nginx] --> API
+        OTEL[OpenTelemetry collector] --> TEMPO[Tempo] --> GRAF[Grafana]
+    end
+
+    subgraph Workers["Ephemeral Scaleway workers, CPU"]
+        S1[Sentinel 1<br/>AI2 SAR detector]
+        S2[Sentinel 2<br/>AI2 rslearn]
+        VI[VIIRS<br/>AI2 night lights]
+    end
+
+    AIS --> COL
+    LISTS --> TASKS
+    EMOD --> DB
+    TASKS -- create, task, destroy --> Workers
+    CDSE --> S1 & S2
+    NASA --> VI
+    Workers -- results over private network --> API
+    PQ -- nightly archive --> R2[(Cloudflare R2)]
+    DB -- nightly backup --> R2
+    GRAF -- alerts --> NTFY[ntfy on phone]
 ```
 
-La base, l'API (port 8000) et la carte (port 8080) démarrent. Au premier lancement, le schéma est créé automatiquement.
+A few design choices worth reading about:
 
-**4. Environnement Python des scripts.**
+* **Ephemeral workers instead of a GPU server.** Satellite analysis runs on throwaway CPU instances created by the
+  server, given their task and credentials once over a private network, then destroyed by a guard that can never touch
+  anything else. A Sentinel 1 check costs about 0.19 € and reads only the windows around the points of interest,
+  through signed range requests.
+* **Everything is traced.** Every task, route, external call and worker step emits OpenTelemetry spans; one satellite
+  analysis is one trace, from the scheduled task that launches the worker, through the worker itself, to the results
+  received by the API, and an observation request is linked to the alert that caused it.
+* **Measure, then simulate, then write.** A silent rule is proven by injection tests on real traffic; every threshold
+  carries a version stamped in each alert; every change to stored alerts is first run as a simulation with its
+  expected result written down, and operator decisions are never overwritten.
+* **Respect the sensor.** No absence is ever declared outside the part of the image actually read, under clouds, or
+  outside the area where AIS reception is proven reliable. A detection that cannot be evaluated says so, and a small
+  echo far from any lead stays a low priority "small craft, AIS not required under 15 m".
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+## Proven on real data
+
+Every line below comes from a real satellite scene and the real AIS feed, with the number measured.
+
+| What | Result |
+|---|---|
+| Radar | A sanctioned tanker at anchor measured at 252 m (244 m declared), its echo 143 m from its AIS position |
+| Radar with scene history | Given two earlier passes of the same orbit, the detector found all five ships it had missed on a busy strait scene: 11 detections, exactly the free replay |
+| Same ship, optical | Four days later Sentinel 2 sees the same tanker at 238 m in its anchorage; its AIS was silent for 31 minutes, so the system reports "not assessable" instead of a false dark ship |
+| First optical true positive | A cargo ship measured at 231 m for 229 m declared |
+| Automatic analysis in a dense area | 15 of 18 radar detections matched to their AIS, the scene chosen by the system alone |
+| Night lights | VIIRS nights processed by workers with the NASA cloud mask; granules published without it are reprocessed in the evening |
+| Offshore transfer | A small vessel alongside three different ships in two days, 25 km offshore, 70 to 90 minutes each: invisible at the Danish 120 minute threshold, caught after recalibration on French traffic |
+| Tip and cue | 60 observation requests raised by real alerts since 20 October; the loop (request, pass, analysis, verdict attached to the alert) is built and tested, and two scheduling defects found on real requests are fixed |
+
+## What real data taught us
+
+Each of these was invisible in tests and synthetic data, found on a real run, then fixed and covered by a test on the
+real case:
+
+* **The radar model needs history.** Without earlier passes of the same orbit its threshold drops and absences mean
+  nothing; the worker now fetches two prior scenes, and says so when it cannot.
+* **Geolocation was 80 m off.** Ground control points interpolated linearly drifted inside a scene; a thin plate spline
+  fixed it.
+* **The night light model was blind under a bright moon.** The cloud mask was never given to it; it is now fetched from
+  NASA, and granules published without it are reprocessed when it appears.
+* **Matching was too short for ships at anchor.** AIS sends one position every ten minutes for a stopped ship; its last
+  position now stays valid for 120 minutes, with a tolerance that grows with time.
+* **Observation requests were lost by replanning.** A request left its satellite pass three minutes after the image was
+  taken, because the pass was only marked "acquired" overnight; it now keeps its pass while the scene can still be
+  published.
+* **Cruise ships, wind turbines and a lightship raised false alerts.** Wind farm masks, a prudence rule (a known AIS ship
+  that could explain the detection makes the alert low) and a plausible meeting distance (2 km) for watchlist proximity.
+* **Real feeds carry junk.** A negative heading from the optical model rejected a whole batch; the placeholder IMO
+  `1234567` passes the checksum and linked unrelated ships; both are now handled.
+
+## Some numbers
+
+| | |
+|---|---|
+| Rules cycle | 18.6 s median every 5 minutes, 626 cycles without failure over the last 7 days |
+| Satellite workers, all real runs since 7 October | 55 workers, 5.03 € in total (Sentinel 1 3.32 €, Sentinel 2 1.14 €, VIIRS 0.57 €) |
+| One Sentinel 1 check | 0.19 €, about ten minutes of a CPU instance |
+| Server | about 19 € a month excluding VAT with network and storage, measured on the invoice |
+| Database | 1.9 GB for 30 days of positions; nightly archive about 26 MB a day |
+| Interface | about 240 kB of application code, map library cached separately, gzip and long caching |
+| Tests | 602 Python tests (with a PostGIS test database) and 42 interface tests, three identical full runs |
+
+## Honest status
+
+This is a completed personal prototype, not a fielded system. It ran live from 6 October to early November 2026.
+
+* **Proven in production:** live AIS collection and ingestion, continuous rules, watchlists, cases and triage,
+  supervision with phone alerts, tracing, nightly archive, backup and a tested restore.
+* **Proven on a few real scenes:** Sentinel 1 radar (about ten analyses), Sentinel 2 optical (one accepted analysis),
+  VIIRS nights.
+* **Built, not yet proven end to end on a real request:** the tip and cue verdict attached to an alert.
+* **Thresholds** were first calibrated on Danish data, then recalibrated on two to three weeks of French traffic where
+  the data allowed; AIS gaps still run in observation mode.
+
+## Tech stack
+
+**Backend** Python 3.12, FastAPI, asyncpg, psycopg, PostgreSQL 16 with PostGIS, Arrow and Parquet, GDAL
+**Frontend** React, TypeScript, MapLibre GL, Tailwind, Vite, nginx
+**Satellite models** AI2 `vessel-detection-sentinels` (Sentinel 1), AI2 rslearn Sentinel 2 vessel detection, AI2
+`vessel-detection-viirs`
+**Infrastructure** Docker Compose, Scaleway instances and private network, Cloudflare R2, GitHub Container Registry
+**Observability** OpenTelemetry (collector contrib, a small OTLP exporter for the Python 3.8 workers), Grafana Tempo,
+Grafana, ntfy
+
+## Repository map
+
+```
+mars/          domain code: AIS ingestion, rules, satellites, tip and cue, trajectory, tracing
+backend/       FastAPI application
+web/           React operator console
+travailleurs/  scripts run on ephemeral satellite workers
+scripts/       collector, ingestion, scheduled tasks and commands, publish and deploy
+db/init/       schema and numbered migrations
+config/        versioned rules thresholds
+otel/ grafana/ observability configuration, dashboards as code
+docs/          design notes, measurements, audit and final report (in French)
 ```
 
-**5. Importer l'AIS, puis analyser la zone.**
+The design notes in `docs/` are written in French; the index is `docs/README.md`. Good entry points:
+`docs/rapport_final.md`, `docs/audit_final.md`, `docs/travailleurs.md`, `docs/regles_alertes.md`,
+`docs/opentelemetry.md` and `docs/exploitation.md`.
 
-```bash
-python scripts/import_ais.py --csv data/ais/aisdk-2024-06-05.csv --bbox 10.2 57.7 10.9 58.15
-python scripts/analyze_zone.py --bbox 10.30 57.80 10.80 58.07 --time 2024-06-05T17:02:26Z
-```
+## How it was built
 
-L'analyse affiche le passage retenu, le nombre de détections, les appariements, les alertes et les durées de chaque étape.
-Sur un Mac, le modèle tourne sur le GPU Apple (MPS) s'il est disponible, sinon sur CPU.
+Designed and directed by Antoine de Pommereau, written with an AI coding assistant (Claude Code), with one method
+throughout: measure on real data, simulate the change, then apply it, and keep a dated journal (`docs/journal.md`).
 
-**6. Ouvrir la carte** : http://localhost:8080
+## Data sources and licences
 
-## Résultat attendu sur la zone de référence
+AIS from AISStream; sanctions from OpenSanctions; Ukrainian GUR shadow fleet catalogue; Copernicus Sentinel data
+(contains modified Copernicus Sentinel data); NASA LANCE VIIRS near real time products; EMODnet Human Activities;
+GSHHG coastlines. Models from the Allen Institute for AI under Apache 2.0. Historical AIS datasets used for training
+(Danish Maritime Authority, GeoTrackNet Brittany, École navale) are used for personal, non commercial research only and
+are not redistributed, nor are any derived datasets or weights. Vessel photos, shown only outside demonstration mode,
+are fetched on demand from VesselFinder for personal use.
 
-Sur le passage du 5 juin 2024 à 17 h 02 UTC, la phase 0 a obtenu 11 détections, dont 5 appariées à l'AIS et 4 fausses
-alertes sur du grain de mer éliminées par le contraste local. Il reste une alerte « navire sombre » : un écho de 44 m,
-très contrasté, à près de 3 km de tout navire AIS. Selon la tolérance d'appariement, un navire proche d'un point AIS
-peut aussi apparaître en alerte : c'est un réglage de la phase 4.
+## En français
 
-## Remettre la base à zéro
+MARS C2 est une plateforme de surveillance maritime pour les eaux françaises : elle confronte l'AIS déclaratif au
+comportement des navires et à des capteurs satellitaires indépendants (radar Sentinel 1, optique Sentinel 2, lumières
+nocturnes VIIRS) pour protéger les infrastructures sous marines et suivre la flotte fantôme. Projet personnel
+d'Antoine de Pommereau, mené jusqu'à un prototype complet en service réel pendant un mois ; la documentation détaillée
+du dossier `docs/` est en français, à commencer par `docs/rapport_final.md`.
 
-```bash
-docker compose down -v
-docker compose up -d
-```
+---
+
+<sub>Built by Antoine de Pommereau. Not affiliated with any French government agency.</sub>

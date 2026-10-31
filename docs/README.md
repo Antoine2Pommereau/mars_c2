@@ -33,6 +33,7 @@ Index des documents de `docs/` au 24/10/2026 (lot Z3). La mémoire du projet est
 | `controle.md` | Panneau de contrôle : capteurs, dépenses, règles, notifications, zones, démonstration (lot P) | à jour au 24/10/2026 |
 | `ux_refonte.md` | Interface de référence : refonte du lot U (dossiers, Veille, Coulisses), registres et principes | à jour au 24/10/2026 |
 | `trajectoire.md` | Prévision de trajectoire, phase 1 : données, faisabilité, référence (lot T) | à jour au 24/10/2026 |
+| `images/` | Captures du README de la vitrine, en mode démonstration (pseudonymes, aucune photo) | à jour au 24/10/2026 |
 
 `mesures_calibration.md` n'est plus versionné : `taches.py mesures` le réécrit dans `docs/` à chaque exécution
 (rapport de mesures pour la recalibration, voir `calibration.md`).
