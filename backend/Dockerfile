@@ -1,5 +1,5 @@
 # Contexte de construction : la racine du dépôt (voir docker-compose.yml)
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 # Relie le paquet du registre au dépôt (nettoyage par GitHub Actions, .github/workflows/nettoyage_registre.yml)
 LABEL org.opencontainers.image.source="https://github.com/Antoine2Pommereau/mars_c2"
 WORKDIR /app

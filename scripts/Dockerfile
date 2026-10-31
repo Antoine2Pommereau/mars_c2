@@ -1,6 +1,6 @@
 # Image des scripts AIS et d'exploitation : collecte AISStream, ingestion en base, import des listes de surveillance,
 # tâches planifiées (archivage R2, purge, sauvegarde, disque). Contexte : la racine du dépôt (docker-compose.yml).
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 # Relie le paquet du registre au dépôt (nettoyage par GitHub Actions, .github/workflows/nettoyage_registre.yml)
 LABEL org.opencontainers.image.source="https://github.com/Antoine2Pommereau/mars_c2"
 # pg_dump doit être de la même version majeure que le serveur (PostgreSQL 16) : dépôt officiel PostgreSQL
