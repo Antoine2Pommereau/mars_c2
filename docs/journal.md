@@ -1627,3 +1627,33 @@ Aucune règle changée, aucune migration, aucune dépense.
   (`/tmp/z7/garde_tip2.sh`, même journal) : mêmes arrêts de sécurité, échéance repoussée, arrêt à la première demande
   analysée, dépense de la mission plafonnée à 2,81 € pour ne jamais dépasser 3,00 € avec une session de plus.
 * Dépense de la mission : 0,95 € sur 3,00 €, inchangée.
+
+## 31/10/2026 : SMYRTOS dans l'analyse 112, OMI de remplissage, flottilles, arrêt de sécurité sur l'analyse 114
+
+* SMYRTOS (analyse 112, Sentinel 2 du 27/10 à 11:27:09) : le maintien à l'arrêt ne s'appliquait pas, et c'est juste.
+  À 11:06, SMYRTOS déclarait 3,5 nœuds en route (statut 0) à 993 m de l'écho ; de 09:28 à 12:17 il manœuvrait à 1,5 à
+  3,5 nœuds devant Weymouth, jamais sous 1 nœud ; aucun message entre 11:06 et 11:37 (31 min, au delà des 10 min de
+  l'interpolation) ; même interpolée, sa position passe à environ 580 m de l'écho. Aucun défaut : test du cas avec les
+  positions réelles ; `sentinel-refusionner 112 --simulation` : 1 apparié avant, 1 après, rien à écrire.
+* OMI : la clé de contrôle était déjà vérifiée à l'ingestion et à l'import des listes (mesure du serveur : 0 OMI à clé
+  fausse sur 5 243 navires, 5 455 identités, 21 317 entrées de listes). 1234567 a une clé juste (77, clé 7) : seul
+  numéro partagé par plus de deux MMSI (cinq noms, dont TEST et TEST1). Règles 2026.10.65 (`b8bc42b`) : numéro de
+  remplissage jamais retenu, ni à l'ingestion, ni dans les listes, ni dans les changements d'identité. Deux alertes en
+  dépendaient, aucune entrée de liste. Commande `identite-omi-factices`, critère écrit avant (47064 et 63928
+  trouvées, 47064 seule classée, décision sur 63928 gardée) : simulation conforme, puis réelle : 47064 classée avec
+  son motif, 63928 reste acquittée (motif noté à côté). Tests : 592 réussis avec la base.
+* Flottilles : proposition mesurée dans `calibration.md` (section 6), **non appliquée** : 2 rendez vous sur 10 entre
+  MMSI de même pays à moins de 10 d'écart, unités en classe B sans type ni longueur (125730 devant Fos, 56150, balises
+  probables au large de Santander) ; gravité faible et étiquette « flottille » proposées, en observation une semaine.
+* Arrêt de sécurité du garde fou le 31/10 à 00:16 UTC : analyse 114 (passage 1204, S1D du 30/10 17:48, sélection
+  automatique sur ALTAI près d'un câble, travailleur 53, 0,19 €, détruit), 16 détections, 12 appariées, alerte
+  DARK_SHIP 146448 élevée (écho 55). Tip and cue et Sentinel 1 en pause par le garde fou, qui s'est arrêté.
+  * Écho 55 : 23 m, score 0,923, contraste 12,2 dB, à 21 km de la côte en baie de Seine ; vignette : cible ponctuelle
+    faible mais nette. Aucun AIS compatible : LALFA II (pêche, 13 m) à 4,1 km, STELLAMARIS (drague) à 6,3 km, tous
+    deux appariés à leur propre écho. Gravité élevée due au seul voisinage d'ALTAI (liste GUR) à 6,3 km, lui même
+    apparié à son écho à sa position AIS : aucun indice de rendez vous. Verdict : petite unité sans AIS probable
+    (pêche de moins de 15 m, qui n'est pas tenue d'en porter), comme 92603. Alerte laissée à Antoine.
+  * Aucune demande de tip and cue sur ce passage (la demande 51 était close « sans passage » depuis le 30/10 08:52).
+* `b8bc42b` publiée en deux fois (premier envoi de l'image des scripts expiré chez GitHub, déploiement arrêté net
+  avant tout changement, services restés en `4cc4063`), puis déployée en 60 s, VERDICT à OK partout.
+* Dépense de la mission : 1,14 € sur 3,00 € (travailleurs 44, 47, 49, 51, 52, 53).
