@@ -76,9 +76,21 @@ confirm, `C` dismiss, `S` follow, `V` request a satellite check, `P` print a rep
 <sub>The same sanctioned tanker at anchor, four days apart: Sentinel 1 radar (left) and Sentinel 2 optical (right).
 Thumbnails produced by the workers, exactly as shown to the operator.</sub>
 
+![One Sentinel 1 analysis as a single trace across the scheduler, the ephemeral worker and the API](docs/images/trace_gantt.png)
+
+<sub>A real analysis, end to end in one OpenTelemetry trace (about 12 minutes): scene selection, worker creation,
+Docker and model download, three windows read and analysed, results posted back, fusion, thumbnails, destruction.
+Drawn from the Tempo data of 31/10/2026.</sub>
+
+| | |
+|---|---|
+| ![Back office, monthly budget: spend per sensor and cost per result](docs/images/budget.png) | ![A printable reporting sheet built from a case](docs/images/signalement.png) |
+| Back office: spend per sensor, cost per useful result, last workers (real figures, 31/10/2026). | A printable A4 reporting sheet built from a case (key `P`), in demonstration mode. |
+
 ![Keyboard triage: J and K move through the cases, Enter opens one](docs/images/tri_clavier.gif)
 
-<sub>Demonstration mode: pseudonyms, no vessel photos.</sub>
+<sub>Demonstration mode: pseudonyms (names, MMSI and IMO), no vessel photos. The map views were captured on the test
+database; the back office on the live server.</sub>
 
 ## Architecture
 
