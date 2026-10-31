@@ -1657,3 +1657,22 @@ Aucune règle changée, aucune migration, aucune dépense.
 * `b8bc42b` publiée en deux fois (premier envoi de l'image des scripts expiré chez GitHub, déploiement arrêté net
   avant tout changement, services restés en `4cc4063`), puis déployée en 60 s, VERDICT à OK partout.
 * Dépense de la mission : 1,14 € sur 3,00 € (travailleurs 44, 47, 49, 51, 52, 53).
+
+## 31/10/2026 : mission finale, clôture et vitrine (fin du projet)
+
+* Phase 0 : étape 6 reprise jusqu'au 05/11 12:00 UTC sous un nouveau garde fou (pause finale au motif « fin du
+  projet », exception pour une alerte élevée dont le seul motif est un navire des listes à plus de 2 km) ; aucune
+  demande évaluée au 31/10 à 11:10 UTC. Gravité des échos sans AIS (règles 2026.10.66, mesure sur les analyses réelles
+  depuis le 19/10) appliquée après simulation : 76467 et 92603 de critique à élevée, 146448 d'élevée à faible,
+  décisions gardées. Flottilles en observation (2026.10.67). Analyses automatiques 114 et 115 (0,19 € chacune) ;
+  151324, incohérence de longueur faible.
+* Phase 1 : audit en lecture seule (`audit_final.md`) ; trois passages complets des tests identiques ; essai de
+  restauration réussi ; gitleaks vert.
+* Phase 2 : code mort retiré, images de base épinglées, voie GPU retirée (migration 47), clés étrangères de
+  traçabilité (48), `VACUUM ANALYZE`, interface découpée avec gzip et cache (premier chargement de 1 395 à environ
+  363 Ko), branches fusionnées supprimées. `5327fb5` déployée, VERDICT à OK.
+* Phase 3 : bloc UX1 non joint ; UX1 et UX2 déjà livrés le 29/10.
+* Phase 4 : README vitrine en anglais, captures en mode démonstration, `CLAUDE.md` à l'état final, mise en veille et
+  réveil, index à jour.
+* Dépense de tous les essais réels du projet : 5,03 € HT (55 travailleurs) ; missions socle A et finale : 1,33 €.
+* **Fin du projet.** Bilan et décisions restantes : `rapport_final.md`.
